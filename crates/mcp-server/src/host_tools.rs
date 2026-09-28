@@ -21,6 +21,8 @@ pub struct McpHostTool {
     pub name: String,
     pub description: String,
     pub args_schema: serde_json::Value,
+    /// Object schema; unions of object branches are normalized on `tools/list`.
+    /// Invalid output schemas are omitted from the list with a warning.
     pub output_schema: serde_json::Value,
     pub annotations: McpToolAnnotations,
 }
@@ -48,6 +50,7 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// Any [`McpToolError`]; it maps to the same JSON-RPC error a registry
-    /// tool's would.
+    /// tool's would. A successful output must be a JSON object; any other
+    /// value is logged and returned as a redacted internal error.
     async fn call(&self, call: ToolCall) -> Result<serde_json::Value, McpToolError>;
 }

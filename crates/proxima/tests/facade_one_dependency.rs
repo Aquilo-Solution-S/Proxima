@@ -94,6 +94,11 @@ struct OwnerOnlyArgs {
     note: Option<String>,
 }
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct OwnerOnlyOutput {
+    note: String,
+}
+
 impl proxima::flavor::Tool for OwnerOnlyTool {
     const NAME: &'static str = "facade_owner_only";
     const DESCRIPTION: &'static str = "declare tool consts through the facade";
@@ -101,13 +106,17 @@ impl proxima::flavor::Tool for OwnerOnlyTool {
     const AUDIENCE: proxima::flavor::McpToolAudience = proxima::flavor::McpToolAudience::Owner;
 
     type Args = OwnerOnlyArgs;
-    type Output = String;
+    type Output = OwnerOnlyOutput;
 
     fn call(
         _ctx: proxima::flavor::ToolCtx,
         args: Self::Args,
     ) -> futures::future::BoxFuture<'static, Result<Self::Output, proxima::flavor::ToolError>> {
-        Box::pin(async move { Ok(args.note.unwrap_or_default()) })
+        Box::pin(async move {
+            Ok(OwnerOnlyOutput {
+                note: args.note.unwrap_or_default(),
+            })
+        })
     }
 }
 

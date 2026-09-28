@@ -11,6 +11,107 @@ use proxima_core::{
     SchemaId, SchemaVersion,
 };
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct EmptyOutput {}
+
+struct OutputFixture<T>(std::marker::PhantomData<fn() -> T>);
+
+impl<T> McpTool for OutputFixture<T>
+where
+    T: serde::Serialize + schemars::JsonSchema + Send + 'static,
+{
+    const NAME: &'static str = "proxima-test_output";
+    const DESCRIPTION: &'static str = "output schema fixture";
+    const ANNOTATIONS: Option<McpToolAnnotations> =
+        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    type Args = EmptyArgs;
+    type Output = T;
+
+    fn call(
+        _ctx: McpToolCtx,
+        _args: Self::Args,
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Err(McpToolError::Other("schema-only fixture".to_owned())) })
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[expect(dead_code, reason = "only the output schema is exercised")]
+enum MixedOutput {
+    Object { value: String },
+    Scalar(String),
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[expect(dead_code, reason = "only the output schema is exercised")]
+enum ObjectUnionOutput {
+    Text { text: String },
+    Count { count: u32 },
+}
+
+fn assert_output_registration_refused<T>()
+where
+    T: serde::Serialize + schemars::JsonSchema + Send + 'static,
+{
+    let mut registry = FlavorRegistry::new();
+    let error = registry
+        .try_add_mcp_tool::<OutputFixture<T>>("proxima-test")
+        .expect_err("nonobject output types cannot register");
+    assert!(matches!(
+        error,
+        FlavorRegistryError::InvalidToolOutputSchema {
+            name: "proxima-test_output",
+            ref message,
+        } if message.contains("object")
+    ));
+    assert!(
+        registry
+            .freeze_or_panic_for_tests()
+            .mcp_tool("proxima-test_output")
+            .is_none()
+    );
+}
+
+#[test]
+fn registration_refuses_unit_sequence_scalar_mixed_and_unconstrained_outputs() {
+    assert_output_registration_refused::<()>();
+    assert_output_registration_refused::<Vec<String>>();
+    assert_output_registration_refused::<String>();
+    assert_output_registration_refused::<bool>();
+    assert_output_registration_refused::<MixedOutput>();
+    assert_output_registration_refused::<serde_json::Value>();
+}
+
+#[test]
+fn registration_accepts_empty_objects_and_preserves_object_union_branches() {
+    let mut registry = FlavorRegistry::new();
+    registry
+        .try_add_mcp_tool::<OutputFixture<EmptyOutput>>("proxima-test")
+        .unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
+    assert_eq!(
+        frozen
+            .mcp_tool("proxima-test_output")
+            .unwrap()
+            .output_schema["type"],
+        "object"
+    );
+    let mut registry = FlavorRegistry::new();
+    registry
+        .try_add_mcp_tool::<OutputFixture<ObjectUnionOutput>>("proxima-test")
+        .unwrap();
+    let frozen = registry.freeze_or_panic_for_tests();
+    let schema = &frozen
+        .mcp_tool("proxima-test_output")
+        .unwrap()
+        .output_schema;
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["anyOf"].as_array().unwrap().len(), 2);
+    assert!(schema.get("properties").is_none());
+}
+
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 struct EmptyArgs {}
 
@@ -20,13 +121,13 @@ impl McpTool for DemoTool {
     const NAME: &'static str = "proxima-test_demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
-    type Output = ();
+    type Output = EmptyOutput;
 
     fn call(
         _ctx: McpToolCtx,
         _args: EmptyArgs,
-    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Ok(EmptyOutput {}) })
     }
 }
 
@@ -36,13 +137,13 @@ impl McpTool for WrongPrefixTool {
     const NAME: &'static str = "wrong_demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
-    type Output = ();
+    type Output = EmptyOutput;
 
     fn call(
         _ctx: McpToolCtx,
         _args: EmptyArgs,
-    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Ok(EmptyOutput {}) })
     }
 }
 
@@ -52,13 +153,13 @@ impl McpTool for ProviderUnsafeTool {
     const NAME: &'static str = "proxima-test/demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
-    type Output = ();
+    type Output = EmptyOutput;
 
     fn call(
         _ctx: McpToolCtx,
         _args: EmptyArgs,
-    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Ok(EmptyOutput {}) })
     }
 }
 
@@ -131,13 +232,13 @@ macro_rules! stub_tool {
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = $specs;
             const ANNOTATIONS: Option<McpToolAnnotations> = $annotations;
             type Args = $args;
-            type Output = ();
+            type Output = EmptyOutput;
 
             fn call(
                 _ctx: McpToolCtx,
                 _args: Self::Args,
-            ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-                Box::pin(async { Ok(()) })
+            ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+                Box::pin(async { Ok(EmptyOutput {}) })
             }
         }
     };
@@ -197,13 +298,13 @@ macro_rules! malformed_dispatch_tool {
             }];
             const ANNOTATIONS: Option<McpToolAnnotations> = STUB_ANNOTATIONS;
             type Args = $args;
-            type Output = ();
+            type Output = EmptyOutput;
 
             fn call(
                 _ctx: McpToolCtx,
                 _args: Self::Args,
-            ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-                Box::pin(async { Ok(()) })
+            ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+                Box::pin(async { Ok(EmptyOutput {}) })
             }
         }
     };

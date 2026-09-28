@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use proxima_core::mcp::{
     McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_resources,
-    provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{
     AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
@@ -428,10 +428,7 @@ impl ServerHandler for DynamicHandler {
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
                 })
-                .and_then(|output| {
-                    let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
-                    Ok((output, text))
-                });
+                .and_then(|output| structured_tool_output(&canonical_name, output));
             if let Some(recording) = recording {
                 recording.finish(&server, error_auth.as_ref(), &outcome);
             }
@@ -592,6 +589,18 @@ pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
 fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {
     tracing::error!(error = %err, "mcp internal error");
     ErrorData::internal_error("internal server error", None)
+}
+
+fn structured_tool_output(
+    tool_name: &str,
+    output: serde_json::Value,
+) -> Result<(serde_json::Value, String), ErrorData> {
+    if !output.is_object() {
+        tracing::error!(tool = %tool_name, "mcp tool output must be a JSON object");
+        return Err(ErrorData::internal_error("internal server error", None));
+    }
+    let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
+    Ok((output, text))
 }
 
 /// Narrow a dispatcher tool's advertised `action` enum and `x-proxima-actions`
@@ -1041,8 +1050,12 @@ fn host_tool_allowed_for_auth(auth: Option<&McpAuthContext>, tool: &McpHostTool)
 }
 
 /// A host tool's `tools/list` entry; `None` (and a warning) when its
-/// schemas are not JSON objects.
-fn host_tool_metadata(tool: McpHostTool) -> Option<Tool> {
+/// input schema is not a JSON object or its output schema admits non-objects.
+fn host_tool_metadata(mut tool: McpHostTool) -> Option<Tool> {
+    if let Err(error) = normalize_mcp_output_schema(&mut tool.output_schema) {
+        tracing::warn!(tool = %tool.name, error = %error, "host tool output schema must describe JSON objects; not listed");
+        return None;
+    }
     let (serde_json::Value::Object(args), serde_json::Value::Object(output)) =
         (tool.args_schema, tool.output_schema)
     else {
@@ -1148,6 +1161,10 @@ impl CallRecording {
 }
 
 #[cfg(test)]
+#[path = "handler/output_contract_tests.rs"]
+mod output_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     // The lib reaches every gate through
@@ -1178,7 +1195,7 @@ mod tests {
             argv_action_specs: &[],
             annotations,
             audience: proxima_core::mcp::McpToolAudience::Shared,
-            call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),
+            call: &|_, _| Box::pin(async { Ok(serde_json::json!({})) }),
         }
     }
 
@@ -1568,6 +1585,9 @@ mod tests {
         #[derive(Debug)]
         struct StubDispatchTool;
 
+        #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+        struct StubOutput {}
+
         impl McpTool for StubDispatchTool {
             const NAME: &'static str = "proxima-stub_dispatch";
             const DESCRIPTION: &'static str = "A flavor dispatcher.";
@@ -1590,9 +1610,12 @@ mod tests {
                 },
             ];
             type Args = StubArgs;
-            type Output = ();
-            fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
-                Box::pin(async { Ok(()) })
+            type Output = StubOutput;
+            fn call(
+                _: McpToolCtx,
+                _: Self::Args,
+            ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+                Box::pin(async { Ok(StubOutput {}) })
             }
         }
 

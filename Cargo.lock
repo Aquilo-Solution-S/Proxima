@@ -2508,6 +2508,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64 0.23.1",
+ "boon",
  "jsonwebtoken",
  "proxima",
  "proxima-auth-oidc",

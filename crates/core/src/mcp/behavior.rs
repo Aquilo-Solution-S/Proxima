@@ -250,6 +250,10 @@ impl RequestBehavior for ScopeGateBehavior {
 }
 
 #[cfg(test)]
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct StubOutput {}
+
+#[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
@@ -540,9 +544,12 @@ mod argv_scope_tests {
         const ANNOTATIONS: Option<McpToolAnnotations> =
             Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = ArgvArgs;
-        type Output = ();
-        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        type Output = super::StubOutput;
+        fn call(
+            _: McpToolCtx,
+            _: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(super::StubOutput {}) })
         }
     }
 
@@ -705,9 +712,12 @@ mod owner_role_tests {
         const ANNOTATIONS: Option<McpToolAnnotations> =
             Some(McpToolAnnotations::new().read_only(true).open_world(false));
         type Args = StubArgs;
-        type Output = ();
-        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        type Output = super::StubOutput;
+        fn call(
+            _: McpToolCtx,
+            _: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(super::StubOutput {}) })
         }
     }
 
@@ -721,9 +731,12 @@ mod owner_role_tests {
         const NAME: &'static str = "proxima-stub_silent";
         const DESCRIPTION: &'static str = "A flavor tool that declares no annotations.";
         type Args = StubArgs;
-        type Output = ();
-        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        type Output = super::StubOutput;
+        fn call(
+            _: McpToolCtx,
+            _: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(super::StubOutput {}) })
         }
     }
 

@@ -776,7 +776,9 @@ pub trait Tool: Send + Sync + 'static {
     /// What the tool answers with. `JsonSchema` is required for the same
     /// reason it is on `Args`: the manifest describes both ends of the call,
     /// and the derived schema is what MCP clients validate
-    /// `structuredContent` against.
+    /// `structuredContent` against. The output must serialize to a JSON object
+    /// and its schema must declare an object root. Use an empty braced struct
+    /// for an empty reply; unit, scalar and sequence roots cannot register.
     type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(ctx: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<Self::Output, ToolError>>;

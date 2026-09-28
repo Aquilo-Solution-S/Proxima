@@ -612,7 +612,8 @@ pub trait McpTool: Send + Sync + 'static {
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// See [`crate::Tool::Output`] — the manifest derives an output schema
-    /// from this type just as it derives the argument schema from `Args`.
+    /// from this type. Its schema and serialized value must have object roots;
+    /// use an empty braced struct for an empty reply.
     type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(
