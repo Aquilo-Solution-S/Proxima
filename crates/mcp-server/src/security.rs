@@ -254,18 +254,28 @@ impl IntoResponse for HostRequestError {
 fn request_authority(request: &Request) -> Result<NormalizedAuthority, HostRequestError> {
     if let Some(host) = request.headers().get(HOST) {
         let host = host.to_str().map_err(|_| {
-            tracing::warn!(host = ?host, "rejected request with non-UTF-8 Host header");
+            tracing::warn!(
+                category = "non_utf8",
+                "rejected request with non-UTF-8 Host header"
+            );
             HostRequestError::InvalidEncoding
         })?;
-        let authority = http::uri::Authority::try_from(host).map_err(|_| {
-            tracing::warn!(host, "rejected request with malformed Host header");
-            HostRequestError::InvalidHeader
-        })?;
-        return Ok(normalize_authority(authority.host(), authority.port_u16()));
+        return parse_request_host(host);
     }
     let authority = request.uri().authority().ok_or_else(|| {
         tracing::warn!("rejected request with missing Host header and no :authority");
         HostRequestError::MissingHeader
+    })?;
+    Ok(normalize_authority(authority.host(), authority.port_u16()))
+}
+
+fn parse_request_host(host: &str) -> Result<NormalizedAuthority, HostRequestError> {
+    let authority = http::uri::Authority::try_from(host).map_err(|_| {
+        tracing::warn!(
+            category = "malformed",
+            "rejected request with malformed Host header"
+        );
+        HostRequestError::InvalidHeader
     })?;
     Ok(normalize_authority(authority.host(), authority.port_u16()))
 }
@@ -309,7 +319,7 @@ async fn enforce_host(
     };
     if !allowlist.allows_authority(&authority) {
         tracing::warn!(
-            host = ?authority,
+            category = "not_allowed",
             "rejected request with disallowed Host header (possible DNS rebinding attempt)",
         );
         return Response::builder()
@@ -877,6 +887,10 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
         port,
     })
 }
+
+#[cfg(test)]
+#[path = "security/header_logging_tests.rs"]
+mod header_logging_tests;
 
 #[cfg(test)]
 mod tests {
