@@ -206,6 +206,10 @@ runtime checklist most likely to prevent regressions.
   `OwnerState` / `OwnerAccessPort` into roles. No org predicate, ACL/share set,
   retired read-scope API, materialized Personality/Self, or caller-supplied
   resolved owner may authorize access.
+- **Composed SQL:** views require `security_invoker=true` and platform ownership;
+  materialized views and foreign tables are refused. Platform-owned definer
+  routines pin trusted `search_path` entries ending with `pg_temp`; only trigger
+  routines may grant `EXECUTE` to `PUBLIC` or runtime authority.
 - **Facts:** Facts are admitted `Memory` rows; receipts prove admission only,
   not external truth. Fact identity is the row id, not content hash, source id,
   or receipt id.

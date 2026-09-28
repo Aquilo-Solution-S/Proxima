@@ -503,7 +503,7 @@ sets. One release, with a coordinated stop/migrate/start cutover:
 1. Stop **every older pack version** and maintenance worker sharing the database.
 2. As database administrator, preinstall `vector`, `btree_gin`, and `pg_trgm`.
    Provision distinct `NOSUPERUSER NOBYPASSRLS` platform and runtime roles.
-   Transfer application schema/table/sequence/function and migration-ledger
+   Transfer application schema/table/view/sequence/function and migration-ledger
    ownership to the platform role. Grant runtime schema usage, DML, sequence
    access and migration-ledger reads, including defaults for new objects;
    runtime must have no ownership, DDL, TRUNCATE or role-escalation privileges.
@@ -521,7 +521,11 @@ sets. One release, with a coordinated stop/migrate/start cutover:
    platform. Apply core plus every linked flavor's migrations through the
    platform lane, or let the new host perform this step before serving.
 4. Start the new packs. Boot refuses a missing policy, missing FORCE RLS,
-   unsafe runtime/platform role, or absent platform credentials.
+   unsafe runtime/platform role, or absent platform credentials. Views require
+   `security_invoker=true` and platform ownership; materialized views and foreign
+   tables are refused. Platform-owned `SECURITY DEFINER` routines require a
+   trusted, pinned `search_path` ending with `pg_temp`; non-trigger routines
+   must not grant `EXECUTE` to `PUBLIC` or runtime authority.
 
 Do not restart an older binary after activation. Rolling coexistence with the
 previous release is not supported for this cutover. A rollback needs a prepared

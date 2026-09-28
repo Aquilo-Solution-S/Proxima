@@ -451,9 +451,11 @@ pub async fn split_role_urls_for(
                FOR r IN SELECT n.nspname, c.relname, c.relkind
                    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                   WHERE n.nspname IN ({schema_list})
-                    AND c.relkind IN ('r','p','S') LOOP
+                    AND c.relkind IN ('r','p','v','S') LOOP
                  IF r.relkind = 'S' THEN
                    EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                 ELSIF r.relkind = 'v' THEN
+                   EXECUTE format('ALTER VIEW %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
                  ELSE
                    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
                  END IF;
