@@ -381,7 +381,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type/file_class filters and optional call-neighbour connections with their call sites. Generated, vendored and lockfile chunks stay searchable, carry file_class, and rank after every source match in hybrid mode unless file_class asks for them.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: semantic (embedding-only) suits a question describing behaviour, lexical (full-text only) an exact identifier, string or path, and hybrid (default) fuses both; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut, and matched_line, the line that best matches the query when one does; context_lines returns the numbered lines around it instead, and verbose adds per-arm scores and byte ranges. Supports language/chunk_type/file_class filters and optional call-neighbour connections with their call sites. Generated, vendored and lockfile chunks stay searchable, carry file_class, and rank after every source match in hybrid mode unless file_class asks for them. An unfiltered hybrid search takes semantic neighbours for source and for the other classes as two sets, each up to the candidate budget, so a non-source vector cannot take a source slot.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -630,14 +630,17 @@ async fn collect_candidates(
     scan: &ChunkCandidateScan<'_>,
 ) -> Result<(Vec<(MemoryId, CodeChunkV1)>, HashMap<Uuid, MatchScores>), ToolError> {
     let lexical_rows = scan_lexical_candidates(pool, scan).await?;
-    let semantic_rows = scan_semantic_candidates(ctx, pool, scan).await?;
+    let (semantic_rows, semantic_rest) = scan_semantic_candidates(ctx, pool, scan).await?;
 
     // Admit: Query HeadsOnly. Content hits on a superseded t drop.
+    // Each semantic slice is its own reciprocal-rank space: the second
+    // holds non-source neighbours of an unfiltered hybrid search, and an
+    // empty slice adds nothing.
     let fused = fuse_candidates(
         scan.effective_mode,
         scan.semantic_weight,
         &lexical_rows,
-        &semantic_rows,
+        &[&semantic_rows, &semantic_rest],
     );
     if fused.is_empty() {
         return Ok((Vec::new(), HashMap::new()));
@@ -693,27 +696,101 @@ async fn scan_lexical_candidates(
 /// rather than applied to its output, because a search scoped to one
 /// repository would otherwise spend its whole budget on whichever repository
 /// is largest and come back empty.
+///
+/// An unfiltered hybrid search runs that scan twice ([`semantic_scan`]):
+/// once over source, once over every other class. One distance-ordered
+/// limit would fill itself with whichever class sits nearest, and the
+/// tier sort that runs after fusion cannot put back a source chunk the
+/// scan never returned. Each set keeps the full budget, and fusion ranks
+/// each set from its own rank 0.
 async fn scan_semantic_candidates(
     ctx: &ToolCtx,
     pool: &crate::CodeFlavorStore,
     scan: &ChunkCandidateScan<'_>,
-) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
+) -> Result<(Vec<CodeChunkVectorCandidate>, Vec<CodeChunkVectorCandidate>), ToolError> {
     let Some(query) = scan.query_embedding else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
-    pool.nearest_code_chunk_candidates(
-        ctx.authz().owner_scope(),
-        ctx.owner(),
-        query,
-        CodeChunkVectorFilters {
-            repo_id: scan.resolved.repo_id,
-            language: scan.resolved.language,
-            chunk_type: scan.resolved.chunk_type,
-            file_class: scan.resolved.file_class.map(FileClass::as_str),
-        },
-        usize::try_from(scan.candidate_limit).unwrap_or(0),
-    )
-    .await
+    let limit = usize::try_from(scan.candidate_limit).unwrap_or(0);
+    match semantic_scan(scan.resolved) {
+        SemanticScan::One(filters) => Ok((
+            pool.nearest_code_chunk_candidates(
+                ctx.authz().owner_scope(),
+                ctx.owner(),
+                query,
+                filters,
+                limit,
+            )
+            .await?,
+            Vec::new(),
+        )),
+        SemanticScan::Split { source, non_source } => {
+            // Two scans, not one filtered after the fact: the limit is
+            // applied inside each scan.
+            let (source, non_source) = tokio::try_join!(
+                pool.nearest_code_chunk_candidates(
+                    ctx.authz().owner_scope(),
+                    ctx.owner(),
+                    query,
+                    source,
+                    limit,
+                ),
+                pool.nearest_code_chunk_candidates(
+                    ctx.authz().owner_scope(),
+                    ctx.owner(),
+                    query,
+                    non_source,
+                    limit,
+                ),
+            )?;
+            Ok((source, non_source))
+        }
+    }
+}
+
+/// How many neighbour scans an unfiltered hybrid search spends, and with
+/// which class predicate.
+enum SemanticScan<'a> {
+    /// One scan. `semantic` mode, a search that named `file_class`, and a
+    /// hybrid search that is not ranking source first.
+    One(CodeChunkVectorFilters<'a>),
+    /// Source, then every other class. Each filter carries the query's
+    /// repo, language and chunk type.
+    Split {
+        source: CodeChunkVectorFilters<'a>,
+        non_source: CodeChunkVectorFilters<'a>,
+    },
+}
+
+/// The neighbour-scan plan for `resolved`.
+///
+/// Unfiltered hybrid is the only query that splits. A named class, and
+/// `lexical` or `semantic` mode, stay one scan: those rankings do not
+/// put source ahead of the other classes, so the class mix inside the
+/// budget is the ranking.
+fn semantic_scan<'query>(resolved: &ResolvedChunkQuery<'query>) -> SemanticScan<'query> {
+    let shared = CodeChunkVectorFilters {
+        repo_id: resolved.repo_id,
+        language: resolved.language,
+        chunk_type: resolved.chunk_type,
+        file_class: resolved.file_class.map(FileClass::as_str),
+        exclude_source: false,
+    };
+    if resolved.source_first() {
+        SemanticScan::Split {
+            source: CodeChunkVectorFilters {
+                file_class: Some(FileClass::Source.as_str()),
+                ..shared
+            },
+            non_source: CodeChunkVectorFilters {
+                file_class: None,
+                exclude_source: true,
+                ..shared
+            },
+        }
+    } else {
+        SemanticScan::One(shared)
+    }
 }
 
 /// One page of admitted candidates, with the truncation signal and the
@@ -903,6 +980,10 @@ struct MatchScores {
     similarity_score: f32,
     /// The lexical arm returned this chunk, whatever its score.
     lexical_hit: bool,
+    /// A semantic slice has already contributed this chunk's reciprocal
+    /// rank. A later slice leaves it: the slices partition by class, and
+    /// the first one is the rank that was asked for.
+    semantic_ranked: bool,
     /// Ranks before `score`: 1 for a non-source chunk in a search that puts
     /// source first, else 0. Set once the payload is read.
     tier: u8,
@@ -1030,16 +1111,24 @@ fn reciprocal_rank(rank: usize) -> f32 {
 /// and however strong the resemblance. That is the one place where a caller
 /// has said exactly what they want, and rank fusion on its own would let a
 /// confident embedding neighbour bury it.
+///
+/// `semantic_arms` are separate rank spaces. An unfiltered hybrid search
+/// passes the source neighbours and the other-class neighbours as two
+/// slices, so a non-source chunk at rank 0 of its own scan scores as a
+/// rank-0 neighbour and does not push a source neighbour down the source
+/// scan. A chunk that appears in more than one slice keeps the first
+/// slice's rank.
 fn fuse_candidates(
     mode: ChunkSearchMode,
     weight: SemanticWeight,
     lexical: &[ChunkCandidateRow],
-    semantic: &[CodeChunkVectorCandidate],
+    semantic_arms: &[&[CodeChunkVectorCandidate]],
 ) -> Vec<MatchScores> {
     let semantic_share = 2.0 * weight.get();
     let lexical_share = 2.0 - semantic_share;
+    let semantic_len: usize = semantic_arms.iter().map(|arm| arm.len()).sum();
     let mut by_id: HashMap<uuid::Uuid, MatchScores> =
-        HashMap::with_capacity(lexical.len() + semantic.len());
+        HashMap::with_capacity(lexical.len() + semantic_len);
     for (rank, row) in lexical.iter().enumerate() {
         let entry = by_id.entry(row.memory_id).or_insert(MatchScores {
             memory_id: row.memory_id,
@@ -1053,17 +1142,23 @@ fn fuse_candidates(
             row.score
         };
     }
-    for (rank, row) in semantic.iter().enumerate() {
-        let entry = by_id.entry(row.memory_id).or_insert(MatchScores {
-            memory_id: row.memory_id,
-            ..MatchScores::default()
-        });
-        entry.similarity_score = row.similarity_score;
-        entry.score = if mode == ChunkSearchMode::Hybrid {
-            entry.score + semantic_share * reciprocal_rank(rank)
-        } else {
-            row.similarity_score
-        };
+    for arm in semantic_arms {
+        for (rank, row) in arm.iter().enumerate() {
+            let entry = by_id.entry(row.memory_id).or_insert(MatchScores {
+                memory_id: row.memory_id,
+                ..MatchScores::default()
+            });
+            if entry.semantic_ranked {
+                continue;
+            }
+            entry.semantic_ranked = true;
+            entry.similarity_score = row.similarity_score;
+            entry.score = if mode == ChunkSearchMode::Hybrid {
+                entry.score + semantic_share * reciprocal_rank(rank)
+            } else {
+                row.similarity_score
+            };
+        }
     }
 
     let mut fused = by_id.into_values().collect::<Vec<_>>();
@@ -1650,638 +1745,4 @@ struct CallSiteRow {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        CHUNK_CURSOR, ChunkCandidateRow, ChunkCursorPos, ChunkMatch, ChunkMatchDetail, ChunkPage,
-        ChunkSearchMode, CodeChunkV1, CodeChunkVectorCandidate, CodeSearchChunksArgs,
-        CodeSearchChunksOutput, FileClass, FileState, HashMap, MatchScores, MemoryId,
-        ResolvedChunkQuery, SemanticWeight, distinctive_terms, fuse_candidates, match_metadata,
-        pointer_words, ranks_after_chunk_cursor, reject_unknown_language, render_snippet,
-        requested_semantic_weight, same_word, select_chunk_page, wire_cursor,
-    };
-    use crate::chunker::LANGUAGE_LABELS;
-
-    const CHUNK: &str = "fn drain(queue: &Queue) {\n    let batch = queue.take();\n    // retry a failed batch with backoff\n    send_with_retries(batch);\n}";
-
-    #[test]
-    fn a_full_text_match_points_at_the_line_sharing_most_query_words() {
-        let (kind, line, excerpt) = match_metadata(
-            "where are failed batches retried",
-            "src/drain.rs",
-            CHUNK,
-            40,
-            true,
-        );
-        assert_eq!(kind, "full_text");
-        assert_eq!(line, Some(42), "the line with batch, failed and retry");
-        assert_eq!(
-            excerpt.as_deref(),
-            Some("// retry a failed batch with backoff")
-        );
-    }
-
-    #[test]
-    fn only_a_lexical_hit_gets_a_word_pointer() {
-        let (kind, line, excerpt) = match_metadata(
-            "where are failed batches retried",
-            "src/drain.rs",
-            CHUNK,
-            40,
-            false,
-        );
-        assert_eq!((kind.as_str(), line, excerpt), ("full_text", None, None));
-        let (_, line, _) = match_metadata(
-            "how does the code handle it",
-            "src/drain.rs",
-            CHUNK,
-            40,
-            true,
-        );
-        assert_eq!(line, None, "stopwords and short words point nowhere");
-    }
-
-    #[test]
-    fn a_line_holding_the_whole_query_still_wins() {
-        let (kind, line, _) = match_metadata("queue.take()", "src/drain.rs", CHUNK, 40, true);
-        assert_eq!((kind.as_str(), line), ("text_contains", Some(41)));
-        let (kind, line, _) = match_metadata("drain.rs", "src/drain.rs", CHUNK, 40, true);
-        assert_eq!((kind.as_str(), line), ("path_contains", None));
-    }
-
-    #[test]
-    fn words_split_at_humps_and_underscores_and_match_up_to_their_ending() {
-        let words: Vec<String> =
-            pointer_words("getModuleScriptSources(ASTNode, max_chunk_chars)").collect();
-        assert_eq!(
-            words,
-            [
-                "get", "module", "script", "sources", "ast", "node", "max", "chunk", "chars"
-            ]
-        );
-        for (a, b) in [
-            ("retries", "retry"),
-            ("resolved", "resolution"),
-            ("chunk", "chunker"),
-            ("configuration", "configure"),
-            ("api", "api"),
-        ] {
-            assert!(same_word(a, b), "{a} ~ {b}");
-        }
-        for (a, b) in [("module", "modal"), ("log", "logger"), ("batch", "backoff")] {
-            assert!(!same_word(a, b), "{a} !~ {b}");
-        }
-    }
-
-    #[test]
-    fn a_window_numbers_the_lines_around_the_pointer() {
-        assert_eq!(
-            render_snippet(CHUNK, 40, Some((42, 1)), 2_000),
-            (
-                "41:     let batch = queue.take();\n42:     // retry a failed batch with backoff\n43:     send_with_retries(batch);".to_string(),
-                true
-            )
-        );
-        assert_eq!(
-            render_snippet(CHUNK, 40, Some((40, 0)), 2_000),
-            ("40: fn drain(queue: &Queue) {".to_string(), true),
-        );
-        let (whole, truncated) = render_snippet(CHUNK, 40, Some((42, 10)), 2_000);
-        assert!(whole.starts_with("40: fn drain") && whole.ends_with("44: }"));
-        assert!(!truncated, "a window over the whole chunk holds all of it");
-        let (cut, truncated) = render_snippet(CHUNK, 40, Some((42, 10)), 12);
-        assert_eq!((cut.as_str(), truncated), ("40: fn drain", true));
-    }
-
-    #[test]
-    fn without_a_window_the_snippet_is_the_chunk_from_its_start() {
-        assert_eq!(
-            render_snippet(CHUNK, 40, None, 2_000),
-            (CHUNK.to_string(), false)
-        );
-        assert_eq!(
-            render_snippet(CHUNK, 40, None, 8),
-            ("fn drain".to_string(), true)
-        );
-    }
-
-    fn lean_match(detail: Option<ChunkMatchDetail>) -> ChunkMatch {
-        ChunkMatch {
-            handle: "A:1".into(),
-            repo_handle: None,
-            file_path: "src/drain.rs".into(),
-            chunk_type: "function".into(),
-            file_class: None,
-            line_range: (40, 44),
-            snippet: "fn drain".into(),
-            snippet_truncated: true,
-            matched_line: None,
-            score: 1.5,
-            detail,
-        }
-    }
-
-    /// The default match carries the fields an agent reads, cites and
-    /// opens, and nothing else; not even a null.
-    #[test]
-    fn a_lean_match_serializes_only_what_an_agent_reads() {
-        let lean = serde_json::to_value(lean_match(None)).expect("serializes");
-        let keys: Vec<&str> = lean
-            .as_object()
-            .expect("object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            keys,
-            [
-                "handle",
-                "file_path",
-                "chunk_type",
-                "line_range",
-                "snippet",
-                "snippet_truncated",
-                "score"
-            ]
-        );
-        let verbose = serde_json::to_value(lean_match(Some(ChunkMatchDetail {
-            language: Some("rust".into()),
-            chunk_index: 3,
-            byte_range: (10, 90),
-            match_kind: "full_text".into(),
-            matched_excerpt: None,
-            lexical_score: 1.5,
-            similarity_score: 0.0,
-        })))
-        .expect("serializes");
-        assert_eq!(verbose["language"], "rust");
-        assert_eq!(verbose["chunk_index"], 3);
-        assert_eq!(verbose["lexical_score"], 1.5);
-        assert!(verbose["matched_excerpt"].is_null());
-    }
-
-    /// The advertised output schema must accept a lean match: the verbose
-    /// fields and the omitted ones are optional properties, not required.
-    #[test]
-    fn the_output_schema_requires_only_the_lean_fields() {
-        let schema = serde_json::to_value(schemars::schema_for!(CodeSearchChunksOutput))
-            .expect("schema serializes");
-        let chunk = &schema["$defs"]["ChunkMatch"];
-        let mut required: Vec<&str> = chunk["required"]
-            .as_array()
-            .expect("required list")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect();
-        required.sort_unstable();
-        assert_eq!(
-            required,
-            [
-                "chunk_type",
-                "file_path",
-                "handle",
-                "line_range",
-                "score",
-                "snippet",
-                "snippet_truncated"
-            ]
-        );
-        for verbose_field in [
-            "lexical_score",
-            "similarity_score",
-            "byte_range",
-            "match_kind",
-        ] {
-            assert!(
-                chunk["properties"].get(verbose_field).is_some(),
-                "{verbose_field} is not described"
-            );
-        }
-    }
-
-    fn id(byte: u8) -> uuid::Uuid {
-        uuid::Uuid::from_bytes([byte; 16])
-    }
-
-    #[test]
-    fn language_filter_accepts_exactly_the_chunker_labels() {
-        for label in LANGUAGE_LABELS {
-            assert!(reject_unknown_language(Some(label)).is_ok(), "{label}");
-        }
-        assert!(reject_unknown_language(None).is_ok());
-        for bad in ["Python", "py", "js", "cobol", ""] {
-            assert!(reject_unknown_language(Some(bad)).is_err(), "{bad:?}");
-        }
-    }
-
-    /// The agent-facing description lists the accepted labels by hand; this
-    /// keeps it from drifting when the chunker gains one.
-    #[test]
-    fn language_description_names_every_label() {
-        let schema = serde_json::to_value(schemars::schema_for!(CodeSearchChunksArgs))
-            .expect("schema serializes");
-        let description = schema["properties"]["language"]["description"]
-            .as_str()
-            .expect("language has a description");
-        for label in LANGUAGE_LABELS {
-            assert!(
-                description.contains(&format!("`{label}`")),
-                "description is missing `{label}`: {description}"
-            );
-        }
-    }
-
-    /// The property the rare bands depend on: a question with no identifiers
-    /// must produce no terms, so `rare_all_tsq`/`rare_any_tsq` bind NULL and
-    /// the rare bands contribute nothing.
-    #[test]
-    fn prose_questions_yield_no_distinctive_terms() {
-        for q in [
-            "how does the code chunker decide how big a chunk should be",
-            "where is an input that the embedding provider rejected as too long split",
-            "may a self hosted issuer serve its key set over plain http on loopback",
-            "Fix Windows progress rendering",
-        ] {
-            assert_eq!(distinctive_terms(q), "", "query: {q}");
-        }
-    }
-
-    #[test]
-    fn identifier_shapes_are_picked_up() {
-        assert_eq!(
-            distinctive_terms("the getModuleScriptSources helper only detects src tags"),
-            "getModuleScriptSources"
-        );
-        assert_eq!(
-            distinctive_terms("MAX_CHUNK_CHARS is the hard upper bound"),
-            "MAX_CHUNK_CHARS"
-        );
-        assert_eq!(distinctive_terms("decode as utf8 please"), "utf8");
-    }
-
-    /// Punctuation is a separator, so a scoped package name contributes its
-    /// parts and `resolveFromAST` survives the surrounding backticks.
-    #[test]
-    fn punctuation_separates_without_swallowing_identifiers() {
-        assert_eq!(
-            distinctive_terms("`resolveFromAST` broke for @tailwindcss/postcss v4.1"),
-            "resolveFromAST"
-        );
-    }
-
-    #[test]
-    fn short_and_unstructured_tokens_are_rejected() {
-        // `id` is too short, `fs` too short, `plugin` unstructured, `A1` too
-        // short even though structured.
-        assert_eq!(distinctive_terms("id fs plugin A1 the config"), "");
-    }
-
-    fn owner(byte: u8) -> proxima_core::Owner {
-        proxima_core::Owner::Personal(proxima_core::UserId::new(id(byte)))
-    }
-
-    fn resolved() -> ResolvedChunkQuery<'static> {
-        ResolvedChunkQuery {
-            owner: owner(1),
-            query: "parse_chunk",
-            requested_mode: ChunkSearchMode::Hybrid,
-            semantic_weight: None,
-            repo_id: Some(id(9)),
-            language: Some("rust"),
-            chunk_type: Some("function"),
-            file_class: None,
-            exact_pattern: "%parse\\_chunk%".to_string(),
-        }
-    }
-
-    /// The check that makes "the cursor binds the whole resolved query" an
-    /// executable statement rather than a review convention: every field the
-    /// fingerprint canon names must be able to move it. A field dropped from
-    /// the canon fails here instead of silently letting page 2 resume a
-    /// different candidate set under a matching cursor.
-    #[test]
-    fn every_resolved_field_moves_the_fingerprint() {
-        let base = resolved();
-        let baseline = base.fingerprint();
-
-        let cases: Vec<(&str, ResolvedChunkQuery<'_>)> = vec![
-            (
-                "owner",
-                ResolvedChunkQuery {
-                    owner: owner(2),
-                    ..resolved()
-                },
-            ),
-            (
-                "query",
-                ResolvedChunkQuery {
-                    query: "parse_chunks",
-                    ..resolved()
-                },
-            ),
-            (
-                "requested_mode",
-                ResolvedChunkQuery {
-                    requested_mode: ChunkSearchMode::Lexical,
-                    ..resolved()
-                },
-            ),
-            (
-                "repo_id",
-                ResolvedChunkQuery {
-                    repo_id: Some(id(10)),
-                    ..resolved()
-                },
-            ),
-            (
-                "language",
-                ResolvedChunkQuery {
-                    language: Some("typescript"),
-                    ..resolved()
-                },
-            ),
-            (
-                "chunk_type",
-                ResolvedChunkQuery {
-                    chunk_type: Some("class"),
-                    ..resolved()
-                },
-            ),
-            (
-                "semantic_weight",
-                ResolvedChunkQuery {
-                    semantic_weight: Some(weight(0.8)),
-                    ..resolved()
-                },
-            ),
-            (
-                "file_class",
-                ResolvedChunkQuery {
-                    file_class: Some(FileClass::Lockfile),
-                    ..resolved()
-                },
-            ),
-        ];
-
-        for (field, flipped) in cases {
-            assert_ne!(
-                baseline,
-                flipped.fingerprint(),
-                "changing {field} left the cursor fingerprint unchanged"
-            );
-        }
-    }
-
-    /// `language` and `chunk_type` are adjacent `Option<&str>` values in the
-    /// canon, so transposing them would compile. It must not fingerprint the
-    /// same: a cursor minted for one filter would otherwise be accepted for
-    /// the other and resume page 1's keyset over a different candidate set.
-    #[test]
-    fn transposing_language_and_chunk_type_moves_the_fingerprint() {
-        let language_only = ResolvedChunkQuery {
-            language: Some("rust"),
-            chunk_type: None,
-            ..resolved()
-        };
-        let chunk_type_only = ResolvedChunkQuery {
-            language: None,
-            chunk_type: Some("rust"),
-            ..resolved()
-        };
-        assert_ne!(
-            language_only.fingerprint(),
-            chunk_type_only.fingerprint(),
-            "language and chunk_type are interchangeable in the cursor canon"
-        );
-    }
-
-    fn weight(value: f32) -> SemanticWeight {
-        SemanticWeight::new(value).expect("weight in range")
-    }
-
-    /// A cursor minted before `semantic_weight` existed still resumes: a
-    /// query without a weight fingerprints the six-value canon byte for
-    /// byte, and two weights fingerprint apart (#355).
-    #[test]
-    fn an_unweighted_query_keeps_the_six_value_canon() {
-        let six_values = serde_json::json!([
-            owner(1).external_key(),
-            "parse_chunk",
-            "hybrid",
-            Some(id(9)),
-            Some("rust"),
-            Some("function"),
-        ]);
-        assert_eq!(
-            resolved().fingerprint(),
-            wire_cursor::fingerprint(&six_values.to_string())
-        );
-        let weighted = |value| ResolvedChunkQuery {
-            semantic_weight: Some(weight(value)),
-            ..resolved()
-        };
-        assert_ne!(weighted(0.7).fingerprint(), weighted(0.8).fingerprint());
-        let classed = |class| ResolvedChunkQuery {
-            file_class: Some(class),
-            ..resolved()
-        };
-        assert_ne!(
-            classed(FileClass::Generated).fingerprint(),
-            classed(FileClass::Vendored).fingerprint()
-        );
-    }
-
-    fn chunk_row(id_byte: u8, class: FileClass) -> (MemoryId, CodeChunkV1) {
-        (
-            MemoryId::new(id(id_byte)),
-            CodeChunkV1 {
-                repo_id: id(9),
-                file_path: format!("f{id_byte}.rs"),
-                chunk_index: 0,
-                text: String::new(),
-                language: Some("rust".into()),
-                chunk_type: "function".into(),
-                byte_range_start: 0,
-                byte_range_end: 0,
-                line_range_start: 1,
-                line_range_end: 1,
-                state: FileState::Present,
-                file_class: class,
-                calls: Vec::new(),
-            },
-        )
-    }
-
-    fn page_ids(page: &ChunkPage) -> Vec<uuid::Uuid> {
-        page.eligible
-            .iter()
-            .map(|(memory_id, ..)| memory_id.into_inner())
-            .collect()
-    }
-
-    /// Source first puts every source row ahead of every other one and
-    /// keeps the fused order inside each tier; without it the fused order
-    /// stands. Paging resumes inside the right tier (#360).
-    #[test]
-    fn source_first_pages_every_source_match_ahead_of_the_rest() {
-        // Fused order: 5 (lockfile), 4, 3 (vendored), 2, 1.
-        let rows = vec![
-            chunk_row(5, FileClass::Lockfile),
-            chunk_row(4, FileClass::Source),
-            chunk_row(3, FileClass::Vendored),
-            chunk_row(2, FileClass::Source),
-            chunk_row(1, FileClass::Source),
-        ];
-        let scores: HashMap<uuid::Uuid, MatchScores> = (1..=5_u8)
-            .map(|byte| {
-                (
-                    id(byte),
-                    MatchScores {
-                        memory_id: id(byte),
-                        score: f32::from(byte),
-                        ..MatchScores::default()
-                    },
-                )
-            })
-            .collect();
-
-        let arm_order = select_chunk_page(rows.clone(), &scores, None, 10, "fp", 0, false);
-        assert_eq!(page_ids(&arm_order), [id(5), id(4), id(3), id(2), id(1)]);
-
-        let first = select_chunk_page(rows.clone(), &scores, None, 2, "fp", 0, true);
-        assert_eq!(page_ids(&first), [id(4), id(2)]);
-        let cursor = first.next_cursor.expect("more remain");
-        let pos: ChunkCursorPos = CHUNK_CURSOR.decode("fp", &cursor).expect("decodes");
-        let second = select_chunk_page(rows.clone(), &scores, Some(pos), 2, "fp", 2, true);
-        assert_eq!(page_ids(&second), [id(1), id(5)]);
-        let pos: ChunkCursorPos = CHUNK_CURSOR
-            .decode("fp", &second.next_cursor.expect("one left"))
-            .expect("decodes");
-        let third = select_chunk_page(rows, &scores, Some(pos), 2, "fp", 4, true);
-        assert_eq!(page_ids(&third), [id(3)]);
-        assert!(!third.has_more);
-    }
-
-    /// A cursor minted before tiers existed carries none and resumes as
-    /// tier 0, which every row was.
-    #[test]
-    fn a_cursor_without_a_tier_resumes_in_tier_zero() {
-        let legacy = serde_json::json!({
-            "score_bits": 2.0_f32.to_bits(),
-            "memory_id": id(2),
-            "seen": 1,
-        });
-        let pos: ChunkCursorPos = serde_json::from_value(legacy).expect("decodes");
-        assert_eq!(pos.tier, 0);
-        let scores = |byte: u8, tier: u8| MatchScores {
-            memory_id: id(byte),
-            score: f32::from(byte),
-            tier,
-            ..MatchScores::default()
-        };
-        assert!(ranks_after_chunk_cursor(scores(1, 0), pos));
-        assert!(!ranks_after_chunk_cursor(scores(3, 0), pos));
-        assert!(ranks_after_chunk_cursor(scores(3, 1), pos));
-    }
-
-    fn lexical(id_byte: u8, literal_bonus: f32) -> ChunkCandidateRow {
-        ChunkCandidateRow {
-            memory_id: id(id_byte),
-            score: 1.0 + literal_bonus,
-            literal_bonus,
-        }
-    }
-
-    fn semantic(id_byte: u8) -> CodeChunkVectorCandidate {
-        CodeChunkVectorCandidate {
-            memory_id: id(id_byte),
-            similarity_score: 0.5,
-        }
-    }
-
-    fn fused_order(
-        value: f32,
-        lexical: &[ChunkCandidateRow],
-        semantic: &[CodeChunkVectorCandidate],
-    ) -> Vec<uuid::Uuid> {
-        fuse_candidates(ChunkSearchMode::Hybrid, weight(value), lexical, semantic)
-            .into_iter()
-            .map(|scores| scores.memory_id)
-            .collect()
-    }
-
-    /// The even weight is plain rank fusion; the ends follow one arm; and a
-    /// literal hit ranks first at every weight (#355).
-    #[test]
-    fn the_weight_moves_the_fusion_but_not_a_literal_hit() {
-        let lexical_arm = [lexical(1, 0.0), lexical(2, 0.0)];
-        let semantic_arm = [semantic(3), semantic(2)];
-
-        let even = fuse_candidates(
-            ChunkSearchMode::Hybrid,
-            SemanticWeight::EVEN,
-            &lexical_arm,
-            &semantic_arm,
-        );
-        let both = even
-            .iter()
-            .find(|scores| scores.memory_id == id(2))
-            .expect("in both arms");
-        assert_eq!(
-            both.score.to_bits(),
-            (1.0_f32 / 62.0 + 1.0 / 62.0).to_bits()
-        );
-        assert_eq!(even[0].memory_id, id(2));
-
-        assert_eq!(
-            fused_order(1.0, &lexical_arm, &semantic_arm)[..2],
-            [id(3), id(2)]
-        );
-        assert_eq!(
-            fused_order(0.0, &lexical_arm, &semantic_arm)[..2],
-            [id(1), id(2)]
-        );
-
-        let literal_last = [lexical(4, 0.0), lexical(5, 4.0)];
-        for value in [0.0, 0.5, 1.0] {
-            assert_eq!(
-                fused_order(value, &literal_last, &[semantic(4)])[0],
-                id(5),
-                "weight {value}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_semantic_weight_is_refused_out_of_range_or_off_hybrid() {
-        for bad in [-0.1, 1.1, f32::NAN] {
-            let err = requested_semantic_weight(Some(bad), ChunkSearchMode::Hybrid)
-                .expect_err("out of range");
-            assert!(err.to_string().contains("within 0.0..=1.0"), "{err}");
-        }
-        for mode in [ChunkSearchMode::Lexical, ChunkSearchMode::Semantic] {
-            let err = requested_semantic_weight(Some(0.5), mode).expect_err("not hybrid");
-            assert!(err.to_string().contains("only to mode=hybrid"), "{err}");
-        }
-        assert_eq!(
-            requested_semantic_weight(None, ChunkSearchMode::Semantic).expect("omitted"),
-            None
-        );
-        assert_eq!(
-            requested_semantic_weight(Some(1.0), ChunkSearchMode::Hybrid).expect("in range"),
-            Some(weight(1.0))
-        );
-    }
-
-    /// The one field that must *not* reach the canon: `exact_pattern` is
-    /// derived from `query`, so it carries no independent binding, and
-    /// `effective_mode` is not on the type at all (see the type's docs).
-    #[test]
-    fn derived_exact_pattern_is_not_fingerprinted() {
-        let base = resolved();
-        let rewritten = ResolvedChunkQuery {
-            exact_pattern: "%something else%".to_string(),
-            ..resolved()
-        };
-        assert_eq!(base.fingerprint(), rewritten.fingerprint());
-    }
-}
+mod tests;

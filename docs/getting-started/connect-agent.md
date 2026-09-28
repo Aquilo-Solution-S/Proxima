@@ -103,10 +103,14 @@ paths (`vendor/`, `node_modules/`, `__snapshots__/`, `*.snap`, `*.min.js`,
 `-linguist-generated` or `-linguist-vendored` turns a built-in path off. Every
 class stays searchable. A non-source match carries `file_class`; `hybrid`
 ranks every source match above every other one, while `lexical` and
-`semantic` rank all classes together. `file_class: "generated"` searches that
-class alone, in any mode. A lockfile chunk embeds only its path and lines,
-and only source files declare calls. The ingest report counts files and
-chunks per class in `files_by_class` and `chunks_by_class`. A class is set
+`semantic` rank all classes together. An unfiltered hybrid search draws its
+semantic neighbours in two sets — source, and every other class — each up to
+the candidate budget, so a non-source vector cannot take a source slot.
+`file_class: "generated"` searches that class alone, in any mode, as one set.
+A lockfile chunk embeds only its path and lines, and only source files
+declare calls. The ingest report and `proxima-code_get_ingest_run` both
+count files and chunks per class in `files_by_class` and `chunks_by_class`;
+a run that has not succeeded reports zeros. A class is set
 when a file's content is ingested: editing `.gitattributes` reclasses a file
 the next time it changes.
 

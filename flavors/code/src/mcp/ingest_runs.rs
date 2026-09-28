@@ -21,6 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::file_class::FileClassCounts;
 use crate::repos::runs::{
     ABANDONED_RUN, RUN_HEARTBEAT, RUN_STALE_AFTER, begin_run, get_owner_run, latest_run,
     mark_failed, mark_succeeded, start_run_with_created, touch_run,
@@ -50,6 +51,12 @@ pub struct IngestRunItem {
     pub chunks_reused: u32,
     pub chunks_tombstoned: u32,
     pub call_references_emitted: u32,
+    /// Present files this run derived chunks for, by class. Zeros until
+    /// the run succeeds. Tombstones stay in `files_emitted` and not here.
+    pub files_by_class: FileClassCounts,
+    /// Chunks this run emitted, by the class of the file each was cut from.
+    /// Zeros until the run succeeds.
+    pub chunks_by_class: FileClassCounts,
     pub error_message: Option<String>,
     pub started_at: String,
     pub updated_at: String,
@@ -81,6 +88,8 @@ fn run_item(ctx: &ToolCtx, run: RepoIngestionRun) -> Result<IngestRunItem, ToolE
         chunks_reused: run.chunks_reused,
         chunks_tombstoned: run.chunks_tombstoned,
         call_references_emitted: run.ast_edges_emitted,
+        files_by_class: run.files_by_class,
+        chunks_by_class: run.chunks_by_class,
         error_message,
         started_at: format_time(run.started_at)?,
         updated_at: format_time(run.updated_at)?,
@@ -221,6 +230,8 @@ fn stage_counters(report: &IndexReport) -> StageCounters {
         chunks_reused: count(report.chunks_reused),
         chunks_tombstoned: count(report.chunks_tombstoned),
         ast_edges_emitted: count(report.call_references_emitted),
+        files_by_class: report.files_by_class,
+        chunks_by_class: report.chunks_by_class,
         ..StageCounters::zeroed()
     }
 }
@@ -327,7 +338,7 @@ pub struct CodeGetIngestRunTool;
 
 impl Tool for CodeGetIngestRunTool {
     const NAME: &'static str = "proxima-code_get_ingest_run";
-    const DESCRIPTION: &'static str = "Read one ingestion run: status (queued, running, succeeded, failed), stage, counters, error and timestamps. Name the run by run_id, or a repository by repo_handle for its most recent run.";
+    const DESCRIPTION: &'static str = "Read one ingestion run: status (queued, running, succeeded, failed), stage, counters, error and timestamps. A succeeded run carries files_by_class and chunks_by_class, the same per-class counts as the ingest report; a run that has not succeeded reports zeros. Name the run by run_id, or a repository by repo_handle for its most recent run.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeGetIngestRunArgs;

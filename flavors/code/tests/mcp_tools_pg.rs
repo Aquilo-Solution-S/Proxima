@@ -1389,6 +1389,19 @@ async fn file_classes_stay_searchable_and_rank_after_source()
             .expect("chunks_emitted"),
         "{ingested}"
     );
+    let run = run_tool::<CodeGetIngestRunTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "run_id": ingested["run_id"] }),
+    )
+    .await?;
+    assert_eq!(
+        run["run"]["files_by_class"], ingested["report"]["files_by_class"],
+        "the persisted run keeps the report's file counts: {run}"
+    );
+    assert_eq!(
+        run["run"]["chunks_by_class"], ingested["report"]["chunks_by_class"],
+        "the persisted run keeps the report's chunk counts: {run}"
+    );
 
     let pool = fixture.pg.pool_for_tests();
     let classes: Vec<(String, String, String)> = sqlx::query_as(

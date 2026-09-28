@@ -48,7 +48,16 @@ fn nearest_code_chunk_sql(lane: Lane) -> String {
                         AND ($2::uuid IS NULL OR c.repo_id = $2)
                         AND ($5::text IS NULL OR c.language = $5)
                         AND ($6::text IS NULL OR c.chunk_type = $6)
-                        AND ($8::text IS NULL OR COALESCE(c.file_class::text, 'source') = $8)
+                        AND (
+                            CASE
+                                WHEN $9::boolean THEN
+                                    c.file_class IS NOT NULL
+                                        AND c.file_class::text <> 'source'
+                                ELSE
+                                    $8::text IS NULL
+                                        OR COALESCE(c.file_class::text, 'source') = $8
+                            END
+                        )
                       ORDER BY {vec} <=> $4{cast}
                       LIMIT $7",
         vec = lane.vec,
@@ -74,6 +83,13 @@ pub struct CodeChunkVectorCandidate {
 /// nearest-neighbour budget spent on rows the caller can actually use. A
 /// search scoped to one repository otherwise spends its whole `limit` on
 /// the largest repository indexed and returns nothing.
+///
+/// `exclude_source` replaces the `file_class` predicate: the scan keeps
+/// generated, vendored and lockfile chunks, and a chunk stored without a
+/// class counts as source so it stays out. An unfiltered hybrid search
+/// uses that scan beside a `file_class = source` scan, because one
+/// distance-ordered limit would let a non-source neighbour take a slot
+/// the later tier sort cannot refill.
 ///
 /// One row per memory: one vec per head version. `ORDER BY distance LIMIT n`
 /// is the shape the HNSW index can serve.
@@ -133,6 +149,7 @@ pub async fn nearest_code_chunk_candidates_on_connection(
         .bind(filters.chunk_type)
         .bind(limit)
         .bind(filters.file_class)
+        .bind(filters.exclude_source)
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)
@@ -141,12 +158,42 @@ pub async fn nearest_code_chunk_candidates_on_connection(
 /// The structural filters a chunk search applies before ranking. Grouped
 /// into one struct so the neighbour scan does not grow a fourth and fifth
 /// bare `Option<&str>` parameter that call sites can silently transpose.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CodeChunkVectorFilters<'a> {
     pub repo_id: Option<uuid::Uuid>,
     pub language: Option<&'a str>,
     pub chunk_type: Option<&'a str>,
     /// `source`, `generated`, `vendored` or `lockfile`; a chunk stored
-    /// without a class is `source`.
+    /// without a class is `source`. Ignored when [`Self::exclude_source`]
+    /// is set.
     pub file_class: Option<&'a str>,
+    /// Keep every class except source. A chunk stored without a class is
+    /// source and is excluded. When set, [`Self::file_class`] is ignored.
+    pub exclude_source: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use proxima_core::EmbeddingDim;
+
+    use super::nearest_code_chunk_sql;
+    use crate::pgvector::Lane;
+
+    #[test]
+    fn the_neighbour_scan_can_leave_source_out() {
+        let sql = nearest_code_chunk_sql(Lane::of(EmbeddingDim::D1024));
+        assert!(
+            sql.contains("$9::boolean"),
+            "the non-source arm is a bind, not a second statement: {sql}"
+        );
+        assert!(
+            sql.contains("c.file_class IS NOT NULL")
+                && sql.contains("c.file_class::text <> 'source'"),
+            "a chunk stored without a class reads as source and stays out: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(c.file_class::text, 'source') = $8"),
+            "the class filter stays the equality it was: {sql}"
+        );
+    }
 }
