@@ -14,20 +14,25 @@ use super::{
 };
 
 impl FlavorRegistry {
-    /// Cross-check: the owner-role gate can classify every registered flat
-    /// tool.
+    /// Cross-check: every registered tool has exactly one behaviour
+    /// declaration.
     ///
-    /// `ScopeGateBehavior::enforce_owner_role` demands WRITE when it cannot
-    /// tell. Same two steps, same order: the tool's `ANNOTATIONS`, then the
-    /// core manifest. Unclassified is silently a write. Dispatcher actions
-    /// missing per-action annotations classify as writes.
+    /// A flat tool's is its `EFFECT`; without it the owner-role gate cannot
+    /// tell a read from a write and demands write access. A dispatcher's is
+    /// one `effect` per action, and a tool-level `EFFECT` beside them would
+    /// be a second answer nothing reads.
     pub(super) fn validate_tools_declare_behavior(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
-            if tool.action_arg_specs.is_empty()
-                && tool.annotations.is_none()
-                && crate::mcp::core_tool_annotations(tool.name).is_none()
-            {
-                return Err(FlavorRegistryError::UndeclaredToolBehavior { name: tool.name });
+            let dispatcher =
+                !tool.action_arg_specs.is_empty() || !tool.argv_action_specs.is_empty();
+            match (dispatcher, tool.effect) {
+                (false, None) => {
+                    return Err(FlavorRegistryError::UndeclaredToolBehavior { name: tool.name });
+                }
+                (true, Some(_)) => {
+                    return Err(FlavorRegistryError::DispatcherToolEffect { name: tool.name });
+                }
+                _ => {}
             }
         }
         Ok(())

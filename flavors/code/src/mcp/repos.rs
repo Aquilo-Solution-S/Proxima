@@ -1,3 +1,4 @@
+use proxima_core::mcp::{Replay, ToolEffect};
 use std::path::PathBuf;
 
 use proxima_core::mcp::cursor as wire_cursor;
@@ -193,8 +194,7 @@ pub struct CodeRegisterRepoTool;
 impl Tool for CodeRegisterRepoTool {
     const NAME: &'static str = "proxima-code_register_repo";
     const DESCRIPTION: &'static str = "Register one local Git repository for the current owner. Returns a repo_handle for code MCP tools.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
-        Some(super::WRITE_IDEMPOTENT);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
 
     type Args = CodeRegisterRepoArgs;
     type Output = CodeRegisterRepoOutput;
@@ -281,8 +281,7 @@ pub struct CodeIngestHeadSnapshotTool;
 impl Tool for CodeIngestHeadSnapshotTool {
     const NAME: &'static str = "proxima-code_ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD, waiting for the result. Does not walk commit history. Refused while another ingestion run of this repository is active for the owner. For a large repository prefer proxima-code_start_ingest_head_snapshot, which returns at once.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
-        Some(super::WRITE_IDEMPOTENT);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
 
     type Args = CodeIngestHeadSnapshotArgs;
     type Output = CodeIngestHeadSnapshotOutput;
@@ -321,7 +320,7 @@ impl Tool for CodeListReposTool {
     const NAME: &'static str = "proxima-code_list_repos";
     const DESCRIPTION: &'static str =
         "List local Git repositories registered for the current owner.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeListReposArgs;
     type Output = CodeListReposOutput;
@@ -507,8 +506,7 @@ pub struct CodeEraseRepoTool;
 impl Tool for CodeEraseRepoTool {
     const NAME: &'static str = "proxima-code_erase_repo";
     const DESCRIPTION: &'static str = "Erase one registered repository and every Fact, Abstraction, edge, embedding and receipt derived from it. Irreversible; requires Admin on the owner and the canonical path as confirmation. Also the supported way to re-index a repository from scratch after a Proxima upgrade changes chunking.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
-        Some(super::DESTRUCTIVE_NON_IDEMPOTENT);
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
 
     type Args = CodeEraseRepoArgs;
     type Output = CodeEraseRepoOutput;

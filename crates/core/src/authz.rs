@@ -268,7 +268,19 @@ pub struct AuthzContext {
     /// by the registration's call wrapper, never by a caller, and read by
     /// verbs whose admission depends on the calling tool's declaration
     /// ([`crate::UnitOfWork::erase_own_series`]).
-    invoking_tool: Option<&'static str>,
+    invoking_tool: Option<InvokingTool>,
+}
+
+/// The registered tool a context was handed to, and the declared effect of
+/// the action it runs: the flat tool's `EFFECT`, or the dispatched action
+/// spec's `effect` — never the dispatcher's join, so one destructive action
+/// does not lend its authority to the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvokingTool {
+    pub name: &'static str,
+    /// `None` only for a flat tool that declared nothing, which a frozen
+    /// registry refuses.
+    pub effect: Option<crate::mcp::ToolEffect>,
 }
 
 /// Opaque authority for one redeemed durable-worker phase.
@@ -721,14 +733,14 @@ impl AuthzContext {
     /// outside a tool call. Set only by the tool registration's call
     /// wrapper; no argument, header or host builder reaches it.
     #[must_use]
-    pub const fn invoking_tool(&self) -> Option<&'static str> {
+    pub const fn invoking_tool(&self) -> Option<InvokingTool> {
         self.invoking_tool
     }
 
     /// Stamp the tool whose handler this context is handed to.
     #[must_use]
-    pub(crate) const fn invoked_by_tool(mut self, name: &'static str) -> Self {
-        self.invoking_tool = Some(name);
+    pub(crate) const fn invoked_by_tool(mut self, tool: InvokingTool) -> Self {
+        self.invoking_tool = Some(tool);
         self
     }
 

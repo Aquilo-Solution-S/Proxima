@@ -444,11 +444,7 @@ mod tests {
     impl proxima_core::mcp::McpTool for StubTool {
         const NAME: &'static str = "proxima-stub_ping";
         const DESCRIPTION: &'static str = "Answers with the calling client's name.";
-        const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
-            proxima_core::mcp::McpToolAnnotations::new()
-                .read_only(true)
-                .open_world(false),
-        );
+        const EFFECT: Option<proxima_core::ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
         type Args = StubArgs;
         type Output = StubOutput;
         fn call(
@@ -477,7 +473,7 @@ mod tests {
                 description: "Host output contract fixture".into(),
                 args_schema: serde_json::json!({"type": "object"}),
                 output_schema: serde_json::json!({"type": "object"}),
-                annotations: proxima_core::McpToolAnnotations::new().read_only(true),
+                effect: proxima_core::ToolEffect::ReadOnly,
             }]
         }
 

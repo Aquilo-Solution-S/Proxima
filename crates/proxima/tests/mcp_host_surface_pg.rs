@@ -21,8 +21,8 @@ use proxima::{
 };
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, Credentials, McpToolAnnotations, McpToolError, OwnerRef,
-    OwnerRoles, UserId,
+    AuthError, AuthPath, Authenticator, Credentials, McpToolError, OwnerRef, OwnerRoles,
+    ToolEffect, UserId,
 };
 use proxima_pg_testkit::SplitRoleDb;
 use serde_json::{Value, json};
@@ -82,7 +82,7 @@ impl McpHostTools for EchoTools {
             description: "Echo the call back.".into(),
             args_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
-            annotations: McpToolAnnotations::new().read_only(true).open_world(false),
+            effect: ToolEffect::ReadOnly,
         }]
     }
 
@@ -441,7 +441,7 @@ impl McpHostTools for SleepTools {
             description: "Sleep, then answer.".into(),
             args_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
-            annotations: McpToolAnnotations::new().read_only(true).open_world(false),
+            effect: ToolEffect::ReadOnly,
         }]
     }
 

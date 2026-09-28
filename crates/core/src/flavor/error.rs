@@ -68,16 +68,21 @@ pub enum FlavorRegistryError {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     },
-    /// A registered MCP tool has no resolvable behaviour declaration, so the
-    /// owner-role gate cannot tell a read from a write and has to assume a
-    /// write. Substrate flat tools may answer through the core manifest; a
-    /// flavor flat tool has only `ANNOTATIONS`. Dispatchers resolve through
-    /// their action specs and are not subject to this error.
+    /// A registered flat MCP tool declares no `EFFECT`, so the owner-role
+    /// gate cannot tell a read from a write and has to assume a write.
     #[error(
-        "tool {name} declares no ANNOTATIONS, so the owner-role gate cannot tell a read \
-         from a write and will demand write access; set `const ANNOTATIONS` on the tool"
+        "tool {name} declares no EFFECT, so the owner-role gate cannot tell a read \
+         from a write and will demand write access; set `const EFFECT` on the tool"
     )]
     UndeclaredToolBehavior { name: &'static str },
+    /// A dispatcher declares a tool-level `EFFECT`. Its effect is the join
+    /// of its actions' — each spec's `effect` — so a second, tool-level
+    /// answer could only disagree.
+    #[error(
+        "tool {name} dispatches actions and also declares a tool-level EFFECT; \
+         declare the effect on each action spec instead"
+    )]
+    DispatcherToolEffect { name: &'static str },
     /// A tool whose `Args` is an internally tagged enum — so its schema
     /// carries `x-proxima-actions` and MCP clients see a dispatcher —
     /// declared no `ACTION_ARG_SPECS`. Nothing then enumerates its
@@ -307,32 +312,6 @@ pub enum FlavorRegistryError {
     ToolActionsDisagreement {
         flavor_id: &'static str,
         name: &'static str,
-    },
-    /// A tool's contract and its resolved MCP annotations disagree about
-    /// whether calling it twice is the same as calling it once.
-    #[error(
-        "flavor {flavor_id} declares {name} idempotent = {declared}; its resolved \
-         MCP annotations say {resolved}, and the wire believes the annotations"
-    )]
-    ToolIdempotenceDisagreement {
-        flavor_id: &'static str,
-        name: &'static str,
-        declared: bool,
-        resolved: bool,
-    },
-    /// A tool's contract and its resolved MCP annotations disagree about
-    /// whether it destroys data. The contract's flag admits
-    /// `UnitOfWork::erase_own_series`; the annotation is what a client reads
-    /// before auto-approving. Two answers would let one without the other.
-    #[error(
-        "flavor {flavor_id} declares {name} destructive = {declared}; its resolved \
-         MCP annotations say {resolved}"
-    )]
-    ToolDestructivenessDisagreement {
-        flavor_id: &'static str,
-        name: &'static str,
-        declared: bool,
-        resolved: bool,
     },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.

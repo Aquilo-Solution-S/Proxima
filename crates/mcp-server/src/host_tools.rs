@@ -2,13 +2,12 @@
 //! flavor registry, through the same scope gate and request behaviors.
 
 use async_trait::async_trait;
-use proxima_core::mcp::{McpToolAnnotations, McpToolError, ToolCall};
+use proxima_core::mcp::{McpToolError, ToolCall, ToolEffect};
 
 use crate::auth::McpAuthContext;
 
 /// One tool a host serves. Flat: its palette key is its name, and the
-/// scope gate classifies it by `annotations.read_only` (silence is a
-/// write).
+/// scope gate classifies it by its `effect`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpHostTool {
     /// Canonical and wire name: 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters
@@ -24,7 +23,9 @@ pub struct McpHostTool {
     /// Object schema; unions of object branches are normalized on `tools/list`.
     /// Invalid output schemas are omitted from the list with a warning.
     pub output_schema: serde_json::Value,
-    pub annotations: McpToolAnnotations,
+    /// What the tool does; its MCP hints are
+    /// [`McpToolAnnotations::host`](proxima_core::McpToolAnnotations::host).
+    pub effect: ToolEffect,
 }
 
 /// A host's tool source, registered on the runtime builder

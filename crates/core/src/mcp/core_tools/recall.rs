@@ -1,5 +1,6 @@
 //! `core_recall` — cue-driven sketch packet. This is how Self is retrieved.
 
+use crate::mcp::ToolEffect;
 use std::collections::BTreeMap;
 
 use futures::future::BoxFuture;
@@ -112,6 +113,7 @@ impl RecallReason {
 impl McpTool for RecallTool {
     const NAME: &'static str = protocol_tool::CORE_RECALL;
     const DESCRIPTION: &'static str = "Cue-driven recall packet of sketches (kind + one-liner). Self is this query, not a parameterless dump of Perspective heads. Pass a question and/or subject handles. Does not hydrate sidecar bodies. Search stays a separate precision tool.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = RecallArgs;
     type Output = RecallOutput;
 

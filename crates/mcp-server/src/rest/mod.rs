@@ -605,15 +605,13 @@ mod tests {
 
         // The direction that matters for safety: every leaf of a read-only
         // parent is checked on its own, so adding a write action here cannot
-        // inherit `QUERY` from the tool annotation.
+        // inherit `QUERY` from the tool's effect.
         let fact = descriptor(protocol_tool::CORE_FACT);
         assert!(fact.is_read_only());
         for spec in fact.action_arg_specs {
             assert_eq!(
                 fact.action_is_read_only(spec.action),
-                spec.annotations
-                    .and_then(|annotations| annotations.read_only)
-                    .unwrap_or(false),
+                spec.effect.is_read_only(),
                 "{} must answer from its own descriptor spec",
                 spec.action
             );

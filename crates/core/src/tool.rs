@@ -713,14 +713,15 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
-    /// MCP behaviour hints for a flat tool.
+    /// What this flat tool does — the one behaviour declaration every gate,
+    /// hint and route derives from (see [`crate::mcp::ToolEffect`]).
     ///
-    /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether
-    /// a flat tool is read-only and demands WRITE access when it cannot tell,
-    /// so a flat read that declares nothing is refused to every read-only
-    /// role. Dispatchers ignore this parent declaration and resolve each
-    /// action only from [`Self::ACTION_ARG_SPECS`].
-    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
+    /// Required on a flat tool and refused on a dispatcher by
+    /// `FlavorRegistry::try_freeze`: a dispatcher declares one effect per
+    /// action ([`Self::ACTION_ARG_SPECS`], [`Self::ARGV_ACTION_SPECS`]) and
+    /// its tool-level effect is their join, so a tool-level value would be a
+    /// second answer nothing reads.
+    const EFFECT: Option<crate::mcp::ToolEffect> = None;
     /// The actions this tool dispatches, or `&[]` for a flat tool.
     ///
     /// This is THE enumeration of a dispatcher's action set — the scope
@@ -731,8 +732,8 @@ pub trait Tool: Send + Sync + 'static {
     /// validated per action before decode, and its scope keys become
     /// `tool:action` leaves rather than the bare tool name.
     /// `FlavorRegistry::try_freeze` refuses a registry where these and the
-    /// schemars-derived `x-proxima-actions` disagree. Each spec's annotations
-    /// are the sole read/write authority for that action; missing means write.
+    /// schemars-derived `x-proxima-actions` disagree. Each spec's `effect`
+    /// is the sole behaviour authority for that action.
     const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
     /// The actions of an argv-keyed dispatcher, or `&[]`.
     ///

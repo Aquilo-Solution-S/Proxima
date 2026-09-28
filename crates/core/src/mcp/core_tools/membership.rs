@@ -1,3 +1,4 @@
+use crate::mcp::{Replay, ToolEffect};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,6 @@ const MEMBER_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::Fingerprint
 };
 
 use super::memory_spaces::MemorySpaceKey;
-use super::{DESTRUCTIVE_NON_IDEMPOTENT, READ_ONLY, WRITE_NON_IDEMPOTENT};
 
 pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
@@ -145,21 +145,21 @@ impl McpTool for CoreMembershipTool {
             action: "add_member",
             allowed_fields: &["group", "member", "relation"],
             required_fields: &["group", "member", "relation"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "remove_member",
             allowed_fields: &["group", "member"],
             required_fields: &["group", "member"],
-            annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
+            effect: ToolEffect::Destructive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "list_members",
             allowed_fields: &["group", "limit", "cursor"],
             required_fields: &["group"],
-            annotations: Some(READ_ONLY),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
     ];

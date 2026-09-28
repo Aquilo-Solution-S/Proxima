@@ -309,7 +309,7 @@ that means when deciding where to send a memory.
 
 | Entry | Authority |
 |---|---|
-| `engine.unit_of_work(&authz)` → `erase_own_series(flavor_id, owner, selection, mode)` | Admin on `owner`; inside a tool handler, a tool the flavor declares `destructive` |
+| `engine.unit_of_work(&authz)` → `erase_own_series(flavor_id, owner, selection, mode)` | Admin on `owner`; inside a tool handler, an action whose `ToolEffect` is `Destructive`, of a tool the flavor's contract names |
 | `engine.system_unit_of_work(&authority)` → `erase_own_series(..)` | the host's `SystemAuthority` for this boot; the unit admits no other operation |
 
 One entry point for flavors and hosts; the scope rules are the same on both.

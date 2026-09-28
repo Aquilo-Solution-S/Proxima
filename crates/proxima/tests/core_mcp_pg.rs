@@ -14,8 +14,8 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AuthPath, CitationMappingPayload, CitedObjectPayload, ColdObjectStore, FlavorRegistry,
-    FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId,
-    provider_safe_tool_name,
+    FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Replay, Role, SchemaId,
+    ToolEffect, UserId, provider_safe_tool_name,
 };
 use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -914,7 +914,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             .iter()
             .find(|tool| tool.name == "core_recall")
             .expect("core_recall registered");
-        assert_eq!(recall.read_only, Some(true));
+        assert_eq!(recall.effect, Some(ToolEffect::ReadOnly));
         assert_facade_projects_output_schema(built.host().registry(), recall);
         let search = listed
             .iter()
@@ -927,15 +927,16 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 .is_some_and(|object| !object.is_empty()),
             "known core tool has a non-empty args schema"
         );
-        assert_eq!(search.read_only, Some(true));
-        assert_eq!(search.open_world, Some(false));
+        assert_eq!(search.effect, Some(ToolEffect::ReadOnly));
         assert_facade_projects_output_schema(built.host().registry(), search);
         let remember = listed
             .iter()
             .find(|tool| tool.name == "core_remember")
             .expect("core/remember registered");
-        assert_eq!(remember.read_only, Some(false));
-        assert_eq!(remember.destructive, Some(false));
+        assert_eq!(
+            remember.effect,
+            Some(ToolEffect::Additive(Replay::NonIdempotent))
+        );
 
         let palette = tools.list_core_tools_for_scope(&ToolScope::Palette(vec![
             "core_search_memories".to_string(),

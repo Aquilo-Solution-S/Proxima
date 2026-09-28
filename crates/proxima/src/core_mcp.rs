@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
-    McpToolDescriptor, McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name,
+    McpToolDescriptor, McpToolErrorKind, Owner, ToolEffect, ToolScope, provider_safe_tool_name,
     resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{
@@ -27,10 +27,10 @@ pub struct CoreToolInfo {
     /// REST document puts it on the 200 response; a host driving the tools
     /// through this facade had no way to see it at all.
     pub output_schema: serde_json::Value,
-    pub read_only: Option<bool>,
-    pub destructive: Option<bool>,
-    pub idempotent: Option<bool>,
-    pub open_world: Option<bool>,
+    /// What the tool does: a flat tool's declaration, a dispatcher's join
+    /// over its actions. `Some` for every tool of a frozen registry; its
+    /// MCP hints are [`McpToolAnnotations::registered`](proxima_core::McpToolAnnotations::registered).
+    pub effect: Option<ToolEffect>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -250,16 +250,12 @@ fn find_tool_descriptor<'a>(
 }
 
 fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
-    let annotations = descriptor.resolved_annotations().unwrap_or_default();
     CoreToolInfo {
         name: provider_safe_tool_name(descriptor.name),
         description: descriptor.description.to_string(),
         args_schema: descriptor.args_schema.clone(),
         output_schema: descriptor.output_schema.clone(),
-        read_only: annotations.read_only,
-        destructive: annotations.destructive,
-        idempotent: annotations.idempotent,
-        open_world: annotations.open_world,
+        effect: descriptor.effect(),
     }
 }
 
@@ -283,11 +279,7 @@ mod tests {
     impl McpTool for LabelEchoTool {
         const NAME: &'static str = "test_label_echo";
         const DESCRIPTION: &'static str = "echo the resolved operator label";
-        const ANNOTATIONS: Option<proxima_core::McpToolAnnotations> = Some(
-            proxima_core::McpToolAnnotations::new()
-                .read_only(true)
-                .open_world(false),
-        );
+        const EFFECT: Option<ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
 
         type Args = LabelEchoArgs;
         type Output = LabelEchoOutput;
@@ -326,11 +318,7 @@ mod tests {
     impl McpTool for MarkerTool {
         const NAME: &'static str = "test_marker";
         const DESCRIPTION: &'static str = "test marker";
-        const ANNOTATIONS: Option<proxima_core::McpToolAnnotations> = Some(
-            proxima_core::McpToolAnnotations::new()
-                .read_only(true)
-                .open_world(false),
-        );
+        const EFFECT: Option<ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
 
         type Args = serde_json::Value;
         type Output = MarkerOutput;

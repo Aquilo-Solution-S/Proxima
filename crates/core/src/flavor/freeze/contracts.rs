@@ -190,10 +190,10 @@ impl FlavorRegistry {
 
     /// A tool's contract entry against the descriptor the registry holds.
     ///
-    /// `actions`, `idempotent` and `destructive` are second descriptions of
-    /// facts the registry already carries — the dispatcher's
-    /// `action_arg_specs` and the wire's `McpToolAnnotations` — and nothing
-    /// but this check keeps them equal.
+    /// `actions` is a second description of the dispatcher's
+    /// `action_arg_specs`, and nothing but this check keeps the two equal.
+    /// The contract states no behaviour: that is the tool's `ToolEffect`,
+    /// declared once on the tool.
     fn validate_contract_tools(
         &self,
         contract: &crate::flavor::contract::FlavorContract,
@@ -209,12 +209,10 @@ impl FlavorRegistry {
                     name: tool.wire_name,
                 });
             };
-            // `actions` and `idempotent` are a SECOND description of facts
-            // the registry already holds, and nothing but this check keeps
-            // the two equal. The dispatcher's truth is
+            // `actions` is a SECOND description of a fact the registry
+            // already holds. The dispatcher's truth is
             // `McpToolDescriptor::action_arg_specs`, validated against the
-            // JSON schema and never against this list; the wire's truth is
-            // `McpToolAnnotations::idempotent`.
+            // JSON schema and never against this list.
             //
             // The list is compared in ORDER, not as a set. A palette scope
             // key is `"<wire_name>:<action>"`, so the declaration is read by
@@ -230,43 +228,6 @@ impl FlavorRegistry {
                 return Err(FlavorRegistryError::ToolActionsDisagreement {
                     flavor_id: contract.flavor_id,
                     name: tool.wire_name,
-                });
-            }
-            let annotations = entry.resolved_annotations();
-            let resolved = annotations
-                .and_then(|value| value.idempotent)
-                // A read-only tool is idempotent by construction — calling
-                // it twice is calling it once — and MCP's `readOnlyHint`
-                // carries that, which is why the substrate annotations do
-                // not restate it. Reading the implication here is what lets
-                // the contract's `idempotent` stay a claim about BEHAVIOUR
-                // rather than a copy of one optional field.
-                .or_else(|| {
-                    annotations
-                        .and_then(|value| value.read_only)
-                        .filter(|ro| *ro)
-                })
-                .unwrap_or(false);
-            if resolved != tool.idempotent {
-                return Err(FlavorRegistryError::ToolIdempotenceDisagreement {
-                    flavor_id: contract.flavor_id,
-                    name: tool.wire_name,
-                    declared: tool.idempotent,
-                    resolved,
-                });
-            }
-            // Silence is "not destructive", the same default MCP gives an
-            // absent `destructiveHint` on a read-only tool; a tool that
-            // declares `destructive: true` must say so on the wire too.
-            let resolved = annotations
-                .and_then(|value| value.destructive)
-                .unwrap_or(false);
-            if resolved != tool.destructive {
-                return Err(FlavorRegistryError::ToolDestructivenessDisagreement {
-                    flavor_id: contract.flavor_id,
-                    name: tool.wire_name,
-                    declared: tool.destructive,
-                    resolved,
                 });
             }
         }

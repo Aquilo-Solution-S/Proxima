@@ -300,8 +300,12 @@ pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str])
 /// reserved-argument strip, the NUL guard and the JSON-RPC error mapping.
 pub use proxima_core::McpHostToolCall;
 /// Field types of [`McpToolDescriptor`] and consts of [`McpTool`]; a host
-/// partitioning tool surfaces by audience reads them.
-pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};
+/// partitioning tool surfaces by audience reads them. [`ToolEffect`] is also
+/// what an [`McpHostTool`] declares, and [`McpToolAnnotations`] the MCP hints
+/// it projects to.
+pub use proxima_core::mcp::{
+    McpArgvActionSpec, McpToolAnnotations, McpToolAudience, Replay, ToolEffect,
+};
 /// The request-behavior onion. A behavior wraps [`McpToolCtx`] /
 /// [`McpToolError`]; flavors register one through `proxima::flavor`.
 pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};

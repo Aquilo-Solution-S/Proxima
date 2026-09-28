@@ -5,6 +5,7 @@ use super::memory_authoring::PreparedDerived;
 use crate::access::{AccessKind, Relation};
 use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
 use crate::error::ProtocolError;
+use crate::mcp::ToolEffect;
 use crate::storage_ports::{
     HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateReplyKind,
     HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, SidecarSessionRead, WriteSession,
@@ -1341,16 +1342,20 @@ impl UnitOfWork<'_> {
             )
             .into());
         }
+        // The calling action's own effect, stamped by the registration's
+        // call wrapper, and a tool the named flavor's contract lists — so a
+        // destructive tool of one flavor cannot erase another's series.
         if let UnitAuthorization::Ordinary(authz) = self.authorization
             && let Some(tool) = authz.invoking_tool()
-            && !contract
-                .tools
-                .iter()
-                .any(|declared| declared.wire_name == tool && declared.destructive)
+            && !(tool.effect.is_some_and(ToolEffect::is_destructive)
+                && contract
+                    .tools
+                    .iter()
+                    .any(|declared| declared.wire_name == tool.name))
         {
             return Err(ProtocolError::forbidden(format!(
-                "tool {tool} is not declared destructive by flavor {flavor_id}, \
-                 so it cannot erase"
+                "tool {} is not a destructive tool of flavor {flavor_id}, so it cannot erase",
+                tool.name
             ))
             .into());
         }
@@ -1655,7 +1660,9 @@ mod tests {
 
         use super::BeginSpyFactory;
         use crate::flavor::contract::{FlavorContract, ProjectionDecl, ToolContract};
-        use crate::mcp::{McpAuthorContext, McpToolAnnotations, McpToolCtx};
+        use crate::mcp::{
+            McpActionArgSpec, McpAuthorContext, McpToolAudience, McpToolCtx, Replay, ToolEffect,
+        };
         use crate::storage_ports::StoragePorts;
         use crate::verbs::own_erase::{EraseMode, SeriesEraseError, SeriesSelection};
         use crate::{
@@ -1710,13 +1717,7 @@ mod tests {
         impl Tool for WipeTool {
             const NAME: &'static str = "gate_fixture_wipe";
             const DESCRIPTION: &'static str = "A tool that declares it destroys data.";
-            const ANNOTATIONS: Option<McpToolAnnotations> = Some(
-                McpToolAnnotations::new()
-                    .read_only(false)
-                    .destructive(true)
-                    .idempotent(false)
-                    .open_world(false),
-            );
+            const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
             type Args = GateArgs;
             type Output = GateOutput;
 
@@ -1733,13 +1734,69 @@ mod tests {
         impl Tool for TouchTool {
             const NAME: &'static str = "gate_fixture_touch";
             const DESCRIPTION: &'static str = "A tool that declares it destroys nothing.";
-            const ANNOTATIONS: Option<McpToolAnnotations> = Some(
-                McpToolAnnotations::new()
-                    .read_only(false)
-                    .destructive(false)
-                    .idempotent(false)
-                    .open_world(false),
-            );
+            const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
+            type Args = GateArgs;
+            type Output = GateOutput;
+
+            fn call(
+                ctx: ToolCtx,
+                args: GateArgs,
+            ) -> BoxFuture<'static, Result<GateOutput, ToolError>> {
+                erase_from(ctx, &args)
+            }
+        }
+
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        #[serde(tag = "action", rename_all = "snake_case")]
+        enum MixedArgs {
+            /// The destructive action.
+            Wipe {},
+            /// The additive action.
+            Touch {},
+        }
+
+        /// A dispatcher with one destructive action: its tool-level effect
+        /// is destructive, and only that action may erase.
+        struct MixedTool;
+
+        impl Tool for MixedTool {
+            const NAME: &'static str = "gate_fixture_mixed";
+            const DESCRIPTION: &'static str = "A dispatcher with one destructive action.";
+            const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+                McpActionArgSpec {
+                    action: "wipe",
+                    allowed_fields: &[],
+                    required_fields: &[],
+                    effect: ToolEffect::Destructive(Replay::NonIdempotent),
+                    audience: McpToolAudience::Shared,
+                },
+                McpActionArgSpec {
+                    action: "touch",
+                    allowed_fields: &[],
+                    required_fields: &[],
+                    effect: ToolEffect::Additive(Replay::NonIdempotent),
+                    audience: McpToolAudience::Shared,
+                },
+            ];
+            type Args = MixedArgs;
+            type Output = GateOutput;
+
+            fn call(
+                ctx: ToolCtx,
+                _: MixedArgs,
+            ) -> BoxFuture<'static, Result<GateOutput, ToolError>> {
+                erase_from(ctx, &GateArgs { empty: false })
+            }
+        }
+
+        /// Destructive, and registered under the flavor, but not named by
+        /// its contract.
+        struct StrayTool;
+
+        impl Tool for StrayTool {
+            const NAME: &'static str = "gate_fixture_stray";
+            const DESCRIPTION: &'static str = "A destructive tool the contract does not name.";
+            const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::Idempotent));
             type Args = GateArgs;
             type Output = GateOutput;
 
@@ -1762,14 +1819,14 @@ mod tests {
                 ToolContract {
                     wire_name: "gate_fixture_wipe",
                     actions: &[],
-                    idempotent: false,
-                    destructive: true,
                 },
                 ToolContract {
                     wire_name: "gate_fixture_touch",
                     actions: &[],
-                    idempotent: false,
-                    destructive: false,
+                },
+                ToolContract {
+                    wire_name: "gate_fixture_mixed",
+                    actions: &["wipe", "touch"],
                 },
             ],
             resources: &[],
@@ -1789,6 +1846,8 @@ mod tests {
                         registry.try_add_contract(&GATE_CONTRACT)?;
                         registry.try_add_tool::<WipeTool>(GATE_FLAVOR)?;
                         registry.try_add_tool::<TouchTool>(GATE_FLAVOR)?;
+                        registry.try_add_tool::<MixedTool>(GATE_FLAVOR)?;
+                        registry.try_add_tool::<StrayTool>(GATE_FLAVOR)?;
                         Ok(())
                     },
                 )
@@ -1830,11 +1889,11 @@ mod tests {
                 .map_err(|err| err.to_string())
         }
 
-        /// The declaration is the gate: the tool its contract calls
-        /// destructive reaches storage, the one it does not is refused
+        /// The declaration is the gate: the tool that declares itself
+        /// destructive reaches storage, the one that does not is refused
         /// before a session is begun, and the handlers are identical.
         #[tokio::test]
-        async fn only_a_tool_its_contract_declares_destructive_reaches_the_erase() {
+        async fn only_a_tool_declared_destructive_reaches_the_erase() {
             let begins = Arc::new(AtomicUsize::new(0));
             let engine = engine(begins.clone());
 
@@ -1842,7 +1901,7 @@ mod tests {
                 .await
                 .expect_err("a tool not declared destructive cannot erase");
             assert!(
-                refused.contains("not declared destructive"),
+                refused.contains("not a destructive tool"),
                 "the refusal names the missing declaration: {refused}"
             );
             assert_eq!(begins.load(Ordering::SeqCst), 0, "refused before storage");
@@ -1851,7 +1910,7 @@ mod tests {
                 .await
                 .expect_err("the spy backend fails the begin");
             assert!(
-                !reached.contains("not declared destructive"),
+                !reached.contains("not a destructive tool"),
                 "a destructive tool passes the gate: {reached}"
             );
             assert_eq!(
@@ -1859,6 +1918,61 @@ mod tests {
                 1,
                 "the erase reached storage"
             );
+        }
+
+        /// The gate reads the dispatched action's own effect, not the
+        /// dispatcher's join: one destructive action lends nothing to its
+        /// sibling, though the tool as a whole is destructive.
+        #[tokio::test]
+        async fn a_dispatcher_erases_only_from_its_destructive_action() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+            let mixed = engine
+                .registry()
+                .mcp_tool("gate_fixture_mixed")
+                .expect("the dispatcher is registered");
+            assert_eq!(
+                mixed.effect(),
+                Some(ToolEffect::Destructive(Replay::NonIdempotent)),
+                "the tool-level effect is the strongest action's"
+            );
+
+            let refused = call_with(
+                &engine,
+                "gate_fixture_mixed",
+                serde_json::json!({ "action": "touch" }),
+            )
+            .await
+            .expect_err("the additive action cannot erase");
+            assert!(refused.contains("not a destructive tool"), "{refused}");
+            assert_eq!(begins.load(Ordering::SeqCst), 0, "refused before storage");
+
+            let reached = call_with(
+                &engine,
+                "gate_fixture_mixed",
+                serde_json::json!({ "action": "wipe" }),
+            )
+            .await
+            .expect_err("the spy backend fails the begin");
+            assert!(!reached.contains("not a destructive tool"), "{reached}");
+            assert_eq!(
+                begins.load(Ordering::SeqCst),
+                1,
+                "the erase reached storage"
+            );
+        }
+
+        /// A destructive tool of the flavor's registration that its contract
+        /// does not name is not the flavor's tool for this purpose.
+        #[tokio::test]
+        async fn a_destructive_tool_its_contract_does_not_name_cannot_erase() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+            let refused = call(&engine, "gate_fixture_stray")
+                .await
+                .expect_err("an unnamed tool cannot erase");
+            assert!(refused.contains("not a destructive tool"), "{refused}");
+            assert_eq!(begins.load(Ordering::SeqCst), 0);
         }
 
         /// Outside a tool nothing is stamped, so the gate does not apply:
@@ -1932,7 +2046,7 @@ mod tests {
             )
             .await
             .expect_err("and on the tool's declaration");
-            assert!(refused.contains("not declared destructive"), "{refused}");
+            assert!(refused.contains("not a destructive tool"), "{refused}");
             assert_eq!(begins.load(Ordering::SeqCst), 0);
         }
     }
