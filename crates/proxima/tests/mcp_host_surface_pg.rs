@@ -117,7 +117,6 @@ fn app(db: &SplitRoleDb) -> Proxima<HostApp> {
     Proxima::<HostApp>::app()
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
-        .with_mcp()
         .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .tool_scope(ToolScope::All)
         .host_tools(Arc::new(EchoTools))
@@ -250,7 +249,7 @@ async fn a_host_tool_is_listed_dispatched_through_behaviors_and_recorded() -> Te
         .record_mcp_calls(true)
         .run()
         .await?;
-    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
     let client = reqwest::Client::new();
     let session = open_session(&client, &base, subject).await?;
 
@@ -301,7 +300,7 @@ async fn a_host_tool_is_listed_dispatched_through_behaviors_and_recorded() -> Te
         "the flavor's request behavior wrapped the host tool"
     );
 
-    assert_only_served_calls_recorded(&running.engine, subject).await?;
+    assert_only_served_calls_recorded(running.host().engine(), subject).await?;
 
     running.shutdown().await;
     Ok(())
@@ -384,11 +383,12 @@ async fn the_resolved_edge_puts_bearer_auth_on_mcp_only() -> TestResult {
     );
     assert_eq!(system.auth_path(), AuthPath::System);
     built
-        .engine
+        .host()
+        .engine()
         .query(&system, &QueryRequest::readable())
         .await
         .map_err(|err| format!("a System context reads: {err}"))?;
-    built.shutdown();
+    built.shutdown().await;
     Ok(())
 }
 
@@ -421,7 +421,7 @@ async fn the_authenticator_is_built_after_the_platform_scope() -> TestResult {
         .run()
         .await?;
     assert!(built_with_scope.load(Ordering::SeqCst));
-    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
     open_session(&reqwest::Client::new(), &base, subject).await?;
     running.shutdown().await;
     Ok(())
@@ -476,7 +476,6 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
         Proxima::<HostApp>::app()
             .database_url(db.runtime_url())
             .platform_database_url(db.platform_url())
-            .with_mcp()
             .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .tool_scope(ToolScope::All)
             .host_tools(Arc::new(SleepTools))
@@ -494,7 +493,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     };
 
     let running = serve(Some(Duration::from_secs(1))).await?;
-    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
 
     // With a progress token: beats every 500 ms keep the session, and the
     // result arrives after them.
@@ -553,7 +552,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
 
     // With the idle timeout off, the same call needs no token.
     let running = serve(None).await?;
-    let base = format!("http://{}", running.mcp_addr.ok_or("no MCP address")?);
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
     let session = open_session(&client, &base, subject).await?;
     let response = mcp_post(&client, &base, subject)
         .header("Mcp-Session-Id", &session)

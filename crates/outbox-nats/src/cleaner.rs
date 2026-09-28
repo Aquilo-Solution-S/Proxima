@@ -20,7 +20,10 @@ use proxima_core::storage_ports::publication::{
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{InboxPrefix, NatsAuth, redacted_url};
+use crate::config::{
+    AuthKeys, ConfigError, InboxPrefix, NatsAuth, auth_from_lookup, parse_non_zero_u32,
+    parse_positive_u64, redacted_url, refuse_broker_less_section,
+};
 use crate::consumer::CloudEventEnvelope;
 use crate::{
     CONTENT_TYPE_CLOUDEVENTS, HEADER_CONTENT_TYPE, HEADER_MSG_ID, HEADER_ORIGIN_SCOPE,
@@ -33,6 +36,42 @@ pub const COPY_CLEANER_STREAM: &str = "PROXIMA_FACTS";
 pub const COPY_CLEANER_SUBJECT_PREFIX: &str = "proxima.fact";
 /// Reply namespace reserved for the cleaner credential.
 pub const COPY_CLEANER_INBOX_PREFIX: &str = "PROXIMA_PURGE_INBOX";
+
+/// Presence key of the `PROXIMA_COPY_CLEANER_*` block: the cleaner's broker.
+pub const ENV_COPY_CLEANER_URL: &str = "PROXIMA_COPY_CLEANER_URL";
+pub const ENV_COPY_CLEANER_CREDS_FILE: &str = "PROXIMA_COPY_CLEANER_CREDS_FILE";
+pub const ENV_COPY_CLEANER_USER: &str = "PROXIMA_COPY_CLEANER_USER";
+pub const ENV_COPY_CLEANER_PASSWORD: &str = "PROXIMA_COPY_CLEANER_PASSWORD";
+pub const ENV_COPY_CLEANER_TOKEN: &str = "PROXIMA_COPY_CLEANER_TOKEN";
+pub const ENV_COPY_CLEANER_INBOX_PREFIX: &str = "PROXIMA_COPY_CLEANER_INBOX_PREFIX";
+pub const ENV_COPY_CLEANER_ITEMS_PER_SLICE: &str = "PROXIMA_COPY_CLEANER_ITEMS_PER_SLICE";
+pub const ENV_COPY_CLEANER_SLICE_BUDGET_MS: &str = "PROXIMA_COPY_CLEANER_SLICE_BUDGET_MS";
+pub const ENV_COPY_CLEANER_REQUEST_TIMEOUT_MS: &str = "PROXIMA_COPY_CLEANER_REQUEST_TIMEOUT_MS";
+pub const ENV_COPY_CLEANER_SCAN_INTERVAL_SECS: &str = "PROXIMA_COPY_CLEANER_SCAN_INTERVAL_SECS";
+pub const ENV_COPY_CLEANER_SHUTDOWN_GRACE_MS: &str = "PROXIMA_COPY_CLEANER_SHUTDOWN_GRACE_MS";
+
+/// Every cleaner key other than [`ENV_COPY_CLEANER_URL`]: any of them set
+/// without it is [`ConfigError::MissingBroker`].
+const COPY_CLEANER_SECTION_KEYS: [&str; 10] = [
+    ENV_COPY_CLEANER_CREDS_FILE,
+    ENV_COPY_CLEANER_USER,
+    ENV_COPY_CLEANER_PASSWORD,
+    ENV_COPY_CLEANER_TOKEN,
+    ENV_COPY_CLEANER_INBOX_PREFIX,
+    ENV_COPY_CLEANER_ITEMS_PER_SLICE,
+    ENV_COPY_CLEANER_SLICE_BUDGET_MS,
+    ENV_COPY_CLEANER_REQUEST_TIMEOUT_MS,
+    ENV_COPY_CLEANER_SCAN_INTERVAL_SECS,
+    ENV_COPY_CLEANER_SHUTDOWN_GRACE_MS,
+];
+
+/// The cleaner's own role: never the publisher's `PROXIMA_NATS_*` credential.
+const COPY_CLEANER_AUTH_KEYS: AuthKeys = AuthKeys {
+    creds_file: ENV_COPY_CLEANER_CREDS_FILE,
+    user: ENV_COPY_CLEANER_USER,
+    password: ENV_COPY_CLEANER_PASSWORD,
+    token: ENV_COPY_CLEANER_TOKEN,
+};
 
 const DEFAULT_ITEMS_PER_SLICE: NonZeroU32 =
     NonZeroU32::new(128).expect("const-evaluated: 128 is not zero");
@@ -120,6 +159,69 @@ impl JetStreamCopyCleanerConfig {
         self.scan_interval = scan_interval;
         self.shutdown_grace = shutdown_grace;
         Ok(self)
+    }
+}
+
+impl JetStreamCopyCleanerConfig {
+    /// Read the `PROXIMA_COPY_CLEANER_*` block from an injected lookup.
+    ///
+    /// `Ok(None)` when no key of the block is set. Unset keys keep
+    /// [`Self::new`]'s defaults; a zero bound is refused like any
+    /// non-positive number.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MissingBroker`] when a cleaner key is set without
+    /// [`ENV_COPY_CLEANER_URL`]; otherwise [`ConfigError`] for conflicting or
+    /// incomplete auth, an invalid inbox prefix, or a malformed number.
+    pub fn from_lookup(
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Self>, ConfigError> {
+        let lookup = |key: &str| proxima_core::env_value(&lookup, key);
+        let Some(url) = lookup(ENV_COPY_CLEANER_URL) else {
+            return refuse_broker_less_section(
+                &lookup,
+                ENV_COPY_CLEANER_URL,
+                &COPY_CLEANER_SECTION_KEYS,
+            );
+        };
+        let mut config = Self::new(url).auth(auth_from_lookup(&lookup, &COPY_CLEANER_AUTH_KEYS)?);
+        if let Some(raw) = lookup(ENV_COPY_CLEANER_INBOX_PREFIX) {
+            config.inbox_prefix = InboxPrefix::parse(ENV_COPY_CLEANER_INBOX_PREFIX, raw)?;
+        }
+        if let Some(raw) = lookup(ENV_COPY_CLEANER_ITEMS_PER_SLICE) {
+            config.items_per_slice = parse_non_zero_u32(ENV_COPY_CLEANER_ITEMS_PER_SLICE, &raw)?;
+        }
+        let millis = |key: &'static str| -> Result<Option<Duration>, ConfigError> {
+            lookup(key)
+                .map(|raw| parse_positive_u64(key, &raw).map(Duration::from_millis))
+                .transpose()
+        };
+        if let Some(budget) = millis(ENV_COPY_CLEANER_SLICE_BUDGET_MS)? {
+            config.slice_budget = budget;
+        }
+        if let Some(timeout) = millis(ENV_COPY_CLEANER_REQUEST_TIMEOUT_MS)? {
+            config.request_timeout = timeout;
+        }
+        if let Some(grace) = millis(ENV_COPY_CLEANER_SHUTDOWN_GRACE_MS)? {
+            config.shutdown_grace = grace;
+        }
+        if let Some(raw) = lookup(ENV_COPY_CLEANER_SCAN_INTERVAL_SECS) {
+            config.scan_interval = Duration::from_secs(parse_positive_u64(
+                ENV_COPY_CLEANER_SCAN_INTERVAL_SECS,
+                &raw,
+            )?);
+        }
+        Ok(Some(config))
+    }
+
+    /// Read the block from process environment.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_lookup`].
+    pub fn from_env() -> Result<Option<Self>, ConfigError> {
+        Self::from_lookup(proxima_core::process_env)
     }
 }
 
@@ -888,6 +990,105 @@ mod tests {
             Duration::from_secs(1),
         );
         assert!(matches!(config, Err(CleanerConfigError::ZeroDuration)));
+    }
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(candidate, _)| *candidate == key)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn the_cleaner_block_is_off_unset_and_refused_without_its_broker() {
+        assert!(
+            JetStreamCopyCleanerConfig::from_lookup(env(&[]))
+                .expect("no key is off")
+                .is_none()
+        );
+        let err = JetStreamCopyCleanerConfig::from_lookup(env(&[(
+            ENV_COPY_CLEANER_CREDS_FILE,
+            "/run/cleaner.creds",
+        )]))
+        .expect_err("a cleaner section without a broker");
+        assert_eq!(
+            err,
+            ConfigError::MissingBroker {
+                url: ENV_COPY_CLEANER_URL,
+                set: ENV_COPY_CLEANER_CREDS_FILE,
+            }
+        );
+        // The publisher's broker is not the cleaner's: its own role, its own URL.
+        assert!(
+            JetStreamCopyCleanerConfig::from_lookup(env(&[(
+                crate::config::ENV_URL,
+                "nats://127.0.0.1:4222"
+            )]))
+            .expect("publisher keys are not cleaner keys")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_cleaner_block_reads_its_own_role_and_bounds() {
+        let config = JetStreamCopyCleanerConfig::from_lookup(env(&[
+            (ENV_COPY_CLEANER_URL, "nats://127.0.0.1:4222"),
+            (ENV_COPY_CLEANER_TOKEN, "cleaner-token"),
+            (ENV_COPY_CLEANER_INBOX_PREFIX, "CELL_A.PURGE"),
+            (ENV_COPY_CLEANER_ITEMS_PER_SLICE, "16"),
+            (ENV_COPY_CLEANER_SLICE_BUDGET_MS, "750"),
+            (ENV_COPY_CLEANER_REQUEST_TIMEOUT_MS, "900"),
+            (ENV_COPY_CLEANER_SCAN_INTERVAL_SECS, "45"),
+            (ENV_COPY_CLEANER_SHUTDOWN_GRACE_MS, "300"),
+        ]))
+        .expect("valid block")
+        .expect("URL set");
+        assert_eq!(config.url, "nats://127.0.0.1:4222");
+        assert_eq!(config.auth, NatsAuth::Token("cleaner-token".to_owned()));
+        assert_eq!(config.inbox_prefix.as_str(), "CELL_A.PURGE");
+        assert_eq!(config.items_per_slice.get(), 16);
+        assert_eq!(config.slice_budget, Duration::from_millis(750));
+        assert_eq!(config.request_timeout, Duration::from_millis(900));
+        assert_eq!(config.scan_interval, Duration::from_secs(45));
+        assert_eq!(config.shutdown_grace, Duration::from_millis(300));
+
+        let defaults = JetStreamCopyCleanerConfig::from_lookup(env(&[(
+            ENV_COPY_CLEANER_URL,
+            "nats://127.0.0.1:4222",
+        )]))
+        .expect("URL alone")
+        .expect("URL set");
+        assert_eq!(defaults.inbox_prefix.as_str(), COPY_CLEANER_INBOX_PREFIX);
+        assert_eq!(defaults.scan_interval, DEFAULT_SCAN_INTERVAL);
+
+        for (key, bad) in [
+            (ENV_COPY_CLEANER_SCAN_INTERVAL_SECS, "0"),
+            (ENV_COPY_CLEANER_ITEMS_PER_SLICE, "0"),
+            (ENV_COPY_CLEANER_REQUEST_TIMEOUT_MS, "soon"),
+        ] {
+            let err = JetStreamCopyCleanerConfig::from_lookup(env(&[
+                (ENV_COPY_CLEANER_URL, "nats://127.0.0.1:4222"),
+                (key, bad),
+            ]))
+            .expect_err("a non-positive or malformed bound");
+            assert!(
+                matches!(err, ConfigError::Number { key: k, .. } if k == key),
+                "{err}"
+            );
+        }
+        let err = JetStreamCopyCleanerConfig::from_lookup(env(&[
+            (ENV_COPY_CLEANER_URL, "nats://127.0.0.1:4222"),
+            (ENV_COPY_CLEANER_USER, "cleaner"),
+        ]))
+        .expect_err("half an auth form");
+        assert_eq!(
+            err,
+            ConfigError::IncompleteAuth {
+                missing: ENV_COPY_CLEANER_PASSWORD
+            }
+        );
     }
 
     #[test]

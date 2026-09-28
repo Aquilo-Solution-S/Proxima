@@ -298,7 +298,7 @@ impl Stack {
             .from_lookup(move |key| env.get(key).cloned())?
             .run()
             .await?;
-        let addr = running.mcp_addr.ok_or("MCP listener did not bind")?;
+        let addr = running.mcp_addr().ok_or("MCP listener did not bind")?;
         Ok((running, format!("http://{addr}")))
     }
 
@@ -652,7 +652,7 @@ async fn sigterm_drains_the_request_in_flight_and_exits_ok() {
     let stack = Stack::new().await;
     let result: TestResult = async {
         let (running, base) = stack.boot(&[]).await?;
-        let addr = running.mcp_addr.ok_or("MCP listener did not bind")?;
+        let addr = running.mcp_addr().ok_or("MCP listener did not bind")?;
         let bearer = stack.idp.bearer(FORWARDER_SUB)?;
         let owner = group_key(Uuid::now_v7());
 

@@ -759,12 +759,12 @@ refuses undeclared tables and unregistered participants before mutation, and
 runs the command on the same backend transaction as Fact ingest. Hosts that
 register no participant keep the existing UnitOfWork Fact path with no extra
 configuration. A host registers exactly one participant; a second registration
-refuses boot (`ProximaError::Config` / `EmbedError::Config`) rather than
+refuses boot (`ProximaError::Config`) rather than
 replacing the first. A participant serving several command types dispatches
 with `HostStateRequest::is::<C>()` or `try_downcast::<C>()`, which hands the
 request back on a mismatch. Do not hold the unit open across broker or provider network I/O.
 A participant error after its SQL has succeeded poisons the unit: `commit`
-refuses and drop rolls every participant back. `AppContext::clone_pool_for_host`
+refuses and drop rolls every participant back. `ProximaHost::clone_pool_for_host`
 remains a different pool and is not this path.
 
 ## Deriving Abstractions
@@ -1121,7 +1121,7 @@ Tool contract:
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize + JsonSchema` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
-| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. Atomic host-state with Facts: Host API `UnitOfWork::apply_host_state` only. No `proxima_core.*` SQL |
+| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. Atomic host-state with Facts: Host API `UnitOfWork::apply_host_state` only. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
@@ -1195,9 +1195,10 @@ The host half is a fallible `FlavorApp::services` override:
 ```rust
 fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
     let mut services = FlavorServices::default();
+    let host = ctx.host();
     services.try_insert(MyFlavorStore::from_backend_pool_for_host(
-        ctx.clone_pool_for_host(),
-        ctx.pg_tuning_for_host(),
+        host.clone_pool_for_host(),
+        host.pg_tuning_for_host(),
     ))?;
     Ok(services)
 }
@@ -1212,7 +1213,7 @@ let Some(store) = ctx.service::<MyFlavorStore>() else {
 };
 ```
 
-`AppContext::{clone_pool_for_host, pg_tuning_for_host}` is the Host
+`ctx.host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}` is the Host
 extra-table bridge (docs/08). It is not Flavor SDK: wrap the pool and resolved
 query policy in a store that keeps `proxima_core.*` SQL private, as
 `proxima-code` does, then insert the store. Tools and workers resolve the

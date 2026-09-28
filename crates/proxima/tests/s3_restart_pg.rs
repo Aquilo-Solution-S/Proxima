@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
+use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
-    AuthPath, AuthzContext, EmbedConfig, EmbeddedProxima, FactWrite, GroupId,
-    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerRef, ProximaBuilder, Role, UserId,
+    AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId,
+    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerRef, Proxima, Role, ToolScope,
+    UserId,
 };
 use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
 use proxima_core::error::{ErrorCode, ProtocolError};
@@ -107,15 +109,12 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
         tags: Vec::new(),
         idempotency_key: None,
     };
-    let fact = initial
-        .engine
+    let engine = initial.host().engine();
+    let fact = engine
         .ingest_fact(&authz, FactWrite::new(owner, "test/cold-s3-reboot", &note))
         .await?;
     assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 1));
-    initial
-        .engine
-        .forget_memory(&authz, owner, fact.memory_id)
-        .await?;
+    engine.forget_memory(&authz, owner, fact.memory_id).await?;
     assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     let cold_key: String =
         sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
@@ -124,8 +123,8 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
             .await?;
     assert_eq!(cold_key, format!("cold/{}", fact.memory_id.into_inner()));
     let cold_bytes = initial
-        .blobs
-        .as_ref()
+        .host()
+        .blobs()
         .expect("configured cold store")
         .cold_store()
         .get(&cold_key)
@@ -140,7 +139,7 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
     stop(initial).await;
 
     let restarted = boot(database, owner, keep_s3.then(|| config.clone())).await?;
-    assert_eq!(restarted.blobs.is_some(), keep_s3);
+    assert_eq!(restarted.host().blobs().is_some(), keep_s3);
     let hydration_before_erase = if keep_s3 {
         None
     } else {
@@ -157,7 +156,11 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
         )
     };
     let system = host_context(owner, AuthPath::System);
-    let receipt = restarted.engine.erase_group_owner(&system, group).await?;
+    let receipt = restarted
+        .host()
+        .engine()
+        .erase_group_owner(&system, group)
+        .await?;
     let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled")
         .fetch_one(&admin_pool(database).await?)
         .await?;
@@ -194,14 +197,18 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
 
 async fn observe_unconfigured_hydration(
     database: &str,
-    boot: &EmbeddedProxima,
+    boot: &BuiltProxima,
     owner: OwnerRef,
     memory_id: MemoryId,
     config: &S3RuntimeConfig,
     cold_key: &str,
 ) -> TestResult<Result<MemoryHydrationOutcome, ProtocolError>> {
     let authz = host_context(owner, AuthPath::HostBearer);
-    let hydration = boot.engine.hydrate_memory(&authz, owner, memory_id).await;
+    let hydration = boot
+        .host()
+        .engine()
+        .hydrate_memory(&authz, owner, memory_id)
+        .await;
     let cooled: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
         .bind(memory_id.into_inner())
         .fetch_one(&admin_pool(database).await?)
@@ -268,9 +275,10 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
         let group = GroupId::new(Uuid::now_v7());
         let owner = OwnerRef::Group(group);
         let boot = boot(&database, owner, None).await?;
-        assert!(boot.blobs.is_none());
+        assert!(boot.host().blobs().is_none());
         let authz = host_context(owner, AuthPath::HostBearer);
-        boot.engine
+        boot.host()
+            .engine()
             .ingest_fact(
                 &authz,
                 FactWrite::new(
@@ -288,7 +296,11 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
             .await?;
         assert_eq!(corpus_counts(&admin_pool(&database).await?).await?, (0, 1));
         let system = host_context(owner, AuthPath::System);
-        let receipt = boot.engine.erase_group_owner(&system, group).await?;
+        let receipt = boot
+            .host()
+            .engine()
+            .erase_group_owner(&system, group)
+            .await?;
         assert!(matches!(
             receipt,
             OwnerEraseOutcome::Completed {
@@ -326,8 +338,8 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
     let owner = OwnerRef::Group(group);
     let initial = boot(database, owner, Some(config.clone())).await?;
     let store = initial
-        .blobs
-        .as_ref()
+        .host()
+        .blobs()
         .expect("configured facade exposes blob store");
     let authz = host_context(owner, AuthPath::HostBearer);
     let prepared = store
@@ -349,7 +361,8 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         .await?;
     let service = CitedBlobService::new(Arc::new(store.clone()));
     let completed = initial
-        .engine
+        .host()
+        .engine()
         .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
         .await?;
     let canonical = format!("objects/{}", prepared.upload_id);
@@ -375,9 +388,13 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
     // Reconnect and compose from scratch, without injecting or replacing any
     // storage port. The second boot therefore uses the actual facade wiring.
     let restarted = boot(database, owner, keep_s3.then(|| config.clone())).await?;
-    assert_eq!(restarted.blobs.is_some(), keep_s3);
+    assert_eq!(restarted.host().blobs().is_some(), keep_s3);
     let system = host_context(owner, AuthPath::System);
-    let receipt = restarted.engine.erase_group_owner(&system, group).await?;
+    let receipt = restarted
+        .host()
+        .engine()
+        .erase_group_owner(&system, group)
+        .await?;
     assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
     let uploads: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.blob_uploads")
         .fetch_one(&admin_pool(database).await?)
@@ -423,7 +440,7 @@ async fn recover_and_cleanup(
     // the public maintenance retry with this fresh facade's real S3 adapter.
     // This never supplies the no-S3 boot's original erase service.
     let cleanup = boot(database, owner, Some(config.clone())).await?;
-    let cold = cleanup.blobs.as_ref().expect("cleanup store").cold_store();
+    let cold = cleanup.host().blobs().expect("cleanup store").cold_store();
     if versions_after_erase > 0 {
         assert_eq!(
             cold.get(canonical).await?,
@@ -475,27 +492,49 @@ async fn recover_and_cleanup(
     Ok(())
 }
 
+/// Core only; S3 is the variable under test.
+struct CoreApp;
+
+impl FlavorBundle for CoreApp {
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
+}
+
+impl FlavorApp for CoreApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "s3-restart-test",
+            title: "S3 Restart Test",
+            version: "1",
+        }
+    }
+}
+
 async fn boot(
     database: &str,
     owner: OwnerRef,
     s3: Option<S3RuntimeConfig>,
-) -> TestResult<EmbeddedProxima> {
+) -> TestResult<BuiltProxima> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
-    Ok(ProximaBuilder::new(
-        EmbedConfig {
-            database_url: runtime_url,
-            platform_database_url: Some(platform_url),
-            s3,
-        },
-        owner,
-    )
-    .boot()
-    .await?)
+    let mut app = Proxima::<CoreApp>::app()
+        .database_url(runtime_url)
+        .platform_database_url(platform_url)
+        .owner(owner)
+        .tool_scope(ToolScope::All);
+    if let Some(s3) = s3 {
+        app = app.s3(s3);
+    }
+    Ok(app.build().await?)
 }
 
-async fn stop(boot: EmbeddedProxima) {
-    let pool = boot.pool_for_tests().clone();
-    boot.engine.stop(boot.handle);
+async fn stop(boot: BuiltProxima) {
+    let pool = boot.host().pool_for_tests().clone();
+    boot.shutdown().await;
     pool.close().await;
 }
 
@@ -622,8 +661,8 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let host = boot(database, owner, Some(config.clone())).await?;
     let cold = host
-        .blobs
-        .as_ref()
+        .host()
+        .blobs()
         .ok_or("configured S3 store")?
         .cold_store();
     let mut owned_keys = Vec::new();
@@ -648,15 +687,15 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
 
 async fn run_missing_cold(
     database: &str,
-    host: &EmbeddedProxima,
+    host: &BuiltProxima,
     owner: OwnerRef,
     config: &S3RuntimeConfig,
     owned_keys: &mut Vec<String>,
 ) -> TestResult<MissingColdObservation> {
     let authz = host_context(owner, AuthPath::HostBearer);
     let cold = host
-        .blobs
-        .as_ref()
+        .host()
+        .blobs()
         .ok_or("configured S3 store")?
         .cold_store();
     let (healthy_id, healthy_note) =
@@ -664,11 +703,13 @@ async fn run_missing_cold(
     let (missing_id, _) = admit_cold_note(host, &authz, owner, "missing", owned_keys).await?;
     let missing_key = format!("cold/{}", missing_id.into_inner());
     let healthy = host
-        .engine
+        .host()
+        .engine()
         .hydrate_memory(&authz, owner, healthy_id)
         .await?;
     let read = host
-        .engine
+        .host()
+        .engine()
         .get_memory(
             &authz,
             &proxima_core::GetMemoryReadRequest {
@@ -688,7 +729,11 @@ async fn run_missing_cold(
         return Err("the missing fixture must have no remaining versions or markers".into());
     }
     let adapter = cold.get(&missing_key).await;
-    let hydration = host.engine.hydrate_memory(&authz, owner, missing_id).await;
+    let hydration = host
+        .host()
+        .engine()
+        .hydrate_memory(&authz, owner, missing_id)
+        .await;
     let missing_rows = sqlx::query_as(
         "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1),
                 (SELECT count(*) FROM proxima_core.cooled WHERE t = $1 AND object_key = $2)",
@@ -700,7 +745,7 @@ async fn run_missing_cold(
     // A missing bucket is a backend/configuration fault, even though its HTTP
     // status is also 404. No bucket is created or deleted for this control.
     let absent_bucket = proxima_blob_s3::CitedBlobStore::new(
-        host.pool_for_tests().clone(),
+        host.host().pool_for_tests().clone(),
         S3RuntimeConfig {
             bucket: format!("pg-missing-bucket-{}", Uuid::now_v7().simple()),
             ..config.clone()
@@ -719,7 +764,7 @@ async fn run_missing_cold(
 }
 
 async fn admit_cold_note(
-    host: &EmbeddedProxima,
+    host: &BuiltProxima,
     authz: &AuthzContext,
     owner: OwnerRef,
     label: &str,
@@ -733,7 +778,8 @@ async fn admit_cold_note(
         idempotency_key: None,
     };
     let fact = host
-        .engine
+        .host()
+        .engine()
         .ingest_fact(
             authz,
             FactWrite::new(owner, "test/missing-cold-object", &note),
@@ -741,12 +787,13 @@ async fn admit_cold_note(
         .await?;
     let key = format!("cold/{}", fact.memory_id.into_inner());
     owned_keys.push(key.clone());
-    host.engine
+    host.host()
+        .engine()
         .forget_memory(authz, owner, fact.memory_id)
         .await?;
     let bytes = host
-        .blobs
-        .as_ref()
+        .host()
+        .blobs()
         .ok_or("configured S3 store")?
         .cold_store()
         .get(&key)

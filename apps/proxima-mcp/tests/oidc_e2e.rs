@@ -126,7 +126,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()
         .await?;
-    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
     let base = format!("http://{addr}");
     let url = format!("{base}/mcp");
     let client = reqwest::Client::new();
@@ -515,7 +515,8 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .ok_or("remember must return a Fact handle")?
         .parse::<Uuid>()?;
     let cold = running
-        .blobs
+        .host()
+        .blobs()
         .as_ref()
         .expect("configured S3 fixture")
         .cold_store();
@@ -585,7 +586,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()
         .await?;
-    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
     let base = format!("http://{addr}");
     let mcp_url = format!("{base}/mcp");
     let openapi_url = format!("{base}/v1/openapi.json");
@@ -770,7 +771,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         .add_group_member(&permit, group_id, subject, Relation::Editor, Uuid::now_v7())
         .await?;
 
-    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
     let base = format!("http://{addr}");
     let url = format!("{base}/mcp");
     let client = reqwest::Client::new();

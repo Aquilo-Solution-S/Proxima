@@ -83,7 +83,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
             .build()
             .await?;
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
-        let engine = built.engine();
+        let engine = built.host().engine();
         let fact = engine
             .ingest_fact(
                 &authz,
@@ -211,7 +211,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
             .memories;
         assert!(heads.iter().any(|row| row.id == changed.memory_id));
         assert!(!heads.iter().any(|row| row.id == next.memory_id));
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -236,7 +236,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
             .build()
             .await?;
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let fact = uow
             .ingest_fact(proxima::FactWrite::new(owner, "sdk/session", &sdk_fact()))
@@ -333,7 +333,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
                 .is_empty(),
             "drop rolls back all pending rows"
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -358,7 +358,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let local_authz = authenticated(built.single_owner_authz().expect("one owner"));
         let foreign_authz = authenticated(
             AuthzContext::for_subject_with_role(
@@ -515,7 +515,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
             .expect("interpretation");
         assert!(row.origins.is_empty());
         assert_eq!(row.refs, [perspective.memory_id]);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -541,7 +541,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let authz = authenticated(AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
             [(owner, Role::admin()), (foreign, Role::admin())],
@@ -621,7 +621,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
             .await
             .expect_err("destination needs write authority");
         assert_eq!(denied.code, proxima::ErrorCode::Forbidden);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -644,7 +644,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
         let original = sdk_fact();
         let draft = proxima::FactWriteCommand::from_payload(
@@ -695,7 +695,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
                 .len(),
             1
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1175,13 +1175,14 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
         let mut valid_query = QueryRequest::readable();
         valid_query.include_payloads = false;
         valid_query.memory_ids = vec![valid_with_extension];
-        let valid = built.engine.query(&authz, &valid_query).await?;
+        let valid = built.host().engine().query(&authz, &valid_query).await?;
         assert_eq!(valid.memories.len(), 1);
         assert_eq!(valid.memories[0].schema_version.into_inner(), 2);
         assert!(valid.memories[0].payload.is_none());
 
         let Err(mixed_err) = built
-            .engine
+            .host()
+            .engine()
             .get_memories(
                 &authz,
                 &GetMemoriesReadRequest {
@@ -1202,7 +1203,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
             let mut query = QueryRequest::readable();
             query.include_payloads = false;
             query.memory_ids = vec![memory_id];
-            let Err(err) = built.engine.query(&authz, &query).await else {
+            let Err(err) = built.host().engine().query(&authz, &query).await else {
                 panic!("{label} must fail closed");
             };
             assert_eq!(
@@ -1212,7 +1213,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
             );
         }
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1469,7 +1470,7 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut ids = Vec::new();
         for owner in owners {
             let authz = authenticated(AuthzContext::for_subject_with_role(
@@ -1506,14 +1507,13 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
             ids[0].into_inner(),
             ids[1].into_inner(),
         ];
-        let typed =
-            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &candidates, 10).await?;
+        let typed = authorized_fact_payloads::<FacadeFact>(engine, &authz, &candidates, 10).await?;
         assert_eq!(
             typed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [ids[1], ids[0]]
         );
         let visible = authorized_memory_ids(
-            &engine,
+            engine,
             &authz,
             &candidates,
             EntityKind::Fact,
@@ -1524,20 +1524,20 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
         assert_eq!(visible, [ids[1], ids[0]]);
         for candidates in [&[][..], &candidates[..]] {
             assert!(matches!(
-                authorized_fact_payloads::<FacadeFact>(&engine, &authz, candidates, 0).await,
+                authorized_fact_payloads::<FacadeFact>(engine, &authz, candidates, 0).await,
                 Err(ToolError::InvalidInput(_))
             ));
             assert!(matches!(
-                authorized_memory_ids(&engine, &authz, candidates, EntityKind::Fact, None, 0).await,
+                authorized_memory_ids(engine, &authz, candidates, EntityKind::Fact, None, 0).await,
                 Err(ToolError::InvalidInput(_))
             ));
         }
         assert!(
-            authorized_fact_payloads::<FacadeFact>(&engine, &authz, &[], 1)
+            authorized_fact_payloads::<FacadeFact>(engine, &authz, &[], 1)
                 .await?
                 .is_empty()
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

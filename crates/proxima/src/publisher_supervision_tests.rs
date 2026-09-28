@@ -467,12 +467,13 @@ async fn wait_for_outbox(pool: &sqlx::PgPool, t: Uuid, wanted: &str) {
     .expect("outbox state changes");
 }
 
-async fn capture(built: &super::BuiltProxima, owner: Owner, note: &str) -> Uuid {
+async fn capture(built: &crate::BuiltProxima, owner: Owner, note: &str) -> Uuid {
     let payload = PublisherHealthProbeV1 {
         probe_id: Uuid::now_v7(),
         note: note.to_owned(),
     };
     built
+        .host()
         .engine()
         .ingest_fact(
             &authenticated_context(built.single_owner_authz().expect("single owner authz")),
@@ -492,7 +493,11 @@ struct TestWorld {
     db_name: String,
     stream_name: String,
     js: async_nats::jetstream::Context,
-    built: super::BuiltProxima,
+    built: crate::BuiltProxima,
+    /// The broker config the wrapped publishers run under. Deliberately NOT
+    /// given to the runtime: a configured broker starts the runtime's own
+    /// publisher, which would drain the records these tests fail on purpose.
+    nats: proxima_outbox_nats::NatsPublisherConfig,
     owner: Owner,
     events: Arc<Mutex<Vec<String>>>,
     platform_pool: sqlx::PgPool,
@@ -522,7 +527,6 @@ impl TestWorld {
             .await
             .expect("platform scope");
         let mut values = vec![
-            ("PROXIMA_PUBLICATION_SOURCE", HEALTH_SOURCE.to_owned()),
             ("PROXIMA_NATS_URL", url.to_owned()),
             ("PROXIMA_NATS_SUBJECT_PREFIX", prefix),
             ("PROXIMA_NATS_POLL_MS", "100".to_owned()),
@@ -538,9 +542,10 @@ impl TestWorld {
                 .find(|(name, _)| *name == key)
                 .map(|(_, value)| value.clone())
         };
+        let mut nats = proxima_outbox_nats::NatsPublisherConfig::from_lookup(lookup)
+            .expect("publisher config")
+            .expect("broker URL set");
         let built = crate::Proxima::<PublisherHealthApp>::app()
-            .from_lookup(lookup)
-            .expect("runtime config")
             .database_url(db_url)
             .platform_database_url(platform_url)
             .owner(owner)
@@ -553,11 +558,21 @@ impl TestWorld {
             .build()
             .await
             .expect("Proxima builds");
+        assert_eq!(
+            built
+                .boot_report()
+                .get(crate::Feature::OutboxPublisher)
+                .state,
+            crate::FeatureState::Off,
+            "the runtime must not start a publisher beside the wrapped ones"
+        );
+        nats.origin_scope = Some(built.host().origin_scope_for_host());
         Self {
             db_name,
             stream_name,
             js,
             built,
+            nats,
             owner,
             events,
             platform_pool,
@@ -565,7 +580,7 @@ impl TestWorld {
     }
 
     async fn teardown(self) {
-        self.built.shutdown();
+        self.built.shutdown().await;
         let _ = self.js.delete_stream(&self.stream_name).await;
         let _ = proxima_pg_testkit::drop_db(&self.db_name).await;
     }
@@ -630,7 +645,7 @@ async fn publisher_supervision_sidecar_fixture_captures_against_real_pg() {
     .catch_unwind()
     .await;
     if let Some(built) = built {
-        built.shutdown();
+        built.shutdown().await;
     }
     let _ = proxima_pg_testkit::drop_db(&db_name).await;
     if let Err(payload) = outcome {
@@ -645,7 +660,7 @@ async fn production_supervisor_reports_and_recovers_from_owned_failures() {
     };
     let world = TestWorld::new(&url).await;
     let outcome = std::panic::AssertUnwindSafe(async {
-        let mut config = world.built.nats.clone().expect("publisher config");
+        let mut config = world.nats.clone();
         config.poll_interval = Duration::from_millis(50);
         config.batch = NonZeroU32::new(16).expect("nonzero batch");
         marker_failure_is_redacted_and_recovers(&world, &config).await;
@@ -666,7 +681,8 @@ async fn marker_failure_is_redacted_and_recovers(
     world: &TestWorld,
     config: &proxima_outbox_nats::NatsPublisherConfig,
 ) {
-    let marker_wrapper = ControlledOutbox::new(world.built.outbox.clone(), ClaimMode::MarkerOnce);
+    let marker_wrapper =
+        ControlledOutbox::new(world.built.outbox_for_tests(), ClaimMode::MarkerOnce);
     let cancel = CancellationToken::new();
     let supervised = spawn_publication_publisher_supervised(
         marker_wrapper,
@@ -711,7 +727,7 @@ async fn real_claim_table_failure_recovers(
         .expect("isolate real claim-table failure");
     let cancel = CancellationToken::new();
     let supervised = spawn_publication_publisher_supervised(
-        world.built.outbox.clone(),
+        world.built.outbox_for_tests(),
         config.clone(),
         None,
         cancel.clone(),
@@ -742,7 +758,7 @@ async fn claim_panic_stops_supervisor(
     world: &TestWorld,
     config: &proxima_outbox_nats::NatsPublisherConfig,
 ) {
-    let panic_wrapper = ControlledOutbox::new(world.built.outbox.clone(), ClaimMode::PanicOnce);
+    let panic_wrapper = ControlledOutbox::new(world.built.outbox_for_tests(), ClaimMode::PanicOnce);
     let cancel = CancellationToken::new();
     let supervised =
         spawn_publication_publisher_supervised(panic_wrapper, config.clone(), None, cancel);
@@ -767,7 +783,7 @@ async fn blocked_claim_abort_stops_supervisor(
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let blocked_wrapper = ControlledOutbox::new(
-        world.built.outbox.clone(),
+        world.built.outbox_for_tests(),
         ClaimMode::BlockOnCall {
             call: 1,
             entered: entered.clone(),
@@ -810,7 +826,7 @@ async fn mixed_pass_stays_failed_until_recovery(
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let mixed_wrapper = ControlledOutbox::new(
-        world.built.outbox.clone(),
+        world.built.outbox_for_tests(),
         ClaimMode::BlockOnCall {
             call: 2,
             entered: entered.clone(),

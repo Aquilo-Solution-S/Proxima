@@ -4,8 +4,7 @@
 
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
-    AppInfo, EmbedConfig, EmbedError, FactWrite, FlavorApp, Proxima, ProximaBuilder, ProximaError,
-    QueryRequest, ToolScope, company_owner,
+    AppInfo, FactWrite, FlavorApp, Proxima, ProximaError, QueryRequest, ToolScope, company_owner,
 };
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, Owner, Role, UserId,
@@ -272,12 +271,14 @@ async fn assert_runtime_serves(fixture: &Fixture, booted: &proxima::BuiltProxima
         idempotency_key: Some("runtime-grants-boot".into()),
     };
     let outcome = booted
-        .engine
+        .host()
+        .engine()
         .ingest_fact(&authz, FactWrite::new(owner, "test/runtime-grants", &note))
         .await
         .expect("runtime DML under owner RLS");
     let response = booted
-        .engine
+        .host()
+        .engine()
         .query(&authz, &QueryRequest::readable())
         .await
         .expect("runtime read under owner RLS");
@@ -351,17 +352,19 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
         .await
         .expect("runtime-grants boot");
     assert_runtime_serves(&fixture, &booted, owner).await;
-    booted.shutdown();
+    booted.shutdown().await;
 
     // (3) Idempotent: again, and together with skip_migrations.
     build(&fixture, owner, true, false)
         .await
         .expect("second runtime-grants boot")
-        .shutdown();
+        .shutdown()
+        .await;
     build(&fixture, owner, true, true)
         .await
         .expect("runtime grants with skip_migrations")
-        .shutdown();
+        .shutdown()
+        .await;
 
     // (4) What runtime holds, and what it never holds.
     assert_runtime_privileges(&fixture).await;
@@ -390,47 +393,31 @@ async fn runtime_grants_refuse_without_split_roles() {
     let unreachable = |user: &str| format!("postgres://{user}:pw@127.0.0.1:1/runtime_grants");
     let owner = company_owner(Uuid::now_v7());
     let boot = |database_url: String, platform_database_url: Option<String>| {
-        ProximaBuilder::new(
-            EmbedConfig {
-                database_url,
-                platform_database_url,
-                s3: None,
-            },
-            owner,
-        )
-        .bundle::<proxima_code::CodeFlavor>()
-        .runtime_grants()
-        .boot()
+        let app = Proxima::<CodeGrantsApp>::app()
+            .database_url(database_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .runtime_grants(true);
+        match platform_database_url {
+            Some(url) => app.platform_database_url(url),
+            None => app,
+        }
+        .build()
     };
 
     let same = boot(unreachable("rtg_same"), Some(unreachable("rtg_same")))
         .await
         .expect_err("runtime == platform user must be refused");
     assert!(
-        matches!(&same, EmbedError::Config(message) if message.contains("split roles")),
+        matches!(&same, ProximaError::Config(message) if message.contains("split roles")),
         "{same}"
     );
     let missing = boot(unreachable("rtg_runtime"), None)
         .await
         .expect_err("runtime grants need a platform URL");
     assert!(
-        matches!(&missing, EmbedError::Config(message)
+        matches!(&missing, ProximaError::Config(message)
             if message.contains("PROXIMA_PLATFORM_DATABASE_URL")),
         "{missing}"
-    );
-
-    // The runtime facade forwards the flag to the same refusal.
-    let facade = Proxima::<CodeGrantsApp>::app()
-        .database_url(unreachable("rtg_same"))
-        .platform_database_url(unreachable("rtg_same"))
-        .owner(owner)
-        .tool_scope(ToolScope::All)
-        .runtime_grants(true)
-        .build()
-        .await
-        .expect_err("facade refuses runtime grants without split roles");
-    assert!(
-        matches!(&facade, ProximaError::Config(message) if message.contains("split roles")),
-        "{facade}"
     );
 }

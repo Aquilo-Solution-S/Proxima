@@ -262,7 +262,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
         );
         let runtime = built.as_ref().expect("fixture was built");
         let authz = runtime.single_owner_authz().expect("single owner authz");
-        let id = capture(&runtime.engine(), &authz, owner, "fixture-capture").await;
+        let id = capture(runtime.host().engine(), &authz, owner, "fixture-capture").await;
         let state: String = sqlx::query_scalar(
             "SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1",
         )
@@ -275,7 +275,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
     .catch_unwind()
     .await;
     if let Some(built) = built {
-        built.shutdown();
+        built.shutdown().await;
     }
     let _ = proxima_pg_testkit::drop_db(&db_name).await;
     if let Err(payload) = outcome {

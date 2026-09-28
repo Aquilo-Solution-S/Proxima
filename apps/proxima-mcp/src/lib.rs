@@ -185,13 +185,14 @@ impl FlavorApp for ProximaMcpApp {
     fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
         #[cfg(feature = "code")]
         {
+            let host = ctx.host();
             let mut services = FlavorServices::default();
             services.try_insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
-                ctx.clone_pool_for_host(),
-                ctx.pg_tuning_for_host(),
-                ctx.pg_sidecars_for_host(),
-                ctx.host_state_erase_context_for_host(),
-                ctx.platform_scope_for_host(),
+                host.clone_pool_for_host(),
+                host.pg_tuning_for_host(),
+                host.pg_sidecars_for_host(),
+                host.host_state_erase_context_for_host(),
+                host.platform_scope_for_host(),
             ))?;
             Ok(services)
         }
@@ -297,34 +298,13 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
 
     let running = run_with_handle(config).await?;
     let addr = running
-        .mcp_addr
+        .mcp_addr()
         .ok_or_else(|| CliError::Runtime(ProximaError::Mcp("MCP listener disabled".into())))?;
     tracing::info!(addr = %addr, "proxima-mcp listening; POST http://{addr}/mcp");
-    let embedding_worker = running.spawn_embedding_worker(running.cancel.clone());
-    // The Fact-outbox publisher, beside the embedding worker and on the
-    // same cancellation token. `None` when this binary was built without
-    // the `nats` feature or when `PROXIMA_NATS_URL` names no broker —
-    // neither is an error, and neither stops the host from serving.
-    #[cfg(feature = "nats")]
-    let publication_publisher = running.spawn_publication_publisher(running.cancel.clone());
-    let server_result = if let Some(server) = running.server {
-        server
-            .await
-            .map_err(|err| CliError::Transport(err.to_string()))
-    } else {
-        Ok(())
-    };
-    running.cancel.cancel();
-    if let Err(err) = embedding_worker.await {
-        tracing::warn!(error = %err, "embedding worker join failed");
-    }
-    #[cfg(feature = "nats")]
-    if let Some(publisher) = publication_publisher
-        && let Err(err) = publisher.await
-    {
-        tracing::warn!(error = %err, "publication publisher join failed");
-    }
-    server_result?;
+    // The runtime started every configured feature — the embedding worker
+    // with an embedding client, the Fact-outbox publisher with
+    // `PROXIMA_NATS_URL` — and joins them all on the way out.
+    running.until_shutdown_signal().await?;
     Ok(())
 }
 
@@ -354,7 +334,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
         .s3(s3)
         .build()
         .await?;
-    let outcome = match built.blobs.as_ref() {
+    let outcome = match built.host().blobs() {
         Some(store) => store
             .reconcile_all(built.system_authority())
             .await
@@ -363,7 +343,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
             "maintain-blobs booted without its required S3 store".into(),
         )),
     };
-    built.shutdown();
+    built.shutdown().await;
     let outcome = outcome?;
 
     println!(

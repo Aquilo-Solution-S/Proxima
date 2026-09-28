@@ -378,7 +378,7 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         note_id: Uuid::now_v7(),
         body: "written under owner RLS".to_owned(),
     };
-    let engine = built.engine();
+    let engine = built.host().engine();
     let outcome = engine
         .ingest_fact(
             &authz,
@@ -397,7 +397,7 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
             .any(|memory| memory.id == outcome.memory_id),
         "the owner reads its own note back"
     );
-    built.shutdown();
+    built.shutdown().await;
 
     assert_eq!(
         ledger_versions(&db, "public._sqlx_migrations_kittest").await,

@@ -3,7 +3,8 @@
 //! policy census and role refusal matrix live in storage-pg's RLS tests.
 
 use async_trait::async_trait;
-use proxima::{EmbedConfig, FactWrite, ProximaBuilder, QueryRequest};
+use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
+use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
 use proxima_core::{
     AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerRoles,
     UserId,
@@ -238,26 +239,50 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
     )
 }
 
+struct CodeApp;
+
+impl FlavorBundle for CodeApp {
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        proxima_code::CodeFlavor::register(registry)
+    }
+
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
+        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        proxima_code::CodeFlavor::migrators()
+    }
+}
+
+impl FlavorApp for CodeApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "owner-rls-boot-test",
+            title: "Owner RLS Boot Test",
+            version: "1",
+        }
+    }
+}
+
 async fn boot(
     runtime_url: String,
     platform_url: Option<String>,
     owner: Owner,
     skip_migrations: bool,
-) -> Result<proxima::EmbeddedProxima, proxima::EmbedError> {
-    let mut builder = ProximaBuilder::new(
-        EmbedConfig {
-            database_url: runtime_url,
-            platform_database_url: platform_url,
-            s3: None,
-        },
-        owner,
-    )
-    .pg_pool_config(PgPoolConfig::default())
-    .bundle::<proxima_code::CodeFlavor>();
-    if skip_migrations {
-        builder = builder.skip_migrations();
+) -> Result<proxima::BuiltProxima, proxima::ProximaError> {
+    let mut app = Proxima::<CodeApp>::app()
+        .database_url(runtime_url)
+        .owner(owner)
+        .tool_scope(ToolScope::All)
+        .pg_pool_config(PgPoolConfig::default());
+    if let Some(platform_url) = platform_url {
+        app = app.platform_database_url(platform_url);
     }
-    builder.boot().await
+    if skip_migrations {
+        app = app.skip_migrations();
+    }
+    app.build().await
 }
 
 #[tokio::test]
@@ -294,12 +319,14 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         idempotency_key: Some("owner-rls-boot".into()),
     };
     let outcome = booted
-        .engine
+        .host()
+        .engine()
         .ingest_fact(&authz, FactWrite::new(owner, "test/owner-rls", &note))
         .await
         .expect("verified fact ingest");
     let response = booted
-        .engine
+        .host()
+        .engine()
         .query(&authz, &QueryRequest::readable())
         .await
         .expect("verified owner query");
@@ -330,11 +357,11 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         .await
         .expect("rollback verify transaction");
     verify.close().await;
-    booted.engine.stop(booted.handle);
+    booted.shutdown().await;
     let second = boot(runtime_url, Some(platform_url), owner, false)
         .await
         .expect("second automatic migration is idempotent");
-    second.engine.stop(second.handle);
+    second.shutdown().await;
 
     cleanup(&database, admin, &runtime, &platform).await;
 }
@@ -355,7 +382,7 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
     )
     .await
     .expect("fresh core+Code automatic migration");
-    first.engine.stop(first.handle);
+    first.shutdown().await;
     let (base_tables, flavor_tables): (i64, i64) = sqlx::query_as(
         "SELECT
            (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxima_core'),
@@ -377,7 +404,7 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
     let second = boot(runtime_url, Some(platform_url), owner, true)
         .await
         .expect("fresh second boot");
-    second.engine.stop(second.handle);
+    second.shutdown().await;
     cleanup(&database, admin, &runtime, &platform).await;
 }
 

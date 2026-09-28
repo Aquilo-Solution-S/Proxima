@@ -1,18 +1,13 @@
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use http::request::Parts;
-use proxima_blob_s3::CitedBlobStore;
 use proxima_core::AuthzContext;
-use proxima_core::{Engine, FlavorServiceError, FlavorServices, Owner};
+use proxima_core::{FlavorServiceError, FlavorServices};
 use proxima_mcp_server::McpAuthContext;
-use proxima_storage_pg::{PgSidecarRegistryFrozen, PgTuning};
-use sqlx::PgPool;
 
-use crate::RuntimeBuilder;
 use crate::bundle::FlavorBundle;
+use crate::{ProximaHost, RuntimeBuilder};
 
 /// Static identity for one composed Proxima application binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +25,11 @@ pub struct AppInfo {
 pub trait FlavorApp: FlavorBundle {
     fn app_info() -> AppInfo;
 
+    /// The app's defaults: the lowest configuration layer, under the
+    /// environment and the host's own builder calls. Every feature starts
+    /// when its config is present, so a flavor that wants MCP by default
+    /// sets [`RuntimeBuilder::mcp_bind`] here.
+    ///
     /// Folded left-to-right for tuples; later tuple elements can
     /// override fields set by earlier elements, except
     /// [`RuntimeBuilder::host_state_participant`]: a second registration
@@ -56,96 +56,29 @@ pub trait FlavorApp: FlavorBundle {
     }
 }
 
-/// Runtime handles passed to host HTTP mounting code.
+/// What [`FlavorApp::services`] and [`FlavorApp::mount_http`] receive: the
+/// booted runtime's [`ProximaHost`], reached as on `BuiltProxima` and
+/// `RunningProxima`.
 #[derive(Clone)]
 pub struct AppContext {
-    pub engine: Arc<Engine>,
-    pub(crate) pool: PgPool,
-    pub(crate) platform_scope: Option<proxima_storage_pg::PgPlatformScope>,
-    pub(crate) pg_tuning: PgTuning,
-    pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
-    pub(crate) host_state_erase_context: proxima_storage_pg::PgHostStateEraseContext,
-    pub blobs: Option<CitedBlobStore>,
-    pub owner: Option<Owner>,
-    pub(crate) services: FlavorServices,
+    pub(crate) host: ProximaHost,
 }
 
 impl AppContext {
-    /// Typed services published to this runtime.
-    ///
-    /// Inside [`FlavorApp::services`] this is the host's own set
-    /// ([`crate::RuntimeBuilder::services`]), so a flavor can build on a
-    /// host-provided client. Everywhere after — [`FlavorApp::mount_http`]
-    /// and the served paths — it is the composed set every tool, request
-    /// behavior, and worker sees: host, flavors, and substrate services.
+    /// The booted runtime's host accessors. Inside [`FlavorApp::services`]
+    /// its [`ProximaHost::services`] is the host's own set; everywhere after,
+    /// the composed one.
     #[must_use]
-    pub fn services(&self) -> &FlavorServices {
-        &self.services
-    }
-
-    /// Host-only extra-table bridge. Not Flavor SDK.
-    ///
-    /// Use this inside [`FlavorApp::services`] to construct a flavor-owned
-    /// store over tables the host migrates (as `proxima-mcp` does with
-    /// `CodeFlavorStore::from_backend_pool_for_host`). Wrap the pool in
-    /// that store immediately. Do not put `PgPool` on `FlavorServices`,
-    /// do not pass it into a [`proxima_core::tool::Tool`], and do not
-    /// run `proxima_core.*` SQL through it — flavor `src/` still has
-    /// zero core-table SQL.
-    ///
-    /// Sidecar-only flavors never call this: they write through
-    /// [`proxima_core::Engine`] / [`proxima_core::engine::UnitOfWork`].
-    #[must_use]
-    pub fn clone_pool_for_host(&self) -> PgPool {
-        self.pool.clone()
-    }
-
-    /// Host-resolved Postgres query tuning for an extra-table store using
-    /// [`Self::clone_pool_for_host`]. Passing this alongside the pool keeps
-    /// flavor queries on the canonical environment-independent boot policy.
-    #[must_use]
-    pub fn pg_tuning_for_host(&self) -> PgTuning {
-        self.pg_tuning
-    }
-
-    #[must_use]
-    pub fn platform_scope_for_host(&self) -> Option<proxima_storage_pg::PgPlatformScope> {
-        self.platform_scope.clone()
-    }
-
-    /// The sidecar registry this boot froze, for a flavor-owned store that
-    /// has to reach the substrate through a storage verb.
-    ///
-    /// A flavor tearing down one of its own scopes deletes its own rows and
-    /// then hands the admissions to `verbs::forget::erase_memory_series`,
-    /// which walks THIS registry to reach the sidecars each admission
-    /// stamped. Handing over the boot's registry rather than letting the
-    /// flavor compose a second one is the point: two compositions can
-    /// disagree, and the one the write path used is the only one whose
-    /// table list matches what is actually in the rows.
-    ///
-    /// Cheap to clone — the entries live behind an `Arc`.
-    #[must_use]
-    pub fn pg_sidecars_for_host(&self) -> PgSidecarRegistryFrozen {
-        self.pg_sidecars.as_ref().clone()
-    }
-
-    /// The full boot-frozen registry and callback required by host flavors
-    /// that invoke physical memory erasure. The context is opaque and grants
-    /// no erase authority by itself.
-    #[must_use]
-    pub fn host_state_erase_context_for_host(&self) -> proxima_storage_pg::PgHostStateEraseContext {
-        self.host_state_erase_context.clone()
+    pub const fn host(&self) -> &ProximaHost {
+        &self.host
     }
 }
 
 impl std::fmt::Debug for AppContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppContext")
-            .field("blobs", &self.blobs)
-            .field("owner", &self.owner)
-            .field("services", &self.services)
-            .finish_non_exhaustive()
+            .field("host", &self.host)
+            .finish()
     }
 }
 
@@ -296,21 +229,9 @@ mod tests {
 
     fn context() -> AppContext {
         AppContext {
-            platform_scope: None,
-            engine: Arc::new(proxima_core::Engine::new(
+            host: crate::ProximaHost::for_tests(Arc::new(proxima_core::Engine::new(
                 FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
-            pool: sqlx::PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new()),
-            pg_tuning: proxima_storage_pg::PgTuning::default(),
-            pg_sidecars: Arc::default(),
-            host_state_erase_context:
-                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
-                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
-                )
-                .expect("empty fixture registry has no host lifecycle tables"),
-            blobs: None,
-            owner: None,
-            services: proxima_core::FlavorServices::default(),
+            ))),
         }
     }
 

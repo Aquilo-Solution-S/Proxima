@@ -456,7 +456,7 @@ fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 
 /// The host's boot composition, repeated for a store built without a host.
 ///
-/// Deliberately the same four steps `ProximaBuilder::boot` runs, in the same
+/// Deliberately the same four steps the facade's boot runs, in the same
 /// order, so a fixture-built store answers `sidecars()` with the registry a
 /// real deployment would have frozen. Test-only: production goes through
 /// [`CodeFlavorStore::from_backend_pool_for_host`], which is handed the

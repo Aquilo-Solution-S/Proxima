@@ -269,7 +269,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
             .publication(PublicationConfig::new(source()))
             .build()
             .await?;
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -323,10 +323,10 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let limits = built.engine().publication_config().limits;
+        let limits = built.host().engine().publication_config().limits;
         assert_eq!(limits.max_pending, 12);
         assert_eq!(limits.max_payload_bytes, 4096);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -363,7 +363,7 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
         let authz = proxima_core::test_fixtures::authenticated_context(
             built.single_owner_authz().ok_or("single owner")?,
         );
-        let engine = built.engine();
+        let engine = built.host().engine();
 
         // An owner this caller holds no grant on. The listenable schema,
         // the source and the ceiling are all exactly the ones the
@@ -434,7 +434,7 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
             .await?;
         assert_eq!(sidecars, 2, "the composed UoW Fact keeps its sidecar");
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -468,7 +468,7 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
         let authz = proxima_core::test_fixtures::authenticated_context(
             built.single_owner_authz().ok_or("single owner")?,
         );
-        let engine = built.engine();
+        let engine = built.host().engine();
 
         // Under the ceiling: admitted, and its event is captured.
         engine
@@ -514,7 +514,7 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
             .await?;
         assert_eq!(memories, 1, "and admitted no Fact");
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

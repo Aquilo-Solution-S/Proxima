@@ -271,7 +271,7 @@ async fn injected_failures_leave_no_partial_commit() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let other = PgPool::connect(&db_url(&db_name)).await?;
         let authz = admin_authz_for(owner);
-        let engine = built.engine();
+        let engine = built.host().engine();
 
         participant.arm_fail_before_sql();
         let mut before = engine.unit_of_work(&authz).await?;
@@ -367,7 +367,7 @@ async fn injected_failures_leave_no_partial_commit() {
             Some(("created".into(), 1))
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -384,7 +384,7 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
         let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let other = PgPool::connect(&db_url(&db_name)).await?;
         let invocation = proxima_core::MemoryId::new(Uuid::now_v7());
 
@@ -429,11 +429,11 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
         drop(unknown);
         assert_eq!(count_execution(&other, invocation).await?, 0);
 
-        built.shutdown();
+        built.shutdown().await;
 
         let unregistered = boot_fixture(&url, &platform_url, owner, None).await?;
         let authz = admin_authz_for(owner);
-        let engine = unregistered.engine();
+        let engine = unregistered.host().engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let err = uow
             .apply_host_state(FixtureHostCommand::Create {
@@ -445,7 +445,7 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
         assert_eq!(err.code, ErrorCode::InvalidArgument, "{err:?}");
         drop(uow);
         assert_eq!(count_execution(&other, invocation).await?, 0);
-        unregistered.shutdown();
+        unregistered.shutdown().await;
         Ok(())
     }
     .await;
@@ -465,7 +465,7 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
         let authz = admin_authz_for(owner);
         let other_authz = admin_authz_for(other_owner);
-        let engine = built.engine();
+        let engine = built.host().engine();
         let pool = admin_pool(&db_name).await?;
 
         let mut setup = engine.unit_of_work(&authz).await?;
@@ -600,7 +600,7 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
             Some(("finalized".into(), 2))
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -619,7 +619,7 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
         let authz = admin_authz_for(owner);
         let missing = proxima_core::MemoryId::new(Uuid::now_v7());
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let outcome = uow
             .apply_host_state(FixtureHostCommand::Finalize {
@@ -639,7 +639,7 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
             count_execution(&admin_pool(&db_name).await?, missing).await?,
             0
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -658,7 +658,7 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let other = PgPool::connect(&db_url(&db_name)).await?;
         let authz = admin_authz_for(owner);
-        let engine = built.engine();
+        let engine = built.host().engine();
 
         participant.arm_hang_after_sql();
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -687,7 +687,7 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
         assert_eq!(err.code, ErrorCode::Internal, "{err:?}");
         assert_eq!(count_memory(&other, fact.memory_id).await?, 0);
         assert_eq!(count_execution(&other, fact.memory_id).await?, 0);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -708,7 +708,7 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
         let authority = built
             .host_state_maintenance_authority()
             .expect("registered participant mints host-only authority");
-        let engine = built.engine();
+        let engine = built.host().engine();
         let observer = PgPool::connect(&db_url(&db_name)).await?;
 
         for (owner, key) in [
@@ -834,15 +834,15 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
         let second_participant = Arc::new(HostFixtureParticipant::default());
         let second =
             boot_fixture(&url, &platform_url, group, Some(second_participant.clone())).await?;
-        let second_engine = second.engine();
+        let second_engine = second.host().engine();
         let error = second_engine
             .host_state_unit_of_work(authority, group)
             .expect_err("capability belongs to the first engine");
         assert_eq!(error.code, ErrorCode::Forbidden, "{error:?}");
         assert_eq!(second_participant.callback_calls(), 0);
 
-        second.shutdown();
-        built.shutdown();
+        second.shutdown().await;
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -889,7 +889,7 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
         let authority = built
             .host_state_maintenance_authority()
             .expect("valid participant capability");
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut widened = engine.host_state_unit_of_work(authority, owner)?;
         let error = widened
             .apply_host_state(AuxiliaryHostCommand { owner })
@@ -917,7 +917,7 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
             "dispatch never re-reads getters"
         );
         assert_eq!(participant.callback_calls(), 1);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -947,7 +947,7 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
         assert_eq!(authz.principal(), Owner::Personal(editor));
         assert_ne!(authz.principal(), group);
 
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut unit = engine.unit_of_work(&authz).await?;
         let fact = unit
             .ingest_fact(proxima::FactWrite::new(
@@ -979,7 +979,7 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
             "the committed fixture row distinguishes target, caller stamp and fake payload"
         );
         assert_eq!(participant.callback_calls(), 1);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -998,7 +998,7 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let authz = AuthzContext::denied_for_owner(&owner);
         assert_eq!(authz.subject(), None);
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut unit = engine.unit_of_work(&authz).await?;
         let invocation_id = proxima_core::MemoryId::new(Uuid::now_v7());
         let error = unit
@@ -1015,7 +1015,7 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
             count_execution(&admin_pool(&db_name).await?, invocation_id).await?,
             0
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1037,7 +1037,7 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
             .host_state_maintenance_authority()
             .expect("host authority");
         let invocation = proxima_core::MemoryId::new(Uuid::now_v7());
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut maintenance = engine.host_state_unit_of_work(authority, owner)?;
         let error = maintenance
             .apply_host_state(FixtureHostCommand::CreateWithPayloadOwner {
@@ -1058,7 +1058,7 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
             count_execution(&admin_pool(&db_name).await?, invocation).await?,
             0
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1077,7 +1077,7 @@ async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
         let built = boot_fixture(&url, &platform_url, owner, Some(participant)).await?;
         let other = PgPool::connect(&db_url(&db_name)).await?;
         let authz = admin_authz_for(owner);
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut unit = engine.unit_of_work(&authz).await?;
         let fact = unit
             .ingest_fact(proxima::FactWrite::new(
@@ -1110,7 +1110,7 @@ async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
         .fetch_one(&other)
         .await?;
         assert_eq!(deferred_rows, 0);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1129,7 +1129,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
         let owner = Owner::Group(GroupId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let pool = admin_pool(&db_name).await?;
         let authz = admin_authz_for(owner);
 
@@ -1290,7 +1290,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
             HostStateOutcome::Permitted(FixtureHostResult::Row(None))
         ));
         assert_eq!(count_execution(&pool, seeded_fact.memory_id).await?, 0);
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

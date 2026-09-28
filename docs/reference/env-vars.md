@@ -69,7 +69,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
-| `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | enabling the JetStream publisher | needs the `nats` cargo feature; unset keeps capture running with records `pending` |
+| `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | starting the JetStream publisher | set ⇒ publisher starts; needs the `outbox-nats` cargo feature (`proxima-mcp`: `nats`), a build without it refuses boot; unset keeps capture running with records `pending`; any other `PROXIMA_NATS_*` publisher key without it refuses boot |
 | `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default source routing | source subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`; deployment-owned transforms and partitions may rewrite it; the token encoding is injective ([18](../18-fact-outbox.md#the-type_token-rule)) |
 | `PROXIMA_NATS_CREDS_FILE` | Fact outbox | unset | credentials-file auth | mutually exclusive with user/password and token |
 | `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | Fact outbox | unset | user/password auth | both required together |
@@ -81,7 +81,17 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_NATS_PUBLISHER_ID` | Fact outbox | `<HOSTNAME>-<pid>` | naming a publisher in incident logs | recorded as `claimed_by` on every claim; operator-facing, not a credential. `HOSTNAME` is read through the injected lookup, never the process environment |
 | `PROXIMA_NATS_CONSUMER_STREAM` | Fact outbox | `PROXIMA_FACTS` | binding the reference consumer | deployment-provided stream name; the consumer binds an existing durable and never creates topology |
 | `PROXIMA_NATS_CONSUMER_NAME` | Fact outbox | `proxima-reference` | binding the reference consumer | deployment-provided durable name; filter, ACK policy, redelivery and flow control remain broker configuration |
-| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the publisher runs; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
+| `PROXIMA_COPY_CLEANER_URL` | Fact outbox | unset (cleaner off) | starting the retained-copy cleaner | set ⇒ cleaner starts; needs the `outbox-nats` cargo feature, a build without it refuses boot; any other `PROXIMA_COPY_CLEANER_*` key without it refuses boot ([18](../18-fact-outbox.md#retained-copy-cleanup)) |
+| `PROXIMA_COPY_CLEANER_CREDS_FILE` | Fact outbox | unset | cleaner credentials-file auth | the cleaner's own role, never the publisher's `PROXIMA_NATS_*` credential; mutually exclusive with user/password and token |
+| `PROXIMA_COPY_CLEANER_USER` / `PROXIMA_COPY_CLEANER_PASSWORD` | Fact outbox | unset | cleaner user/password auth | both required together |
+| `PROXIMA_COPY_CLEANER_TOKEN` | Fact outbox | unset | cleaner token auth | |
+| `PROXIMA_COPY_CLEANER_INBOX_PREFIX` | Fact outbox | `PROXIMA_PURGE_INBOX` | cleaner reply namespace | validated inbox prefix owned by the cleaner role |
+| `PROXIMA_COPY_CLEANER_ITEMS_PER_SLICE` | Fact outbox | `128` | tuning cleaner slices | positive |
+| `PROXIMA_COPY_CLEANER_SLICE_BUDGET_MS` | Fact outbox | `2000` | tuning cleaner slices | soft per-slice time budget; positive |
+| `PROXIMA_COPY_CLEANER_REQUEST_TIMEOUT_MS` | Fact outbox | `5000` | tuning broker waits | per-request bound; positive |
+| `PROXIMA_COPY_CLEANER_SCAN_INTERVAL_SECS` | Fact outbox | `30` | tuning scan cadence | positive |
+| `PROXIMA_COPY_CLEANER_SHUTDOWN_GRACE_MS` | Fact outbox | `2000` | tuning shutdown | positive |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |

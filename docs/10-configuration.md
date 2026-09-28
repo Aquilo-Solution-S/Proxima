@@ -51,6 +51,22 @@ Proxima::<App>::app()
     .await?;
 ```
 
+An embedded host takes the same path and serves nothing itself: `build()`
+starts every configured feature without binding MCP. One builder, one
+accessor set:
+
+```rust
+let built = Proxima::<App>::app()          // App: FlavorApp — flavors, sidecars, migrators
+    .from_env()
+    .embed_client(client)                  // configured ⇒ the embedding worker drains
+    .tool_scope(ToolScope::All)
+    .build()
+    .await?;
+let engine = built.host().engine();        // same `.host()` on RunningProxima / AppContext
+built.boot_report();                       // one decision per feature
+built.shutdown().await;                    // cancels and joins every started task
+```
+
 A stock host needs no code beyond its flavor list; everything else is the
 environment below (the flavor's `configure` still names its tool scope):
 
@@ -64,7 +80,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | Env var | Meaning |
 |---|---|
 | `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
-| `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
+| `PROXIMA_MCP_BIND` | MCP socket address; starts the listener when set ([Runtime features](#runtime-features)). |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated browser-origin allowlist for listener-wide CORS. |
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
@@ -95,7 +111,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
-| `PROXIMA_NATS_URL` | NATS server URL. **Unset ⇒ publisher off**; capture still runs and records stay `pending` (the rollback path). Requires the `nats` cargo feature. The publisher only needs publish and reply-inbox permissions. |
+| `PROXIMA_NATS_URL` | NATS server URL. **Set ⇒ publisher starts; unset ⇒ off**; capture still runs and records stay `pending` (the rollback path). Requires the `outbox-nats` cargo feature (`proxima-mcp`: `nats`); a build without it refuses boot. Another `PROXIMA_NATS_*` publisher key without it refuses boot. The publisher only needs publish and reply-inbox permissions. |
 | `PROXIMA_NATS_SUBJECT_PREFIX` | Source subject prefix; full source subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. Stream transforms and partitions are deployment-owned. The token encoding is injective — see [18 §The `type_token` rule](18-fact-outbox.md#the-type_token-rule). |
 | `PROXIMA_NATS_CREDS_FILE` | NATS credentials file. Mutually exclusive with the user/password and token forms. |
 | `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | NATS user credentials. |
@@ -107,7 +123,8 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_NATS_PUBLISHER_ID` | Operator-facing identity recorded on every claim (`claimed_by`). Default: `HOSTNAME` (read through the same injected lookup, not the process environment) plus the pid. Not a credential — the fencing token is the claim token. |
 | `PROXIMA_NATS_CONSUMER_STREAM` | Deployment-provided stream name for the reference consumer. Default `PROXIMA_FACTS`; the consumer binds an existing durable and never creates topology. |
 | `PROXIMA_NATS_CONSUMER_NAME` | Deployment-provided durable consumer name for the reference consumer. Default `proxima-reference`. Its filter, ACK policy, redelivery and flow-control settings belong to the broker topology. |
-| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches. Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the publisher runs. Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
+| `PROXIMA_COPY_CLEANER_URL` (+ `PROXIMA_COPY_CLEANER_*`) | Retained-copy cleaner broker. **Set ⇒ cleaner starts.** Its own credential and bounds; any other key of the block without the URL refuses boot. Every key: [env-vars](reference/env-vars.md); contract: [18 §Retained-copy cleanup](18-fact-outbox.md#retained-copy-cleanup). |
 | `PROXIMA_TEST_NATS_URL` | Test-only. Unset ⇒ broker-backed tests skip with a message; CI sets it. |
 | `PROXIMA_TEST_NATS_PUBLISHER_URL` | Test-only. CI publisher URL with publish and reply-inbox permissions but no stream-management permissions. |
 | `PROXIMA_DEV_NATS_PORT` | Local-dev only (`docker-compose.dev.yml`): host port mapped to the dev JetStream container's `4222`. Default `4224`, so it cannot collide with a system NATS. |
@@ -123,15 +140,52 @@ Builder methods override env per field. Defaults, precedence
 (`configure < env < explicit`), and the fail-closed network/auth matrix
 are specified by `crates/proxima` rustdoc and source:
 [`RuntimeBuilder`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs),
-[`RuntimeConfig::validate`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs),
-[`EmbedConfig`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/config.rs), and
+[`RuntimeConfig::validate`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs), and
 [`Proxima<A>`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime.rs).
+
+<a id="runtime-features"></a>
+## Runtime features
+
+One start rule per feature: IF its config is present THEN it starts. No
+enable flags, no spawn calls.
+
+| `feature=` | Starts IF | Env | Code | Health reader |
+|---|---|---|---|---|
+| `mcp` | bind address | `PROXIMA_MCP_BIND` | `mcp_bind(..)` | — |
+| `flavor-workers` | a linked flavor's `FlavorBundle::spawn_workers` returns ≥1 | — | — | — |
+| `embedding-worker` | embedding client or router; startup reconcile, then drain | host-built (`proxima-mcp`: `PROXIMA_EMBED_*`) | `embed_client(..)` / `embedding_router(..)` | — |
+| `outbox-publisher` | broker URL | `PROXIMA_NATS_URL` | `nats(..)` | `publisher_health()` |
+| `published-record-prune` | publisher runs ∧ retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | `published_retention(..)` | — |
+| `copy-cleaner` | cleaner section (broker required) | `PROXIMA_COPY_CLEANER_URL` | `copy_cleaner(..)` | `copy_cleaner_health()` |
+
+- Config: one typed section per feature, from env (`from_env` /
+  `from_lookup`) or code (`Proxima<A>` builder calls, `RuntimeBuilder` in
+  `FlavorApp::configure`); code wins. A flavor that wants MCP by default
+  sets `mcp_bind` in `configure`.
+- `build()` and `run()` start the same features. `run()` binds MCP;
+  `build()` assembles it without a listener and hands it over as
+  `BuiltProxima::service()` / `mcp_edge()`. REST and health remain route
+  options of the MCP listener.
+- The runtime owns cancellation; `shutdown()` cancels and joins every
+  started task.
+- Boot report: one INFO line per feature,
+  `feature=<name> state=started|off reason=<rule>`; the same decisions on
+  `boot_report()`.
+- Half-configured refuses boot, naming the missing key: a
+  `PROXIMA_NATS_*` / `PROXIMA_COPY_CLEANER_*` key without its section's URL;
+  either URL in a build without the `outbox-nats` cargo feature.
+- Several processes with the same config are safe: publisher claims are
+  leased and fenced (see [18](18-fact-outbox.md)).
+
+`BuiltProxima`, `RunningProxima` and `AppContext` reach one host accessor
+set the same way, `.host()` → `ProximaHost` (engine, registry, blobs,
+`*_for_host` handles).
 
 <a id="mcp-endpoint-and-auth"></a>
 ## MCP Endpoint and Authentication
 
 The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
-`with_mcp()` / `mcp_bind(..)`) is set. A non-loopback bind requires
+`mcp_bind(..)`) is set. A non-loopback bind requires
 `PROXIMA_EXPOSE_NETWORK`. Serving requires a host authenticator:
 
 | Mode | How | Identity model |
@@ -624,7 +678,7 @@ capability type: boot checks `dim` against the vector column;
 ## Large Artefact S3
 
 Large cited-object storage is deployment infrastructure, not per-Owner
-configuration. Resolved by `EmbedConfig`/`S3RuntimeConfig` from env:
+configuration. Resolved by `S3RuntimeConfig` from env:
 
 | Key | Required | Default |
 |---|---:|---|
@@ -689,7 +743,7 @@ Boot sequence:
 3. Migrations create core tables.
 4. The embedding client, if injected, is wired; otherwise semantic search
    is disabled.
-5. The MCP listener starts when a bind is configured.
+5. Every configured feature starts ([Runtime features](#runtime-features)).
 
 When owner RLS is detected, boot first inventories the composed catalog and
 checks every table's policy and FORCE RLS state, then attaches the validated

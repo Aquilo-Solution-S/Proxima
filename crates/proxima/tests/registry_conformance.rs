@@ -151,7 +151,7 @@ fn dump_for_embedded_consumer<B: FlavorBundle>() -> RegistryDump {
 }
 
 fn dump_for_hosted_app<A: FlavorApp>() -> RegistryDump {
-    // `Proxima::<A>::build` routes through `ProximaBuilder::bundle::<A>()`;
+    // `Proxima::<A>::build` registers `A`'s bundle before any connection;
     // this helper isolates that static registry composition from DB boot.
     dump_registry(&frozen_registry_for_bundle::<A>())
 }
