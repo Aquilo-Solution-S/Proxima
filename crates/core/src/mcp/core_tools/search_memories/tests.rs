@@ -1,12 +1,14 @@
 use super::{
     LaneArm, MergeKind, OwnerLane, PageCursor, SearchMemoriesArgs, SearchMemoriesKind,
-    SearchMemoriesMode, SearchMemoriesSupersession, cursor_positions, decode_cursor,
-    degraded_to_lexical, encode_cursor, truncate_body, validate_body_max_chars, validate_list_caps,
-    validate_score_args,
+    SearchMemoriesMode, SearchMemoriesSupersession, cursor_positions, decode_cursor, encode_cursor,
+    truncate_body, validate_body_max_chars, validate_list_caps, validate_score_args,
 };
 use crate::MemoryId;
 use crate::mcp::McpToolError;
-use crate::verbs::query::{SearchCursor, SearchMode, SearchOrder, TagMatch};
+use crate::verbs::query::{
+    SearchCursor, SearchMode, SearchOrder, TagMatch,
+    hybrid_degraded_to_lexical as degraded_to_lexical,
+};
 
 fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
     SearchMemoriesArgs {
@@ -124,8 +126,9 @@ fn search_mode_and_supersession_accept_mixed_case() {
 }
 
 #[test]
-fn degraded_flag_only_fires_for_hybrid_with_results_and_no_semantic() {
-    // Hybrid returned rows but none carried a semantic score → degraded.
+fn score_based_flavor_warning_keeps_its_existing_contract() {
+    // The public flavor helper retains its score heuristic. Served memory
+    // search instead observes route availability, covered by its PG test.
     assert!(degraded_to_lexical(SearchMode::Hybrid, false, false));
     // Hybrid with a real semantic score → healthy.
     assert!(!degraded_to_lexical(SearchMode::Hybrid, false, true));

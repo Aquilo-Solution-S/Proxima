@@ -1228,6 +1228,19 @@ const LEXICAL_CONFIG_MARKERS: &str = r"SELECT CASE
            THEN 'missing function proxima_core.lexical_config()'
          WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
            THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_proc p
+                   WHERE p.oid = to_regprocedure('proxima_core.lexical_query_text(regconfig,text)')
+                     AND p.provolatile = 's'
+                     AND NOT p.prosecdef
+                     AND p.proparallel = 's'
+                     AND p.proconfig = ARRAY['search_path=pg_catalog, proxima_core, pg_temp']
+                     AND strpos(p.prosrc, 'query_stopword_counts') > 0
+                     AND strpos(p.prosrc, 'query_dominant_languages') > 0
+                     AND strpos(p.prosrc, 'pg_catalog.ts_debug') > 0
+                )
+           THEN 'lexical_query_text must select dominant-language stopwords as a stable invoker'
          ELSE NULL
        END";
 
@@ -2447,7 +2460,7 @@ mod tests {
         assert_eq!(
             versions,
             vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2460,7 +2473,8 @@ mod tests {
              0013_v015_agent_note_natural_key_index.sql, 0014_v015_owner_rls.sql, \
              0015_v016_embedding_spaces.sql, 0016_v016_embedding_claim_order.sql, \
              0017_v016_metadata_write_scope.sql, 0018_v020_owner_rls_installer.sql and
-             0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql"
+             0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql and \
+             0021_v027_query_stopwords.sql"
         );
     }
 

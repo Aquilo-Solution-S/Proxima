@@ -64,7 +64,7 @@
 //! breaking change, not an identity claim.
 //!
 //! Language variation gets its own database
-//! ([`a_second_lexical_configuration_scores_what_it_scored`]): registering
+//! ([`mixed_configurations_preserve_content_scores_and_strip_query_stopwords`]): registering
 //! a second `lexical_languages` row changes the query side for EVERY row in
 //! that database, so a corpus that mixes configurations cannot also pin the
 //! single-configuration cases.
@@ -625,11 +625,9 @@ fn language_cases() -> Vec<(&'static str, MemorySearchRequest)> {
             )),
         ),
         (
-            // `the` is a stop word under `english` and a real lexeme under
-            // `simple`, so this case is where a second registered
-            // configuration is visible at all: the rows stamped `simple`
-            // reach the exact arm, the rows stamped `english` reach only
-            // the substring arm.
+            // English wins the stopword count even for stored simple rows.
+            // Both configurations now reach only the declared substring arm;
+            // their stored vectors and content-query scores stay unchanged.
             "mixed-language/all-owners/relevance/the",
             any_kind(request(
                 (0..OWNERS).map(owner_at).collect(),
@@ -654,6 +652,21 @@ fn language_cases() -> Vec<(&'static str, MemorySearchRequest)> {
 fn alternating_language(index: usize) -> Option<&'static str> {
     index.is_multiple_of(3).then_some("simple")
 }
+
+/// Historical English-only stopword page captured from `b5fe11ad`.
+/// Dominant English analysis now gives mixed English/simple rows the same
+/// literal-only query; this pin is independent of the current implementation.
+const STOPWORD_LITERAL_EXPECTED: &[&str] = &[
+    "018bcfe5-6816-7016-8016-1718191a1b1c 0.250000 the projection the vector atlas bucket-2",
+    "018bcfe5-6813-7013-8013-141516171819 0.250000 the owner the vector atlas substrate the vector atlas bucket-1",
+    "018bcfe5-6810-7010-8010-111213141516 0.250000 the vector the vector atlas substrate the vector bucket-0",
+    "018bcfe5-680d-700d-800d-0e0f10111213 0.250000 substrate the substrate the vector atlas substrate the bucket-0",
+    "018bcfe5-680b-700b-800b-0c0d0e0f1011 0.250000 keyword the keyword cartography owner edges keyword bucket-2",
+    "018bcfe5-680a-700a-800a-0b0c0d0e0f10 0.250000 substrate needle substrate the vector atlas substrate bucket-2",
+    "018bcfe5-6807-7007-8007-08090a0b0c0d 0.250000 substrate keyword substrate the vector atlas bucket-1",
+    "018bcfe5-6804-7004-8004-05060708090a 0.250000 substrate substrate substrate the vector bucket-0",
+    "has_more=true",
+];
 
 /// Captured from `b5fe11ad` — the pre-projection tree — with this exact
 /// corpus and these exact requests. See the module doc.
@@ -716,20 +729,7 @@ const EXPECTED: &[(&str, &[&str])] = &[
             "has_more=true",
         ],
     ),
-    (
-        "all-owners/relevance/the",
-        &[
-            "018bcfe5-6816-7016-8016-1718191a1b1c 0.250000 the projection the vector atlas bucket-2",
-            "018bcfe5-6813-7013-8013-141516171819 0.250000 the owner the vector atlas substrate the vector atlas bucket-1",
-            "018bcfe5-6810-7010-8010-111213141516 0.250000 the vector the vector atlas substrate the vector bucket-0",
-            "018bcfe5-680d-700d-800d-0e0f10111213 0.250000 substrate the substrate the vector atlas substrate the bucket-0",
-            "018bcfe5-680b-700b-800b-0c0d0e0f1011 0.250000 keyword the keyword cartography owner edges keyword bucket-2",
-            "018bcfe5-680a-700a-800a-0b0c0d0e0f10 0.250000 substrate needle substrate the vector atlas substrate bucket-2",
-            "018bcfe5-6807-7007-8007-08090a0b0c0d 0.250000 substrate keyword substrate the vector atlas bucket-1",
-            "018bcfe5-6804-7004-8004-05060708090a 0.250000 substrate substrate substrate the vector bucket-0",
-            "has_more=true",
-        ],
-    ),
+    ("all-owners/relevance/the", STOPWORD_LITERAL_EXPECTED),
     (
         "one-owner/relevance/substring",
         &[
@@ -809,8 +809,9 @@ const EXPECTED: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Captured from `e7c3c83f` with the mixed-configuration corpus. See
-/// [`a_second_lexical_configuration_scores_what_it_scored`].
+/// Content-query pins captured from `e7c3c83f`. The stopword case reuses
+/// the historical English-only literal pin: dominant analysis removes `the`
+/// from every row configuration, including `simple`.
 const LANGUAGE_EXPECTED: &[(&str, &[&str])] = &[
     (
         "mixed-language/all-owners/relevance/atlas",
@@ -828,17 +829,7 @@ const LANGUAGE_EXPECTED: &[(&str, &[&str])] = &[
     ),
     (
         "mixed-language/all-owners/relevance/the",
-        &[
-            "018bcfe5-6813-7013-8013-141516171819 0.615385 the owner the vector atlas substrate the vector atlas bucket-1",
-            "018bcfe5-6810-7010-8010-111213141516 0.615385 the vector the vector atlas substrate the vector bucket-0",
-            "018bcfe5-680d-700d-800d-0e0f10111213 0.615385 substrate the substrate the vector atlas substrate the bucket-0",
-            "018bcfe5-6816-7016-8016-1718191a1b1c 0.583333 the projection the vector atlas bucket-2",
-            "018bcfe5-680a-700a-800a-0b0c0d0e0f10 0.545455 substrate needle substrate the vector atlas substrate bucket-2",
-            "018bcfe5-6807-7007-8007-08090a0b0c0d 0.545455 substrate keyword substrate the vector atlas bucket-1",
-            "018bcfe5-6804-7004-8004-05060708090a 0.545455 substrate substrate substrate the vector bucket-0",
-            "018bcfe5-6801-7001-8001-020304050607 0.545455 atlas atlas atlas substrate the bucket-0",
-            "has_more=false",
-        ],
+        STOPWORD_LITERAL_EXPECTED,
     ),
     (
         "mixed-language/two-owners/recency/vector",
@@ -881,6 +872,35 @@ async fn run_identity(
             language_for,
         )
         .await?;
+
+        let (has_simple, stored_stopword): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
+                             WHERE config = 'simple'::regconfig),
+                    EXISTS (SELECT 1 FROM proxima_core.projection
+                             WHERE lexical_language = 'simple'::regconfig
+                               AND search_tsv @@ to_tsquery('simple', 'the'))",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        if has_simple {
+            assert!(
+                stored_stopword,
+                "stored simple vectors retain their stopword lexemes"
+            );
+            let query_nodes: (i32, i32) = sqlx::query_as(
+                "SELECT numnode(websearch_to_tsquery('english',
+                            proxima_core.lexical_query_text('english', 'the'))),
+                        numnode(websearch_to_tsquery('simple',
+                            proxima_core.lexical_query_text('simple', 'the')))",
+            )
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert_eq!(
+                query_nodes,
+                (0, 0),
+                "dominant English removes the query stopword in both configurations"
+            );
+        }
 
         let projections = projections();
         let mut actual = Vec::new();
@@ -1192,7 +1212,8 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
     result.expect("starvation probe failed");
 }
 
-/// A second registered `lexical_languages` row does not move a score.
+/// Content scores retain their historical pins across configurations.
+/// Dominant stopwords use the historical literal-only page in both configs.
 ///
 /// `LanguagePolicy::PerRow` is the whole reason the query side ORs one
 /// `websearch_to_tsquery` per registered configuration, and that CTE is
@@ -1200,7 +1221,7 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
 /// four schemas got the multilingual query side wrong, this is the case that
 /// says so.
 #[tokio::test]
-async fn a_second_lexical_configuration_scores_what_it_scored() {
+async fn mixed_configurations_preserve_content_scores_and_strip_query_stopwords() {
     run_identity(language_cases(), LANGUAGE_EXPECTED, alternating_language).await;
 }
 

@@ -25,10 +25,11 @@ pub enum SearchMode {
     Hybrid,
 }
 
-/// A `Hybrid` search ranked lexically only: it returned rows but none
-/// carry a positive semantic similarity (empty or unavailable embedding
-/// store). An empty result is a genuine no-match, not degradation.
-/// Restricted to `Hybrid`: pure `Semantic` has no lexical branch.
+/// Score-based warning for flavor callers: a `Hybrid` search returned rows
+/// without positive semantic similarity. This heuristic cannot distinguish
+/// an absent semantic leg from zero cosine or a lexical-only page. Core
+/// memory search reports degradation from its resolved embedding route.
+/// Empty results and pure modes do not trigger this warning.
 #[must_use]
 pub const fn hybrid_degraded_to_lexical(
     mode: SearchMode,
@@ -111,20 +112,20 @@ pub const MAX_SEARCH_PAGE_LIMIT: u32 = 50;
 
 /// Hybrid fusion weight on the semantic component when the request
 /// does not override it; the lexical component gets the complement.
-pub const DEFAULT_HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
+pub const DEFAULT_HYBRID_SEMANTIC_WEIGHT: f32 = 0.5;
 
 /// Upper bound on [`SearchCursor::Relevance`] depth (`seen`). Relevance
-/// keysets re-rank an overfetched candidate window that grows with
-/// depth, so depth is bounded; recency keysets push into SQL and page
-/// without bound.
+/// keysets in pure lexical and semantic modes grow their overfetch with
+/// depth. Hybrid keeps a fixed candidate window and ends at its boundary.
+/// Pure-mode recency keysets push into SQL and page without a depth cap.
 pub const MAX_RELEVANCE_SEARCH_DEPTH: u32 = 5_000;
 
 /// Resume point for paged memory search. The variant must match the
 /// request's `order`. A `Relevance` cursor carries the fused score of
 /// the last emitted row as exact bits ([`f32::to_bits`]) plus the total
-/// rows already emitted (`seen`), which storage uses to widen its
-/// candidate overfetch window; a `Recency` cursor is a plain
-/// `(created_at, memory_id)` keyset pushed into SQL.
+/// rows already emitted (`seen`). Pure modes widen their candidate window
+/// with depth and push `Recency` keysets into SQL. Hybrid computes one fixed
+/// window for both orders, then applies either cursor after rank fusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SearchCursor {
     Relevance {
@@ -184,12 +185,13 @@ pub struct MemorySearchRequest {
     pub until: Option<time::OffsetDateTime>,
     #[serde(default)]
     pub order: SearchOrder,
-    /// Drop results whose mode-appropriate fused score is below this
-    /// floor (0..=1). `None` disables the floor.
+    /// Raw score floor (0..=1). Hybrid applies it to each leg before rank
+    /// fusion; a hit survives if either raw leg score reaches the floor.
+    /// Pure modes apply it to their score. `None` disables the floor.
     #[serde(default)]
     pub min_score: Option<f32>,
-    /// Hybrid fusion weight on the semantic component (0..=1); the
-    /// lexical component gets the complement. `None` uses
+    /// Hybrid reciprocal rank fusion weight on the semantic leg (0..=1);
+    /// the lexical leg gets the complement. `None` uses
     /// [`DEFAULT_HYBRID_SEMANTIC_WEIGHT`]. Only [`SearchMode::Hybrid`]
     /// fuses two components, so the verb rejects a weight paired with
     /// any other mode rather than accepting one it would discard.
@@ -213,16 +215,21 @@ pub struct MemorySearchResult {
     pub schema_id: SchemaId,
     pub created_at: time::OffsetDateTime,
     pub snippet: String,
+    /// Pure modes retain their raw score. Hybrid uses weighted reciprocal
+    /// rank fusion with one-based ranks and k = 60; values are comparable
+    /// only within this result list, not to raw lexical or cosine scores.
     pub score: f32,
+    /// Raw lexical score; zero when the memory is absent from that leg.
     pub lexical_score: f32,
+    /// Raw best-chunk cosine; zero when absent from the semantic leg.
     pub similarity_score: f32,
 }
 
 /// One page of search results. `has_more` reports whether at least one
 /// further post-floor match exists past the last returned row inside
-/// the ranking horizon (relevance ordering re-ranks an overfetched
-/// candidate window, so a false negative is possible at extreme
-/// depths; recency ordering is exact).
+/// the ranking horizon. Hybrid ends at the union of two fixed candidate
+/// windows in both orders. Pure-mode relevance may exhaust its overfetch
+/// cap at depth; pure-mode recency keysets are exact.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchPage {
     pub results: Vec<MemorySearchResult>,

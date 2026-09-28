@@ -29,6 +29,9 @@ use uuid::Uuid;
 #[path = "core_mcp_pg/embedding_routing.rs"]
 mod embedding_routing;
 
+#[path = "core_mcp_pg/hybrid_search.rs"]
+mod hybrid_search;
+
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
