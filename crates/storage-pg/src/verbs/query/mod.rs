@@ -25,9 +25,10 @@ pub use code_chunk_vectors::{
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use code_series_heads::file_revision_heads_sql_for_tests;
 pub use code_series_heads::{
-    ChunkSeriesHead, FileRevisionHeadRow, owned_chunk_series_heads, owned_file_revision_heads,
-    owned_present_chunk_indexes, owned_present_file_revision_heads_except,
-    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+    ChunkHeadClass, ChunkSeriesHead, FileRevisionHeadRow, owned_chunk_head_classes,
+    owned_chunk_series_heads, owned_file_revision_heads, owned_present_chunk_indexes,
+    owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
+    readable_file_revision_head_ts,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]

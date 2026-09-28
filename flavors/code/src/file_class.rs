@@ -173,6 +173,55 @@ impl FileClassifier {
         base_name(path) == ".gitattributes"
     }
 
+    /// Directory a `.gitattributes` file classes. The root file's directory
+    /// is empty, and an empty directory covers every path.
+    #[must_use]
+    pub fn attributes_directory(path: &str) -> &str {
+        path.rsplit_once('/').map_or("", |(dir, _)| dir)
+    }
+
+    /// Whether `path` is strictly inside `dir`. An empty `dir` is the root
+    /// file, which covers every path.
+    #[must_use]
+    pub fn path_is_under_attributes_directory(path: &str, dir: &str) -> bool {
+        dir.is_empty()
+            || path.len() > dir.len()
+                && path.as_bytes().get(..dir.len()) == Some(dir.as_bytes())
+                && path.as_bytes().get(dir.len()) == Some(&b'/')
+    }
+
+    /// Directories whose files a change to these paths can reclass.
+    ///
+    /// Empty when none of `paths` is a `.gitattributes` file. A root file
+    /// yields one empty directory, which covers the tree. A directory that
+    /// sits inside another is dropped: the ancestor already covers it.
+    #[must_use]
+    pub fn affected_attribute_directories<'a>(
+        paths: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<&'a str> {
+        let mut dirs: Vec<&str> = paths
+            .into_iter()
+            .filter(|path| Self::is_attributes_path(path))
+            .map(Self::attributes_directory)
+            .collect();
+        if dirs.iter().any(|dir| dir.is_empty()) {
+            return vec![""];
+        }
+        dirs.sort_unstable();
+        dirs.dedup();
+        let mut kept: Vec<&'a str> = Vec::new();
+        for dir in dirs {
+            if kept
+                .iter()
+                .any(|parent| Self::path_is_under_attributes_directory(dir, parent))
+            {
+                continue;
+            }
+            kept.push(dir);
+        }
+        kept
+    }
+
     /// The class of `path` (repo-relative, `/`-separated) with contents
     /// `blob`.
     #[must_use]
@@ -645,5 +694,44 @@ mod tests {
         }
         assert_eq!(FileClass::parse("Source"), None);
         assert_eq!(FileClass::default(), FileClass::Source);
+    }
+
+    #[test]
+    fn an_attributes_change_covers_its_directory_and_a_root_file_covers_the_tree() {
+        assert_eq!(FileClassifier::attributes_directory(".gitattributes"), "");
+        assert_eq!(
+            FileClassifier::attributes_directory("web/.gitattributes"),
+            "web"
+        );
+        assert!(FileClassifier::path_is_under_attributes_directory(
+            "src/lib.rs",
+            ""
+        ));
+        assert!(FileClassifier::path_is_under_attributes_directory(
+            "web/a.rs", "web"
+        ));
+        assert!(!FileClassifier::path_is_under_attributes_directory(
+            "web2/a.rs",
+            "web"
+        ));
+        assert_eq!(
+            FileClassifier::affected_attribute_directories(["src/lib.rs", "README.md"]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            FileClassifier::affected_attribute_directories([
+                "web/.gitattributes",
+                "web/src/.gitattributes",
+                "docs/.gitattributes",
+            ]),
+            vec!["docs", "web"]
+        );
+        assert_eq!(
+            FileClassifier::affected_attribute_directories([
+                ".gitattributes",
+                "web/.gitattributes",
+            ]),
+            vec![""]
+        );
     }
 }

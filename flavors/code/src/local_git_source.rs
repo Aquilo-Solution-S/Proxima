@@ -227,6 +227,32 @@ impl<'a> CodeIngestContext<'a> {
             .await
             .map_err(|err| read_error(&err))
     }
+
+    /// Class of each path's current present chunk head. A path with no
+    /// present chunk is absent. A chunk stored without a class is `source`.
+    async fn chunk_head_classes(
+        &self,
+        owner: Owner,
+        repo_id: Uuid,
+        file_paths: &[String],
+    ) -> Result<HashMap<String, FileClass>, IngestError> {
+        let rows = self
+            .store
+            .owned_chunk_head_classes(self.authz.owner_scope(), owner, repo_id, file_paths)
+            .await
+            .map_err(|err| read_error(&err))?;
+        rows.into_iter()
+            .map(|row| {
+                let class = FileClass::parse(&row.file_class).ok_or_else(|| {
+                    IngestError::Storage(format!(
+                        "invalid code chunk file_class {}",
+                        row.file_class
+                    ))
+                })?;
+                Ok((row.file_path, class))
+            })
+            .collect()
+    }
 }
 
 fn read_error(err: &ToolError) -> IngestError {
@@ -488,7 +514,15 @@ impl LocalGitSource {
         changed: Vec<String>,
         deleted: Vec<String>,
     ) -> Result<IndexReport, IndexError> {
-        let (changed, deleted, files_excluded) = if scope.admits_everything() {
+        // Directories come from the raw diff. A scope that drops
+        // `.gitattributes` still classes the files it admits.
+        let attribute_dirs: Vec<String> = FileClassifier::affected_attribute_directories(
+            changed.iter().chain(&deleted).map(String::as_str),
+        )
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let (mut changed, deleted, files_excluded) = if scope.admits_everything() {
             (changed, deleted, 0)
         } else {
             let before = changed.len();
@@ -497,15 +531,24 @@ impl LocalGitSource {
             let deleted: Vec<String> = deleted.into_iter().filter(|p| scope.admits(p)).collect();
             (changed, deleted, files_excluded)
         };
-        let entries = git::ls_tree_paths(&self.repo_path, "HEAD", &changed)?;
         // `.gitattributes` anywhere in the tree can class a changed file,
         // so the delta still lists the whole tree — but only when there is
         // a file to class.
-        let classifier = if entries.is_empty() {
+        let classifier = if changed.is_empty() && attribute_dirs.is_empty() {
             FileClassifier::default()
         } else {
             self.classifier_at(head_sha, None)?
         };
+        self.extend_with_reclassed(
+            ctx,
+            head_sha,
+            &mut changed,
+            scope,
+            &classifier,
+            &attribute_dirs,
+        )
+        .await?;
+        let entries = git::ls_tree_paths(&self.repo_path, "HEAD", &changed)?;
         let mut report = self
             .snapshot_apply(ctx, head_sha, &entries, &deleted, None, &classifier)
             .await?;
@@ -602,6 +645,90 @@ impl LocalGitSource {
         ))
     }
 
+    async fn extend_with_reclassed(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        rev: &str,
+        changed: &mut Vec<String>,
+        scope: &ScopeMatcher,
+        classifier: &FileClassifier,
+        attribute_dirs: &[String],
+    ) -> Result<(), IndexError> {
+        if attribute_dirs.is_empty() {
+            return Ok(());
+        }
+        let extra = self
+            .paths_reclassed_by_attributes(ctx, rev, changed, scope, classifier, attribute_dirs)
+            .await?;
+        changed.extend(extra);
+        Ok(())
+    }
+
+    /// Paths under `attribute_dirs` whose bytes this diff did not change and
+    /// whose stored class is not the class `classifier` would give them.
+    ///
+    /// A path with no present chunk is left out: an attributes edit reclasses
+    /// what was indexed, and does not admit a file the index has never held.
+    /// `ingesting` is the diff's own path list, already scope-filtered.
+    async fn paths_reclassed_by_attributes(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        rev: &str,
+        ingesting: &[String],
+        scope: &ScopeMatcher,
+        classifier: &FileClassifier,
+        attribute_dirs: &[String],
+    ) -> Result<Vec<String>, IndexError> {
+        if attribute_dirs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ingesting: HashSet<&str> = ingesting.iter().map(String::as_str).collect();
+        let candidates: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, rev)?
+            .into_iter()
+            .filter(|entry| {
+                entry.size <= crate::chunker::MAX_BLOB_BYTES as u64
+                    && !ingesting.contains(entry.path.as_str())
+                    && !FileClassifier::is_attributes_path(&entry.path)
+                    && scope.admits(&entry.path)
+                    && attribute_dirs.iter().any(|dir| {
+                        FileClassifier::path_is_under_attributes_directory(&entry.path, dir)
+                    })
+            })
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let paths: Vec<String> = candidates.iter().map(|entry| entry.path.clone()).collect();
+        let stored = ctx
+            .chunk_head_classes(self.owner, self.repo_id, &paths)
+            .await?;
+        let mut reclass = Vec::new();
+        let mut cursor = 0usize;
+        while cursor < candidates.len() {
+            let mut end = cursor;
+            let mut budget = 0u64;
+            while end < candidates.len()
+                && (end == cursor || budget + candidates[end].size <= BLOB_BATCH_BYTES)
+            {
+                budget += candidates[end].size;
+                end += 1;
+            }
+            let batch = &candidates[cursor..end];
+            let oids: Vec<String> = batch.iter().map(|entry| entry.oid.clone()).collect();
+            let blobs = git::cat_blobs(&self.repo_path, &oids)?;
+            for (entry, blob) in batch.iter().zip(blobs) {
+                let Some(class) = stored.get(&entry.path) else {
+                    continue;
+                };
+                if classifier.classify(&entry.path, &blob) != *class {
+                    reclass.push(entry.path.clone());
+                }
+            }
+            cursor = end;
+        }
+        Ok(reclass)
+    }
+
     async fn snapshot_apply(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -691,11 +818,15 @@ impl LocalGitSource {
             (added, Vec::new())
         };
         // Before scope filtering: a `.gitattributes` the scope drops still
-        // classes the files it admits.
-        let attributes_changed = changed
-            .iter()
-            .chain(&deleted)
-            .any(|path| FileClassifier::is_attributes_path(path));
+        // classes the files it admits, and its directory is what a
+        // class-only edit reclasses.
+        let attribute_dirs: Vec<String> = FileClassifier::affected_attribute_directories(
+            changed.iter().chain(&deleted).map(String::as_str),
+        )
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let attributes_changed = !attribute_dirs.is_empty();
         let classifier = match classifier {
             Some(current) if !attributes_changed => current,
             slot => slot.insert(self.classifier_at(&commit_info.sha, root_listing.as_deref())?),
@@ -720,6 +851,16 @@ impl LocalGitSource {
             let deleted: Vec<String> = deleted.into_iter().filter(|p| scope.admits(p)).collect();
             (changed, deleted)
         };
+        let mut changed = changed;
+        self.extend_with_reclassed(
+            ctx,
+            &commit_info.sha,
+            &mut changed,
+            scope,
+            pass.classifier,
+            &attribute_dirs,
+        )
+        .await?;
 
         // The commit Fact itself.
         let commit_payload = CommitV1 {

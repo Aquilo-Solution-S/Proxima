@@ -2,10 +2,10 @@ use proxima_core::{
     AbstractionPayload, FactPayload, GoalId, MemoryId, Owner, OwnerScope, ToolError,
 };
 use proxima_storage_pg::query::{
-    ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
-    HeadChunkCallPair, active_goals_for_memory_targets_on_connection, head_chunk_call_pairs,
-    nearest_code_chunk_candidates_on_connection, owned_chunk_series_heads,
-    owned_file_revision_heads, owned_present_file_revision_heads_except,
+    ChunkHeadClass, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
+    FileRevisionHeadRow, HeadChunkCallPair, active_goals_for_memory_targets_on_connection,
+    head_chunk_call_pairs, nearest_code_chunk_candidates_on_connection, owned_chunk_head_classes,
+    owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 use proxima_storage_pg::{
@@ -192,6 +192,35 @@ impl CodeFlavorStore {
             &crate::payloads::FileRevisionV1::schema_id(),
             repo_id,
             file_path,
+        )
+        .await
+        .map_err(|error| ToolError::Other(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        Ok(rows)
+    }
+
+    /// Class of each named path's current present chunk head.
+    ///
+    /// A path with no present chunk is absent. `file_class` is `source`
+    /// when the chunk stores none.
+    pub(crate) async fn owned_chunk_head_classes(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_paths: &[String],
+    ) -> Result<Vec<ChunkHeadClass>, ToolError> {
+        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        let rows = owned_chunk_head_classes(
+            &mut *tx,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            repo_id,
+            file_paths,
         )
         .await
         .map_err(|error| ToolError::Other(error.to_string()))?;

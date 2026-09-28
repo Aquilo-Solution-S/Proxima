@@ -795,8 +795,8 @@ async fn chunk_zero_classes(
 
 /// A poll classes each commit's files by that commit's `.gitattributes`:
 /// the file a commit adds takes effect from that commit on, and the one a
-/// commit deletes stops applying there. Files the commit does not touch
-/// keep the class they were written with (#360).
+/// commit deletes stops applying there. A file outside the changed
+/// attributes file's reach keeps the class it was written with (#360).
 #[tokio::test]
 async fn a_poll_classes_each_commit_by_its_own_gitattributes() {
     let (db_name, pg) = migrated_db().await;
@@ -866,4 +866,154 @@ async fn a_poll_classes_each_commit_by_its_own_gitattributes() {
 
     let _ = drop_db(&db_name).await;
     result.expect("a_poll_classes_each_commit_by_its_own_gitattributes failed");
+}
+
+/// An attributes-only commit reclasses indexed files under that file and
+/// leaves every other file on the revision it already has (#370).
+#[tokio::test]
+async fn a_poll_reclasses_files_an_attributes_commit_covers() {
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+        let repo = fixture_repo();
+        let commit = |message: &str| {
+            git(repo.path(), &["add", "-A"]);
+            git(repo.path(), &["commit", "-q", "-m", message]);
+        };
+        write_file(repo.path(), "gen/api.rs", "pub fn api() {}\n");
+        write_file(repo.path(), "web/app.rs", "pub fn app() {}\n");
+        commit("gen and web");
+
+        let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+        let (_, cursor) = source
+            .run_poll(&ingest_ctx, &Cursor::empty(), &mut |_| {})
+            .await?;
+        let present = |path: &str| {
+            let pool = pg.pool_for_tests().clone();
+            let path = path.to_string();
+            async move {
+                chunk_zero_classes(&pool, repo_id, &path).await.map(|rows| {
+                    rows.into_iter()
+                        .filter(|(_, state)| state == "Present")
+                        .map(|(class, _)| class)
+                        .collect::<Vec<_>>()
+                })
+            }
+        };
+        assert_eq!(present("gen/api.rs").await?, ["source"]);
+        assert_eq!(present("web/app.rs").await?, ["source"]);
+        assert_eq!(present("src/lib.rs").await?, ["source"]);
+
+        write_file(repo.path(), ".gitattributes", "gen/** linguist-generated\n");
+        commit("mark gen generated");
+        let (_, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert_eq!(present("gen/api.rs").await?, ["source", "generated"]);
+        assert_eq!(present("web/app.rs").await?, ["source"]);
+        assert_eq!(present("src/lib.rs").await?, ["source"]);
+        assert_eq!(present("README.md").await?, ["source"]);
+
+        write_file(
+            repo.path(),
+            "web/.gitattributes",
+            "*.rs linguist-vendored\n",
+        );
+        commit("vendor web rust");
+        let (_, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert_eq!(present("web/app.rs").await?, ["source", "vendored"]);
+        assert_eq!(present("gen/api.rs").await?, ["source", "generated"]);
+        assert_eq!(present("src/lib.rs").await?, ["source"]);
+
+        write_file(
+            repo.path(),
+            ".gitattributes",
+            "gen/** linguist-generated\n* text=auto\n",
+        );
+        commit("text=auto does not change a class");
+        let (_, cursor) = source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert_eq!(present("gen/api.rs").await?, ["source", "generated"]);
+        assert_eq!(present("README.md").await?, ["source"]);
+
+        std::fs::remove_file(repo.path().join("web/.gitattributes"))?;
+        commit("web is hand-written again");
+        source.run_poll(&ingest_ctx, &cursor, &mut |_| {}).await?;
+        assert_eq!(
+            present("web/app.rs").await?,
+            ["source", "vendored", "source"]
+        );
+        assert_eq!(present("src/lib.rs").await?, ["source"]);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("a_poll_reclasses_files_an_attributes_commit_covers failed");
+}
+
+/// A HEAD snapshot reclasses on an attributes-only commit, then a second
+/// snapshot of that same tree admits nothing more (#370).
+#[tokio::test]
+async fn a_snapshot_reclasses_files_an_attributes_commit_covers() {
+    let (db_name, pg) = migrated_db().await;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
+        let repo = fixture_repo();
+        let repo_id = Uuid::now_v7();
+        register_fixture_repo(pg.pool_for_tests(), &owner, repo_id, repo.path()).await;
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+        let initial = source
+            .run_head_snapshot(&ingest_ctx, &Cursor::empty())
+            .await?;
+
+        write_file(repo.path(), ".gitattributes", "*.md linguist-generated\n");
+        git(repo.path(), &["add", "-A"]);
+        git(
+            repo.path(),
+            &["commit", "-q", "-m", "mark markdown generated"],
+        );
+        let reclassed = source
+            .run_head_snapshot(&ingest_ctx, &initial.cursor)
+            .await?;
+        assert_eq!(
+            reclassed.report.files_by_class.generated, 1,
+            "{reclassed:?}"
+        );
+        // `.gitattributes` itself, plus README.md. The rust files stay put.
+        assert_eq!(reclassed.report.files_present_emitted, 2, "{reclassed:?}");
+        let present = |path: &str| {
+            let pool = pg.pool_for_tests().clone();
+            let path = path.to_string();
+            async move {
+                chunk_zero_classes(&pool, repo_id, &path).await.map(|rows| {
+                    rows.into_iter()
+                        .filter(|(_, state)| state == "Present")
+                        .map(|(class, _)| class)
+                        .collect::<Vec<_>>()
+                })
+            }
+        };
+        assert_eq!(present("README.md").await?, ["source", "generated"]);
+        assert_eq!(present("src/lib.rs").await?, ["source"]);
+
+        let again = source
+            .run_head_snapshot(&ingest_ctx, &reclassed.cursor)
+            .await?;
+        assert_eq!(again.report.files_present_emitted, 0, "{again:?}");
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("a_snapshot_reclasses_files_an_attributes_commit_covers failed");
 }

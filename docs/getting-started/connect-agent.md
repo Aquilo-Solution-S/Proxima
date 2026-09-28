@@ -110,9 +110,10 @@ the candidate budget, so a non-source vector cannot take a source slot.
 A lockfile chunk embeds only its path and lines, and only source files
 declare calls. The ingest report and `proxima-code_get_ingest_run` both
 count files and chunks per class in `files_by_class` and `chunks_by_class`;
-a run that has not succeeded reports zeros. A class is set
-when a file's content is ingested: editing `.gitattributes` reclasses a file
-the next time it changes.
+a run that has not succeeded reports zeros. A class is set when a file's
+content is ingested. A commit that only edits `.gitattributes` also reclasses
+files under that file whose stored class would change; a file the edit does
+not cover keeps the class it has.
 
 To re-index a repository from scratch — which indexes
 built by an earlier version, since chunking and call extraction (Python and
