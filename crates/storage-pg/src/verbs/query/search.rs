@@ -56,6 +56,9 @@ use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBan
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::PgConnection;
 
+use super::embedding_candidates::{
+    SEMANTIC_SCAN_CAP, best_embedding_scores_on_connection, next_chunk_window,
+};
 use super::lineage::load_one_schema_snippets_on_connection;
 
 /// How far past the caller's `limit` one statement fetches before the merge
@@ -73,8 +76,7 @@ const REQUEST_OVERFETCH_FACTOR: u32 = 20;
 /// probes ahead of [`semantic_search_tail`].
 fn semantic_search_scan(lane: Lane) -> String {
     format!(
-        "SELECT emb.entity_id AS t,
-                GREATEST(0.0, (1 - ({vec} <=> $3{cast})))::real AS similarity_score
+        "SELECT emb.entity_id AS t
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
@@ -88,8 +90,6 @@ fn semantic_search_scan(lane: Lane) -> String {
                  OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
             AND ($6::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)",
-        vec = lane.vec,
-        cast = lane.cast,
         predicate = lane.predicate,
     )
 }
@@ -145,12 +145,6 @@ struct AdmitRow {
     kind: String,
     schema_id: String,
     created_at: time::OffsetDateTime,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct EmbeddingScanRow {
-    t: uuid::Uuid,
-    similarity_score: f32,
 }
 
 /// Request search on a caller-owned transaction connection. All candidate,
@@ -255,11 +249,10 @@ fn overfetch(limit: u32, overfetch_k: u32, after: Option<SearchCursor>) -> u32 {
     base.max(needed).min(overfetch_k)
 }
 
-/// The embedding scan is not per-flavor — `proxima_core.embeddings` is one
-/// table for every owner — so its cap is spelled where its one reader lives.
+/// The core semantic arm targets the same distinct-memory overfetch as
+/// before chunking; extra chunk rows can expand its scan to the shared cap.
 fn semantic_overfetch(limit: u32, after: Option<SearchCursor>) -> u32 {
-    const SEMANTIC_OVERFETCH_CAP: u32 = 1_000;
-    overfetch(limit, SEMANTIC_OVERFETCH_CAP, after)
+    overfetch(limit, SEMANTIC_SCAN_CAP, after)
 }
 
 /// One flavor's participating schemas, grouped for the ONE statement that
@@ -1106,27 +1099,45 @@ async fn scan_embeddings_on_connection(
         .execute(&mut *connection)
         .await
         .map_err(map_err)?;
-    // SQL-POLICY: PgIdent
-    let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(&owner_ids)
-        .bind(semantic.space().model_id())
-        .bind(crate::pgvector::literal(semantic.values()))
-        .bind(i64::from(overfetch))
-        .bind(req.since)
-        .bind(req.until);
-    if !req.tags.is_empty() {
-        query = query.bind(&req.tags);
+    let query_vector = crate::pgvector::literal(semantic.values());
+    let mut window = overfetch;
+    let mut candidates = BTreeSet::new();
+    loop {
+        // SQL-POLICY: PgIdent
+        let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(&owner_ids)
+            .bind(semantic.space().model_id())
+            .bind(&query_vector)
+            .bind(i64::from(window))
+            .bind(req.since)
+            .bind(req.until);
+        if !req.tags.is_empty() {
+            query = query.bind(&req.tags);
+        }
+        for schema_ids in &schema_sets {
+            query = query.bind(schema_ids);
+        }
+        let rows: Vec<uuid::Uuid> = query.fetch_all(&mut *connection).await.map_err(map_err)?;
+        let fetched = rows.len();
+        candidates.extend(rows);
+        let Some(next) = next_chunk_window(window, fetched, candidates.len(), overfetch) else {
+            break;
+        };
+        window = next;
     }
-    for schema_ids in &schema_sets {
-        query = query.bind(schema_ids);
-    }
-    let rows: Vec<EmbeddingScanRow> = query.fetch_all(&mut *connection).await.map_err(map_err)?;
+    let rows = best_embedding_scores_on_connection(
+        connection,
+        &owner_ids,
+        semantic,
+        &candidates.into_iter().collect::<Vec<_>>(),
+    )
+    .await?;
     Ok(rows
         .into_iter()
         .map(|row| Hit {
-            t: row.t,
+            t: row.memory_id,
             lexical_score: 0.0,
-            similarity_score: row.similarity_score.clamp(0.0, 1.0),
+            similarity_score: row.similarity_score,
         })
         .collect())
 }

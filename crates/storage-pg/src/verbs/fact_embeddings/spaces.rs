@@ -143,7 +143,7 @@ WITH keep AS (
        FROM unnest($2::text[], $3::smallint[]) AS k(model_id, dim)
  ),
  doomed_vectors AS (
-     SELECT e.entity_id, e.model_id, e.dim, e.embedding_version
+     SELECT e.entity_id, e.model_id, e.dim, e.embedding_version, e.chunk_ordinal
        FROM proxima_core.embeddings e
       WHERE e.owner_id = $1
         AND ($4::uuid[] IS NULL OR e.entity_id = ANY($4::uuid[]))
@@ -159,6 +159,7 @@ WITH keep AS (
         AND e.model_id = d.model_id
         AND e.dim = d.dim
         AND e.embedding_version = d.embedding_version
+        AND e.chunk_ordinal = d.chunk_ordinal
      RETURNING 1
  ),
  doomed_heads AS (

@@ -295,7 +295,7 @@ impl Engine {
                     kind: entity_kind,
                     memory_id,
                 },
-                &super::memory_authoring::space_vector(client, embedding)?,
+                &[super::memory_authoring::space_vector(client, embedding)?],
                 crate::storage_ports::EmbeddingWriteProof::new(),
             )
             .await?;
@@ -375,8 +375,8 @@ impl Engine {
     /// - a batch failure whose liveness probe succeeds re-embeds the batch one
     ///   text at a time to isolate the content-attributed input(s); an
     ///   over-limit input is rescued by bisecting it into chunks and storing
-    ///   the first chunk's vector, jobs rejected at every length go terminal instead of
-    ///   cycling reject-retry forever, and their batch-mates still embed;
+    ///   all chunk vectors atomically; jobs rejected at every length go terminal
+    ///   instead of cycling reject-retry forever, and their batch-mates still embed;
     ///   when the probe fails, all jobs remain retryable.
     ///
     /// # Errors
@@ -559,7 +559,10 @@ impl Engine {
             Ok(vectors) => {
                 for ((claim, _), vector) in batch.iter().zip(vectors) {
                     outcome.processed += 1;
-                    if !self.store_claim_embedding(client, claim, vector).await? {
+                    if !self
+                        .store_claim_embeddings(client, claim, vec![vector])
+                        .await?
+                    {
                         outcome.failed += 1;
                     }
                 }
@@ -671,18 +674,16 @@ impl Engine {
             .await
     }
 
-    /// Store one produced vector for its claim and complete the job; a
-    /// vector of another width than the client declared records an
-    /// ordinary retryable job failure instead. Returns whether the vector
-    /// was stored.
-    async fn store_claim_embedding(
+    /// Store every chunk for its claim and complete the job. Invalid widths
+    /// or an empty batch fail the job before any chunk is stored.
+    async fn store_claim_embeddings(
         &self,
         client: &BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
-        vector: Vec<f32>,
+        vectors: Vec<Vec<f32>>,
     ) -> Result<bool, StorageError> {
-        let vector = match client.vector(vector) {
-            Ok(vector) => vector,
+        let vectors = match super::memory_authoring::space_vectors(client, vectors) {
+            Ok(vectors) => vectors,
             Err(err) => {
                 self.storage
                     .ingest
@@ -701,7 +702,7 @@ impl Engine {
                     kind: claim.entity_kind,
                     memory_id: claim.entity_id,
                 },
-                &vector,
+                &vectors,
                 crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
             )
             .await?;
@@ -716,8 +717,8 @@ impl Engine {
     /// Per-item fallback after a live-provider batch rejection: isolate which
     /// inputs the provider rejects. A rejected input is bisected into
     /// provider-acceptable chunks ([`crate::llm::embed_in_chunks_after_failure`])
-    /// and its first chunk is stored — storage keeps one vec per version —
-    /// so an over-limit input stays findable instead of going invisible.
+    /// and every chunk is stored atomically in one version, so the whole
+    /// over-limit input remains semantically searchable.
     /// An ambiguous per-item failure
     /// is eligible only after its own liveness probe succeeds.
     /// Inputs the provider rejects at every length go terminal; other
@@ -733,7 +734,10 @@ impl Engine {
             outcome.processed += 1;
             match client.embed(&text).await {
                 Ok(vector) => {
-                    if !self.store_claim_embedding(client, &claim, vector).await? {
+                    if !self
+                        .store_claim_embeddings(client, &claim, vec![vector])
+                        .await?
+                    {
                         outcome.failed += 1;
                     }
                 }
@@ -747,21 +751,10 @@ impl Engine {
                                 entity_id = ?claim.entity_id,
                                 chunks = vectors.len(),
                                 total_bytes = text.len(),
-                                "over-limit embedding input rescued by its first chunk"
+                                "over-limit embedding input rescued by chunking"
                             );
-                            let stored = if let Some(first) = vectors.into_iter().next() {
-                                self.store_claim_embedding(client, &claim, first).await?
-                            } else {
-                                self.storage
-                                    .ingest
-                                    .embedding_job
-                                    .fail_embedding_job(
-                                        &claim,
-                                        "chunked embedding rescue returned no chunks",
-                                    )
-                                    .await?;
-                                false
-                            };
+                            let stored =
+                                self.store_claim_embeddings(client, &claim, vectors).await?;
                             if !stored {
                                 outcome.failed += 1;
                             }

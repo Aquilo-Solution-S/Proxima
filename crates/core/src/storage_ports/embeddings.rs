@@ -67,14 +67,16 @@ pub trait EmbeddingTextPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
-    /// Write one embedding version for an entity in `vector`'s space.
+    /// Write one complete embedding version in text order. `vectors` must be
+    /// nonempty and share one space; storage commits every chunk and its head
+    /// atomically.
     /// Public callers cannot forge `EmbeddingWriteProof`; route through
     /// engine embedding-write APIs instead.
     async fn insert_embedding(
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        vector: &crate::SpaceVector,
+        vectors: &[crate::SpaceVector],
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
 }
@@ -105,6 +107,7 @@ pub struct EmbeddingOrphanSweepOutcome {
     pub jobs_deleted: u64,
 }
 
+/// Recall over chunk vector rows in the sampled space.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingRecallCanary {
     pub model_id: String,

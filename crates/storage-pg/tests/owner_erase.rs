@@ -542,8 +542,10 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+                (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             SELECT $1, 'test-embed', 1024, version, chunk_ordinal, $2::vector, $3
+               FROM generate_series(1, 2) AS version
+               CROSS JOIN generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(t)
         .bind(embed_literal())
@@ -553,7 +555,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $2)",
+             VALUES ($1, 'test-embed', 1024, 2, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -577,7 +579,11 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("memories"), 1);
-        assert_eq!(counts.get("embeddings"), 2);
+        assert_eq!(
+            counts.get("embeddings"),
+            7,
+            "erase removes both versions' three chunks and their head"
+        );
         // `ingest_keys` declares `counter: CounterRule::Counted("receipts")`, and the
         // generated leg tallies whatever its surface declares. The
         // hand-written leg it replaced deleted the same row and counted it
