@@ -208,7 +208,8 @@ runtime checklist most likely to prevent regressions.
   resolved owner may authorize access.
 - **Composed SQL:** views require `security_invoker=true` and platform ownership;
   materialized views and foreign tables are refused. Platform-owned definer
-  routines pin trusted `search_path` entries ending with `pg_temp`; only trigger
+  routines pin an explicit trusted schema prefix, then `pg_temp`, in `search_path`;
+  only trigger
   routines may grant `EXECUTE` to `PUBLIC` or runtime authority.
 - **Facts:** Facts are admitted `Memory` rows; receipts prove admission only,
   not external truth. Fact identity is the row id, not content hash, source id,
