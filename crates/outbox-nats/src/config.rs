@@ -662,7 +662,7 @@ fn validated_name(key: &'static str, raw: &str) -> Result<String, ConfigError> {
 }
 
 /// A subject prefix: dot-separated tokens of `[A-Za-z0-9_-]`.
-fn validated_subject_prefix(raw: &str) -> Result<String, ConfigError> {
+pub(crate) fn validated_subject_prefix(raw: &str) -> Result<String, ConfigError> {
     let invalid = || ConfigError::InvalidSubjectPrefix {
         value: raw.to_owned(),
     };
@@ -709,6 +709,20 @@ pub fn subject_for(
     prefix: &str,
     owner_kind: &str,
     owner_id: uuid::Uuid,
+    event_type: &str,
+) -> String {
+    subject_from_parts(prefix, owner_kind, &owner_id, event_type)
+}
+
+/// The one subject layout, over any rendering of the owner segments.
+///
+/// [`subject_for`] fills them with an owner; the `AsyncAPI` channel address
+/// fills them with `{ownerKind}` / `{ownerId}` parameters. One formatter is
+/// what keeps the published document and the publisher from drifting.
+pub(crate) fn subject_from_parts(
+    prefix: &str,
+    owner_kind: &str,
+    owner_id: &dyn std::fmt::Display,
     event_type: &str,
 ) -> String {
     format!(

@@ -31,10 +31,13 @@ uuid = { workspace = true }
 # them again; an integration test cannot reach the crate's own dependencies.
 async-nats = { workspace = true, features = ["nkeys"] }
 blake3 = { workspace = true }
+boon = { workspace = true }
 futures = { workspace = true }
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 proxima-storage-pg = { path = "../storage-pg", features = ["backend-api", "test-fixtures"] }
+schemars = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 time = { workspace = true }
