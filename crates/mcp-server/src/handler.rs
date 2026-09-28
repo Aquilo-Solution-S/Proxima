@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use proxima_core::mcp::{
     McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolEffect,
-    all_core_resources, normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action,
-    tool_name_matches,
+    all_core_resources, mcp_wire_output_schema, normalize_mcp_output_schema,
+    provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{
     AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
@@ -332,7 +332,7 @@ impl ServerHandler for DynamicHandler {
                     Arc::new(rmcp::model::object(schema)),
                 )
                 .with_raw_output_schema(Arc::new(rmcp::model::object(
-                    descriptor.output_schema.clone(),
+                    mcp_wire_output_schema(&descriptor.output_schema),
                 )));
                 match annotations_for_auth(auth.as_ref(), descriptor) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
@@ -368,7 +368,7 @@ impl ServerHandler for DynamicHandler {
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 )
                 .with_raw_output_schema(Arc::new(rmcp::model::object(
-                    descriptor.output_schema.clone(),
+                    mcp_wire_output_schema(&descriptor.output_schema),
                 )));
                 match annotations_for_auth(None, descriptor) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
@@ -604,85 +604,29 @@ fn structured_tool_output(
     Ok((output, text))
 }
 
-/// Narrow a dispatcher tool's advertised `action` enum and `x-proxima-actions`
-/// to the actions a `Palette` scope permits, so `tools/list` never advertises
-/// an action the caller cannot invoke. `All` (or absent) scopes and flat tools
-/// are returned unchanged.
+/// A dispatcher's `inputSchema` over the actions a `Palette` scope permits,
+/// so `tools/list` never advertises an action the caller cannot invoke.
+/// `All` (or absent) scopes and flat tools get the full schema.
 #[cfg(test)]
 pub(crate) fn project_dispatcher_actions(
-    schema: &serde_json::Value,
+    descriptor: &McpToolDescriptor,
     scope: Option<&ToolScope>,
-    tool: &str,
 ) -> serde_json::Value {
-    project_dispatcher_actions_where(schema, |action| {
-        scope.is_none_or(|scope| scope_permits_action(scope, tool, action))
+    descriptor.input_schema(|action| {
+        scope.is_none_or(|scope| scope_permits_action(scope, descriptor.name, action))
     })
 }
 
-/// Narrow a descriptor's dispatcher schema to the actions this caller can
-/// both name and authorize. A viewer of a mixed dispatcher therefore sees
-/// its read leaves without being shown write leaves it cannot invoke.
+/// A descriptor's `inputSchema` over the actions this caller can both name
+/// and authorize. A viewer of a mixed dispatcher therefore sees its read
+/// leaves — their fields, their prose — without being shown write leaves it
+/// cannot invoke.
 pub(crate) fn project_dispatcher_actions_for_auth(
     descriptor: &McpToolDescriptor,
     auth: Option<&McpAuthContext>,
 ) -> serde_json::Value {
-    project_dispatcher_actions_where(&descriptor.args_schema, |action| {
-        auth.is_none() || action_allowed_for_auth(auth, descriptor, action)
-    })
-}
-
-fn project_dispatcher_actions_where(
-    schema: &serde_json::Value,
-    permitted: impl Fn(&str) -> bool,
-) -> serde_json::Value {
-    let Some(actions) = schema
-        .get("x-proxima-actions")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return schema.clone();
-    };
-    let permitted: Vec<String> = actions
-        .keys()
-        .filter(|action| permitted(action))
-        .cloned()
-        .collect();
-    // Whole-tool grant (or exactly the full action set) needs no narrowing.
-    if permitted.len() == actions.len() {
-        return schema.clone();
-    }
-    let mut projected = schema.clone();
-    let Some(map) = projected.as_object_mut() else {
-        return schema.clone();
-    };
-    if let Some(actions) = map
-        .get_mut("x-proxima-actions")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        actions.retain(|action, _| permitted.iter().any(|permit| permit == action));
-    }
-    // The flattener sets `required = [discriminator]`; use it to find the enum.
-    let discriminator = map
-        .get("required")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    if let Some(discriminator) = discriminator
-        && let Some(enum_values) = map
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-            .and_then(|properties| properties.get_mut(&discriminator))
-            .and_then(serde_json::Value::as_object_mut)
-            .and_then(|property| property.get_mut("enum"))
-            .and_then(serde_json::Value::as_array_mut)
-    {
-        enum_values.retain(|value| {
-            value
-                .as_str()
-                .is_some_and(|s| permitted.iter().any(|p| p == s))
-        });
-    }
-    projected
+    descriptor
+        .input_schema(|action| auth.is_none() || action_allowed_for_auth(auth, descriptor, action))
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
@@ -1022,14 +966,16 @@ fn host_tool_allowed_for_auth(auth: Option<&McpAuthContext>, tool: &McpHostTool)
 
 /// A host tool's `tools/list` entry; `None` (and a warning) when its
 /// input schema is not a JSON object or its output schema admits non-objects.
+/// Its output schema goes out as registered tools' do: validation only.
 fn host_tool_metadata(mut tool: McpHostTool) -> Option<Tool> {
     if let Err(error) = normalize_mcp_output_schema(&mut tool.output_schema) {
         tracing::warn!(tool = %tool.name, error = %error, "host tool output schema must describe JSON objects; not listed");
         return None;
     }
-    let (serde_json::Value::Object(args), serde_json::Value::Object(output)) =
-        (tool.args_schema, tool.output_schema)
-    else {
+    let (serde_json::Value::Object(args), serde_json::Value::Object(output)) = (
+        tool.args_schema,
+        mcp_wire_output_schema(&tool.output_schema),
+    ) else {
         tracing::warn!(tool = %tool.name, "host tool schemas must be JSON objects; not listed");
         return None;
     };
@@ -1155,6 +1101,7 @@ mod tests {
             origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
             produces_schema_ids: &[],
             args_schema: serde_json::json!({"type": "object"}),
+            dispatcher_schema: None,
             output_schema: serde_json::json!({"type": "object"}),
             action_arg_specs: &[],
             argv_action_specs: &[],
@@ -1460,8 +1407,7 @@ mod tests {
 
         // A palette that permits only the `set` leaf of core_goal.
         let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
-        let projected =
-            project_dispatcher_actions(&goal.args_schema, Some(&scope), protocol_tool::CORE_GOAL);
+        let projected = project_dispatcher_actions(&goal, Some(&scope));
 
         let enum_values = projected
             .pointer("/properties/action/enum")
@@ -1469,14 +1415,37 @@ mod tests {
             .expect("action enum");
         assert_eq!(enum_values, &vec![serde_json::json!("set")]);
 
-        let advertised: Vec<&str> = projected
-            .get("x-proxima-actions")
-            .and_then(serde_json::Value::as_object)
-            .expect("x-proxima-actions")
+        // Only `set`'s fields and prose: no field another action alone
+        // takes, no guide line for an action the palette withholds.
+        let advertised: std::collections::BTreeSet<&str> = projected["properties"]
+            .as_object()
+            .expect("properties")
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(advertised, vec!["set"]);
+        let mut expected: std::collections::BTreeSet<&str> = goal
+            .action_arg_specs
+            .iter()
+            .find(|spec| spec.action == "set")
+            .expect("set spec")
+            .allowed_fields
+            .iter()
+            .copied()
+            .collect();
+        expected.insert("action");
+        assert_eq!(advertised, expected);
+        let guide = projected["properties"]["action"]["description"]
+            .as_str()
+            .expect("action guide");
+        assert!(guide.contains("\n- set: "), "{guide}");
+        assert!(!guide.contains("\n- transition:"), "{guide}");
+        assert!(
+            !projected["properties"]["evidence"]["description"]
+                .as_str()
+                .expect("evidence prose")
+                .contains("mark_achieved"),
+            "{projected:#}"
+        );
     }
 
     #[test]
@@ -1490,11 +1459,7 @@ mod tests {
             .find(|descriptor| descriptor.name == protocol_tool::CORE_GOAL)
             .expect("core_goal descriptor")
             .clone();
-        let projected = project_dispatcher_actions(
-            &goal.args_schema,
-            Some(&ToolScope::All),
-            protocol_tool::CORE_GOAL,
-        );
+        let projected = project_dispatcher_actions(&goal, Some(&ToolScope::All));
         assert_eq!(projected, goal.args_schema);
     }
 
@@ -1773,13 +1738,23 @@ mod tests {
                 AuthPath::HostBearer,
             ),
         };
+        let no_fields = serde_json::json!({
+            "type": "object", "properties": {}, "additionalProperties": false
+        });
+        let dispatcher = proxima_core::mcp::McpDispatcherSchema {
+            discriminator: "action".to_owned(),
+            description: None,
+            actions: ["look", "touch"]
+                .map(|action| proxima_core::mcp::McpActionSchema {
+                    action: action.to_owned(),
+                    description: None,
+                    argument_schema: no_fields.clone(),
+                })
+                .to_vec(),
+        };
         let mixed = McpToolDescriptor {
-            args_schema: serde_json::json!({
-                "type": "object",
-                "properties": { "action": { "type": "string", "enum": ["look", "touch"] } },
-                "required": ["action"],
-                "x-proxima-actions": { "look": {}, "touch": {} },
-            }),
+            args_schema: dispatcher.render(|_| true),
+            dispatcher_schema: Some(dispatcher),
             action_arg_specs: MIXED_ACTIONS,
             // Parent says read; the write action must not inherit it.
             ..flavor_descriptor("proxima-stub_dispatch", Some(ToolEffect::ReadOnly))
@@ -1839,18 +1814,32 @@ mod tests {
             ),
         };
         let projected = project_dispatcher_actions_for_auth(descriptor, Some(&viewer));
-        let actions = projected["x-proxima-actions"]
-            .as_object()
-            .expect("projected action metadata");
-        assert!(actions.contains_key("list_members"));
-        assert!(!actions.contains_key("add_member"));
-        assert_eq!(
-            actions["list_members"]["argument_schema"],
-            descriptor.args_schema["x-proxima-actions"]["list_members"]["argument_schema"]
-        );
         assert_eq!(
             projected["properties"]["action"]["enum"],
             serde_json::json!(["list_members"])
+        );
+        // The viewer's schema is `list_members`' own: its field, as declared,
+        // and nothing `add_member` / `remove_member` alone take.
+        let list_members = descriptor
+            .action_argument_schema("list_members")
+            .expect("list_members argument schema");
+        let fields: Vec<&String> = projected["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .filter(|field| *field != "action")
+            .collect();
+        assert_eq!(
+            fields,
+            list_members["properties"]
+                .as_object()
+                .expect("list_members properties")
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            projected["properties"]["group"],
+            list_members["properties"]["group"]
         );
     }
 

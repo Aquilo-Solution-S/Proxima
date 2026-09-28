@@ -33,11 +33,11 @@ pub struct RememberArgs {
     #[serde(default)]
     #[schemars(
         length(max = 16),
-        description = "Optional tags for later search, at most 16. Each is stored trimmed and lowercased, so `Rust` is stored and matched as `rust`. Use `[]` when no tags are needed."
+        description = "Search tags, 1 to 48 chars each; stored and matched lowercase."
     )]
     pub tags: Vec<String>,
     #[schemars(
-        description = "Optional stable note key. An exact replay (same title/body/tags) returns the existing Fact. Reusing the key with changed content appends a new Fact version and advances the note head; it does not overwrite."
+        description = "Optional stable note key, 1 to 180 chars. Same key and same title/body/tags returns the existing Fact; same key with changed content adds a newer version that replaces it in default search."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -50,7 +50,7 @@ pub struct RememberArgs {
     pub space: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional RFC3339 timestamp of when this Fact was originally observed, for importing historical material (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering and the note-head pointer still follow ingestion time. Omit for 'now'."
+        description = "RFC3339 time this was originally observed, for imports; not in the future. Stored as provenance only; ordering and versioning use write time. Omit for now."
     )]
     pub observed_at: Option<String>,
     #[serde(default)]
@@ -103,7 +103,8 @@ pub struct RememberTool;
 
 impl McpTool for RememberTool {
     const NAME: &'static str = protocol_tool::CORE_REMEMBER;
-    const DESCRIPTION: &'static str = "Append an agent-observed Fact. Optional idempotency_key collapses only exact replays with the same content; changed content with the same key writes a new version and advances the note head pointer. core_search_memories returns heads by default; pass supersession=all for full history.";
+    const DESCRIPTION: &'static str =
+        "Save an observation as a Fact. For a raw conversation turn use core_record_utterance.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = RememberArgs;
     type Output = RememberOutput;

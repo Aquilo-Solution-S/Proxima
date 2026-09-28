@@ -23,20 +23,20 @@ use super::sql::{map_storage, resolve_repo_identifier};
 pub struct CodeSearchCommitsArgs {
     #[schemars(
         length(max = proxima_core::MAX_QUERY_CHARS),
-        description = "Lexical query string for Git commit and commit-summary search. Matches SHA, message, and summary text; 1 to 512 chars."
+        description = "Lexical text matched against commit SHA, message and author, and against summary text and key files."
     )]
     pub query: String,
     #[schemars(
         range(min = 1),
-        description = "Optional maximum number of commit and summary matches. Omit or null for 10; values above 50 are clamped, and 0 is rejected."
+        description = "Max matches per list (commits and summaries each); default 10, values above 50 are clamped."
     )]
     pub limit: Option<u32>,
     #[schemars(
-        description = "Optional repository filter: an `R…` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `R:<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(
-        description = "Optional commit-summary change_kind filter such as `feature`, `fix`, or `docs`. Omit or null for all kinds."
+        description = "Filters summaries only (e.g. `feature`, `fix`, `docs`); commits are not filtered."
     )]
     pub change_kind: Option<String>,
 }
@@ -84,8 +84,7 @@ pub struct CodeSearchCommitsTool;
 
 impl Tool for CodeSearchCommitsTool {
     const NAME: &'static str = "proxima-code_search_commits";
-    const DESCRIPTION: &'static str =
-        "Search Git commit facts and operator-authored commit summaries.";
+    const DESCRIPTION: &'static str = "Search indexed Git commits and commit summaries by text; returns two lists, commits and summaries. Commits are indexed only where the host runs a Git history import; proxima-code_ingest_head_snapshot indexes files, not commits, so empty lists for a repo with history mean that import has not run.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeSearchCommitsArgs;

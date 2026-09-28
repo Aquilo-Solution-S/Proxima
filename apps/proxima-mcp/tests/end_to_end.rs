@@ -28,6 +28,16 @@ const ISSUER: &str = "https://idp.end-to-end.test";
 const AUDIENCE: &str = "proxima-mcp";
 const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
 
+/// Ceiling on the serialized `tools/list` result for the authorized full
+/// catalog. Clients that put every definition into context pay for each
+/// char, so growth is a decision: trim prose or schema before raising it.
+/// Measured in bytes when set (#375): with `code` 124,488 before, 80,110
+/// after; without it 71,509 before, 42,601 after.
+#[cfg(feature = "code")]
+const TOOLS_LIST_BUDGET: usize = 84_000;
+#[cfg(not(feature = "code"))]
+const TOOLS_LIST_BUDGET: usize = 45_000;
+
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {
     for keyword in ["anyOf", "oneOf"] {
@@ -202,12 +212,113 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
             tool["outputSchema"]["type"], "object",
             "strict MCP clients require object output roots: {tool}"
         );
+        assert_plain_wire_schemas(tool);
     }
+    let size = serde_json::to_string(&body["result"])?.len();
+    assert!(
+        size <= TOOLS_LIST_BUDGET,
+        "tools/list is {size} bytes, over its {TOOLS_LIST_BUDGET}-byte budget"
+    );
 
     assert_union_reply_matches_schema(&client, &url, &session_id, &bearer, listed).await?;
 
     running.shutdown().await;
     Ok(())
+}
+
+/// One reply against the output schema `tools/list` published for its tool,
+/// as a strict client checks it.
+fn assert_reply_matches_listed_schema(
+    listed: &[serde_json::Value],
+    name: &str,
+    output: &serde_json::Value,
+) {
+    assert!(output.is_object(), "{name} replied {output}");
+    let schema = &listed
+        .iter()
+        .find(|tool| tool["name"] == name)
+        .unwrap_or_else(|| panic!("{name} listed"))["outputSchema"];
+    let url = format!("https://proxima.test/{name}-output.json");
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(&url, schema.clone())
+        .expect("published output schema loads");
+    let mut schemas = Schemas::new();
+    let index = compiler
+        .compile(&url, &mut schemas)
+        .expect("published output schema compiles");
+    if let Err(error) = schemas.validate(output, index) {
+        panic!("{name} structuredContent must validate against outputSchema: {error:#}");
+    }
+}
+
+/// `tools/list` carries plain JSON Schema: no `x-` extension anywhere, no
+/// `$schema`, and output schemas without prose (`description`, `title`,
+/// `examples`) — models never see an output schema; clients only validate
+/// against it.
+fn assert_plain_wire_schemas(tool: &serde_json::Value) {
+    fn visit(schema: &serde_json::Value, name: &str, output: bool, path: &str) {
+        let Some(map) = schema.as_object() else {
+            return;
+        };
+        for key in map.keys() {
+            assert!(
+                !key.starts_with("x-") && key != "$schema",
+                "{name}: `{key}` at {path}"
+            );
+            assert!(
+                !output || !["description", "title", "examples"].contains(&key.as_str()),
+                "{name}: output schema keeps `{key}` at {path}"
+            );
+        }
+        for keyword in ["properties", "patternProperties", "$defs"] {
+            for (child, subschema) in map
+                .get(keyword)
+                .and_then(serde_json::Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                visit(
+                    subschema,
+                    name,
+                    output,
+                    &format!("{path}/{keyword}/{child}"),
+                );
+            }
+        }
+        for keyword in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+            for (index, subschema) in map
+                .get(keyword)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                visit(
+                    subschema,
+                    name,
+                    output,
+                    &format!("{path}/{keyword}/{index}"),
+                );
+            }
+        }
+        for keyword in [
+            "items",
+            "additionalProperties",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contains",
+        ] {
+            if let Some(subschema) = map.get(keyword) {
+                visit(subschema, name, output, &format!("{path}/{keyword}"));
+            }
+        }
+    }
+    let name = tool["name"].as_str().unwrap_or_default();
+    visit(&tool["inputSchema"], name, false, "inputSchema");
+    visit(&tool["outputSchema"], name, true, "outputSchema");
 }
 
 async fn assert_union_reply_matches_schema(
@@ -240,21 +351,62 @@ async fn assert_union_reply_matches_schema(
     assert!(output.is_object(), "{called}");
     assert_eq!(output["cited_object_id"], cited_object_id);
     assert_eq!(output["facts"], json!([]));
-    let schema = &listed
-        .iter()
-        .find(|tool| tool["name"] == "core_fact")
-        .expect("core_fact listed")["outputSchema"];
-    let mut compiler = Compiler::new();
-    compiler
-        .add_resource(OUTPUT_SCHEMA_URL, schema.clone())
-        .expect("published output schema loads");
-    let mut schemas = Schemas::new();
-    let index = compiler
-        .compile(OUTPUT_SCHEMA_URL, &mut schemas)
-        .expect("published output schema compiles");
-    if let Err(error) = schemas.validate(output, index) {
-        panic!("structuredContent must validate against outputSchema: {error:#}");
+    assert_reply_matches_listed_schema(listed, "core_fact", output);
+
+    // A write reply whose type skips a field when unset: the published
+    // schema must not require what serde leaves out.
+    let call = |id: u64, name: &str, arguments: serde_json::Value| {
+        let request = json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        async move { post_rpc(client, url, Some(session_id), bearer, request).await }
+    };
+    let mut facts = Vec::new();
+    for (id, title) in [(4, "first observation"), (5, "second observation")] {
+        let remembered = call(
+            id,
+            "core_remember",
+            json!({ "title": title, "body": format!("{title} for the schema check") }),
+        )
+        .await?;
+        let output = &remembered["result"]["structuredContent"];
+        assert_reply_matches_listed_schema(listed, "core_remember", output);
+        facts.push(output["handle"].clone());
     }
+    let derived = call(
+        6,
+        "core_derive",
+        json!({
+            "kind": "Abstraction",
+            "title": "a pattern",
+            "body": "a pattern over both observations",
+            "source_handles": facts,
+        }),
+    )
+    .await?;
+    assert_reply_matches_listed_schema(
+        listed,
+        "core_derive",
+        &derived["result"]["structuredContent"],
+    );
+    let found = call(
+        7,
+        "core_search_memories",
+        json!({ "query": "observation", "mode": "lexical" }),
+    )
+    .await?;
+    assert_reply_matches_listed_schema(
+        listed,
+        "core_search_memories",
+        &found["result"]["structuredContent"],
+    );
+    let spaces = call(8, "core_memory_spaces", json!({})).await?;
+    assert_reply_matches_listed_schema(
+        listed,
+        "core_memory_spaces",
+        &spaces["result"]["structuredContent"],
+    );
 
     Ok(())
 }

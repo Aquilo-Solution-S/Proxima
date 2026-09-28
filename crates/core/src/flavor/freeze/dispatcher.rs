@@ -47,26 +47,7 @@ impl FlavorRegistry {
     /// `"action"` before dispatch.
     pub(super) fn validate_dispatcher_action_specs(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
-            // Absent and malformed are different answers. Reading them as one
-            // — `.and_then(Value::as_object)` — lets a schema that *carries*
-            // the extension, and so may well be read as a dispatcher by
-            // anything less forgiving, pass here as a flat tool. The derive
-            // always writes an object; a hand-written `JsonSchema` need not.
-            let extension = match tool.args_schema.get("x-proxima-actions") {
-                Some(serde_json::Value::Object(extension)) => Some(extension),
-                Some(malformed) => {
-                    return Err(FlavorRegistryError::InvalidActionSpecs {
-                        name: tool.name,
-                        message: format!(
-                            "its schema carries a malformed `x-proxima-actions` extension: \
-                             expected an object keyed by action name, found {malformed}. \
-                             Nothing can enumerate the actions of an extension it cannot read"
-                        ),
-                    });
-                }
-                None => None,
-            };
-            let Some(extension) = extension else {
+            let Some(dispatcher) = &tool.dispatcher_schema else {
                 if tool.action_arg_specs.is_empty() {
                     continue;
                 }
@@ -83,21 +64,14 @@ impl FlavorRegistry {
             if tool.action_arg_specs.is_empty() {
                 return Err(FlavorRegistryError::DispatcherWithoutActionSpecs { name: tool.name });
             }
-            // The flattener writes `required = [discriminator]`, so the tag
-            // name is readable straight off the normalized schema.
-            let discriminator = tool
-                .args_schema
-                .get("required")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|required| required.first())
-                .and_then(serde_json::Value::as_str);
-            if discriminator != Some("action") {
+            if dispatcher.discriminator != "action" {
                 return Err(FlavorRegistryError::InvalidActionSpecs {
                     name: tool.name,
                     message: format!(
-                        "dispatcher discriminator is {discriminator:?}; a dispatcher must tag on \
+                        "dispatcher discriminator is {:?}; a dispatcher must tag on \
                          `action` (#[serde(tag = \"action\")]) because scope keys, the scope \
-                         gate, and the REST action routes all read that field"
+                         gate, and the REST action routes all read that field",
+                        dispatcher.discriminator
                     ),
                 });
             }
@@ -121,9 +95,10 @@ impl FlavorRegistry {
                     ),
                 });
             }
-            let derived = extension
-                .keys()
-                .map(String::as_str)
+            let derived = dispatcher
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
                 .collect::<BTreeSet<_>>();
             if declared != derived {
                 return Err(FlavorRegistryError::InvalidActionSpecs {
@@ -134,7 +109,7 @@ impl FlavorRegistry {
                     ),
                 });
             }
-            validate_action_field_sets(tool, extension)?;
+            validate_action_field_sets(tool, dispatcher)?;
         }
         Ok(())
     }
@@ -142,61 +117,35 @@ impl FlavorRegistry {
 
 /// The per-action half of [`FlavorRegistry::validate_dispatcher_action_specs`]:
 /// each spec's field lists against the ones the schema derived for that action.
-/// The action sets are known to agree by the time this runs, so `extension`
-/// has a key for every spec.
+/// The action sets are known to agree by the time this runs, so `dispatcher`
+/// has an action for every spec.
 fn validate_action_field_sets(
     tool: &McpToolDescriptor,
-    extension: &serde_json::Map<String, serde_json::Value>,
+    dispatcher: &crate::mcp::McpDispatcherSchema,
 ) -> Result<(), FlavorRegistryError> {
     for spec in tool.action_arg_specs {
-        let meta = action_metadata(tool, extension, spec)?;
-        let argument_schema = action_argument_schema(tool, meta, spec)?;
+        let argument_schema = &dispatcher
+            .action(spec.action)
+            .expect("the action sets agree")
+            .argument_schema;
         let derived = derived_action_fields(tool, spec, argument_schema)?;
-        for (key, fields) in [
-            ("allowed_fields", spec.allowed_fields),
-            ("required_fields", spec.required_fields),
-        ] {
-            let expected = if key == "allowed_fields" {
-                &derived.allowed
-            } else {
-                &derived.required
-            };
-            let expected_fields = expected.iter().map(String::as_str).collect::<BTreeSet<_>>();
-            validate_declared_action_fields(tool, spec, key, fields, &expected_fields)?;
-            validate_action_metadata_fields(tool, spec, key, meta, &expected_fields)?;
-        }
+        validate_declared_action_fields(
+            tool,
+            spec,
+            "allowed_fields",
+            spec.allowed_fields,
+            &derived.allowed.iter().map(String::as_str).collect(),
+        )?;
+        validate_declared_action_fields(
+            tool,
+            spec,
+            "required_fields",
+            spec.required_fields,
+            &derived.required.iter().map(String::as_str).collect(),
+        )?;
         validate_derived_required_are_allowed(tool, spec, &derived)?;
     }
     Ok(())
-}
-
-/// The derived metadata block for one action. The action sets agreeing
-/// guarantees the key is present, not that it holds an object.
-fn action_metadata<'a>(
-    tool: &McpToolDescriptor,
-    extension: &'a serde_json::Map<String, serde_json::Value>,
-    spec: &crate::mcp::McpActionArgSpec,
-) -> Result<&'a serde_json::Map<String, serde_json::Value>, FlavorRegistryError> {
-    extension
-        .get(spec.action)
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| FlavorRegistryError::InvalidActionSpecs {
-            name: tool.name,
-            message: format!("action {} metadata must be an object", spec.action),
-        })
-}
-
-/// The `argument_schema` an action's derived metadata advertises.
-fn action_argument_schema<'a>(
-    tool: &McpToolDescriptor,
-    meta: &'a serde_json::Map<String, serde_json::Value>,
-    spec: &crate::mcp::McpActionArgSpec,
-) -> Result<&'a serde_json::Value, FlavorRegistryError> {
-    meta.get("argument_schema")
-        .ok_or_else(|| FlavorRegistryError::InvalidActionSpecs {
-            name: tool.name,
-            message: format!("action {} metadata is missing argument_schema", spec.action),
-        })
 }
 
 /// The field vocabulary an action's `argument_schema` describes, once the
@@ -267,55 +216,6 @@ fn validate_declared_action_fields(
             message: format!(
                 "action {} declares {key} {declared_fields:?} but the argument_schema \
                  says {expected_fields:?}",
-                spec.action
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// The same field list as the derived metadata spells it, against the set the
-/// schema derives: the metadata is what the wire reads, so it drifting from
-/// the schema is as wrong as the spec drifting from it.
-fn validate_action_metadata_fields(
-    tool: &McpToolDescriptor,
-    spec: &crate::mcp::McpActionArgSpec,
-    key: &str,
-    meta: &serde_json::Map<String, serde_json::Value>,
-    expected_fields: &BTreeSet<&str>,
-) -> Result<(), FlavorRegistryError> {
-    let Some(metadata_fields) = meta.get(key).and_then(serde_json::Value::as_array) else {
-        return Err(FlavorRegistryError::InvalidActionSpecs {
-            name: tool.name,
-            message: format!("action {} metadata is missing {key}", spec.action),
-        });
-    };
-    let mut metadata_names = BTreeSet::new();
-    for field in metadata_fields {
-        let Some(field) = field.as_str() else {
-            return Err(FlavorRegistryError::InvalidActionSpecs {
-                name: tool.name,
-                message: format!(
-                    "action {} metadata {key} must contain only strings",
-                    spec.action
-                ),
-            });
-        };
-        if field.is_empty() || field == "action" || !metadata_names.insert(field) {
-            return Err(FlavorRegistryError::InvalidActionSpecs {
-                name: tool.name,
-                message: format!(
-                    "action {} metadata {key} contains an empty, root action, or duplicate field",
-                    spec.action
-                ),
-            });
-        }
-    }
-    if &metadata_names != expected_fields {
-        return Err(FlavorRegistryError::InvalidActionSpecs {
-            name: tool.name,
-            message: format!(
-                "action {} metadata {key} drifts from argument_schema {expected_fields:?}",
                 spec.action
             ),
         });

@@ -32,28 +32,24 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreUploadTool::NAME,
         action: "prepare",
         scope_key: protocol_action::CORE_UPLOAD_PREPARE,
-        description: "Mint a presigned S3 PUT for one artefact and record the pending upload.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
         action: "complete",
         scope_key: protocol_action::CORE_UPLOAD_COMPLETE,
-        description: "Verify an uploaded artefact, persist its canonical cited object, and record the upload as a core/upload-v1 Fact citing it.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
         action: "abort",
         scope_key: protocol_action::CORE_UPLOAD_ABORT,
-        description: "Abort a pending upload and discard its pending object.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
         action: "read_url",
         scope_key: protocol_action::CORE_UPLOAD_READ_URL,
-        description: "Mint a presigned download URL for a completed cited blob.",
         produces_schema_ids: &[],
     },
 ];
@@ -72,7 +68,9 @@ pub struct UploadPrepareArgs {
     )]
     pub byte_len: u64,
     #[serde(default)]
-    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces; omit for current owner. complete and abort need prepare's space, read_url the cited object's space."
+    )]
     pub space: Option<String>,
 }
 
@@ -81,7 +79,9 @@ pub struct UploadCompleteArgs {
     #[schemars(description = "The `upload_id` returned by the prepare action.")]
     pub upload_id: String,
     #[serde(default)]
-    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces; omit for current owner. complete and abort need prepare's space, read_url the cited object's space."
+    )]
     pub space: Option<String>,
 }
 
@@ -90,7 +90,9 @@ pub struct UploadAbortArgs {
     #[schemars(description = "The `upload_id` returned by the prepare action.")]
     pub upload_id: String,
     #[serde(default)]
-    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces; omit for current owner. complete and abort need prepare's space, read_url the cited object's space."
+    )]
     pub space: Option<String>,
 }
 
@@ -101,16 +103,23 @@ pub struct UploadReadUrlArgs {
     )]
     pub cited_object_id: String,
     #[serde(default)]
-    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces; omit for current owner. complete and abort need prepare's space, read_url the cited object's space."
+    )]
     pub space: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreUploadArgs {
+    /// Mint a presigned S3 PUT for one artefact and record the pending upload.
     Prepare(UploadPrepareArgs),
+    /// Verify an uploaded artefact, persist its canonical cited object, and record the upload
+    /// as a core/upload-v1 Fact citing it.
     Complete(UploadCompleteArgs),
+    /// Abort a pending upload and discard its pending object.
     Abort(UploadAbortArgs),
+    /// Mint a presigned download URL for a completed cited blob.
     ReadUrl(UploadReadUrlArgs),
 }
 
@@ -169,7 +178,12 @@ pub enum CoreUploadOutput {
 
 impl McpTool for CoreUploadTool {
     const NAME: &'static str = protocol_tool::CORE_UPLOAD;
-    const DESCRIPTION: &'static str = "Upload dispatcher for cited artefacts (documents, images, transcripts) — prepare/complete/abort/read_url. Bytes never travel through MCP: `prepare` (filename, mime, byte_len) returns a presigned `upload_url` plus `headers`; HTTP PUT the raw bytes to that URL with exactly those headers before `expires_at`; then `complete` (upload_id) verifies the bytes and returns the canonical `cited_object_id`. `complete` also records the arrival itself as a `core/upload-v1` Fact citing that artefact and returns its handle as `fact`, so an uploaded file is findable by name through core_search_memories without anyone writing a Fact for it. Cite the artefact from further Facts via core_remember's `citation.cited_object_id`; fetch it later with `read_url` (cited_object_id), which returns a presigned download URL. `abort` discards a pending upload.";
+    const DESCRIPTION: &'static str = "Upload an artefact (document, image, transcript) \
+         without sending its bytes through MCP: `prepare` returns a presigned `upload_url` and \
+         `headers`; HTTP PUT the raw bytes there with exactly those headers before `expires_at`; \
+         `complete` verifies them, returns the `cited_object_id`, and records a `core/upload-v1` \
+         Fact citing it (`fact`), findable by file name. Cite the artefact from further Facts via \
+         core_remember's `citation.cited_object_id`; `read_url` returns a download URL.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "prepare",

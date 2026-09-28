@@ -60,7 +60,10 @@ local checkout and ingest its current tree:
    recover a synchronous ingest whose response was lost.
 
 Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
-and read exact revisions with `proxima-code_open_file_revision`.
+and read exact revisions with `proxima-code_open_file_revision`. A snapshot
+indexes files only: commits reach `proxima-code_search_commits` through a
+host-run Git history import (`LocalGitSource::run_poll`), which
+`proxima-mcp` does not run.
 
 `proxima-code_search_chunks` takes both shapes of query. An identifier or
 path (`lexical_tsv`, `common_candidates_sql`,

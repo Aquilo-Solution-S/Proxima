@@ -41,7 +41,10 @@ pub use manifest::{
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolPresentation};
-pub use schema::{normalize_mcp_output_schema, schema_bound_mismatches};
+pub use schema::{
+    McpActionSchema, McpDispatcherSchema, mcp_wire_output_schema, normalize_mcp_output_schema,
+    schema_bound_mismatches,
+};
 pub use tool::{
     McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool, McpToolAudience, McpToolDescriptor,
     McpToolOrigin, McpUnknownFieldPolicy,

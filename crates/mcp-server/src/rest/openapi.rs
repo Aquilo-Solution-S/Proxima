@@ -284,39 +284,25 @@ fn collect_tool_paths(
     paths.insert(format!("/v1/tools/{}", tool.name), tool_path_item(&whole));
 
     // Action routes come from `action_arg_specs`, which is what the router
-    // enumerates — not from the `x-proxima-actions` extension. The two are
-    // not interchangeable even though both registration entry points now
-    // fill the specs and `try_freeze` refuses a registry where they
-    // disagree: the extension is the derived, client-facing *description*
-    // of a dispatcher (it carries per-field prose the specs do not), while
-    // the specs are the enumeration every seam dispatches on. Reading the
-    // enumeration off the enumeration is what keeps this document and the
-    // router describing one surface.
-    let extension = tool
-        .args_schema
-        .get("x-proxima-actions")
-        .and_then(Value::as_object);
+    // enumerates; each route's body is that action's derived argument
+    // schema. `try_freeze` refuses a registry where the two disagree, so
+    // every spec has one.
     for spec in tool
         .action_arg_specs
         .iter()
         .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, tool, spec.action))
     {
         let action = spec.action;
-        let action_schema = extension
-            .and_then(|map| map.get(action))
-            .and_then(|metadata| metadata.get("argument_schema"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "frozen dispatcher {} action {} has no argument_schema metadata",
-                    tool.name, action
-                )
-            });
+        let action_schema = tool.action_argument_schema(action).unwrap_or_else(|| {
+            panic!(
+                "frozen dispatcher {} action {} has no argument schema",
+                tool.name, action
+            )
+        });
         // Per-action, not tool-level: the spec's effect is the same
         // authority the owner-role gate and router read.
         let action_annotations = McpToolAnnotations::registered(spec.effect);
-        let action_description = tool
-            .resolved_action_description(action)
-            .unwrap_or(tool.description);
+        let action_description = tool.action_description(action).unwrap_or(tool.description);
         let narrowed = Operation {
             target: OperationTarget::Action {
                 tool: tool.name,
@@ -432,11 +418,6 @@ fn embeddable_schema(args_schema: &Value) -> Value {
         map.shift_remove("$schema");
     }
     schema
-}
-
-#[cfg(test)]
-fn discriminator_key(args_schema: &Value) -> Option<&str> {
-    args_schema.get("required")?.as_array()?.first()?.as_str()
 }
 
 #[cfg(test)]
@@ -720,15 +701,12 @@ mod tests {
         let document = core_document(&registry);
         let mut checked = 0usize;
         for tool in registry.list_mcp_tools() {
-            let Some(actions) = tool
-                .args_schema
-                .get("x-proxima-actions")
-                .and_then(Value::as_object)
-            else {
+            let Some(dispatcher) = &tool.dispatcher_schema else {
                 continue;
             };
-            let discriminator = super::discriminator_key(&tool.args_schema).unwrap_or("action");
-            for (action, meta) in actions {
+            let discriminator = dispatcher.discriminator.as_str();
+            for derived in &dispatcher.actions {
+                let action = derived.action.as_str();
                 let item = path_item(&document, &format!("/v1/tools/{}/{action}", tool.name));
                 let schema = item
                     .pointer("/post/requestBody/content/application~1json/schema")
@@ -741,7 +719,8 @@ mod tests {
                     .keys()
                     .cloned()
                     .collect();
-                let expected: BTreeSet<String> = super::string_list(meta, "allowed_fields")
+                let expected: BTreeSet<String> = derived
+                    .allowed_fields()
                     .into_iter()
                     .filter(|field| field != discriminator)
                     .collect();
@@ -759,7 +738,7 @@ mod tests {
                 );
                 assert_eq!(
                     super::string_list(schema, "required"),
-                    super::string_list(meta, "required_fields"),
+                    derived.required_fields(),
                     "{}/{action} must carry the action's own required set: {schema:#}",
                     tool.name,
                 );

@@ -24,7 +24,7 @@ pub struct CodeRetryExecutionRequestTool;
 
 impl Tool for CodeRetryExecutionRequestTool {
     const NAME: &'static str = "proxima-code_retry_execution_request";
-    const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/work-requested-v1 Fact for a target worker.";
+    const DESCRIPTION: &'static str = "Re-issue a prior work request as a new one assigned to a worker Perspective, with optional new title, appended instructions and extra evidence. Needs a host-supplied caller Perspective.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
         ExecutionRequestV1::SCHEMA_ID,

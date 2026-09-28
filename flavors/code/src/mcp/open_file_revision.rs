@@ -12,7 +12,7 @@ use super::sql::resolve_repo_identifier;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
     #[schemars(
-        description = "The repository: an `R…` repo_handle from search output, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead."
+        description = "The repository: an `R:<uuid>` repo_handle from search output, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead."
     )]
     pub repo_handle: String,
     #[schemars(
@@ -21,22 +21,22 @@ pub struct CodeOpenFileRevisionArgs {
     pub file_path: String,
     #[serde(default)]
     #[schemars(
-        description = "Whether to include chunk text in the response. Defaults to false, but line/text limits imply true."
+        description = "Include chunk text. Implied by line_start, line_limit or max_text_bytes."
     )]
     pub include_text: bool,
     #[schemars(
         range(min = 1),
-        description = "Optional 1-based starting line for a text window. Must be >= 1. Omit or null to return chunk snippets only."
+        description = "1-based first line of a text window; defaults to 1 when only line_limit is set. A window returns only the chunks it overlaps and implies include_text=true."
     )]
     pub line_start: Option<i64>,
     #[schemars(
         range(min = 1),
-        description = "Optional maximum number of lines from `line_start`; values above 500 are clamped, 0 is rejected, default 120. Omit or null when no line window is needed."
+        description = "Window height in lines; default 120, values above 500 are clamped."
     )]
     pub line_limit: Option<i64>,
     #[schemars(
         range(min = 1),
-        description = "Optional cap on returned text bytes per chunk, at least 1; a cut chunk is flagged text_truncated=true. Omit or null to use the default projection, and pass include_text=false to skip text entirely."
+        description = "Byte cap on each chunk's text; a cut chunk has text_truncated=true. Setting it implies include_text=true."
     )]
     pub max_text_bytes: Option<usize>,
 }
@@ -83,8 +83,7 @@ pub struct CodeOpenFileRevisionTool;
 
 impl Tool for CodeOpenFileRevisionTool {
     const NAME: &'static str = "proxima-code_open_file_revision";
-    const DESCRIPTION: &'static str =
-        "Return the current head revision and head chunks for one repo_handle/file_path pair.";
+    const DESCRIPTION: &'static str = "Open one indexed file: its latest indexed revision (commit sha, language, size) and its chunks with line ranges; optionally chunk text or a line window.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CodeOpenFileRevisionArgs;

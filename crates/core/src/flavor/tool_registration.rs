@@ -102,7 +102,10 @@ impl FlavorRegistry {
         if !T::ACTION_ARG_SPECS.is_empty() && !T::ARGV_ACTION_SPECS.is_empty() {
             return Err(FlavorRegistryError::ConflictingActionVocabularies { name: T::NAME });
         }
-        let args_schema = mcp_tool_schema::<T::Args>();
+        let crate::mcp::schema::McpArgsSchema {
+            schema: args_schema,
+            dispatcher: dispatcher_schema,
+        } = mcp_tool_schema::<T::Args>();
         let output_schema = mcp_output_schema::<T::Output>().map_err(|message| {
             FlavorRegistryError::InvalidToolOutputSchema {
                 name: T::NAME,
@@ -176,6 +179,7 @@ impl FlavorRegistry {
             },
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
+            dispatcher_schema,
             output_schema,
             action_arg_specs: T::ACTION_ARG_SPECS,
             argv_action_specs: T::ARGV_ACTION_SPECS,

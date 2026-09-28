@@ -31,35 +31,30 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreGoalTool::NAME,
         action: "set",
         scope_key: protocol_action::CORE_GOAL_SET,
-        description: "Set an Active Goal assigned to a Perspective.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "transition",
         scope_key: protocol_action::CORE_GOAL_TRANSITION,
-        description: "Pause, resume, or abandon a Goal head.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "modify",
         scope_key: protocol_action::CORE_GOAL_MODIFY,
-        description: "Replace an Active Goal head's content.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "mark_achieved",
         scope_key: protocol_action::CORE_GOAL_MARK_ACHIEVED,
-        description: "Mark a Goal head Achieved with completion evidence.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "decompose",
         scope_key: protocol_action::CORE_GOAL_DECOMPOSE,
-        description: "Create Active child Goals under a parent Goal.",
         produces_schema_ids: &[],
     },
 ];
@@ -67,25 +62,25 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GoalPayloadArgs {
     #[schemars(
-        description = "Registered Goal-payload schema id (PayloadKind::Goal). Discover valid ids with the `proxima://schemas{?kind}` resource (kind=Goal)."
+        description = "Goal-payload schema id, e.g. `core/simple-text-v1`. The `proxima://schemas?kind=Goal` resource lists every registered id."
     )]
     pub schema_id: String,
-    #[schemars(description = "Goal-payload schema version. Omit to default to 1.")]
+    #[schemars(description = "Version of `schema_id`. Omit for 1.")]
     pub schema_version: Option<u32>,
     #[schemars(
         length(max = 240),
-        description = "Short, human-readable goal title, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
+        description = "Short goal title, 1 to 240 chars after trimming."
     )]
     pub title: String,
     #[schemars(
         length(max = 20000),
-        description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means. Leading and trailing whitespace is removed before the length check."
+        description = "The goal in prose — what pursuing or achieving it means. 1 to 20000 chars after trimming."
     )]
     pub text: String,
     #[serde(default = "default_empty_object")]
     #[schemars(
         with = "std::collections::BTreeMap<String, serde_json::Value>",
-        description = "Structured goal payload conforming to `schema_id`@`schema_version`; must be a JSON object. Omit for `{}`."
+        description = "Payload object whose fields `schema_id` defines. Omit for `{}`."
     )]
     pub body: serde_json::Value,
 }
@@ -100,19 +95,19 @@ pub struct GoalSetArgs {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored goal; at least one is required."
+        description = "Abstraction handles (`A:<uuid>`) that motivate the goal; at least one."
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Optional Perspective memory handle to assign the goal to; omit to use the caller Perspective context."
+        description = "Perspective handle (`P:<uuid>`) the goal is assigned to, e.g. a stance `core_interpret` returned. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
-        description = "Optional wake config arming this goal: a trigger Fact/Fact-schema, a wake prompt, and a toolset. Armed goals surface on `proxima://wake-candidates` when a matching Fact is appended."
+        description = "Arms the goal: when a matching Fact is appended it surfaces on `proxima://wake-candidates` with this prompt and toolset."
     )]
     pub wake: Option<GoalWakeArgs>,
     #[schemars(
-        description = "Optional stable idempotency key so a replayed call is a no-op, not a duplicate goal."
+        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
     )]
     pub idempotency_key: Option<String>,
 }
@@ -120,24 +115,22 @@ pub struct GoalSetArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GoalWakeArgs {
     #[schemars(
-        description = "Fact memory handle (`F...`) whose exact row is the wake trigger. Exactly one of `trigger_fact` / `trigger_schema_id` is required."
+        description = "Fact handle (`F:<uuid>`) whose exact row is the trigger. Give exactly one of `trigger_fact`, `trigger_schema_id`."
     )]
     pub trigger_fact: Option<String>,
     #[schemars(
-        description = "Registered Fact schema id; any appended Fact of this schema wakes the goal. Exactly one of `trigger_fact` / `trigger_schema_id` is required."
+        description = "Fact schema id, e.g. `core/agent-note-v1` (what `core_remember` writes); any appended Fact of it wakes the goal. Give exactly one of `trigger_fact`, `trigger_schema_id`."
     )]
     pub trigger_schema_id: Option<String>,
-    #[schemars(description = "Fact schema version for `trigger_schema_id`. Omit to default to 1.")]
+    #[schemars(description = "Version of `trigger_schema_id`. Omit for 1.")]
     pub trigger_schema_version: Option<u32>,
     #[schemars(
-        description = "Registered tool or `tool:action` leaf ids the woken run may use (e.g. `core_search_memories`, `core_goal:set`); at least one is required."
+        description = "What the woken run may call, at least one: a flat tool's name (`core_search_memories`) or a dispatcher action as `tool:action` (`core_goal:set`). A bare dispatcher name is refused."
     )]
     pub tool_ids: Vec<String>,
-    #[schemars(description = "Wake prompt handed to the external harness, 1 to 20000 chars.")]
+    #[schemars(description = "Prompt for the woken run, 1 to 20000 chars.")]
     pub prompt: String,
-    #[schemars(
-        description = "Optional memory handles pinned as required readable context for the woken run."
-    )]
+    #[schemars(description = "Memory handles the woken run must be able to read.")]
     pub hard_memories: Option<Vec<String>>,
 }
 
@@ -156,10 +149,16 @@ pub struct CoreGoalTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreGoalArgs {
+    /// Create an Active goal assigned to a Perspective.
     Set(GoalSetArgs),
+    /// Pause, resume, or abandon a goal.
     Transition(GoalTransitionArgs),
+    /// Replace an Active goal's title, text and payload; omitted evidence and wake carry
+    /// over.
     Modify(GoalModifyArgs),
+    /// Mark a goal Achieved, citing the memories that show it.
     MarkAchieved(GoalMarkAchievedArgs),
+    /// Create Active child Goals under a parent goal.
     Decompose(GoalDecomposeArgs),
 }
 
@@ -172,8 +171,11 @@ pub enum CoreGoalOutput {
 
 impl McpTool for CoreGoalTool {
     const NAME: &'static str = protocol_tool::CORE_GOAL;
-    const DESCRIPTION: &'static str =
-        "Goal write dispatcher — set/transition/modify/mark_achieved/decompose.";
+    const DESCRIPTION: &'static str = "Write Goals: set one, decompose it into child goals, \
+         pause/resume/abandon it, replace its content, mark it achieved. Every write returns the \
+         goal's new head `handle`; the next write on that goal names that handle. set and decompose \
+         assign goals to a Perspective: pass target_perspective unless the host supplies a caller \
+         Perspective.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -316,12 +318,16 @@ pub enum GoalTransition {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalTransitionArgs {
     #[schemars(
-        description = "Goal handle to transition (the `handle` returned by `core_goal` action=set/decompose)."
+        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
-    #[schemars(description = "Lifecycle transition to apply: `pause`, `resume`, or `abandon`.")]
+    #[schemars(
+        description = "pause and abandon apply to an Active goal, resume to a Paused one. Use mark_achieved to achieve."
+    )]
     pub transition: GoalTransition,
-    #[schemars(description = "Optional stable idempotency key for replay-safe transitions.")]
+    #[schemars(
+        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -358,15 +364,17 @@ async fn goal_transition(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalMarkAchievedArgs {
     #[schemars(
-        description = "Goal handle to mark Achieved (from `core_goal` action=set/decompose)."
+        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
     #[schemars(
         length(min = 1),
-        description = "Fact or Abstraction memory handles (`F...`/`A...`) evidencing completion; at least one is required."
+        description = "Fact or Abstraction handles (`F:`/`A:<uuid>`) that show completion; at least one."
     )]
     pub evidence: Vec<String>,
-    #[schemars(description = "Optional stable idempotency key for replay-safe completion.")]
+    #[schemars(
+        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -407,26 +415,26 @@ async fn goal_mark_achieved(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalModifyArgs {
     #[schemars(
-        description = "Goal handle whose Active head is replaced (from `core_goal` action=set/decompose)."
+        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Optional nonempty Abstraction evidence handles (`A...`) for the operator-authored modified goal head; omit to carry the prior exact evidence vector."
+        description = "Replacement Abstraction handles (`A:<uuid>`), at least one. Omit to keep the current evidence."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
-        description = "Optional replacement wake config for the new goal head. Omit to carry the prior head's wake config forward; mutually exclusive with `clear_wake`."
+        description = "Replacement wake config. Omit to keep the current one; `clear_wake` removes it."
     )]
     pub wake: Option<GoalWakeArgs>,
     #[serde(default)]
-    #[schemars(
-        description = "Set true to disarm the goal: the new head carries no wake config. Mutually exclusive with `wake`."
-    )]
+    #[schemars(description = "True disarms the goal. Not with `wake`.")]
     pub clear_wake: bool,
-    #[schemars(description = "Optional stable idempotency key for replay-safe modification.")]
+    #[schemars(
+        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+    )]
     pub idempotency_key: Option<String>,
 }
 
@@ -480,21 +488,19 @@ async fn goal_modify(
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalDecomposeArgs {
-    #[schemars(
-        description = "Handle of the parent goal the children attach under (from `core_goal` action=set)."
-    )]
+    #[schemars(description = "The parent goal's current head `handle`.")]
     pub parent_goal: String,
     #[schemars(
         length(min = 1, max = 50),
-        description = "Child goals to create (1 to 50); each is set Active and linked to the parent."
+        description = "Child goals to create, 1 to 50; each starts Active under the parent."
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Optional Perspective memory handle to assign children to; omit to use the caller Perspective context."
+        description = "Perspective handle (`P:<uuid>`) the children are assigned to; not inherited from the parent. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
-        description = "Required stable idempotency key; each child's key derives from it deterministically, so replays are no-ops."
+        description = "Stable key, at most 162 chars, that makes a replay of this call a no-op; each child's key derives from it."
     )]
     pub idempotency_key: String,
 }
@@ -505,12 +511,10 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Required Abstraction memory handles (`A...`) that motivate this operator-authored child goal."
+        description = "Abstraction handles (`A:<uuid>`) that motivate this child; at least one."
     )]
     pub evidence: Vec<String>,
-    #[schemars(
-        description = "Optional wake config arming this child goal (see `core_goal` action=set `wake`)."
-    )]
+    #[schemars(description = "Arms this child, as `wake` arms a goal on `set`.")]
     pub wake: Option<GoalWakeArgs>,
 }
 
@@ -732,7 +736,9 @@ fn target_perspective(
             .map(GoalAssignmentTarget::perspective)
             .ok_or_else(|| {
                 McpToolError::InvalidInput(
-                    "target_perspective or caller Perspective context is required".into(),
+                    "target_perspective is required: name the Perspective (`P:<uuid>`) to \
+                     assign to, e.g. one core_interpret returned"
+                        .into(),
                 )
             }),
     }

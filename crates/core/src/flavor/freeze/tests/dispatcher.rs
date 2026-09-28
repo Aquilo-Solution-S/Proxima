@@ -1,40 +1,29 @@
-//! Freeze refusals over a dispatcher tool's per-action metadata.
+//! Freeze refusals over a dispatcher tool's per-action argument schemas.
 //!
-//! The registry is the shipped one with one action's schema or metadata
-//! mutated, so what each case pins is the drift a real edit would produce
-//! rather than a hand-built shape no generator emits.
+//! The registry is the shipped one with one action's schema mutated, so
+//! what each case pins is the drift a real edit would produce rather than a
+//! hand-built shape no generator emits.
 
 use crate::{FlavorRegistry, FlavorRegistryError};
 
 fn mutated_goal_schema_error(mutate: impl FnOnce(&mut serde_json::Value)) -> FlavorRegistryError {
     let mut registry = FlavorRegistry::default();
-    let tool = registry
+    let set = registry
         .mcp_tools
         .iter_mut()
         .find(|tool| tool.name == "core_goal")
-        .expect("core_goal is registered");
-    mutate(&mut tool.args_schema["x-proxima-actions"]["set"]["argument_schema"]);
+        .expect("core_goal is registered")
+        .dispatcher_schema
+        .as_mut()
+        .expect("core_goal is a dispatcher")
+        .actions
+        .iter_mut()
+        .find(|action| action.action == "set")
+        .expect("core_goal derives `set`");
+    mutate(&mut set.argument_schema);
     registry
         .try_freeze()
         .expect_err("mutated argument_schema must not freeze")
-}
-
-fn mutated_goal_metadata_error(
-    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
-) -> FlavorRegistryError {
-    let mut registry = FlavorRegistry::default();
-    let tool = registry
-        .mcp_tools
-        .iter_mut()
-        .find(|tool| tool.name == "core_goal")
-        .expect("core_goal is registered");
-    let action = tool.args_schema["x-proxima-actions"]["set"]
-        .as_object_mut()
-        .expect("action metadata object");
-    mutate(action);
-    registry
-        .try_freeze()
-        .expect_err("mutated action metadata must not freeze")
 }
 
 #[test]
@@ -51,6 +40,18 @@ fn dispatcher_argument_schema_freeze_rejects_malformed_metadata() {
                 schema["$defs"] = serde_json::json!({});
             }),
             "ref-free",
+        ),
+        (
+            Box::new(|schema: &mut serde_json::Value| {
+                *schema = serde_json::json!("bad");
+            }),
+            "argument_schema is invalid",
+        ),
+        (
+            Box::new(|schema: &mut serde_json::Value| {
+                *schema = serde_json::json!([]);
+            }),
+            "argument_schema is invalid",
         ),
         (
             Box::new(|schema: &mut serde_json::Value| {
@@ -89,12 +90,13 @@ fn dispatcher_argument_schema_freeze_rejects_malformed_metadata() {
         );
         assert!(err.to_string().contains(expected), "{err}");
     }
-    let err = mutated_goal_metadata_error(|metadata| {
-        metadata["allowed_fields"] = serde_json::json!(["other"]);
+    // A derived field the spec does not declare is drift between the two.
+    let err = mutated_goal_schema_error(|schema| {
+        schema["properties"]["other"] = serde_json::json!({ "type": "string" });
     });
     assert!(matches!(
         err,
         FlavorRegistryError::InvalidActionSpecs { .. }
     ));
-    assert!(err.to_string().contains("metadata allowed_fields"), "{err}");
+    assert!(err.to_string().contains("declares allowed_fields"), "{err}");
 }

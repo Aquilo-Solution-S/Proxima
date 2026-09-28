@@ -245,152 +245,45 @@ macro_rules! stub_tool {
 }
 
 stub_tool!(TaggedNoSpecsTool, "proxima-test_tagged", TaggedArgs, &[]);
-macro_rules! malformed_dispatch_args {
-    ($name:ident, $argument_schema:expr, $include_argument_schema:expr, $allowed:expr) => {
-        #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
-        struct $name;
-
-        impl schemars::JsonSchema for $name {
-            fn schema_name() -> std::borrow::Cow<'static, str> {
-                stringify!($name).into()
-            }
-
-            fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                let mut action = serde_json::json!({
-                    "allowed_fields": $allowed,
-                    "required_fields": ["value"],
-                    "field_descriptions": {}
-                });
-                if $include_argument_schema {
-                    action["argument_schema"] = $argument_schema;
-                }
-                schemars::Schema::try_from(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["run"] },
-                        "value": { "type": "string" }
-                    },
-                    "required": ["action"],
-                    "additionalProperties": false,
-                    "x-proxima-actions": { "run": action }
-                }))
-                .expect("test schema is a JSON object")
-            }
-        }
-    };
+/// A hand-written `JsonSchema` carrying the retired `x-proxima-actions`
+/// extension. Only a tagged enum's derived schema makes a dispatcher; the
+/// extension is an inert keyword now, so its specs describe nothing.
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct LegacyExtensionArgs {
+    value: String,
 }
 
-macro_rules! malformed_dispatch_tool {
-    ($tool:ident, $name:literal, $args:ty) => {
-        #[allow(dead_code)]
-        struct $tool;
+impl schemars::JsonSchema for LegacyExtensionArgs {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "LegacyExtensionArgs".into()
+    }
 
-        impl McpTool for $tool {
-            const NAME: &'static str = $name;
-            const DESCRIPTION: &'static str = "test";
-            const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
-                action: "run",
-                allowed_fields: &["value"],
-                required_fields: &["value"],
-                effect: ToolEffect::Additive(Replay::NonIdempotent),
-                audience: McpToolAudience::Shared,
-            }];
-            type Args = $args;
-            type Output = EmptyOutput;
-
-            fn call(
-                _ctx: McpToolCtx,
-                _args: Self::Args,
-            ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
-                Box::pin(async { Ok(EmptyOutput {}) })
-            }
-        }
-    };
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["run"] },
+                "value": { "type": "string" }
+            },
+            "required": ["action"],
+            "additionalProperties": false,
+            "x-proxima-actions": { "run": { "allowed_fields": ["value"] } }
+        })
+    }
 }
 
-macro_rules! schema {
-    ($($tokens:tt)*) => {
-        serde_json::json!($($tokens)*)
-    };
-}
-
-malformed_dispatch_args!(MissingArgumentSchemaArgs, schema!({}), false, ["value"]);
-malformed_dispatch_args!(MalformedArgumentSchemaArgs, schema!("bad"), true, ["value"]);
-malformed_dispatch_args!(NonObjectArgumentSchemaArgs, schema!([]), true, ["value"]);
-malformed_dispatch_args!(
-    RootActionArgumentSchemaArgs,
-    schema!({
-        "type": "object", "properties": {
-            "action": { "type": "string" }, "value": { "type": "string" }
-        }, "required": ["value"], "additionalProperties": false
-    }),
-    true,
-    ["value"]
-);
-malformed_dispatch_args!(
-    ReopenedArgumentSchemaArgs,
-    schema!({
-        "type": "object", "properties": { "value": { "type": "string" } },
-        "required": ["value"], "additionalProperties": true
-    }),
-    true,
-    ["value"]
-);
-malformed_dispatch_args!(
-    UnhoistedArgumentSchemaArgs,
-    schema!({
-        "type": "object", "properties": { "value": { "type": "string" } },
-        "required": ["value"], "additionalProperties": false,
-        "oneOf": [{ "type": "object", "properties": { "hidden": { "type": "string" } }, "additionalProperties": false }]
-    }),
-    true,
-    ["value"]
-);
-malformed_dispatch_args!(
-    DriftingArgumentSchemaArgs,
-    schema!({
-        "type": "object", "properties": { "value": { "type": "string" } },
-        "required": ["value"], "additionalProperties": false
-    }),
-    true,
-    ["other"]
-);
-
-malformed_dispatch_tool!(
-    MissingArgumentSchemaTool,
-    "proxima-test_missingarg",
-    MissingArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    MalformedArgumentSchemaTool,
-    "proxima-test_malformedarg",
-    MalformedArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    NonObjectArgumentSchemaTool,
-    "proxima-test_nonobjectarg",
-    NonObjectArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    RootActionArgumentSchemaTool,
-    "proxima-test_rootactionarg",
-    RootActionArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    ReopenedArgumentSchemaTool,
-    "proxima-test_reopenedarg",
-    ReopenedArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    UnhoistedArgumentSchemaTool,
-    "proxima-test_unhoistedarg",
-    UnhoistedArgumentSchemaArgs
-);
-malformed_dispatch_tool!(
-    DriftingArgumentSchemaTool,
-    "proxima-test_driftingarg",
-    DriftingArgumentSchemaArgs
+stub_tool!(
+    LegacyExtensionTool,
+    "proxima-test_legacyext",
+    LegacyExtensionArgs,
+    &[McpActionArgSpec {
+        action: "run",
+        allowed_fields: &["value"],
+        required_fields: &["value"],
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
+        audience: McpToolAudience::Shared,
+    }]
 );
 
 stub_tool!(
@@ -484,35 +377,6 @@ stub_tool!(
             audience: McpToolAudience::Shared,
         },
     ]
-);
-
-/// A hand-written `JsonSchema` — the only way to reach the malformed-extension
-/// branch. The derive path runs the flattener, which writes `x-proxima-actions`
-/// as an object or not at all.
-#[derive(serde::Deserialize)]
-struct BogusExtensionArgs {}
-
-impl schemars::JsonSchema for BogusExtensionArgs {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "BogusExtensionArgs".into()
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "object",
-            "properties": {},
-            "x-proxima-actions": "bogus",
-        })
-    }
-}
-
-// Empty specs on purpose: a non-object `x-proxima-actions` must not seal
-// as a flat tool.
-stub_tool!(
-    BogusExtensionTool,
-    "proxima-test_bogusext",
-    BogusExtensionArgs,
-    &[]
 );
 
 #[derive(Debug)]
@@ -741,18 +605,12 @@ fn assert_invalid_argument_schema<T: McpTool>(needle: &str) {
 }
 
 #[test]
-fn malformed_argument_schema_metadata_cannot_be_frozen() {
-    assert_invalid_argument_schema::<MissingArgumentSchemaTool>("missing argument_schema");
-    assert_invalid_argument_schema::<MalformedArgumentSchemaTool>("argument_schema is invalid");
-    assert_invalid_argument_schema::<NonObjectArgumentSchemaTool>("argument_schema is invalid");
-    assert_invalid_argument_schema::<RootActionArgumentSchemaTool>("action property");
-    assert_invalid_argument_schema::<ReopenedArgumentSchemaTool>("additionalProperties");
-    assert_invalid_argument_schema::<UnhoistedArgumentSchemaTool>("not hoisted");
-    assert_invalid_argument_schema::<DriftingArgumentSchemaTool>("metadata allowed_fields");
+fn a_hand_written_actions_extension_is_not_a_dispatcher() {
+    assert_invalid_argument_schema::<LegacyExtensionTool>("not an internally tagged enum");
 }
 
 /// An internally tagged `Args` is what makes a client see a dispatcher —
-/// the schema pass stamps `x-proxima-actions` onto it unconditionally. With
+/// the schema pass derives a dispatcher schema from it unconditionally. With
 /// no `ACTION_ARG_SPECS` nothing enumerates the actions, so the scope gate
 /// falls back to whole-tool grants and arguments are validated against every
 /// variant's fields merged together. Boot is where that is caught.
@@ -896,30 +754,6 @@ fn duplicate_action_names_in_specs_cannot_be_frozen() {
         "got {err:?}",
     );
     assert!(err.to_string().contains("duplicate"), "{err}");
-}
-
-/// `x-proxima-actions` present but not an object is not the same answer as
-/// absent. Read as absent — which `as_object()` did — a hand-written schema
-/// carrying a dispatcher-shaped extension sealed as a flat tool.
-#[test]
-fn a_non_object_actions_extension_cannot_be_frozen() {
-    let err = freeze_error::<BogusExtensionTool>();
-    assert!(
-        matches!(
-            err,
-            FlavorRegistryError::InvalidActionSpecs {
-                name: "proxima-test_bogusext",
-                ..
-            }
-        ),
-        "got {err:?}",
-    );
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("malformed `x-proxima-actions`"),
-        "{rendered}",
-    );
-    assert!(rendered.contains("bogus"), "{rendered}");
 }
 
 #[test]

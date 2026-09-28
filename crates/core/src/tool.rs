@@ -732,7 +732,7 @@ pub trait Tool: Send + Sync + 'static {
     /// validated per action before decode, and its scope keys become
     /// `tool:action` leaves rather than the bare tool name.
     /// `FlavorRegistry::try_freeze` refuses a registry where these and the
-    /// schemars-derived `x-proxima-actions` disagree. Each spec's `effect`
+    /// schemars-derived dispatcher schema disagree. Each spec's `effect`
     /// is the sole behaviour authority for that action.
     const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
     /// The actions of an argv-keyed dispatcher, or `&[]`.

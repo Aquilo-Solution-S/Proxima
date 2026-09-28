@@ -236,8 +236,8 @@ writes use the same tool with the matching action key.
 5. A tool without exactly one behaviour declaration: a flat tool with no
    `EFFECT`, or a dispatcher with a tool-level `EFFECT` beside its per-action
    `effect`s (see [12 §Tool Effect](12-tool-manifest.md#tool-effect)).
-6. A tool whose `Args` is an internally tagged enum — so its schema carries
-   `x-proxima-actions` and clients see a dispatcher — that declares no
+6. A tool whose `Args` is an internally tagged enum — so registration derives
+   a `dispatcher_schema` and clients see a dispatcher — that declares no
    `ACTION_ARG_SPECS`. Nothing would then enumerate its actions: the scope
    gate falls back to whole-tool grants, the catalog lists none, REST serves
    no action route, and arguments are validated against every variant's
@@ -246,13 +246,11 @@ writes use the same tool with the matching action key.
    other than `action`, a different action set, or different
    `allowed_fields`/`required_fields` for an action. Each action also carries
    its generated, closed, `$ref`-free `argument_schema`; freeze reruns the
-   same root-only field analysis used by schema generation and rejects
-   missing, malformed, reopened, root-`action`, duplicate, or drifting
-   metadata. Two specs naming the same action fail here too — a set comparison
-   cannot see the collapse, and the later spec would never be read — as do
-   specs on a tool whose `Args` is a plain struct, and a schema whose
-   `x-proxima-actions` is present but not an object, which is a malformed
-   extension rather than an absent one.
+   same root-only field analysis used by schema generation and rejects a
+   malformed, reopened, root-`action`, `$ref`-carrying or drifting one. Two
+   specs naming the same action fail here too — a set comparison cannot see
+   the collapse, and the later spec would never be read — as do specs on a
+   tool whose `Args` is a plain struct.
 8. Contract/registration drift: two contracts claiming the same ordinal, a
    contract set with no flavor #0 in it, resources declared by a flavor other
    than #0, a contract schema id carrying another flavor's prefix, a

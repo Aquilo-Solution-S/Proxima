@@ -7,27 +7,45 @@
 //! which do not resolve `$ref` still render every field (see commit
 //! 37f209b). They differ in the client-facing normalization applied
 //! afterwards; see `mcp_output_schema`.
+//!
+//! What reaches the wire is plain JSON Schema: no `x-` extension, no
+//! `$schema`, no Rust type name as `title`, no non-standard `format`. A
+//! dispatcher's per-action contract is typed data
+//! ([`McpDispatcherSchema`]) the flat `inputSchema` is rendered from, so a
+//! caller shown a subset of actions is shown only their fields and prose.
 
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 
-/// Generate a `$ref`-free draft-2020-12 argument schema for `T`.
+/// A tool's argument schema as registration derives it from `Args`.
+#[derive(Debug, Clone)]
+pub(crate) struct McpArgsSchema {
+    /// The complete wire `inputSchema`.
+    pub(crate) schema: serde_json::Value,
+    /// A tagged-enum dispatcher's per-action contract; `None` for a flat
+    /// tool.
+    pub(crate) dispatcher: Option<McpDispatcherSchema>,
+}
+
+/// Generate the `$ref`-free draft-2020-12 argument schema for `T`.
 ///
 /// Panics at registration (startup) if `T` is recursive: `schemars`
 /// cannot inline a recursive subschema, so it emits a `$ref` that no
 /// inlining pass can eliminate. A recursive MCP tool argument type is a
-/// registration error.
-pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
-    let mut settings = SchemaSettings::draft2020_12();
-    settings.inline_subschemas = true;
-    let schema = settings.into_generator().into_root_schema_for::<T>();
-    let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
-    flatten_root_tagged_enum(&mut value).unwrap_or_else(|error| {
+/// registration error. So is a dispatcher two of whose actions give one
+/// field incompatible schemas: the flat `inputSchema` could not describe
+/// both.
+pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> McpArgsSchema {
+    let mut value = generated_schema::<T>(SchemaSettings::draft2020_12());
+    let dispatcher = derive_dispatcher(&value).unwrap_or_else(|error| {
         panic!(
-            "MCP tool type `{}` has invalid local dispatcher schema references: {error}",
+            "MCP tool type `{}` has an invalid dispatcher schema: {error}",
             std::any::type_name::<T>(),
         )
     });
+    if let Some(dispatcher) = &dispatcher {
+        value = dispatcher.render(|_| true);
+    }
     ensure_client_safe_root::<T>(&mut value);
     assert!(
         !schema_contains_ref(&value),
@@ -36,10 +54,154 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
         std::any::type_name::<T>(),
     );
     remove_definition_containers(&mut value);
+    McpArgsSchema {
+        schema: value,
+        dispatcher,
+    }
+}
+
+/// `T`'s schema with subschemas inlined, `$schema` and the Rust type name
+/// (`title`) dropped from the root, every non-standard `format` and
+/// `default: null` removed, and doc-comment wraps rejoined.
+fn generated_schema<T: JsonSchema>(mut settings: SchemaSettings) -> serde_json::Value {
+    settings.inline_subschemas = true;
+    let schema = settings.into_generator().into_root_schema_for::<T>();
+    let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    if let Some(root) = value.as_object_mut() {
+        root.remove("$schema");
+        root.remove("title");
+    }
+    strip_nonstandard_formats(&mut value);
+    strip_null_defaults(&mut value);
+    unwrap_descriptions(&mut value);
     value
 }
 
+/// Drop `default: null`: an optional field's absence already means none,
+/// so the keyword is payload that tells a model nothing.
+fn strip_null_defaults(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    if map.get("default").is_some_and(serde_json::Value::is_null) {
+        map.remove("default");
+    }
+    for_each_subschema_mut(map, &mut strip_null_defaults);
+}
+
+/// Rejoin the hard wraps a multi-line `///` comment leaves in a
+/// `description`. A blank line (paragraph) and a line opening a list item
+/// (`- `, `* `, `1. `) keep their break; every other break was the source
+/// file's line width, not the author's meaning.
+fn unwrap_descriptions(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(serde_json::Value::String(text)) = map.get_mut("description")
+        && text.contains('\n')
+    {
+        *text = unwrap_lines(text);
+    }
+    for_each_subschema_mut(map, &mut unwrap_descriptions);
+}
+
+fn unwrap_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut lines = text.split('\n').map(str::trim_end).peekable();
+    while let Some(line) = lines.next() {
+        out.push_str(line);
+        let Some(next) = lines.peek() else {
+            break;
+        };
+        let next = next.trim_start();
+        let keeps_break = line.is_empty()
+            || next.is_empty()
+            || next.starts_with("- ")
+            || next.starts_with("* ")
+            || next.split_once(". ").is_some_and(|(number, _)| {
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+            });
+        out.push(if keeps_break { '\n' } else { ' ' });
+    }
+    out
+}
+
+/// The `format` values JSON Schema 2020-12 defines. schemars also writes
+/// Rust widths (`uint32`, `int64`, `float`, …), which no JSON Schema
+/// validator or model API knows; the bound they imply is `minimum` or the
+/// server's own decode.
+const STANDARD_FORMATS: &[&str] = &[
+    "date-time",
+    "date",
+    "time",
+    "duration",
+    "email",
+    "idn-email",
+    "hostname",
+    "idn-hostname",
+    "ipv4",
+    "ipv6",
+    "uri",
+    "uri-reference",
+    "iri",
+    "iri-reference",
+    "uuid",
+    "uri-template",
+    "json-pointer",
+    "relative-json-pointer",
+    "regex",
+];
+
+fn strip_nonstandard_formats(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    if map
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|format| !STANDARD_FORMATS.contains(&format))
+    {
+        map.remove("format");
+    }
+    for_each_subschema_mut(map, &mut strip_nonstandard_formats);
+}
+
+/// The output schema as `tools/list` sends it: validation keywords only.
+///
+/// Output-schema prose never reaches a model — model APIs carry a tool's
+/// name, description and input schema — so `outputSchema` is a client-side
+/// validation contract and its annotations are payload. Drops
+/// `description`, `title`, `examples`, `default`, `$comment`, `$schema` and
+/// non-standard `format` at every schema position; property *names* are
+/// untouched. The registry keeps the documented schema for the REST
+/// projection's `OpenAPI` document.
+#[must_use]
+pub fn mcp_wire_output_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let mut wire = schema.clone();
+    if let Some(root) = wire.as_object_mut() {
+        root.remove("$schema");
+    }
+    strip_annotations(&mut wire);
+    strip_nonstandard_formats(&mut wire);
+    wire
+}
+
+fn strip_annotations(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    for key in ["description", "title", "examples", "default", "$comment"] {
+        map.remove(key);
+    }
+    for_each_subschema_mut(map, &mut strip_annotations);
+}
+
 /// Generate a `$ref`-free draft-2020-12 *output* schema for `T`.
+///
+/// Generated for serialization, because a reply is what `T` serializes to:
+/// a field `#[serde(skip_serializing_if)]` may omit is optional here, where
+/// the deserialize contract would require it and a strict client would
+/// refuse the reply.
 ///
 /// MCP output schemas declare an object root. Output unions retain their
 /// branches, so clients can validate each reply variant; unlike argument
@@ -47,7 +209,7 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
 /// Recursive output types still panic at registration because their `$ref`
 /// cannot be inlined.
 pub(crate) fn mcp_output_schema<T: JsonSchema>() -> Result<serde_json::Value, String> {
-    let mut settings = SchemaSettings::draft2020_12();
+    let mut settings = SchemaSettings::draft2020_12().for_serialize();
     settings.inline_subschemas = true;
     let schema = settings.into_generator().into_root_schema_for::<T>();
     let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
@@ -206,29 +368,13 @@ pub fn schema_bound_mismatches(registry: &crate::FlavorRegistryFrozen) -> Vec<St
             continue;
         };
         for (field, spec) in properties {
-            // A dispatcher's top-level description is a placeholder pointing at
-            // `x-proxima-actions`, where the real prose lives; `minimum` stays
-            // on the top-level property.
-            let mut prose = vec![
-                spec.get("description")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default(),
-            ];
-            if let Some(actions) = tool
-                .args_schema
-                .get("x-proxima-actions")
-                .and_then(serde_json::Value::as_object)
-            {
-                prose.extend(actions.values().filter_map(|action| {
-                    action
-                        .get("field_descriptions")
-                        .and_then(|described| described.get(field))
-                        .and_then(serde_json::Value::as_str)
-                }));
-            }
-            // Descriptions wrap, so a claim can straddle a newline.
-            let joined = prose
-                .join(" ")
+            // A shared dispatcher field carries every action's prose inline,
+            // so the top-level description is the whole claim. Descriptions
+            // wrap, so a claim can straddle a newline.
+            let joined = spec
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -265,27 +411,109 @@ pub fn schema_bound_mismatches(registry: &crate::FlavorRegistryFrozen) -> Vec<St
     offenders
 }
 
-/// Flatten a schemars root `oneOf` for an internally tagged enum into a plain
-/// object schema whose discriminator is the enum's own `#[serde(tag = "...")]`
-/// key (e.g. `action`, `kind`), exposed as a string enum.
+/// One action of a tagged-enum dispatcher, derived from its variant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpActionSchema {
+    /// The discriminator value that selects this action.
+    pub action: String,
+    /// What the action does: the variant's doc comment.
+    pub description: Option<String>,
+    /// The closed schema of this action's own fields: discriminator
+    /// removed, root branch fields hoisted as unconstrained properties so
+    /// the root names the whole vocabulary.
+    pub argument_schema: serde_json::Value,
+}
+
+impl McpActionSchema {
+    /// The root fields this action accepts, as its schema derives them.
+    #[must_use]
+    pub fn allowed_fields(&self) -> Vec<String> {
+        analyze_root_fields(&self.argument_schema)
+            .map(|fields| fields.allowed)
+            .unwrap_or_default()
+    }
+
+    /// The root fields this action requires, as its schema derives them.
+    #[must_use]
+    pub fn required_fields(&self) -> Vec<String> {
+        analyze_root_fields(&self.argument_schema)
+            .map(|fields| fields.required)
+            .unwrap_or_default()
+    }
+}
+
+/// A dispatcher's argument contract, one entry per action in declaration
+/// order, derived from an internally tagged `Args` enum.
 ///
-/// Anthropic/OpenAI-compatible tool schemas cannot rely on a root-level union.
-/// Runtime serde validation remains authoritative for per-action required
-/// fields; the flattened schema is the MCP/client-facing discovery surface.
-fn flatten_root_tagged_enum(value: &mut serde_json::Value) -> Result<bool, String> {
+/// The flat wire `inputSchema` is rendered from it ([`Self::render`]):
+/// whole at registration, narrowed per caller. Field lists, per-action prose
+/// and the action enum therefore cannot disagree with what the caller may
+/// run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpDispatcherSchema {
+    /// The serde tag (`#[serde(tag = "...")]`). `try_freeze` requires
+    /// `action`, the key scope keys and REST routes read.
+    pub discriminator: String,
+    /// The enum's own doc comment.
+    pub description: Option<String>,
+    pub actions: Vec<McpActionSchema>,
+}
+
+impl McpDispatcherSchema {
+    /// The action named `action`.
+    #[must_use]
+    pub fn action(&self, action: &str) -> Option<&McpActionSchema> {
+        self.actions.iter().find(|schema| schema.action == action)
+    }
+
+    /// The flat `inputSchema` over the actions `permitted` admits.
+    ///
+    /// - the discriminator is a string enum of those actions; its
+    ///   description gives one line per action: what it does, then its
+    ///   required and optional fields;
+    /// - every other property is a field of at least one of them. A field
+    ///   whose schemas differ only in nullability is widened to admit both;
+    ///   one an action leaves unconstrained stays unconstrained;
+    /// - a field whose prose differs by action carries each action's prose
+    ///   under a "Depends on" heading naming the discriminator, so no client
+    ///   has to read anything but the schema.
+    ///
+    /// Registration refuses a dispatcher whose actions give a field
+    /// incompatible schemas; a hand-built schema with such a field renders
+    /// it unconstrained.
+    #[must_use]
+    pub fn render(&self, permitted: impl Fn(&str) -> bool) -> serde_json::Value {
+        let actions = self
+            .actions
+            .iter()
+            .filter(|schema| permitted(&schema.action))
+            .collect::<Vec<_>>();
+        render_dispatcher(self, &actions)
+    }
+}
+
+/// Derive the dispatcher contract of a schemars root `oneOf` for an
+/// internally tagged enum, or `None` when the root is not that shape.
+///
+/// Anthropic/OpenAI-compatible tool schemas cannot rely on a root-level
+/// union, so the wire carries the rendered flat object. Runtime serde
+/// validation remains authoritative for per-action required fields.
+///
+/// # Errors
+///
+/// An unresolved, non-local or cyclic local reference, or a field two
+/// actions give incompatible schemas.
+fn derive_dispatcher(value: &serde_json::Value) -> Result<Option<McpDispatcherSchema>, String> {
     let Some(raw_variants) = value
         .as_object()
         .and_then(|map| map.get("oneOf"))
         .and_then(serde_json::Value::as_array)
-        .cloned()
     else {
-        return Ok(false);
+        return Ok(None);
     };
 
-    // Keep the generated root untouched until every variant has been copied,
-    // resolved and validated. An unresolved/non-local/cyclic reference must
-    // fail registration with the original `$defs` still present rather than
-    // silently dropping the only diagnostic evidence.
+    // Resolve every definition first: an unresolved/non-local/cyclic
+    // reference must fail registration even when no variant reaches it.
     let defs = local_defs(value);
     for definition in defs.draft.values().chain(defs.legacy.values()) {
         let mut checked_definition = definition.clone();
@@ -293,101 +521,269 @@ fn flatten_root_tagged_enum(value: &mut serde_json::Value) -> Result<bool, Strin
     }
     let mut variants = Vec::with_capacity(raw_variants.len());
     for raw_variant in raw_variants {
-        let mut variant = raw_variant;
+        let mut variant = raw_variant.clone();
         inline_variant_refs(&mut variant, &defs)?;
         remove_definition_containers(&mut variant);
         variants.push(variant);
     }
 
-    // Detect the discriminator KEY: the single property name present across
-    // every variant carrying a string `const`, with a distinct value per
-    // variant. For an internally-tagged enum this is the `#[serde(tag = ...)]`
-    // field. Bail (leaving the schema unflattened) if there is not exactly one.
+    // The discriminator KEY: the single property present across every
+    // variant with a distinct string `const` per variant — for an
+    // internally tagged enum, the `#[serde(tag = ...)]` field.
     let Some(discriminator) = detect_discriminator_key(&variants) else {
-        return Ok(false);
+        return Ok(None);
     };
-
-    let mut action_values = Vec::with_capacity(variants.len());
-    let mut merged_properties = serde_json::Map::new();
-    let mut generated_placeholders = std::collections::BTreeSet::new();
-    let mut action_metadata = serde_json::Map::new();
-    let mut field_occurrences = std::collections::BTreeMap::<String, usize>::new();
-
+    let mut actions = Vec::with_capacity(variants.len());
     for variant in &variants {
-        // A missing-properties / missing-const variant means this is not the
-        // internally-tagged shape we can flatten; bail and leave it unflattened.
-        if merge_variant(
-            variant,
-            &discriminator,
-            &mut action_values,
-            &mut merged_properties,
-            &mut generated_placeholders,
-            &mut action_metadata,
-            &mut field_occurrences,
-        )
-        .is_none()
-        {
-            return Ok(false);
-        }
+        // A variant without an object root or a string `const` under the
+        // discriminator is not the shape this derives; leave it a union.
+        let (Some(action), Some(argument_schema)) = (
+            root_const_value(variant, &discriminator),
+            normalize_action_argument_schema(variant, &discriminator),
+        ) else {
+            return Ok(None);
+        };
+        actions.push(McpActionSchema {
+            action,
+            description: root_variant_description(variant).map(one_line),
+            argument_schema,
+        });
     }
-
-    if action_values.is_empty() {
-        return Ok(false);
+    if actions.is_empty() {
+        return Ok(None);
     }
-
-    for (field, count) in field_occurrences {
-        if count > 1
-            && let Some(property_schema) = merged_properties.get_mut(&field)
-        {
-            neutralize_shared_property_description(property_schema, &field, &discriminator);
-        }
-    }
-
-    let discriminator_description = {
-        let base = format!(
-            "Dispatcher {discriminator} to execute. Additional fields depend on the selected {discriminator}."
-        );
-        let signatures = action_signature_block(&action_values, &action_metadata);
-        if signatures.is_empty() {
-            base
-        } else {
-            // Standard MCP clients render a property's description but not our
-            // `x-proxima-actions` extension, so the per-action field contract is
-            // inlined here where every client can see it.
-            format!("{base}\nAction signatures (required, then +optional):\n{signatures}")
-        }
+    let dispatcher = McpDispatcherSchema {
+        discriminator,
+        description: value
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        actions,
     };
-    merged_properties.insert(
-        discriminator.clone(),
+    // Every subset of mutually compatible actions merges, so checking the
+    // whole set once is what makes every narrowed render exact.
+    for (name, occurrences) in field_occurrences(&dispatcher.actions.iter().collect::<Vec<_>>()) {
+        merge_typed(name, &occurrences)?;
+    }
+    Ok(Some(dispatcher))
+}
+
+/// Field name → every (action, property schema) naming it, in first-seen
+/// order so the rendered properties follow declaration order.
+type FieldOccurrences<'a> = Vec<(&'a str, Vec<(&'a str, &'a serde_json::Value)>)>;
+
+fn field_occurrences<'a>(actions: &[&'a McpActionSchema]) -> FieldOccurrences<'a> {
+    let mut fields: FieldOccurrences<'a> = Vec::new();
+    for action in actions {
+        let properties = action
+            .argument_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        for (name, property) in properties.into_iter().flatten() {
+            let occurrence = (action.action.as_str(), property);
+            match fields.iter_mut().find(|(field, _)| field == name) {
+                Some((_, occurrences)) => occurrences.push(occurrence),
+                None => fields.push((name.as_str(), vec![occurrence])),
+            }
+        }
+    }
+    fields
+}
+
+/// The flat object over `actions`.
+fn render_dispatcher(
+    dispatcher: &McpDispatcherSchema,
+    actions: &[&McpActionSchema],
+) -> serde_json::Value {
+    let discriminator = dispatcher.discriminator.as_str();
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        discriminator.to_owned(),
         serde_json::json!({
             "type": "string",
-            "enum": action_values,
-            "description": discriminator_description,
+            "enum": actions.iter().map(|action| action.action.as_str()).collect::<Vec<_>>(),
+            "description": action_guide(actions),
         }),
     );
-    let Some(map) = value.as_object_mut() else {
-        return Ok(false);
+    for (name, occurrences) in field_occurrences(actions) {
+        properties.insert(
+            name.to_owned(),
+            merge_field(name, discriminator, &occurrences),
+        );
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("type".to_owned(), serde_json::json!("object"));
+    if let Some(description) = &dispatcher.description {
+        root.insert("description".to_owned(), serde_json::json!(description));
+    }
+    root.insert(
+        "properties".to_owned(),
+        serde_json::Value::Object(properties),
+    );
+    root.insert("required".to_owned(), serde_json::json!([discriminator]));
+    root.insert("additionalProperties".to_owned(), serde_json::json!(false));
+    serde_json::Value::Object(root)
+}
+
+/// The discriminator's description: one line per action — what it does,
+/// then its required and optional fields. Standard clients render a
+/// property's description and nothing else, so the per-action contract
+/// lives here.
+fn action_guide(actions: &[&McpActionSchema]) -> String {
+    use std::fmt::Write as _;
+    let mut guide =
+        String::from("The action to run. Each action takes only the fields listed for it.");
+    for action in actions {
+        let (allowed, required) = (action.allowed_fields(), action.required_fields());
+        let optional = allowed
+            .iter()
+            .filter(|field| !required.contains(field))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        write!(guide, "\n- {}:", action.action).expect("write to String is infallible");
+        if let Some(description) = &action.description {
+            write!(guide, " {}", sentence(description)).expect("write to String is infallible");
+        }
+        if !required.is_empty() {
+            write!(guide, " Required: {}.", required.join(", "))
+                .expect("write to String is infallible");
+        }
+        if !optional.is_empty() {
+            write!(guide, " Optional: {}.", optional.join(", "))
+                .expect("write to String is infallible");
+        }
+        if allowed.is_empty() {
+            guide.push_str(" No fields.");
+        }
+    }
+    guide
+}
+
+/// One field as the flat object advertises it, from every action naming it.
+///
+/// Identical occurrences are the field as declared. Otherwise the schemas
+/// merge — nullability widens, an unconstrained occurrence (a hoisted
+/// branch field) leaves the field unconstrained — `title` goes, `default`
+/// stays only when every action agrees, and the prose is
+/// [`shared_description`].
+fn merge_field(
+    name: &str,
+    discriminator: &str,
+    occurrences: &[(&str, &serde_json::Value)],
+) -> serde_json::Value {
+    let first = occurrences[0].1;
+    if occurrences.iter().all(|(_, schema)| *schema == first) {
+        return first.clone();
+    }
+    let unconstrained = occurrences
+        .iter()
+        .any(|(_, schema)| is_unconstrained(schema));
+    let mut field = match merge_typed(name, occurrences) {
+        Ok(Some(merged)) if !unconstrained => merged,
+        _ => serde_json::Value::Object(serde_json::Map::new()),
     };
-    map.remove("oneOf");
-    map.remove("$defs");
-    map.remove("definitions");
-    map.insert(
-        "properties".to_string(),
-        serde_json::Value::Object(merged_properties),
-    );
-    map.insert(
-        "required".to_string(),
-        serde_json::json!([discriminator.clone()]),
-    );
-    map.insert(
-        "additionalProperties".to_string(),
-        serde_json::Value::Bool(false),
-    );
-    map.insert(
-        "x-proxima-actions".to_string(),
-        serde_json::Value::Object(action_metadata),
-    );
-    Ok(true)
+    if let Some(map) = field.as_object_mut() {
+        map.remove("title");
+        let default = first.get("default");
+        match default.filter(|_| {
+            occurrences
+                .iter()
+                .all(|(_, schema)| schema.get("default") == default)
+        }) {
+            Some(default) => map.insert("default".to_owned(), default.clone()),
+            None => map.remove("default"),
+        };
+        match shared_description(discriminator, occurrences) {
+            Some(description) => map.insert("description".to_owned(), description.into()),
+            None => map.remove("description"),
+        };
+    }
+    field
+}
+
+/// A schema that admits every value: `{}`/`true` up to annotations — what
+/// hoisting a branch-only field leaves at an action's root.
+fn is_unconstrained(schema: &serde_json::Value) -> bool {
+    let shape = validation_shape(schema);
+    shape == serde_json::json!({}) || shape == serde_json::Value::Bool(true)
+}
+
+/// The constrained occurrences of one field merged by widening
+/// nullability; `None` when every occurrence is unconstrained.
+///
+/// # Errors
+///
+/// Two constrained occurrences whose validation differs beyond nullability:
+/// no flat property describes both.
+fn merge_typed(
+    name: &str,
+    occurrences: &[(&str, &serde_json::Value)],
+) -> Result<Option<serde_json::Value>, String> {
+    let mut merged: Option<serde_json::Value> = None;
+    for (action, schema) in occurrences {
+        if is_unconstrained(schema) {
+            continue;
+        }
+        merged = Some(match merged {
+            None => (*schema).clone(),
+            Some(current) => nullable_compatible_schema(&current, schema).ok_or_else(|| {
+                format!(
+                    "conflicting property `{name}` while flattening action `{action}`: \
+                     {current:#} vs {schema:#}"
+                )
+            })?,
+        });
+    }
+    Ok(merged)
+}
+
+/// One description when every action describing the field agrees; else
+/// each distinct text under the actions it belongs to.
+fn shared_description(
+    discriminator: &str,
+    occurrences: &[(&str, &serde_json::Value)],
+) -> Option<String> {
+    let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (action, schema) in occurrences {
+        let Some(description) = schema
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        match groups.iter_mut().find(|(text, _)| *text == description) {
+            Some((_, actions)) => actions.push(action),
+            None => groups.push((description, vec![action])),
+        }
+    }
+    match groups.as_slice() {
+        [] => None,
+        [(description, _)] => Some((*description).to_owned()),
+        _ => {
+            Some(
+                std::iter::once(format!("Depends on `{discriminator}`:"))
+                    .chain(groups.iter().map(|(text, actions)| {
+                        format!("- {}: {}", actions.join(", "), one_line(text))
+                    }))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+    }
+}
+
+/// `text` on one line: a doc comment's wrapped paragraphs joined by spaces.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` on one line, ending as a sentence.
+fn sentence(text: &str) -> String {
+    let mut line = one_line(text);
+    if !line.ends_with(['.', '!', '?']) {
+        line.push('.');
+    }
+    line
 }
 
 /// The root fields of one action schema. This is deliberately a root-only
@@ -730,19 +1126,14 @@ fn root_node_has_fields(schema: &serde_json::Value) -> Result<bool, String> {
     Ok(contributes)
 }
 
-/// Normalize one raw tagged-enum variant into the action-only schema carried
-/// in x-proxima-actions. The copied variant's local refs are expanded first;
-/// this pass then removes only the direct discriminator and performs the root
+/// Normalize one raw tagged-enum variant into its action's own argument
+/// schema. The copied variant's local refs are expanded first; this pass
+/// then removes only the direct discriminator and performs the root
 /// closure/field hoist. Nested property schemas remain otherwise untouched.
-struct NormalizedActionArgumentSchema {
-    schema: serde_json::Value,
-    generated_placeholders: std::collections::BTreeSet<String>,
-}
-
 fn normalize_action_argument_schema(
     variant: &serde_json::Value,
     discriminator: &str,
-) -> Option<NormalizedActionArgumentSchema> {
+) -> Option<serde_json::Value> {
     let mut schema = variant.clone();
     {
         let map = schema.as_object_mut()?;
@@ -789,7 +1180,6 @@ fn normalize_action_argument_schema(
 
     let (hoisted, _) = analyze_root_node(&schema, true).ok()?;
     let mut merged = serde_json::Map::new();
-    let mut generated_placeholders = std::collections::BTreeSet::new();
     if let Some(root_properties) = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
@@ -809,7 +1199,6 @@ fn normalize_action_argument_schema(
         // branch. A neutral root property makes the flat object vocabulary
         // closed without accidentally requiring a branch's value shape on
         // every action input.
-        generated_placeholders.insert(name.clone());
         merged.insert(name, serde_json::Value::Object(serde_json::Map::new()));
     }
     schema
@@ -828,10 +1217,7 @@ fn normalize_action_argument_schema(
         map.insert("required".to_string(), serde_json::Value::Array(required));
     }
     validate_closed_root_schema(&schema).ok()?;
-    Some(NormalizedActionArgumentSchema {
-        schema,
-        generated_placeholders,
-    })
+    Some(schema)
 }
 
 fn root_const_value(schema: &serde_json::Value, discriminator: &str) -> Option<String> {
@@ -1120,139 +1506,6 @@ fn remove_definition_containers_from_schema(value: &mut serde_json::Value) {
     for_each_subschema_mut(map, &mut remove_definition_containers_from_schema);
 }
 
-/// Fold one tagged-enum variant into the flattener's accumulators.
-///
-/// Returns `None` when the variant is not the expected internally-tagged object
-/// shape (no object root, or no string `const` under `discriminator`), which
-/// signals the caller to abort flattening and leave the schema as a root union.
-fn merge_variant(
-    variant: &serde_json::Value,
-    discriminator: &str,
-    action_values: &mut Vec<serde_json::Value>,
-    merged_properties: &mut serde_json::Map<String, serde_json::Value>,
-    generated_placeholders: &mut std::collections::BTreeSet<String>,
-    action_metadata: &mut serde_json::Map<String, serde_json::Value>,
-    field_occurrences: &mut std::collections::BTreeMap<String, usize>,
-) -> Option<()> {
-    let action = root_const_value(variant, discriminator)?;
-    action_values.push(serde_json::Value::String(action.clone()));
-    let normalized = normalize_action_argument_schema(variant, discriminator)?;
-    let argument_schema = normalized.schema;
-    let action_placeholders = normalized.generated_placeholders;
-    let fields = analyze_root_fields(&argument_schema).ok()?;
-    let allowed_fields = fields
-        .allowed
-        .iter()
-        .map(|field| serde_json::Value::String(field.clone()))
-        .collect::<Vec<_>>();
-    let required = fields
-        .required
-        .iter()
-        .map(|field| serde_json::Value::String(field.clone()))
-        .collect::<Vec<_>>();
-    let mut field_descriptions = serde_json::Map::new();
-    let normalized_properties = argument_schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .ok_or(())
-        .ok()?;
-    for (name, property_schema) in normalized_properties {
-        if name != discriminator {
-            *field_occurrences.entry(name.clone()).or_default() += 1;
-            if let Some(description) = property_schema
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-            {
-                field_descriptions.insert(
-                    name.clone(),
-                    serde_json::Value::String(description.to_string()),
-                );
-            }
-            merge_property_schema(
-                merged_properties,
-                generated_placeholders,
-                name,
-                property_schema,
-                action_placeholders.contains(name),
-                &action,
-                discriminator,
-            );
-        }
-    }
-    let mut metadata = serde_json::json!({
-        "allowed_fields": allowed_fields,
-        "required_fields": required,
-        "field_descriptions": field_descriptions,
-        "argument_schema": argument_schema,
-    });
-    if let Some(description) = root_variant_description(variant) {
-        metadata
-            .as_object_mut()
-            .expect("action metadata is an object")
-            .insert(
-                "description".to_string(),
-                serde_json::Value::String(description.to_string()),
-            );
-    }
-    action_metadata.insert(action, metadata);
-    Some(())
-}
-
-/// Build a compact one-line-per-action signature block from the accumulated
-/// `x-proxima-actions` metadata: `- <action>: <required> (+ <optional>)`.
-/// Optional fields are `allowed_fields` minus `required_fields`. Empty when no
-/// action carries any field.
-fn action_signature_block(
-    action_values: &[serde_json::Value],
-    action_metadata: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    use std::fmt::Write as _;
-    let mut lines = Vec::new();
-    for action_value in action_values {
-        let Some(action) = action_value.as_str() else {
-            continue;
-        };
-        let Some(meta) = action_metadata
-            .get(action)
-            .and_then(serde_json::Value::as_object)
-        else {
-            continue;
-        };
-        let field_list = |key: &str| -> Vec<String> {
-            meta.get(key)
-                .and_then(serde_json::Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let required = field_list("required_fields");
-        let optional: Vec<String> = field_list("allowed_fields")
-            .into_iter()
-            .filter(|field| !required.contains(field))
-            .collect();
-        let mut line = format!("- {action}: ");
-        match (required.is_empty(), optional.is_empty()) {
-            (true, true) => line.push_str("(no args)"),
-            (true, false) => {
-                write!(line, "(+ {})", optional.join(", ")).expect("write to String is infallible");
-            }
-            (false, true) => line.push_str(&required.join(", ")),
-            (false, false) => {
-                line.push_str(&required.join(", "));
-                write!(line, " (+ {})", optional.join(", "))
-                    .expect("write to String is infallible");
-            }
-        }
-        lines.push(line);
-    }
-    lines.join("\n")
-}
-
 /// Top-level property names in `args_schema` that carry no non-empty
 /// `description`. Used by tool registration to warn (never fail) on
 /// under-documented MCP tool fields.
@@ -1359,47 +1612,6 @@ fn collect_root_consts(schema: &serde_json::Value, out: &mut Vec<(String, String
         }
     }
     Some(())
-}
-
-fn merge_property_schema(
-    merged_properties: &mut serde_json::Map<String, serde_json::Value>,
-    generated_placeholders: &mut std::collections::BTreeSet<String>,
-    name: &str,
-    property_schema: &serde_json::Value,
-    incoming_is_placeholder: bool,
-    action: &str,
-    discriminator: &str,
-) {
-    let Some(existing) = merged_properties.get_mut(name) else {
-        merged_properties.insert(name.to_string(), property_schema.clone());
-        if incoming_is_placeholder {
-            generated_placeholders.insert(name.to_string());
-        }
-        return;
-    };
-    let existing_is_placeholder = generated_placeholders.contains(name);
-    if existing_is_placeholder || incoming_is_placeholder {
-        // A generated `{}` is a compatibility projection, not a claim that
-        // this action accepts every property shape only because the other
-        // action's root field happened to be typed. Keep it widest so the
-        // flattened root cannot reject a value accepted by either action.
-        if !existing_is_placeholder {
-            *existing = serde_json::Value::Object(serde_json::Map::new());
-            generated_placeholders.insert(name.to_string());
-        }
-        return;
-    }
-    if let Some(widened) = nullable_compatible_schema(existing, property_schema) {
-        let changed = existing != &widened || existing != property_schema;
-        *existing = widened;
-        if changed {
-            neutralize_shared_property_description(existing, name, discriminator);
-        }
-        return;
-    }
-    panic!(
-        "conflicting property `{name}` while flattening action `{action}`: {existing:#} vs {property_schema:#}"
-    );
 }
 
 /// Merge two shared root property schemas when their only validation
@@ -1510,24 +1722,6 @@ fn nullable_type_union(
         values.push(serde_json::Value::String("null".to_string()));
     }
     Some(serde_json::Value::Array(values))
-}
-
-fn neutralize_shared_property_description(
-    value: &mut serde_json::Value,
-    name: &str,
-    discriminator: &str,
-) {
-    if let serde_json::Value::Object(map) = value {
-        for key in ["default", "title"] {
-            map.remove(key);
-        }
-        map.insert(
-            "description".to_string(),
-            serde_json::Value::String(format!(
-                "Shared dispatcher field `{name}`. Semantics and requiredness depend on `{discriminator}`; see `x-proxima-actions` or `proxima://tools` for {discriminator}-specific guidance."
-            )),
-        );
-    }
 }
 
 fn validation_shape(value: &serde_json::Value) -> serde_json::Value {
@@ -1711,7 +1905,6 @@ mod tests {
         let tagged = mcp_output_schema::<CollidingDispatcher>().unwrap();
         assert_eq!(tagged["type"], "object");
         assert_eq!(tagged["oneOf"].as_array().unwrap().len(), 2);
-        assert!(tagged.get("x-proxima-actions").is_none());
         assert!(tagged.get("properties").is_none());
     }
 
@@ -1787,18 +1980,30 @@ mod tests {
         B {},
     }
 
-    /// A `kind`-tagged dispatcher with a field (`shared`) present in more than
-    /// one variant, so the flattener neutralizes its description. That guidance
-    /// text must name the actual discriminator (`kind`), not a hardcoded
-    /// `action`.
+    /// A `kind`-tagged dispatcher with a field (`shared`) whose prose differs
+    /// by variant, so the render inlines each variant's prose. That text must
+    /// name the actual discriminator (`kind`), not a hardcoded `action`.
     #[derive(Deserialize, JsonSchema)]
     #[allow(dead_code)]
     #[serde(tag = "kind")]
     enum DemoShared {
         #[serde(rename = "left")]
-        Left { shared: Option<String> },
+        Left {
+            /// Text for the left side.
+            shared: Option<String>,
+        },
         #[serde(rename = "right")]
-        Right { shared: Option<String> },
+        Right {
+            /// Text for the right side.
+            shared: String,
+            /// Only the right side counts.
+            count: u32,
+        },
+        #[serde(rename = "middle")]
+        Middle {
+            /// Text for the left side.
+            shared: Option<String>,
+        },
     }
 
     #[derive(Deserialize, JsonSchema)]
@@ -2058,31 +2263,33 @@ mod tests {
         bare: String,
     }
 
+    fn dispatcher(args: &McpArgsSchema) -> &McpDispatcherSchema {
+        args.dispatcher
+            .as_ref()
+            .unwrap_or_else(|| panic!("a tagged enum derives a dispatcher: {:#}", args.schema))
+    }
+
     #[test]
-    fn dispatcher_description_carries_per_action_signatures() {
-        let schema = mcp_tool_schema::<Demo>();
-        let description = schema
+    fn the_action_guide_gives_each_action_its_prose_and_fields() {
+        let args = mcp_tool_schema::<Demo>();
+        let guide = args
+            .schema
             .pointer("/properties/kind/description")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("kind discriminator description present: {schema:#}"));
+            .unwrap_or_else(|| panic!("kind discriminator description present: {:#}", args.schema));
         assert!(
-            description.contains("Action signatures"),
-            "dispatcher description must inline the signature block: {description}",
-        );
-        // Variant `a` carries one optional field `x`; variant `b` carries none.
-        assert!(
-            description.contains("- a: (+ x)"),
-            "per-action signature must list optional fields: {description}",
+            guide.contains("\n- a: Inspect one value without changing it. Optional: x."),
+            "{guide}"
         );
         assert!(
-            description.contains("- b: (no args)"),
-            "a variant with no fields must render `(no args)`: {description}",
+            guide.contains("\n- b: Apply the requested change. No fields."),
+            "{guide}"
         );
     }
 
     #[test]
     fn undescribed_property_names_flags_only_bare_fields() {
-        let schema = mcp_tool_schema::<PartiallyDescribed>();
+        let schema = mcp_tool_schema::<PartiallyDescribed>().schema;
         assert_eq!(
             undescribed_property_names(&schema),
             vec!["bare".to_string()]
@@ -2090,24 +2297,47 @@ mod tests {
     }
 
     #[test]
-    fn shared_field_description_names_the_actual_discriminator() {
-        let schema = mcp_tool_schema::<DemoShared>();
-        let description = schema
-            .pointer("/properties/shared/description")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("shared field description present: {schema:#}"));
-        assert!(
-            description.contains("depend on `kind`"),
-            "shared-field guidance must name the actual discriminator `kind`: {description}",
+    fn shared_field_prose_is_inlined_per_action_under_the_actual_discriminator() {
+        let schema = mcp_tool_schema::<DemoShared>().schema;
+        let shared = &schema["properties"]["shared"];
+        assert_eq!(
+            shared["description"],
+            "Depends on `kind`:\n- left, middle: Text for the left side.\n- right: Text for the right side.",
+            "{schema:#}"
         );
-        assert!(
-            !description.contains("`action`"),
-            "shared-field guidance must not leak the hardcoded `action` discriminator: {description}",
+        // Nullability widens; the prose of a one-action field is its own.
+        assert_eq!(shared["type"], serde_json::json!(["string", "null"]));
+        assert_eq!(
+            schema["properties"]["count"]["description"],
+            "Only the right side counts."
         );
     }
 
     #[test]
-    fn invalid_dispatcher_refs_leave_the_root_untouched_for_registration_failure() {
+    fn a_narrowed_render_names_only_the_permitted_actions() {
+        let args = mcp_tool_schema::<DemoShared>();
+        let narrowed = dispatcher(&args).render(|action| action != "right");
+        assert_eq!(
+            narrowed["properties"]["kind"]["enum"],
+            serde_json::json!(["left", "middle"])
+        );
+        assert!(
+            narrowed.pointer("/properties/count").is_none(),
+            "{narrowed:#}"
+        );
+        assert_eq!(
+            narrowed["properties"]["shared"]["description"],
+            "Text for the left side."
+        );
+        let guide = narrowed["properties"]["kind"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(!guide.contains("- right"), "{guide}");
+        assert_eq!(dispatcher(&args).render(|_| true), args.schema);
+    }
+
+    #[test]
+    fn invalid_dispatcher_refs_fail_registration() {
         let cases = [
             (
                 serde_json::json!("#/$defs/Missing"),
@@ -2129,7 +2359,7 @@ mod tests {
             ),
         ];
         for (reference, defs, expected) in cases {
-            let mut schema = serde_json::json!({
+            let schema = serde_json::json!({
                 "$defs": defs,
                 "oneOf": [{
                     "type": "object",
@@ -2141,16 +2371,8 @@ mod tests {
                     "additionalProperties": false
                 }]
             });
-            let error = flatten_root_tagged_enum(&mut schema).expect_err("invalid refs reject");
+            let error = derive_dispatcher(&schema).expect_err("invalid refs reject");
             assert!(error.contains(expected), "{error}");
-            assert!(
-                schema.get("oneOf").is_some(),
-                "invalid refs must not flatten: {schema:#}"
-            );
-            assert!(
-                schema.get("$defs").is_some(),
-                "invalid refs must retain defs: {schema:#}"
-            );
         }
     }
 
@@ -2165,7 +2387,9 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "core_goal")
             .expect("core_goal registered");
-        let argument = &descriptor.args_schema["x-proxima-actions"]["modify"]["argument_schema"];
+        let argument = descriptor
+            .action_argument_schema("modify")
+            .expect("modify action schema");
         assert_eq!(
             argument["properties"]["evidence"]["type"],
             serde_json::json!(["array", "null"])
@@ -2195,6 +2419,133 @@ mod tests {
         }
     }
 
+    /// Every registered tool's wire schemas are plain JSON Schema: no `x-`
+    /// keyword, no `$schema`, no root Rust type name, no non-standard
+    /// `format`; a dispatcher's is its full render.
+    #[test]
+    fn registered_wire_schemas_are_plain_json_schema() {
+        fn keywords(value: &serde_json::Value, out: &mut Vec<String>) {
+            let Some(map) = value.as_object() else {
+                return;
+            };
+            for (key, child) in map {
+                out.push(key.clone());
+                if let Some(format) = child.as_str().filter(|_| key == "format") {
+                    out.push(format!("format:{format}"));
+                }
+            }
+            let mut map = map.clone();
+            for_each_subschema_mut(&mut map, &mut |child| keywords(child, out));
+        }
+        let registry = crate::FlavorRegistry::default().freeze_or_panic_for_tests();
+        for tool in registry.list_mcp_tools() {
+            let mut found = Vec::new();
+            keywords(&tool.args_schema, &mut found);
+            keywords(&mcp_wire_output_schema(&tool.output_schema), &mut found);
+            assert!(
+                !tool.args_schema.to_string().contains("\"default\":null"),
+                "{}: default null",
+                tool.name
+            );
+            for keyword in &found {
+                assert!(
+                    !keyword.starts_with("x-") && keyword != "$schema",
+                    "{}: {keyword}",
+                    tool.name
+                );
+                if let Some(format) = keyword.strip_prefix("format:") {
+                    assert!(
+                        STANDARD_FORMATS.contains(&format),
+                        "{}: {format}",
+                        tool.name
+                    );
+                }
+            }
+            assert!(tool.args_schema.get("title").is_none(), "{}", tool.name);
+            if let Some(dispatcher) = &tool.dispatcher_schema {
+                assert_eq!(
+                    dispatcher.render(|_| true),
+                    tool.args_schema,
+                    "{}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn doc_comment_wraps_are_rejoined_but_paragraphs_and_lists_kept() {
+        #[derive(Deserialize, JsonSchema)]
+        #[allow(dead_code)]
+        struct Wrapped {
+            /// A description a source file
+            /// wrapped at its line width.
+            field: String,
+        }
+        assert_eq!(
+            unwrap_lines(
+                "One sentence wrapped\nat the source width.\n\nA paragraph:\n- one\n- two\n1. three"
+            ),
+            "One sentence wrapped at the source width.\n\nA paragraph:\n- one\n- two\n1. three"
+        );
+        assert_eq!(
+            mcp_tool_schema::<Wrapped>().schema["properties"]["field"]["description"],
+            "A description a source file wrapped at its line width."
+        );
+    }
+
+    #[test]
+    fn the_wire_output_schema_keeps_validation_and_property_names() {
+        let documented = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Reply",
+            "description": "What the tool returns.",
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "A field named description.",
+                    "examples": ["text"]
+                },
+                "count": { "type": "integer", "format": "uint32", "minimum": 0, "default": 1 },
+                "at": { "type": "string", "format": "date-time", "title": "When" }
+            },
+            "required": ["description"]
+        });
+        assert_eq!(
+            mcp_wire_output_schema(&documented),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "description": { "type": "string" },
+                    "count": { "type": "integer", "minimum": 0 },
+                    "at": { "type": "string", "format": "date-time" }
+                },
+                "required": ["description"]
+            })
+        );
+    }
+
+    /// A reply is what its type *serializes* to: a field serde may skip is
+    /// optional, else a strict client refuses the reply that omits it.
+    #[test]
+    fn output_schemas_follow_the_serialize_contract() {
+        #[derive(serde::Serialize, JsonSchema)]
+        struct Reply {
+            always: u32,
+            #[serde(skip_serializing_if = "core::ops::Not::not")]
+            deferred: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            maybe: Option<u32>,
+        }
+        let schema = mcp_output_schema::<Reply>().unwrap();
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["always"]),
+            "{schema:#}"
+        );
+    }
+
     #[test]
     #[should_panic(expected = "is recursive")]
     fn recursive_type_panics() {
@@ -2221,7 +2572,8 @@ mod tests {
 
     #[test]
     fn non_action_discriminator_flattens_under_its_own_tag() {
-        let schema = mcp_tool_schema::<Demo>();
+        let args = mcp_tool_schema::<Demo>();
+        let schema = &args.schema;
 
         assert_eq!(
             schema.get("type").and_then(serde_json::Value::as_str),
@@ -2276,21 +2628,22 @@ mod tests {
             "flattened schema must not require a phantom `action` field: {schema:#}",
         );
 
-        // `x-proxima-actions` is keyed by the variant values, not by `action`.
-        let actions = schema
-            .get("x-proxima-actions")
-            .and_then(serde_json::Value::as_object)
-            .unwrap_or_else(|| {
-                panic!("flattened schema must expose x-proxima-actions: {schema:#}")
-            });
-        assert!(
-            actions.contains_key("a") && actions.contains_key("b"),
-            "x-proxima-actions must be keyed by the kind values a/b: {schema:#}",
+        // The typed contract is keyed by the variant values, not by `action`.
+        let dispatcher = dispatcher(&args);
+        assert_eq!(dispatcher.discriminator, "kind");
+        assert_eq!(
+            dispatcher
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"],
         );
         assert_eq!(
-            actions.len(),
-            2,
-            "x-proxima-actions must hold one entry per variant: {schema:#}",
+            dispatcher
+                .action("a")
+                .and_then(|a| a.description.as_deref()),
+            Some("Inspect one value without changing it.")
         );
 
         // The optional `x` field of variant `a` survives as a top-level property.
@@ -2302,10 +2655,11 @@ mod tests {
 
     #[test]
     fn action_argument_schema_preserves_nested_union_and_closes_only_its_root() {
-        let schema = mcp_tool_schema::<ConditionalDispatcher>();
-        let argument = schema
-            .pointer("/x-proxima-actions/submit/argument_schema")
-            .unwrap_or_else(|| panic!("submit action schema present: {schema:#}"));
+        let args = mcp_tool_schema::<ConditionalDispatcher>();
+        let argument = &dispatcher(&args)
+            .action("submit")
+            .expect("submit action schema present")
+            .argument_schema;
         assert_eq!(argument.get("type"), Some(&serde_json::json!("object")));
         assert_eq!(
             argument.get("additionalProperties"),
@@ -2330,27 +2684,18 @@ mod tests {
         );
         assert!(!schema_contains_ref(argument));
         assert!(argument.get("$defs").is_none());
-        assert_eq!(
-            schema.pointer("/x-proxima-actions/submit/allowed_fields"),
-            Some(&serde_json::json!(["payload"]))
-        );
-        assert_eq!(
-            schema.pointer("/x-proxima-actions/submit/required_fields"),
-            Some(&serde_json::json!(["payload"]))
-        );
-        assert!(
-            schema
-                .pointer("/x-proxima-actions/submit/allowed_fields/0/text")
-                .is_none()
-        );
+        let fields = analyze_root_fields(argument).unwrap();
+        assert_eq!(fields.allowed, ["payload"]);
+        assert_eq!(fields.required, ["payload"]);
     }
 
     #[test]
     fn root_condition_fields_are_hoisted_but_requirements_stay_conditional() {
-        let schema = mcp_tool_schema::<RootConditionalDispatcher>();
-        let argument = schema
-            .pointer("/x-proxima-actions/choose/argument_schema")
-            .unwrap_or_else(|| panic!("choose action schema present: {schema:#}"));
+        let args = mcp_tool_schema::<RootConditionalDispatcher>();
+        let choose = dispatcher(&args)
+            .action("choose")
+            .expect("choose action schema present");
+        let argument = &choose.argument_schema;
         assert_eq!(
             argument["properties"]["mode"],
             serde_json::json!({
@@ -2361,18 +2706,11 @@ mod tests {
         assert!(argument.pointer("/if/properties/mode").is_some());
         assert!(argument.pointer("/then/properties/level").is_some());
         assert!(argument.pointer("/properties/action").is_none());
-        assert_eq!(
-            schema.pointer("/x-proxima-actions/choose/allowed_fields"),
-            Some(&serde_json::json!(["mode", "level"]))
-        );
-        assert_eq!(
-            schema.pointer("/x-proxima-actions/choose/required_fields"),
-            Some(&serde_json::json!(["mode"]))
-        );
+        let fields = analyze_root_fields(argument).unwrap();
+        assert_eq!(fields.allowed, ["mode", "level"]);
+        assert_eq!(fields.required, ["mode"]);
         assert!(
-            schema
-                .pointer("/x-proxima-actions/choose/description")
-                .is_none(),
+            choose.description.is_none(),
             "a conditional branch description is not an action description"
         );
         assert!(!evaluates(argument, &serde_json::json!({})));

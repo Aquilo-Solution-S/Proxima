@@ -628,13 +628,10 @@ async fn a_palette_narrows_the_advertised_dispatcher_actions() {
         .find(|tool| tool["id"] == protocol_tool::CORE_GOAL)
         .cloned()
         .expect("core_goal is advertised");
-    let actions: Vec<String> = goal["args_schema"]["x-proxima-actions"]
-        .as_object()
-        .expect("x-proxima-actions")
-        .keys()
-        .cloned()
-        .collect();
-    assert_eq!(actions, vec!["set".to_string()]);
+    assert_eq!(
+        goal["args_schema"]["properties"]["action"]["enum"],
+        serde_json::json!(["set"])
+    );
 }
 
 /// A `tool:action` palette entry admits a dispatcher leaf only. A flat tool
@@ -971,13 +968,10 @@ async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
         .find(|tool| tool["id"] == FLAVOR_DISPATCH)
         .cloned()
         .unwrap_or_else(|| panic!("{FLAVOR_DISPATCH} is advertised: {}", answer.json()));
-    let actions: Vec<String> = dispatch["args_schema"]["x-proxima-actions"]
-        .as_object()
-        .expect("x-proxima-actions")
-        .keys()
-        .cloned()
-        .collect();
-    assert_eq!(actions, vec!["look".to_string()]);
+    assert_eq!(
+        dispatch["args_schema"]["properties"]["action"]["enum"],
+        serde_json::json!(["look"])
+    );
 }
 
 /// And the gate refuses the leaf the palette does not carry — `403` from
@@ -1176,14 +1170,14 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
         .iter()
         .find(|tool| tool["id"] == FLAVOR_DISPATCH)
         .expect("REST advertises the mixed dispatcher");
-    let advertised = rest_dispatch["args_schema"]["x-proxima-actions"]
-        .as_object()
-        .expect("actions");
-    assert_eq!(advertised.keys().collect::<Vec<_>>(), ["look"]);
-    assert_eq!(
-        advertised["look"]["description"],
-        "Inspect one thing without changing it."
+    let action = &rest_dispatch["args_schema"]["properties"]["action"];
+    assert_eq!(action["enum"], serde_json::json!(["look"]));
+    let guide = action["description"].as_str().expect("action guide");
+    assert!(
+        guide.contains("\n- look: Inspect one thing without changing it."),
+        "{guide}"
     );
+    assert!(!guide.contains("- touch"), "{guide}");
     assert_eq!(rest_dispatch["annotations"]["read_only"], true);
 
     for uri in [

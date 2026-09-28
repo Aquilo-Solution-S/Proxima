@@ -101,32 +101,32 @@ pub struct DeriveArgs {
     pub kind: DerivedKind,
     #[schemars(
         length(max = 240),
-        description = "Short title for the derived memory, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
+        description = "Short title, 1 to 240 chars after trimming."
     )]
     pub title: String,
     #[schemars(
         length(max = 20000),
-        description = "Body text for the derived memory, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
+        description = "Body text, 1 to 20000 chars after trimming."
     )]
     pub body: String,
     #[serde(default)]
     #[schemars(
         length(max = 16),
-        description = "Optional tags for later search, at most 16. Each is stored trimmed and lowercased, so `Rust` is stored and matched as `rust`. Use `[]` when no tags are needed."
+        description = "Search tags, 1 to 48 chars each; stored and matched lowercase."
     )]
     pub tags: Vec<String>,
     #[schemars(
-        description = "Required source memory handles for the operator proof. Use only one input layer per call: Facts for F→A, Abstractions for A→A/A→P."
+        description = "At least one handle the new memory is made from, all of one layer: Facts (`F:<uuid>`) or Abstractions (`A:<uuid>`) for an Abstraction, Abstractions for a Perspective."
     )]
     pub source_handles: Vec<String>,
     #[serde(default)]
     #[schemars(
         length(max = 120),
-        description = "Optional model/agent label recorded as operator provenance (e.g. `example-model`), 1 to 120 chars. Defaults to the reserved `model_id` request-context field when omitted."
+        description = "Label of the model/agent authoring this, e.g. `example-model`. Omit for the host-supplied model id."
     )]
     pub model_id: Option<String>,
     #[schemars(
-        description = "Optional stable idempotency key. Omit or null to derive one from model_id and the authored content (title, body, tags), so two derivations that differ in any of them are two writes. Supplying one asserts that calls sharing it are the same derivation even if the text differs; the first body written under a key is the one kept."
+        description = "Optional key, 1 to 180 chars. Omit to key on model_id, title, body and tags. Calls sharing a supplied key are one derivation: the first content written is kept."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -183,8 +183,9 @@ pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
     const NAME: &'static str = protocol_tool::CORE_DERIVE;
-    const DESCRIPTION: &'static str =
-        "Author an Abstraction or Perspective derived from existing memory handles.";
+    const DESCRIPTION: &'static str = "Author a memory made from others: an Abstraction \
+         over Facts or Abstractions (a pattern), or a Perspective over Abstractions (a stance or \
+         self-model). `source_handles` become its provenance.";
     // Idempotent by content: the derived memory id is folded from the
     // claim, so re-asserting it lands on one memory.
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));

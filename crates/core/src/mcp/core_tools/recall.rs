@@ -37,16 +37,18 @@ pub struct RecallArgs {
     #[serde(default)]
     #[schemars(
         length(max = 16),
-        description = "Situation handles (`F:`/`A:`/`P:`), at most 16. Kernel cue set."
+        description = "Memories the situation is about: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Optional kind filter: Fact, Abstraction, Perspective, or Goal.")]
+    #[schemars(
+        description = "Perspective also keeps the Active Goals assigned to the returned Perspectives."
+    )]
     pub kind: Option<RecallKind>,
     #[serde(default = "default_limit")]
     #[schemars(
         range(min = 1),
-        description = "Hard cap. Default 16, max 32, 0 rejected."
+        description = "Max sketches; values above 32 are clamped."
     )]
     pub limit: u32,
     #[serde(default)]
@@ -112,7 +114,7 @@ impl RecallReason {
 
 impl McpTool for RecallTool {
     const NAME: &'static str = protocol_tool::CORE_RECALL;
-    const DESCRIPTION: &'static str = "Cue-driven recall packet of sketches (kind + one-liner). Self is this query, not a parameterless dump of Perspective heads. Pass a question and/or subject handles. Does not hydrate sidecar bodies. Search stays a separate precision tool.";
+    const DESCRIPTION: &'static str = "Recall what is known about a question and/or subject handles: short sketches of the subjects, Perspectives about them, question matches, and Active Goals assigned to recalled Perspectives. No bodies; use core_search_memories for filtered search.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = RecallArgs;
     type Output = RecallOutput;

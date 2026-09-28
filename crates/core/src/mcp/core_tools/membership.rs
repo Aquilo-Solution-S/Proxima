@@ -29,21 +29,18 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreMembershipTool::NAME,
         action: "add_member",
         scope_key: protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
-        description: "Add one user membership relation to a Group space.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
         action: "remove_member",
         scope_key: protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
-        description: "Remove all membership relations for one user in a Group space.",
         produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
         action: "list_members",
         scope_key: protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
-        description: "List users and relations for one Group space.",
         produces_schema_ids: &[],
     },
 ];
@@ -54,8 +51,11 @@ pub struct CoreMembershipTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreMembershipArgs {
+    /// Add one user membership relation to a Group space.
     AddMember(AddMemberArgs),
+    /// Remove all membership relations for one user in a Group space.
     RemoveMember(RemoveMemberArgs),
+    /// List users and relations for one Group space.
     ListMembers(ListMembersArgs),
 }
 
@@ -63,7 +63,7 @@ pub enum CoreMembershipArgs {
 pub struct AddMemberArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
-    /// User UUID string. Users are not MCP entities and take no prefix.
+    /// The user's UUID, bare: users take no handle prefix.
     pub member: String,
     /// Membership relation (case-insensitive): `admin`, `editor`,
     /// `viewer`, or `ingest`.
@@ -74,7 +74,7 @@ pub struct AddMemberArgs {
 pub struct RemoveMemberArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
-    /// User UUID string. All relations for this member in the group are removed.
+    /// The user's UUID, bare. Every relation they hold in the group goes.
     pub member: String,
 }
 
@@ -82,8 +82,7 @@ pub struct RemoveMemberArgs {
 pub struct ListMembersArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
-    /// Max members per page; values above 200 are clamped, 0 is rejected,
-    /// default 50.
+    /// Max members per page; default 50, values above 200 are clamped.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub limit: Option<u32>,
@@ -134,7 +133,7 @@ fn member_fingerprint(group: GroupId) -> String {
 impl McpTool for CoreMembershipTool {
     const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
     const DESCRIPTION: &'static str =
-        "Membership dispatcher — add_member/remove_member/list_members.";
+        "Manage who belongs to a group memory space: add, remove, or list members.";
     /// Membership governs who can reach the owner's memory at all, so every
     /// key of this tool belongs to the owner alone. Declared on the
     /// descriptor rather than hardcoded by name in each host that computes

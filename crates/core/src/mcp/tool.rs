@@ -64,9 +64,16 @@ pub struct McpToolDescriptor {
     pub description: &'static str,
     pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
+    /// The complete wire `inputSchema`: plain JSON Schema, every action of a
+    /// dispatcher rendered. [`Self::input_schema`] narrows it per caller.
     pub args_schema: serde_json::Value,
-    /// JSON Schema for the tool's reply envelope. `produces_schema_ids` names
-    /// the registry payloads it writes — a different thing.
+    /// A tagged-enum dispatcher's per-action contract, which `args_schema`
+    /// is rendered from; `None` for a flat or argv-keyed tool.
+    pub dispatcher_schema: Option<crate::mcp::McpDispatcherSchema>,
+    /// JSON Schema for the tool's reply envelope, documented. `tools/list`
+    /// sends [`mcp_wire_output_schema`](crate::mcp::mcp_wire_output_schema)
+    /// of it. `produces_schema_ids` names the registry payloads it writes —
+    /// a different thing.
     pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
     /// The actions of an argv-keyed dispatcher, or `&[]`. Mutually exclusive
@@ -177,23 +184,45 @@ impl McpToolDescriptor {
             .is_some_and(crate::mcp::ToolEffect::is_read_only)
     }
 
-    /// Client-facing prose for one dispatcher action.
-    ///
-    /// Substrate actions keep their curated manifest description. Flavor
-    /// actions have no substrate entry, so their enum-variant doc comment is
-    /// read from the schema-derived `x-proxima-actions` extension instead.
+    /// What one dispatcher action does: its enum variant's doc comment.
     #[must_use]
-    pub fn resolved_action_description(&self, action: &str) -> Option<&str> {
-        crate::mcp::core_action_meta(self.name, action)
-            .map(|meta| meta.description)
-            .or_else(|| {
-                self.args_schema
-                    .get("x-proxima-actions")
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|actions| actions.get(action))
-                    .and_then(|metadata| metadata.get("description"))
-                    .and_then(serde_json::Value::as_str)
-            })
+    pub fn action_description(&self, action: &str) -> Option<&str> {
+        self.dispatcher_schema
+            .as_ref()?
+            .action(action)?
+            .description
+            .as_deref()
+    }
+
+    /// The closed argument schema of one dispatcher action alone.
+    #[must_use]
+    pub fn action_argument_schema(&self, action: &str) -> Option<&serde_json::Value> {
+        Some(
+            &self
+                .dispatcher_schema
+                .as_ref()?
+                .action(action)?
+                .argument_schema,
+        )
+    }
+
+    /// The `inputSchema` for a caller who may run only the actions
+    /// `permitted` admits: a dispatcher re-rendered over them, so its
+    /// action enum, field set and prose name nothing the caller cannot run.
+    /// A flat tool, or a caller permitted every action, gets `args_schema`.
+    #[must_use]
+    pub fn input_schema(&self, permitted: impl Fn(&str) -> bool) -> serde_json::Value {
+        match &self.dispatcher_schema {
+            Some(dispatcher)
+                if !dispatcher
+                    .actions
+                    .iter()
+                    .all(|action| permitted(&action.action)) =>
+            {
+                dispatcher.render(permitted)
+            }
+            _ => self.args_schema.clone(),
+        }
     }
 
     /// Whether the owner-role gate should treat this tool as a read.
@@ -263,6 +292,7 @@ impl std::fmt::Debug for McpToolDescriptor {
             .field("origin", &self.origin)
             .field("produces_schema_ids", &self.produces_schema_ids)
             .field("args_schema", &self.args_schema)
+            .field("dispatcher_schema", &self.dispatcher_schema)
             .field("output_schema", &self.output_schema)
             .field("action_arg_specs", &self.action_arg_specs)
             .field("argv_action_specs", &self.argv_action_specs)

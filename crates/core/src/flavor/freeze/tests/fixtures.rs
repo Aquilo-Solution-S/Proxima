@@ -252,7 +252,7 @@ pub(super) const FIXTURE_ACTIONS: &[crate::mcp::McpActionArgSpec] =
 /// declaration has a registration to disagree with.
 ///
 /// Flat unless `action_arg_specs` is non-empty. A dispatcher fixture carries
-/// no `x-proxima-actions` extension, so it only reaches the checks that run
+/// no dispatcher schema, so it only reaches the checks that run
 /// before `validate_dispatcher_action_specs` — which is where the behaviour
 /// check sits.
 pub(super) fn register_fixture_tool(
@@ -274,6 +274,7 @@ pub(super) fn register_fixture_tool(
         origin: crate::mcp::McpToolOrigin::Flavor(FIXTURE_FLAVOR.to_owned()),
         produces_schema_ids: &[],
         args_schema: serde_json::json!({ "type": "object" }),
+        dispatcher_schema: None,
         output_schema: serde_json::json!({ "type": "object" }),
         action_arg_specs,
         argv_action_specs: &[],
