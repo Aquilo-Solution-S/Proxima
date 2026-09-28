@@ -161,12 +161,12 @@ pub struct SearchMemoriesArgs {
     pub order: SearchOrder,
     #[serde(default)]
     #[schemars(
-        description = "Minimum fused relevance score in 0..=1; results scoring below it are dropped. Omit or null for no floor."
+        description = "Minimum raw relevance score in 0..=1. Hybrid keeps a hit if either leg reaches the floor before rank fusion; lexical and semantic apply it to their own score. Omit or null for no floor."
     )]
     pub min_score: Option<f32>,
     #[serde(default)]
     #[schemars(
-        description = "Hybrid fusion weight on the semantic component in 0..=1; the lexical component gets the complement. Defaults to 0.6. Only valid with mode=hybrid."
+        description = "Hybrid reciprocal-rank fusion weight on the semantic leg in 0..=1; the lexical leg gets the complement. Defaults to 0.5. Only valid with mode=hybrid."
     )]
     pub semantic_weight: Option<f32>,
     #[serde(default = "default_include_neighbor_edges")]
@@ -230,8 +230,12 @@ pub struct SearchMemoryOutput {
     pub schema_id: String,
     pub created_at: String,
     pub snippet: String,
+    /// Mode score. Hybrid uses weighted reciprocal ranks (k=60), comparable
+    /// within this result list; lexical and semantic retain their raw scores.
     pub score: f32,
+    /// Raw lexical score before hybrid rank fusion.
     pub lexical_score: f32,
+    /// Raw best-chunk cosine in `0..=1` before hybrid rank fusion.
     pub similarity_score: f32,
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,7 +249,7 @@ pub struct SearchMemoryOutput {
 
 impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
-    const DESCRIPTION: &'static str = "Search memories by text, with kind/schema/tag/time/space filters. Latest versions only unless supersession=all; pages of at most 50.";
+    const DESCRIPTION: &'static str = "Search memories by text, with kind/schema/tag/time/space filters. Latest versions only unless supersession=all; pages of at most 50. Hybrid score uses weighted RRF (k=60) over fixed candidate windows, comparable within its result list.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
@@ -645,7 +649,7 @@ async fn search_one_space(
         )
         .await?;
     let rows = response.memories;
-    let degraded_to_lexical = semantic_search_degraded_to_lexical(mode, &rows);
+    let degraded_to_lexical = matches!(lane.arm, LaneArm::Degraded);
     let payloads = response
         .payloads
         .into_iter()
@@ -994,17 +998,6 @@ fn search_memory_output(
     })
 }
 
-fn semantic_search_degraded_to_lexical(
-    mode: SearchMode,
-    rows: &[crate::verbs::query::MemorySearchResult],
-) -> bool {
-    degraded_to_lexical(
-        mode,
-        rows.is_empty(),
-        rows.iter().any(|row| row.similarity_score > 0.0),
-    )
-}
-
 /// The fusion weight to hand the search verb, given the mode the run can
 /// actually serve.
 ///
@@ -1055,10 +1048,6 @@ fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut 
         // later touching duplicate is still evaluated on its own merits.
         touches && seen_edges.insert((edge.source.clone(), edge.target.clone(), edge.kind.clone()))
     });
-}
-
-fn degraded_to_lexical(mode: SearchMode, no_rows: bool, any_semantic_score: bool) -> bool {
-    crate::verbs::query::hybrid_degraded_to_lexical(mode, no_rows, any_semantic_score)
 }
 
 fn parse_rfc3339(

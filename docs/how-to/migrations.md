@@ -13,6 +13,16 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.27
+
+| Lane | Migration |
+|---|---|
+| Core | `0021_v027_query_stopwords.sql`: replaces `lexical_query_text` with dominant configured-language stopword analysis; preserves the function's identity, owner and privileges |
+
+Existing text vectors and per-row language stamps remain unchanged. Query
+analysis is `STABLE` and runs as the caller; ranked queries prepare it once
+per statement (see 10 §Memory hybrid search).
+
 ## v0.0.26
 
 | Lane | Migration |

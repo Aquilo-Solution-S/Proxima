@@ -605,8 +605,40 @@ router — else 0.5.
 The best value follows the model. A strong code embedding model ranks
 behaviour questions better on its own than fused with the lexical arm, so it
 wants a higher weight; a weak one gains from the lexical arm. There is no
-measured default beyond 0.5 yet. The weight is not `core_search_memories`'
-`semantic_weight`: that one interpolates scores and defaults to 0.6.
+measured default beyond 0.5 yet. `core_search_memories` uses the weighted
+reciprocal ranks below and defaults to 0.5; code search additionally has its
+literal bonus.
+
+### Memory hybrid search
+
+`core_search_memories` fuses lexical and semantic ranks:
+`score = w / (60 + rank_sem) + (1 - w) / (60 + rank_lex)`, with one-based
+ranks and default `semantic_weight = 0.5`. A missing leg contributes zero.
+The lexical leg includes partial rescue matches. `lexical_score` and
+`similarity_score` remain raw; hybrid `score` is comparable within its
+result list. Pure lexical and semantic modes retain their score scales.
+
+Each leg contributes at most 1,000 authorized distinct memories. Flavor
+lexical caps and the 1,000-chunk semantic scan cap may reduce that window.
+The window is fixed across cursor pages and page sizes; pagination ends at
+its fused union, including for recency ordering. Hybrid `min_score` filters
+each raw leg before ranking: a hit survives when either leg reaches the
+floor. It does not compare the small RRF value with that floor.
+
+For per-row multilingual search, query analysis counts stopword occurrences
+under every configured PostgreSQL language. It removes only the highest-count
+language's stopwords; tied winners contribute their union. Zero stopwords
+leaves the query unchanged. The remaining text is parsed under every
+configured language, so a German question can retain English domain terms.
+Dictionary stopwords are used; there are no per-language fusion weights.
+
+Short queries can be ambiguous: with English and German configured,
+`man page`, `Red Hat`, and `war crimes` score English 0 / German 1 and lose
+the German stopword. Full English questions with a higher English stopword
+count retain those content terms. Stopword-only full-text queries can become
+empty, including against rows stored with the `simple` configuration. A
+projection's declared literal substring fallback remains available; stored
+vectors and their per-row language stamps are unchanged.
 
 ### Blob store reconcile
 

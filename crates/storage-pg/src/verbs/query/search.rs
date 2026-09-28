@@ -48,9 +48,8 @@ use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
 use proxima_core::verbs::query::{
-    DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
-    MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
-    SupersessionStatus, TagMatch, like_pattern,
+    EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
+    SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
 };
 use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
@@ -60,6 +59,10 @@ use super::embedding_candidates::{
     SEMANTIC_SCAN_CAP, best_embedding_scores_on_connection, next_chunk_window,
 };
 use super::lineage::load_one_schema_snippets_on_connection;
+
+mod hybrid;
+
+use hybrid::{HYBRID_CANDIDATE_WINDOW, apply_hybrid_fusion, uses_hybrid_fusion};
 
 /// How far past the caller's `limit` one statement fetches before the merge
 /// trims. The CAP is declared — [`ProjectionSpec::overfetch_k`], a
@@ -116,8 +119,9 @@ const SEMANTIC_SCHEMA_BIND_BASE: usize = 8;
 #[derive(Debug, Clone)]
 struct Hit {
     t: uuid::Uuid,
-    lexical_score: f32,
-    similarity_score: f32,
+    // Membership is distinct from a zero raw score.
+    lexical_score: Option<f32>,
+    similarity_score: Option<f32>,
 }
 
 /// The ranked arm's row. `schema_id` rides along because the substring arm's
@@ -183,7 +187,7 @@ pub(crate) async fn search_memories_on_connection(
                 req,
                 &flavors,
                 tuning,
-                semantic_overfetch(limit, req.after),
+                candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
             )
             .await?,
         ),
@@ -191,7 +195,7 @@ pub(crate) async fn search_memories_on_connection(
             if req.semantic.is_some() {
                 merge_hits(
                     &mut hits,
-                    scan_flavors_on_connection(connection, req, &flavors, limit, false).await?,
+                    scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
                 );
                 merge_hits(
                     &mut hits,
@@ -200,7 +204,7 @@ pub(crate) async fn search_memories_on_connection(
                         req,
                         &flavors,
                         tuning,
-                        semantic_overfetch(limit, req.after),
+                        candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
                     )
                     .await?,
                 );
@@ -212,7 +216,10 @@ pub(crate) async fn search_memories_on_connection(
             }
         }
     }
-    let admitted = admit_hits_on_connection(connection, req, &hits).await?;
+    let mut admitted = admit_hits_on_connection(connection, req, &hits).await?;
+    if uses_hybrid_fusion(req) {
+        apply_hybrid_fusion(req, &mut admitted, &hits);
+    }
     let mut page = page_hits(req, limit, admitted);
     hydrate_snippets_on_connection(connection, projections, &mut page.results).await?;
     Ok(page)
@@ -233,9 +240,8 @@ pub(crate) async fn search_memories_on_connection(
 /// that: with it the window is the global top-`overfetch` of the ADMISSIBLE
 /// set, and the superset argument holds over the set the page is drawn from.
 ///
-/// The page CAN still move for `Hybrid` — a row with weak lexical rank but
-/// strong similarity — and for very deep cursor pages. Both are accepted
-/// movement; the `Lexical` + `Relevance` page is not.
+/// Very deep non-hybrid cursor pages can still exhaust the declared cap.
+/// Hybrid uses a separate fixed candidate window on every page.
 fn overfetch(limit: u32, overfetch_k: u32, after: Option<SearchCursor>) -> u32 {
     let base = limit.saturating_mul(REQUEST_OVERFETCH_FACTOR).max(limit);
     // Relevance candidates are ranked from the beginning before the cursor
@@ -249,10 +255,22 @@ fn overfetch(limit: u32, overfetch_k: u32, after: Option<SearchCursor>) -> u32 {
     base.max(needed).min(overfetch_k)
 }
 
-/// The core semantic arm targets the same distinct-memory overfetch as
-/// before chunking; extra chunk rows can expand its scan to the shared cap.
-fn semantic_overfetch(limit: u32, after: Option<SearchCursor>) -> u32 {
-    overfetch(limit, SEMANTIC_SCAN_CAP, after)
+/// Hybrid retains one fixed window regardless of page size, cursor depth,
+/// or requested output order. Other modes retain their existing overfetch.
+fn candidate_overfetch(req: &MemorySearchRequest, limit: u32, cap: u32) -> u32 {
+    if uses_hybrid_fusion(req) {
+        HYBRID_CANDIDATE_WINDOW.min(cap)
+    } else {
+        overfetch(limit, cap, req.after)
+    }
+}
+
+fn candidate_order(req: &MemorySearchRequest) -> SearchOrder {
+    if uses_hybrid_fusion(req) {
+        SearchOrder::Relevance
+    } else {
+        req.order
+    }
 }
 
 /// One flavor's participating schemas, grouped for the ONE statement that
@@ -369,10 +387,18 @@ fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
     for hit in rows {
         into.entry(hit.t)
             .and_modify(|existing| {
-                existing.lexical_score = existing.lexical_score.max(hit.lexical_score);
-                existing.similarity_score = existing.similarity_score.max(hit.similarity_score);
+                existing.lexical_score = maximum_present(existing.lexical_score, hit.lexical_score);
+                existing.similarity_score =
+                    maximum_present(existing.similarity_score, hit.similarity_score);
             })
             .or_insert(hit);
+    }
+}
+
+fn maximum_present(left: Option<f32>, right: Option<f32>) -> Option<f32> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
     }
 }
 
@@ -404,7 +430,9 @@ async fn scan_one_flavor_on_connection(
     rescue: bool,
 ) -> Result<Vec<Hit>, StorageError> {
     let recency_t = match req.after {
-        Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
+        Some(SearchCursor::Recency { memory_id, .. }) if !uses_hybrid_fusion(req) => {
+            Some(memory_id.into_inner())
+        }
         _ => None,
     };
     let owner_ids: Vec<uuid::Uuid> = req
@@ -418,7 +446,8 @@ async fn scan_one_flavor_on_connection(
         .iter()
         .map(|projection| projection.schema_id.as_str())
         .collect();
-    let overfetch = i64::from(overfetch(limit, flavor.head().overfetch_k, req.after));
+    let budget = candidate_overfetch(req, limit, flavor.head().overfetch_k);
+    let overfetch = i64::from(budget);
     let tags = (!req.tags.is_empty()).then_some(req.tags.as_slice());
     let sql = ranked_projection_sql(flavor, req, rescue)?;
     // SQL-POLICY: PgIdent
@@ -439,8 +468,8 @@ async fn scan_one_flavor_on_connection(
         .iter()
         .map(|row| Hit {
             t: row.t,
-            lexical_score: row.lexical_score.max(0.0),
-            similarity_score: 0.0,
+            lexical_score: Some(row.lexical_score.max(0.0)),
+            similarity_score: None,
         })
         .collect();
     let missing: Vec<&MemorySearchProjection> = flavor
@@ -470,9 +499,19 @@ async fn scan_one_flavor_on_connection(
             .map_err(map_err)?;
         hits.extend(rows.into_iter().map(|row| Hit {
             t: row.t,
-            lexical_score: row.lexical_score.max(0.0),
-            similarity_score: 0.0,
+            lexical_score: Some(row.lexical_score.max(0.0)),
+            similarity_score: None,
         }));
+    }
+    if uses_hybrid_fusion(req) {
+        // Ranked and optional substring statements share the flavor's cap.
+        hits.sort_by(|a, b| {
+            b.lexical_score
+                .unwrap_or_default()
+                .total_cmp(&a.lexical_score.unwrap_or_default())
+                .then_with(|| b.t.cmp(&a.t))
+        });
+        hits.truncate(usize::try_from(budget).unwrap_or(usize::MAX));
     }
     Ok(hits)
 }
@@ -519,7 +558,7 @@ fn substring_sql(
     // the column, so the union's own ordering stays one spelling.
     if let ([only], [projection]) = (legs.as_slice(), scanned.as_slice()) {
         let key = projection_key_ident(projection)?;
-        let order_by = match req.order {
+        let order_by = match candidate_order(req) {
             SearchOrder::Relevance => format!("lexical_score DESC, c.{} DESC", key.as_str()),
             SearchOrder::Recency => format!("c.{} DESC", key.as_str()),
         };
@@ -530,7 +569,7 @@ fn substring_sql(
           LIMIT $2"
         ));
     }
-    let order_by = match req.order {
+    let order_by = match candidate_order(req) {
         SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
         SearchOrder::Recency => "s.t DESC",
     };
@@ -686,7 +725,7 @@ fn ranked_projection_sql(
                     0.0
                 )::real"
     );
-    let order_by = match req.order {
+    let order_by = match candidate_order(req) {
         SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
         SearchOrder::Recency => "p.memory_id DESC",
     };
@@ -941,33 +980,35 @@ fn search_admit_sql(heads_only: bool) -> String {
 /// that pin one config stay on `lexical_config()`.
 fn query_side_cte(multilingual: bool) -> &'static str {
     if multilingual {
-        "WITH q AS (
-             SELECT s.q AS scrubbed,
+        "WITH analyzed_query AS MATERIALIZED (
+             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
+                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
+                        proxima_core.lexical_scrub($1)) AS analyzed
+         ), q AS (
+             SELECT s.scrubbed, s.analyzed,
                     COALESCE(
                         (SELECT proxima_core.tsquery_or_agg(
-                                    websearch_to_tsquery(l.config,
-                                        proxima_core.lexical_query_text(l.config, s.q))
+                                    websearch_to_tsquery(l.config, s.analyzed)
                                     ORDER BY l.config)
                            FROM proxima_core.lexical_languages l),
-                        websearch_to_tsquery(proxima_core.lexical_config(), s.q)
+                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
                     ) AS tsq,
                     COALESCE(
                         (SELECT proxima_core.tsquery_or_agg(
                                     NULLIF(
                                         replace(
-                                            plainto_tsquery(l.config,
-                                                proxima_core.lexical_query_text(l.config, s.q))::text,
+                                            plainto_tsquery(l.config, s.analyzed)::text,
                                             ' & ', ' | '),
                                         '')::tsquery
                                     ORDER BY l.config)
                            FROM proxima_core.lexical_languages l),
                         NULLIF(
                             replace(
-                                plainto_tsquery(proxima_core.lexical_config(), s.q)::text,
+                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
                                 ' & ', ' | '),
                             '')::tsquery
                     ) AS any_tsq
-               FROM (SELECT proxima_core.lexical_scrub($1) AS q) s
+               FROM analyzed_query s
          )"
     } else {
         "WITH q AS (
@@ -986,8 +1027,7 @@ fn query_side_cte(multilingual: bool) -> &'static str {
 
 fn rank_tsquery_expr(multilingual: bool) -> &'static str {
     if multilingual {
-        "websearch_to_tsquery(p.lexical_language, \
-         proxima_core.lexical_query_text(p.lexical_language, q.scrubbed))"
+        "websearch_to_tsquery(p.lexical_language, q.analyzed)"
     } else {
         "q.tsq"
     }
@@ -1136,8 +1176,8 @@ async fn scan_embeddings_on_connection(
         .into_iter()
         .map(|row| Hit {
             t: row.memory_id,
-            lexical_score: 0.0,
-            similarity_score: row.similarity_score,
+            lexical_score: None,
+            similarity_score: Some(row.similarity_score),
         })
         .collect())
 }
@@ -1169,22 +1209,16 @@ async fn admit_hits_on_connection(
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
-    let semantic_weight = req
-        .semantic_weight
-        .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
-        .clamp(0.0, 1.0);
     Ok(rows
         .into_iter()
         .filter_map(|row| {
             let hit = hits.get(&row.t)?;
             let kind = parse_kind(&row.kind)?;
             let score = match req.mode {
-                SearchMode::Lexical => hit.lexical_score,
-                SearchMode::Semantic => hit.similarity_score,
-                SearchMode::Hybrid => {
-                    semantic_weight * hit.similarity_score
-                        + (1.0 - semantic_weight) * hit.lexical_score
-                }
+                SearchMode::Semantic => hit.similarity_score.unwrap_or_default(),
+                // Hybrid with an embedding is fused after admission. Without
+                // an embedding its effective ranking remains lexical.
+                SearchMode::Lexical | SearchMode::Hybrid => hit.lexical_score.unwrap_or_default(),
             };
             Some(MemorySearchResult {
                 memory_id: MemoryId::new(row.t),
@@ -1193,8 +1227,8 @@ async fn admit_hits_on_connection(
                 created_at: row.created_at,
                 snippet: String::new(),
                 score,
-                lexical_score: hit.lexical_score,
-                similarity_score: hit.similarity_score,
+                lexical_score: hit.lexical_score.unwrap_or_default(),
+                similarity_score: hit.similarity_score.unwrap_or_default(),
             })
         })
         .collect())
@@ -1205,7 +1239,9 @@ fn page_hits(
     limit: u32,
     mut results: Vec<MemorySearchResult>,
 ) -> MemorySearchPage {
-    if let Some(floor) = req.min_score {
+    if !uses_hybrid_fusion(req)
+        && let Some(floor) = req.min_score
+    {
         results.retain(|result| result.score >= floor);
     }
     if let Some(after) = req.after {

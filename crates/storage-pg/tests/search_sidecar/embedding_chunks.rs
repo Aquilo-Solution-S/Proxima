@@ -104,11 +104,7 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
             req.mode = mode;
             req.semantic = Some(chunk_query(dim));
             req.semantic_weight = Some(0.75);
-            req.min_score = Some(if mode == SearchMode::Semantic {
-                0.75
-            } else {
-                0.55
-            });
+            req.min_score = Some(0.75);
             let page = pg
                 .search_memories(None, &req, std::slice::from_ref(&projection))
                 .await?;
@@ -122,7 +118,7 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
             let expected_score = if mode == SearchMode::Semantic {
                 0.8
             } else {
-                0.6
+                0.75 / 61.0
             };
             assert!((hit.score - expected_score).abs() < 0.000_001, "{hit:?}");
             assert!(!page.has_more);

@@ -6,6 +6,12 @@
 #[path = "search_sidecar/embedding_chunks.rs"]
 mod embedding_chunks;
 
+#[path = "search_sidecar/query_stopwords.rs"]
+mod query_stopwords;
+
+#[path = "search_sidecar/hybrid_rrf.rs"]
+mod hybrid_rrf;
+
 use proxima_core::flavor::{
     Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
 };
@@ -691,7 +697,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
 }
 
 #[tokio::test]
-async fn simple_rows_retain_stopwords_after_default_switch() {
+async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -706,7 +712,7 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
         sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
             .execute(pool)
             .await?;
-        let simple = seed_note(pool, owner, "Stopword", "the").await?;
+        let simple = seed_note(pool, owner, "Stopword", "the checkpoint").await?;
         sqlx::query("SELECT proxima_core.set_lexical_config('english')")
             .execute(pool)
             .await?;
@@ -723,15 +729,48 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
             stamped_simple,
             "the existing row must retain its simple config"
         );
+        let stored_the: bool = sqlx::query_scalar(
+            "SELECT search_tsv @@ to_tsquery('simple', 'the')
+               FROM proxima_core.projection WHERE memory_id = $1",
+        )
+        .bind(simple)
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            stored_the,
+            "query analysis must not rewrite stored simple lexemes"
+        );
 
         let page = pg
-            .search_memories(None, &search_req(owner, "the"), &[note_projection()])
+            .search_memories(None, &search_req(owner, "checkpoint"), &[note_projection()])
             .await?;
         assert!(
             page.results
                 .iter()
                 .any(|row| row.memory_id.into_inner() == simple),
-            "a simple-config row must retain stopword matches after the default becomes english"
+            "a simple-config row must remain searchable after the default becomes english"
+        );
+        let stopword_page = pg
+            .search_memories(None, &search_req(owner, "the"), &[note_projection()])
+            .await?;
+        let no_ranked_terms: bool = sqlx::query_scalar(
+            "SELECT numnode(websearch_to_tsquery('simple',
+                        proxima_core.lexical_query_text('simple', 'the'))) = 0",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            no_ranked_terms,
+            "registered English removes its stopword-only full-text query even for simple rows"
+        );
+        let stopword_hit = stopword_page
+            .results
+            .iter()
+            .find(|hit| hit.memory_id.into_inner() == simple)
+            .expect("the declared substring arm preserves literal stopword matches");
+        assert!(
+            (stopword_hit.lexical_score - BAND_SUBSTRING.floor).abs() < f32::EPSILON,
+            "a literal stopword match has only the declared substring band"
         );
         Ok(())
     }
