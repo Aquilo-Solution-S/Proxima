@@ -6,6 +6,7 @@ mod code_chunk_calls;
 mod code_chunk_vectors;
 mod code_series_heads;
 mod edges;
+mod embedding_candidates;
 mod goals;
 mod lineage;
 mod memories;

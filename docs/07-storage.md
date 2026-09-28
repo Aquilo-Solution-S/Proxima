@@ -43,7 +43,7 @@ Fact identity is `t`. `ingest_keys` is the only sourced unique.
 | Goal | `(handle, t)` | later `t` on the same handle; terminal admits no later `t` |
 | Pin | the `t` stored in `origins` / `refs` | write-time only |
 | Blob | `blob_id`; unique `(owner_id, schema_id, content_hash)` | insert-only |
-| Embedding | `(entity_id, model_id, embedding_version)` | re-embed writes a new row |
+| Embedding | `(entity_id, model_id, dim, embedding_version, chunk_ordinal)` | re-embed writes a complete chunk set |
 
 Stateful Fact current-state is a head-by-natural-key query on the sidecar (03).
 Ingest of a stateful Fact with empty `handle` reuses the owned NK head; a
@@ -251,11 +251,17 @@ Independent of entity tables.
 |---|---|
 | no FK from memory to embedding | writes never block on embed |
 | `entity_id` is `t` | embeddings can be swept |
-| re-embed = new row | memory row unchanged |
+| re-embed = new version of ordered chunks | memory row unchanged |
 | similarity is query-time | never authors a pin |
 
-`embeddings.vec` is an untyped `vector` keyed by its space `(model_id, dim)`,
-indexed per width. Forget drops vectors; hydrate enqueues jobs.
+`embeddings.vec` is an untyped `vector`, indexed per width. Each
+`(entity_id, model_id, dim, embedding_version)` has one or more chunk rows,
+with contiguous zero-based `chunk_ordinal` in text order. Writers commit all
+chunks before advancing `embedding_heads`; coverage counts complete heads,
+while vector counts include every chunk and superseded version. Legacy
+single-vector versions are chunk 0. Search collapses chunk candidates by
+memory and scores the best chunk (cosine clamped to `[0,1]`). Forget drops all chunks; hydrate enqueues
+jobs per space.
 
 <a id="consequences-of-append-only"></a>
 

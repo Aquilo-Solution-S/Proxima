@@ -755,8 +755,9 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         assert_eq!(sidecar_tables_for(pool, t).await?, vec![AGENT_NOTE]);
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $3::vector, $2)",
+                (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             SELECT $1, 'test-embed', 1024, 1, chunk_ordinal, $3::vector, $2
+               FROM generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
@@ -770,10 +771,31 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         .execute(pool)
         .await?;
 
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.embeddings WHERE entity_id = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(before, 3, "the fixture has one row per chunk");
+
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
         let key = cold_object_key(t);
         let payload = cold.get(&key).await?;
+        let record = decode_record(&payload)?;
+        assert_eq!(
+            record.embed_spaces, *ROUTE_SPACES,
+            "the archive records a space once, regardless of chunk count"
+        );
         assert!(
             payload.len() > 64,
             "held store must receive the full memory+sidecar record, got {} bytes",
@@ -791,7 +813,14 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         .bind(t)
         .fetch_one(pool)
         .await?;
-        assert_eq!(embed_hot, 0, "forget drops vectors");
+        assert_eq!(embed_hot, 0, "forget drops every chunk");
+        let heads: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.embedding_heads WHERE entity_id = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(heads, 0, "forget drops the chunk set's head");
 
         let mut tx = pool.begin().await?;
         hydrate_one_in_tx(
@@ -827,7 +856,16 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         .bind(t)
         .fetch_one(pool)
         .await?;
-        assert_eq!(jobs, 1, "hydrate enqueues embed; vectors stay out of S3");
+        assert_eq!(
+            jobs, 1,
+            "hydrate enqueues one job to regenerate the chunk set"
+        );
+        let regenerated: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.embeddings WHERE entity_id = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(regenerated, 0, "vectors stay out of the archive");
         Ok(())
     }
     .await;

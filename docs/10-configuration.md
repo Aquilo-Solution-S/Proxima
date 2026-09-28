@@ -496,9 +496,18 @@ Refused input is not lost. The refusal is permanent rather than transient,
 which is what routes it into the bisecting rescue
 (`proxima_core::llm::embed_in_chunks`): the text is halved until the pieces
 fit, with no request leaving the process until a piece is inside the bound.
-Storage keeps one vector per memory version, so the first piece's vector is
-stored: the memory is findable by its opening, and a passage only a later
-piece holds does not rank semantically.
+Storage writes every piece's vector in text order, atomically under one
+embedding version. Semantic search returns one hit per memory, scored by
+its best chunk's cosine clamped to the existing `[0,1]` score range; hybrid
+search uses that per-memory semantic result.
+Chunk candidates are over-fetched until the distinct-memory budget is filled
+or the scan cap is reached. Input below the configured/provider limit is not
+split proactively.
+
+A Fact should contain one observation. Flavors holding long documents get
+more precise retrieval by splitting them into several Facts, as the code
+flavor does. Chunk rescue keeps every passage searchable even when a flavor
+admits a long unit.
 
 That coupling sets the **minimum of 4095 characters**
 (`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`) — the largest piece the

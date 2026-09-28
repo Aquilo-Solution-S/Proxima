@@ -13,6 +13,17 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.26
+
+| Lane | Migration |
+|---|---|
+| Core | `0020_v026_embedding_chunks.sql`: adds zero-based `embeddings.chunk_ordinal` to the primary key; existing rows become chunk 0 without re-embedding |
+
+`embedding_heads` still selects a version. New writes store every chunk and
+advance the head in one transaction. Per-dimension HNSW indexes remain over
+chunk rows. Cold archives remain v8: forget stores distinct spaces, drops all
+vectors, and hydration queues one job per space (see 07 §Vector Store).
+
 ## v0.0.25
 
 | Lane | Migration |

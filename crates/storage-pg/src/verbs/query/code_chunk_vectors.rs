@@ -17,22 +17,24 @@
 //! exactly like the lexical candidates it is merged with. Nothing here
 //! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
+use std::collections::BTreeSet;
+
 use proxima_core::{Owner, StorageError};
 use sqlx::{PgConnection, PgPool};
 
+use super::embedding_candidates::{
+    SEMANTIC_SCAN_CAP, best_embedding_scores_on_connection, next_chunk_window,
+};
 use crate::error::map_err;
 use crate::pgvector::{Lane, set_hnsw_search_sql};
 use crate::tuning::PgTuning;
 
-/// One vec per `(entity_id, model_id, dim, embedding_version)`. The head
-/// join already picks the current version; there is nothing to DISTINCT ON.
-/// The lane's predicate and casts are literals so the planner proves the
-/// lane's partial HNSW index.
+/// The head join picks every chunk of the current embedding version.
+/// The row window expands before per-memory scoring; the lane predicate
+/// and casts remain literals so the planner proves the partial HNSW index.
 fn nearest_code_chunk_sql(lane: Lane) -> String {
     format!(
-        "SELECT emb.entity_id AS memory_id,
-                            GREATEST(0.0, (1 - ({vec} <=> $4{cast})))::real
-                                AS similarity_score
+        "SELECT emb.entity_id AS memory_id
                        FROM proxima_core.embeddings emb
                        JOIN proxima_core.embedding_heads head
                          ON head.entity_id = emb.entity_id
@@ -91,8 +93,9 @@ pub struct CodeChunkVectorCandidate {
 /// distance-ordered limit would let a non-source neighbour take a slot
 /// the later tier sort cannot refill.
 ///
-/// One row per memory: one vec per head version. `ORDER BY distance LIMIT n`
-/// is the shape the HNSW index can serve.
+/// One row per memory, scored by its best embedding chunk. The HNSW
+/// `ORDER BY distance LIMIT n` window grows until it contains `limit`
+/// distinct memories, is exhausted, or reaches the 1,000-chunk scan cap.
 ///
 /// # Errors
 ///
@@ -138,21 +141,50 @@ pub async fn nearest_code_chunk_candidates_on_connection(
         .await
         .map_err(map_err)?;
     let sql = nearest_code_chunk_sql(Lane::of(query.space().dim()));
-    // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
-    // casts, chosen by a closed enum; every value is bound.
-    sqlx::query_as::<_, CodeChunkVectorCandidate>(sqlx::AssertSqlSafe(sql))
-        .bind(owner.stored_owner_id())
-        .bind(filters.repo_id)
-        .bind(query.space().model_id())
-        .bind(crate::pgvector::literal(query.values()))
-        .bind(filters.language)
-        .bind(filters.chunk_type)
-        .bind(limit)
-        .bind(filters.file_class)
-        .bind(filters.exclude_source)
-        .fetch_all(&mut *connection)
-        .await
-        .map_err(map_err)
+    let target = u32::try_from(limit)
+        .unwrap_or(u32::MAX)
+        .min(SEMANTIC_SCAN_CAP);
+    let mut window = target;
+    let query_vector = crate::pgvector::literal(query.values());
+    let mut candidates = BTreeSet::new();
+    loop {
+        // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
+        // casts, chosen by a closed enum; every value is bound.
+        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(owner.stored_owner_id())
+            .bind(filters.repo_id)
+            .bind(query.space().model_id())
+            .bind(&query_vector)
+            .bind(filters.language)
+            .bind(filters.chunk_type)
+            .bind(i64::from(window))
+            .bind(filters.file_class)
+            .bind(filters.exclude_source)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(map_err)?;
+        let fetched = rows.len();
+        candidates.extend(rows);
+        let Some(next) = next_chunk_window(window, fetched, candidates.len(), target) else {
+            break;
+        };
+        window = next;
+    }
+    let rows = best_embedding_scores_on_connection(
+        connection,
+        &[owner.stored_owner_id()],
+        query,
+        &candidates.into_iter().collect::<Vec<_>>(),
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .take(usize::try_from(target).unwrap_or(usize::MAX))
+        .map(|row| CodeChunkVectorCandidate {
+            memory_id: row.memory_id,
+            similarity_score: row.similarity_score,
+        })
+        .collect())
 }
 
 /// The structural filters a chunk search applies before ranking. Grouped
