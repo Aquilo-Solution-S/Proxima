@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,10 +38,27 @@ struct Observed {
 }
 
 #[tokio::test]
-async fn reconciliation_visits_each_upload_when_blob_ids_cross_a_page() -> TestResult<()> {
+async fn reconciliation_retains_every_completed_claim_across_a_page() -> TestResult<()> {
+    let Some(observed) = with_fixture("duplicates", |database, config, client| {
+        Box::pin(observe_reports(database, config, client))
+    })
+    .await?
+    else {
+        return Ok(());
+    };
+    assert_complete_reports(&observed)
+}
+
+type ObservationFuture<'a, T> = Pin<Box<dyn Future<Output = TestResult<T>> + 'a>>;
+
+async fn with_fixture<T, F>(label: &str, observe: F) -> TestResult<Option<T>>
+where
+    T: std::fmt::Debug,
+    F: for<'a> FnOnce(&'a str, &'a S3RuntimeConfig, &'a Client) -> ObservationFuture<'a, T>,
+{
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
-        return Ok(());
+        return Ok(None);
     }
     let config = S3RuntimeConfig {
         bucket: format!("pg-reconcile-{}", Uuid::now_v7().simple()),
@@ -47,10 +66,10 @@ async fn reconciliation_visits_each_upload_when_blob_ids_cross_a_page() -> TestR
         ..S3RuntimeConfig::from_env()?
     };
     let client = s3_client(&config).await;
-    let database = unique_db_name("proxima_reconcile_duplicates");
+    let database = unique_db_name(&format!("proxima_reconcile_{label}"));
     create_core_db(&database).await?;
     eprintln!(
-        "duplicate-blob-id fixture: database={database} bucket={}",
+        "reconciliation fixture: database={database} bucket={}",
         config.bucket
     );
     let mut bucket_created = false;
@@ -67,16 +86,12 @@ async fn reconciliation_visits_each_upload_when_blob_ids_cross_a_page() -> TestR
             )
             .send()
             .await?;
-        tokio::time::timeout(
-            Duration::from_mins(2),
-            observe_reports(&database, &config, &client),
-        )
-        .await?
+        tokio::time::timeout(Duration::from_mins(2), observe(&database, &config, &client)).await?
     }
     .await;
     // All reports, including the baseline's wrong counts, are retained before
     // cleanup. Assertions below cannot leave this fixture's bucket or DB.
-    eprintln!("duplicate-blob-id reconciliation observation: {result:?}");
+    eprintln!("{label} reconciliation observation: {result:?}");
     let bucket_cleanup: TestResult<()> = if bucket_created {
         match tokio::time::timeout(
             Duration::from_secs(30),
@@ -91,11 +106,10 @@ async fn reconciliation_visits_each_upload_when_blob_ids_cross_a_page() -> TestR
         Ok(())
     };
     let database_cleanup = drop_db(&database).await;
-    eprintln!("duplicate-blob-id cleanup: bucket={bucket_cleanup:?} database={database_cleanup:?}");
+    eprintln!("{label} cleanup: bucket={bucket_cleanup:?} database={database_cleanup:?}");
     bucket_cleanup?;
     database_cleanup?;
-    let observed = result?;
-    assert_complete_reports(&observed)
+    result.map(Some)
 }
 
 fn assert_complete_reports(observed: &Observed) -> TestResult<()> {
@@ -109,7 +123,7 @@ fn assert_complete_reports(observed: &Observed) -> TestResult<()> {
             observed.healthy_global.orphan_objects,
             observed.healthy_global.foreign_locators,
         ),
-        (shared + 1, shared + 1, 0, 0, 0),
+        (2, shared + 1, 0, 0, 0),
         "every present canonical key is owned by a completed upload: {observed:?}"
     );
     assert!(observed.healthy_global.orphan_sample.is_empty());
@@ -120,8 +134,8 @@ fn assert_complete_reports(observed: &Observed) -> TestResult<()> {
             observed.missing_owner.missing_objects,
             observed.missing_owner.foreign_locators,
         ),
-        (shared + 1, 1, shared, 0),
-        "all missing shared locators and the later healthy control must be visited"
+        (2, 1, 1, 0),
+        "only the live shared locator is missing; its superseded rows stay excluded"
     );
     assert!(
         observed
@@ -140,8 +154,8 @@ fn assert_complete_reports(observed: &Observed) -> TestResult<()> {
             observed.foreign_owner.foreign_locators,
             observed.foreign_owner.orphan_objects,
         ),
-        (1, 1, 0, shared, 0),
-        "foreign rows cannot be lost behind their shared blob id"
+        (1, 1, 0, 1, 0),
+        "the latest foreign locator is counted once for its blob"
     );
     assert_eq!(
         (
@@ -151,7 +165,7 @@ fn assert_complete_reports(observed: &Observed) -> TestResult<()> {
             observed.foreign_global.orphan_objects,
             observed.foreign_global.foreign_locators,
         ),
-        (1, 1, 0, 0, shared),
+        (1, 1, 0, 0, 1),
     );
     Ok(())
 }
@@ -397,3 +411,6 @@ async fn empty_and_delete_bucket(client: &Client, bucket: &str) -> TestResult<()
     client.delete_bucket().bucket(bucket).send().await?;
     Ok(())
 }
+
+#[path = "reconcile_duplicate_blob_ids/live_uploads.rs"]
+mod live_uploads;

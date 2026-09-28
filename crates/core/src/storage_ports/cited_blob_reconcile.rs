@@ -5,7 +5,8 @@
 //! store holds bytes. Nothing keeps them in step, and since the held-blob
 //! check (`CitedBlobPort::find_held_blobs`) an upload is SKIPPED when the
 //! row says the artefact is present — so a row that outlives its object
-//! makes a citation permanently unresolvable, and no path repairs it.
+//! makes a citation unresolvable until the object is restored or the content
+//! is re-uploaded.
 //!
 //! WHY THIS IS NOT A CHECK ON THE HOT PATH. `find_held_blobs` is one
 //! indexed query by design: it exists to replace a per-page network
@@ -17,7 +18,8 @@
 //! IT REPORTS AND DELETES NOTHING, deliberately. The dangerous direction
 //! cannot be repaired here in any case — the bytes are gone, and only a
 //! source that still has them (a bucket version, a backup, the original
-//! upload) can restore one. The other direction is deletable in principle
+//! upload) can restore one. Re-uploading the same content selects the new
+//! completed upload for reads and reconciliation. The other direction is deletable in principle
 //! and still is not: an object with no row may be an upload that committed
 //! its bytes microseconds ago and has not yet committed its row, so a
 //! sweep that deleted on sight would race every concurrent upload it
@@ -54,18 +56,20 @@ pub struct CitedBlobMissingObject {
 /// What one pass over the bucket and the table found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CitedBlobReconcileOutcome {
-    /// Rows examined: this store's bucket, under the canonical prefix.
+    /// Live completed uploads examined: this store's bucket and minted keys.
     pub rows_scanned: u64,
     /// Objects examined under the canonical prefix.
     pub objects_scanned: u64,
-    /// Rows with no object. **A citation that cannot be resolved.**
+    /// Live uploads with no object. **A citation that cannot be resolved.**
     pub missing_objects: u64,
+    /// Newest completed losses first, bounded by [`MAX_RECONCILE_SAMPLE`].
     pub missing_sample: Vec<CitedBlobMissingObject>,
-    /// Objects with no row: cost and retention, not correctness. An aborted
+    /// Objects no completed row claims, including superseded rows: cost and
+    /// retention, not correctness. An aborted
     /// upload, a dropped database, an owner erased from Postgres alone.
     pub orphan_objects: u64,
     pub orphan_sample: Vec<String>,
-    /// Rows naming another bucket, or a key outside the canonical prefix.
+    /// Live uploads naming another bucket or a key not minted for their upload.
     ///
     /// NOT COUNTED AS MISSING, because the cause is different and so is the
     /// repair. The locator columns are client-writable — `read_url` says so
@@ -78,7 +82,7 @@ pub struct CitedBlobReconcileOutcome {
 }
 
 impl CitedBlobReconcileOutcome {
-    /// True when every row this store is responsible for has its object.
+    /// True when every live upload this store is responsible for has its object.
     ///
     /// Orphans do not count against it: they cost money and retention, and
     /// they resolve nothing wrongly. A caller that wants "is the corpus
@@ -109,9 +113,12 @@ pub struct CitedBlobOwnerMissingObject {
 /// owner lane reports only their counts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CitedBlobOwnerReconcileOutcome {
+    /// This owner's live completed uploads with valid store locators.
     pub rows_scanned: u64,
+    /// Live uploads whose object is present; mounts can name the same object.
     pub objects_scanned: u64,
     pub missing_objects: u64,
+    /// Newest completed losses first, bounded by [`MAX_RECONCILE_SAMPLE`].
     pub missing_sample: Vec<CitedBlobOwnerMissingObject>,
     /// Always `0` in this lane, and structurally so.
     ///
@@ -126,7 +133,7 @@ pub struct CitedBlobOwnerReconcileOutcome {
 }
 
 impl CitedBlobOwnerReconcileOutcome {
-    /// True when every row this owner can inspect has its object.
+    /// True when every live upload this owner can inspect has its object.
     #[must_use]
     pub const fn is_intact(&self) -> bool {
         self.missing_objects == 0

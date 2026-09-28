@@ -14,6 +14,8 @@ use uuid::Uuid;
 use crate::error::BlobError;
 use proxima_storage_pg::begin_compatible_owner_transaction;
 
+use super::live_upload::with_live_blob_upload;
+
 #[derive(Debug, Clone)]
 pub(super) struct UploadRow {
     pub(super) bucket: String,
@@ -267,32 +269,26 @@ pub(super) async fn find_held_blobs_on_connection(
     owner: &Owner,
     content_hashes: &[[u8; 32]],
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
+    const SQL: &str = with_live_blob_upload!(
+        "SELECT b.content_hash, b.blob_id,
+                COALESCE(u.expected_byte_len, 0) AS byte_len,
+                COALESCE(u.mime, '') AS mime,
+                COALESCE(u.filename, '') AS filename
+           FROM proxima_core.blob b
+           LEFT JOIN",
+        "WHERE b.owner_id = $1
+            AND b.schema_id = $2
+            AND b.content_hash = ANY($3::bytea[])"
+    );
     let owner_id = owner.stored_owner_id();
     let digests: Vec<Vec<u8>> = content_hashes.iter().map(|hash| hash.to_vec()).collect();
-    let rows = sqlx::query(
-        "SELECT b.content_hash, b.blob_id, \
-                COALESCE(u.expected_byte_len, 0) AS byte_len, \
-                COALESCE(u.mime, '') AS mime, \
-                COALESCE(u.filename, '') AS filename \
-           FROM proxima_core.blob b \
-           LEFT JOIN LATERAL (
-                SELECT expected_byte_len, mime, filename
-                  FROM proxima_core.blob_uploads u
-                 WHERE u.blob_id = b.blob_id
-                   AND u.status = 'completed'
-                 ORDER BY u.completed_at DESC NULLS LAST
-                 LIMIT 1
-           ) u ON true \
-          WHERE b.owner_id = $1 \
-            AND b.schema_id = $2 \
-            AND b.content_hash = ANY($3::bytea[])",
-    )
-    .bind(owner_id)
-    .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .bind(&digests)
-    .fetch_all(&mut *pool)
-    .await
-    .map_err(BlobError::Db)?;
+    let rows = sqlx::query(SQL)
+        .bind(owner_id)
+        .bind(UPLOADED_BLOB_SCHEMA_ID)
+        .bind(&digests)
+        .fetch_all(&mut *pool)
+        .await
+        .map_err(BlobError::Db)?;
 
     rows.into_iter()
         .map(|row| {
@@ -313,29 +309,25 @@ pub(super) async fn load_blob_location_on_connection(
     owner: &Owner,
     blob_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
+    // The shared selection requires the blob and upload owners to agree:
+    // a stale upload left behind by a partial transfer cannot locate bytes
+    // for the blob's new owner.
+    const SQL: &str = with_live_blob_upload!(
+        "SELECT u.bucket, u.object_key, u.upload_id, u.mounted_from_upload_id
+           FROM proxima_core.blob b
+           JOIN",
+        "WHERE b.blob_id = $1
+            AND b.owner_id = $2
+            AND b.schema_id = $3"
+    );
     let owner_id = owner.stored_owner_id();
-    if let Some(row) = sqlx::query(
-        // `u.owner_id = $2` as well as `b.owner_id`: a transfer moves both
-        // rows together, so the two must agree. Without it a stale upload
-        // row left behind by a half-applied transfer would still locate
-        // bytes for whoever now holds the blob row.
-        "SELECT u.bucket, u.object_key, u.upload_id, u.mounted_from_upload_id \
-           FROM proxima_core.blob b \
-           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
-          WHERE b.blob_id = $1 \
-            AND b.owner_id = $2 \
-            AND u.owner_id = $2 \
-            AND b.schema_id = $3 \
-            AND u.status = 'completed' \
-          ORDER BY u.completed_at DESC NULLS LAST \
-          LIMIT 1",
-    )
-    .bind(blob_id)
-    .bind(owner_id)
-    .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .fetch_optional(&mut *pool)
-    .await
-    .map_err(BlobError::Db)?
+    if let Some(row) = sqlx::query(SQL)
+        .bind(blob_id)
+        .bind(owner_id)
+        .bind(UPLOADED_BLOB_SCHEMA_ID)
+        .fetch_optional(&mut *pool)
+        .await
+        .map_err(BlobError::Db)?
     {
         return Ok(BlobLocation {
             bucket: row.get("bucket"),
@@ -357,27 +349,24 @@ pub(super) async fn load_blob_read_record_on_connection(
     owner: &Owner,
     blob_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
+    const SQL: &str = with_live_blob_upload!(
+        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, u.upload_id,
+                u.mounted_from_upload_id,
+                u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename
+           FROM proxima_core.blob b
+           JOIN",
+        "WHERE b.blob_id = $1
+            AND b.owner_id = $2
+            AND b.schema_id = $3"
+    );
     let owner_id = owner.stored_owner_id();
-    let row = sqlx::query(
-        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, u.upload_id, \
-                u.mounted_from_upload_id, \
-                u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename \
-           FROM proxima_core.blob b \
-           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
-          WHERE b.blob_id = $1 \
-            AND b.owner_id = $2 \
-            AND u.owner_id = $2 \
-            AND b.schema_id = $3 \
-            AND u.status = 'completed' \
-          ORDER BY u.completed_at DESC NULLS LAST \
-          LIMIT 1",
-    )
-    .bind(blob_id)
-    .bind(owner_id)
-    .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .fetch_optional(&mut *pool)
-    .await
-    .map_err(BlobError::Db)?;
+    let row = sqlx::query(SQL)
+        .bind(blob_id)
+        .bind(owner_id)
+        .bind(UPLOADED_BLOB_SCHEMA_ID)
+        .fetch_optional(&mut *pool)
+        .await
+        .map_err(BlobError::Db)?;
 
     row.map(|row| {
         let byte_len: i64 = row.get("byte_len");
