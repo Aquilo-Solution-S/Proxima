@@ -125,6 +125,12 @@ pub use proxima_core::verbs::goal_write::{
     IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS, MAX_WAKE_TOOL_ID_CHARS,
     OperatorKind, SystemOrigin,
 };
+/// Flavor-scoped erase for the host's retention schedule: open a unit with
+/// `Engine::system_unit_of_work` and call [`UnitOfWork::erase_own_series`].
+pub use proxima_core::verbs::own_erase::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
+};
 /// Typed derived-memory writes; handles identify series and outcomes identify rows.
 pub use proxima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,

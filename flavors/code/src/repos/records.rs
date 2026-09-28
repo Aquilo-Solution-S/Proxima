@@ -39,9 +39,9 @@ pub struct RepoEraseReceipt {
     /// Admissions erased: every version of every series this repo's rows
     /// named, Facts and Abstractions and Perspectives alike.
     pub memories_deleted: u64,
-    /// Cold objects marked for destruction. They are destroyed by
-    /// `maintain-storage --retry-cold-object-purges`, not by the erase —
-    /// see `super::erase::erase_repo`.
+    /// Cold objects enqueued for destruction. Each page's are destroyed
+    /// after that page commits; one that fails stays queued for
+    /// `maintain-storage --retry-cold-object-purges`.
     pub cold_objects_pending: u64,
     pub repo_record_deleted: bool,
 }
@@ -246,26 +246,38 @@ pub enum RepoRegistryError {
         repo_id: Uuid,
         blocking: Vec<String>,
     },
-    /// The sweep deleted a row the footprint never named.
+    /// The erase could not converge on an empty repository.
     ///
-    /// Two causes, and the common one is not a bug. An ordinary write
-    /// committed between the discovery pass and the lock is a row the
-    /// footprint could not have seen and the sweep then reaches — which is
-    /// the guard doing exactly its job, and which re-discovery fixes, so
-    /// the erase treats it as transient and comes round again. The other
-    /// cause is that the finding statements and the deleting statements
-    /// have drifted apart, which no retry fixes and which surfaces here
-    /// once the budget is spent.
+    /// Two causes, and the common one is not a bug. A write committed after
+    /// the last page and before the retirement took the `code-repo` fence
+    /// is a row the retirement finds under the fence; re-discovery erases
+    /// it, so the erase treats it as transient and comes round again. The
+    /// other cause is a row the finder names that no series erase removes
+    /// — the finder and the verb have drifted apart — which no retry fixes
+    /// and which surfaces here once the budget is spent.
     ///
-    /// Either way the answer is to refuse: the footprint is what the erase
-    /// locks, so a row outside it is a row deleted under no lock. The
-    /// alternative is an erase that looks like it worked.
+    /// Either way the answer is to refuse: deleting the registration over a
+    /// row still filed under it leaves that row belonging to a repository
+    /// that no longer exists.
     #[error(
-        "repo {repo_id} erase reached memory {memory_id}, which its footprint never named — \
-         a concurrent write landed in the discovery window, or the finder and the sweep \
-         have drifted apart"
+        "repo {repo_id} erase did not converge: memory {memory_id} is still filed under it — \
+         a concurrent write kept landing, or the finder names a row no series erase removes"
     )]
     FootprintIncomplete { repo_id: Uuid, memory_id: Uuid },
+    /// The erase verb refused the repository's footprint for a reason other
+    /// than ownership: a schema this flavor does not declare, a referencing
+    /// row no memory key can erase, or one series closure larger than an
+    /// erase call may take. Nothing of that page was deleted.
+    #[error("repo {repo_id} erase refused: {refusal}")]
+    EraseRefused {
+        repo_id: Uuid,
+        refusal: proxima::flavor::SeriesEraseRefusal,
+    },
+    /// Authorization or declaration fault from the erase verb: less than
+    /// Admin on the owner, or a tool the contract does not declare
+    /// destructive.
+    #[error(transparent)]
+    Protocol(#[from] proxima_core::ProtocolError),
     #[error("ingestion run not found: {run_id}")]
     RunNotFound { run_id: Uuid },
     #[error("ingestion run is already in terminal state: {run_id} ({status:?})")]

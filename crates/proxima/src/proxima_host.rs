@@ -104,16 +104,14 @@ impl ProximaHost {
         self.platform_scope.clone()
     }
 
-    /// The sidecar registry this boot froze, for a flavor-owned store that
+    /// The sidecar registry this boot froze, for a host-owned store that
     /// has to reach the substrate through a storage verb.
     ///
-    /// A flavor tearing down one of its own scopes deletes its own rows and
-    /// then hands the admissions to `verbs::forget::erase_memory_series`,
-    /// which walks THIS registry to reach the sidecars each admission
-    /// stamped. Handing over the boot's registry rather than letting the
-    /// flavor compose a second one is the point: two compositions can
-    /// disagree, and the one the write path used is the only one whose
-    /// table list matches what is actually in the rows.
+    /// Handing over the boot's registry rather than composing a second one
+    /// is the point: two compositions can disagree, and the one the write
+    /// path used is the only one whose table list matches what is actually
+    /// in the rows. A flavor erasing its own series does not need it:
+    /// `UnitOfWork::erase_own_series` runs on the Engine's own.
     ///
     /// Cheap to clone — the entries live behind an `Arc`.
     #[must_use]
@@ -121,9 +119,10 @@ impl ProximaHost {
         self.pg_sidecars.as_ref().clone()
     }
 
-    /// The full boot-frozen registry and callback required by host flavors
-    /// that invoke physical memory erasure. The context is opaque and grants
-    /// no erase authority by itself.
+    /// The full boot-frozen registry and callback required by a host that
+    /// invokes physical memory erasure on its own storage. The context is
+    /// opaque and grants no erase authority by itself. A flavor uses
+    /// `UnitOfWork::erase_own_series`, which carries the Engine's own.
     #[must_use]
     pub fn host_state_erase_context_for_host(&self) -> PgHostStateEraseContext {
         self.erase_context.clone()

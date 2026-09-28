@@ -1,166 +1,89 @@
 //! Erase one registered repository.
 //!
 //! The flavor is the only place that knows what "one repository's rows"
-//! means, so the split is: the flavor deletes the flavor's rows and names
-//! the admissions behind them; [`erase_memory_series`] deletes the
-//! substrate. Neither half enumerates the other's tables.
+//! means; the substrate is the only place that knows how to erase a series.
+//! So the split is: [`FIND_REPO_ROWS_SQL`] names the admissions filed under
+//! the repository, and [`UnitOfWork::erase_own_series`] erases them, a page
+//! at a time (docs/13 §Flavor-scoped erase). The verb expands each to its
+//! whole series, erases every row that references the erase set through a
+//! foreign key, refuses a footprint that reaches another owner or another
+//! flavor's schema, and takes its own locks, fences and transaction. The
+//! flavor then retires the registry row under the `code-repo` scope fence
+//! ([`retire_repo`]). No storage lock, owner fence or platform transaction
+//! is spelled here.
 //!
-//! The two halves reach their tables differently, and the difference is the
-//! point. [`erase_memory_series`] iterates the declared surfaces it is
-//! handed, so a surface added to the declaration is reached without
-//! touching it. This file is the flavor's own inverse and names its tables
-//! by hand: the statements below are `&'static str` constants spelling every
-//! `proxima_code` relation a repo's rows live in.
-//!
-//! A hand-written inverse is only as good as what checks it, so both
-//! directions are pinned against the contract:
+//! The finder names its tables by hand, so it is pinned against the
+//! contract in both directions:
 //! `every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption`
-//! fails on a surface the contract declares and these statements miss,
-//! unless it is listed as an exemption with a reason, and
+//! fails on a surface the contract declares and the finder misses, unless
+//! it is listed as an exemption with a reason, and
 //! `the_erase_names_no_table_the_contract_does_not_declare` fails on a table
-//! these statements name and the contract does not.
+//! the finder names and the contract does not.
+//!
+//! [`UnitOfWork::erase_own_series`]: proxima_core::UnitOfWork::erase_own_series
 
-use proxima_core::{AccessKind, Owner, StorageError};
-use proxima_storage_pg::verbs::forget::{
-    admissions_outside_owner, erase_memory_series, expand_series_for_erase,
-    lock_admissions_for_erase,
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use proxima::flavor::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
+    SeriesEraseRefusalKind, SeriesSelection,
 };
-use proxima_storage_pg::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
-use sqlx::PgPool;
-use std::collections::{BTreeMap, BTreeSet};
+use proxima_core::{AuthzContext, Engine, MemoryId, Owner, StorageError};
+use proxima_storage_pg::{
+    MAX_TRANSACTION_ATTEMPTS, begin_compatible_owner_transaction, is_transient_conflict,
+};
 use uuid::Uuid;
 
 use super::records::{RepoEraseReceipt, RepoRegistryError};
 use crate::store::CodeFlavorStore;
 
-/// Delete every `proxima_code` row filed under one repo, returning the
-/// admissions they named.
+/// Every `proxima_code` row filed under one repo, oldest admission first,
+/// at most `$2`, with the table it was found in.
 ///
-/// One statement on purpose. Data-modifying CTEs all read the same snapshot,
-/// so `work_items` still sees the work-item rows that the same statement is
-/// deleting — which is what lets `acceptance_criteria_v1` and
-/// `acceptance_verification_v1`, the two sidecars that carry no `repo_id` of
-/// their own, be reached through the work item they belong to. Both hold a
-/// plain (non-cascading) foreign key into `proxima_core.memory`, so leaving
-/// them behind would not leak a row, it would ABORT the substrate erase.
+/// Fourteen tables. `work_requested_v1` and `test_requested_v1` are the
+/// work items; `acceptance_criteria_v1` and `acceptance_verification_v1`
+/// carry no `repo_id` of their own and are found through the work item they
+/// belong to. The verb's reference closure would reach them anyway — each
+/// holds a foreign key into the work item's admission — but naming them
+/// here keeps "what is this repository's" a question the flavor answers,
+/// not a side effect of a constraint.
 ///
 /// Detail tables are absent by design: `acceptance_criterion_v1`,
 /// `code_chunk_call_v1`, `execution_plan_item_v1` and
 /// `test_requested_criterion_v1` cascade from the sidecar above them, and
-/// the contract declares exactly that (`EraseRule::Cascade`). Naming them
-/// here would be a second, weaker statement of a constraint the database
-/// already enforces.
+/// the contract declares exactly that (`EraseRule::Cascade`).
 ///
 /// `commit_summarizer_self_v1` and `engineer_self_v1` are absent for the
 /// opposite reason: they are the owner's self-model, carry no `repo_id`,
 /// and outlive any one repository. Erasing a repo must not delete the
 /// engineer who worked on it.
-/// `every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption`
-/// in `tests` is what keeps this list and that exemption honest against the
-/// contract.
 ///
 /// `development_perspective_v1.repo_id` is NULLABLE, and `repo_id = $1`
-/// therefore never matches a NULL one. That is the intended reading, not an
-/// oversight: the payload documents `None` as "cross-repo observations", so
-/// a perspective SERIES that never named this repository belongs to the
-/// owner the way the self-model rows do, and no single repository's erase is
-/// entitled to it. It goes with the owner, through the owner erase.
-///
-/// The unit is the series, not the version. A perspective whose current
-/// version says `None` but whose history was filed under this repository IS
-/// this repository's, and goes: the footprint expands every admission it
-/// finds to the whole series (that is what
-/// [`expand_series_for_erase`] is for), because keeping one version of a
-/// series and erasing another is not a state the substrate can be left in —
-/// the head would point at a missing row. Saying "a NULL `repo_id`
-/// survives" full stop would therefore be a promise about rows, made in the
-/// language of series, and false in exactly the case where it matters.
+/// therefore never matches a NULL one. The payload documents `None` as
+/// "cross-repo observations", so a perspective SERIES that never named this
+/// repository belongs to the owner and goes with the owner erase. The unit
+/// is the series, not the version: a perspective whose current version says
+/// `None` but whose history was filed under this repository IS this
+/// repository's, and goes, because the verb erases every series it is
+/// handed whole.
 /// `a_perspective_about_no_particular_repo_survives_a_repo_erase` pins the
 /// first half and
 /// `a_perspective_that_dropped_its_repo_id_still_goes_with_the_repo` pins
-/// the second, because a nullable column silently excluded from a sweep is
-/// otherwise indistinguishable from a bug.
-const DELETE_REPO_ROWS_SQL: &str = "\
-WITH work_items AS (
-    SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
-    UNION
-    SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
-),
-d_commit AS (
-    DELETE FROM proxima_code.commit_v1 WHERE repo_id = $1 RETURNING t
-),
-d_commit_summary AS (
-    DELETE FROM proxima_code.commit_summary_v1 WHERE repo_id = $1 RETURNING t
-),
-d_code_chunk AS (
-    DELETE FROM proxima_code.code_chunk_v1 WHERE repo_id = $1 RETURNING t
-),
-d_file_revision AS (
-    DELETE FROM proxima_code.file_revision_v1 WHERE repo_id = $1 RETURNING t
-),
-d_work_requested AS (
-    DELETE FROM proxima_code.work_requested_v1 WHERE repo_id = $1 RETURNING t
-),
-d_test_requested AS (
-    DELETE FROM proxima_code.test_requested_v1 WHERE repo_id = $1 RETURNING t
-),
-d_execution_result AS (
-    DELETE FROM proxima_code.execution_result_v1 WHERE repo_id = $1 RETURNING t
-),
-d_test_result AS (
-    DELETE FROM proxima_code.test_result_v1 WHERE repo_id = $1 RETURNING t
-),
-d_execution_plan AS (
-    DELETE FROM proxima_code.execution_plan_v1 WHERE repo_id = $1 RETURNING t
-),
-d_acceptance_summary AS (
-    DELETE FROM proxima_code.acceptance_summary_v1 WHERE repo_id = $1 RETURNING t
-),
-d_development_perspective AS (
-    DELETE FROM proxima_code.development_perspective_v1 WHERE repo_id = $1 RETURNING t
-),
-d_work_assignment AS (
-    DELETE FROM proxima_code.work_assignment_v1 WHERE repo_id = $1 RETURNING t
-),
-d_acceptance_criteria AS (
-    DELETE FROM proxima_code.acceptance_criteria_v1
-     WHERE work_item_memory_id IN (SELECT t FROM work_items)
-    RETURNING t
-),
-d_acceptance_verification AS (
-    DELETE FROM proxima_code.acceptance_verification_v1
-     WHERE work_item_memory_id IN (SELECT t FROM work_items)
-    RETURNING t
-)
-SELECT t FROM d_commit
-UNION SELECT t FROM d_commit_summary
-UNION SELECT t FROM d_code_chunk
-UNION SELECT t FROM d_file_revision
-UNION SELECT t FROM d_work_requested
-UNION SELECT t FROM d_test_requested
-UNION SELECT t FROM d_execution_result
-UNION SELECT t FROM d_test_result
-UNION SELECT t FROM d_execution_plan
-UNION SELECT t FROM d_acceptance_summary
-UNION SELECT t FROM d_development_perspective
-UNION SELECT t FROM d_work_assignment
-UNION SELECT t FROM d_acceptance_criteria
-UNION SELECT t FROM d_acceptance_verification";
-
-/// [`DELETE_REPO_ROWS_SQL`] asked instead of performed.
+/// the second.
 ///
-/// The erase now computes its whole footprint before it deletes anything,
-/// so the first step has to be a question. The two statements name the same
-/// fourteen tables through the same predicates and
-/// `the_finder_and_the_sweep_ask_the_same_question` holds them to it; the
-/// runtime check in [`erase_repo`] holds them to it again, on real rows, by
-/// refusing to proceed if the sweep deletes a row the finder never saw.
+/// Under owner RLS the finder sees only this owner's rows. An admission
+/// transferred away keeps its `repo_id` (the transfer moves `owner_id` and
+/// nothing else), so without RLS the finder reaches it and the verb refuses
+/// it as another owner's; with RLS it is the destination's and the finder
+/// never sees it. Either way no other owner's row is erased.
 const FIND_REPO_ROWS_SQL: &str = "\
 WITH work_items AS (
     SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
     UNION
     SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
 )
+SELECT src, t FROM (
 SELECT 'commit_v1' AS src, t FROM proxima_code.commit_v1 WHERE repo_id = $1
 UNION ALL
 SELECT 'commit_summary_v1', t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
@@ -192,148 +115,19 @@ SELECT 'acceptance_criteria_v1', t
 UNION ALL
 SELECT 'acceptance_verification_v1', t
   FROM proxima_code.acceptance_verification_v1
- WHERE work_item_memory_id IN (SELECT t FROM work_items)";
-
-/// Every `proxima_code` row that references an erased admission through a
-/// column other than its own `t`, and the admissions behind those rows.
-///
-/// Nine such columns exist and every one of them is `NO ACTION`. The repo
-/// sweep above reaches a row only through the row's OWN `repo_id` (or,
-/// for the two work-item sidecars, through a work item of this repo), and
-/// nothing anywhere constrains a row's `repo_id` to agree with the repo of
-/// the memory it points at. So repo B may hold an `execution_result_v1`
-/// naming repo A's `work_requested_v1` memory: erasing A sweeps A's rows,
-/// B's row survives with a pointer to a memory about to go, and the
-/// substrate delete does not leak — it RAISES, and the whole erase rolls
-/// back. That is not a hypothetical; it reproduces on an ordinary
-/// deployment.
-///
-/// The semantics chosen here: A REFERENCE TO ERASED DATA IS ITSELF ERASED,
-/// wherever it lives. The alternatives are worse. Keeping the row is not
-/// available — the database refuses it. Nulling the column would leave a
-/// test result that reports on nothing and an assignment pointing at
-/// nobody, which is a fact about the erased work item preserved in the
-/// negative. Refusing the erase would let one repository's stray pointer
-/// veto another repository's erasure, which is the inverse of what an
-/// erase is for.
-///
-/// One pass, over the CLOSED footprint. These rows carry admissions of
-/// their own and a row deleted here may in turn be referenced by a third,
-/// so the set has to be a fixpoint — but the fixpoint is reached by
-/// [`FIND_DANGLING_REFERENCES_SQL`], which asks the same question without
-/// deleting anything, so that the whole set can be locked in one statement
-/// before any of it is touched. Deleting in rounds and locking per round
-/// was the earlier shape and it was wrong twice over: it left an
-/// arbitrarily long window between locking one round and asking for the
-/// next, and it could not see the versions the series expansion adds.
-///
-/// `the_reference_closure_covers_every_non_t_foreign_key_into_memory` pins
-/// the column list of both statements against `pg_constraint` rather than
-/// against this comment.
-const CLOSE_DANGLING_REFERENCES_SQL: &str = "\
-WITH erased AS (
-    SELECT unnest($1::uuid[]) AS t
-),
-d_acceptance_criteria AS (
-    DELETE FROM proxima_code.acceptance_criteria_v1
-     WHERE work_item_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_acceptance_summary AS (
-    DELETE FROM proxima_code.acceptance_summary_v1
-     WHERE work_item_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_acceptance_verification AS (
-    DELETE FROM proxima_code.acceptance_verification_v1
-     WHERE work_item_memory_id IN (SELECT t FROM erased)
-        OR verifier_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_execution_plan AS (
-    DELETE FROM proxima_code.execution_plan_v1
-     WHERE goal_activated_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_execution_result AS (
-    DELETE FROM proxima_code.execution_result_v1
-     WHERE work_requested_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_test_result AS (
-    DELETE FROM proxima_code.test_result_v1
-     WHERE test_requested_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-),
-d_work_assignment AS (
-    DELETE FROM proxima_code.work_assignment_v1
-     WHERE work_item_memory_id IN (SELECT t FROM erased)
-        OR target_perspective_memory_id IN (SELECT t FROM erased)
-    RETURNING t
-)
-SELECT t FROM d_acceptance_criteria
-UNION SELECT t FROM d_acceptance_summary
-UNION SELECT t FROM d_acceptance_verification
-UNION SELECT t FROM d_execution_plan
-UNION SELECT t FROM d_execution_result
-UNION SELECT t FROM d_test_result
-UNION SELECT t FROM d_work_assignment";
-
-/// [`CLOSE_DANGLING_REFERENCES_SQL`] asked instead of performed, with the
-/// table each answer came from.
-///
-/// The table name is not decoration: a row found here may belong to a
-/// DIFFERENT principal — a flavor table's foreign key names
-/// `proxima_core.memory (t)` and nothing constrains whose memory that is,
-/// and an admission that changed hands leaves exactly this shape behind.
-/// Following such a reference would delete one principal's rows on another
-/// principal's authority, so [`erase_repo`] refuses instead, and the
-/// refusal has to be able to say which rows.
-const FIND_DANGLING_REFERENCES_SQL: &str = "\
-WITH erased AS (
-    SELECT unnest($1::uuid[]) AS t
-)
-SELECT 'acceptance_criteria_v1' AS src, t
-  FROM proxima_code.acceptance_criteria_v1
- WHERE work_item_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'acceptance_summary_v1', t
-  FROM proxima_code.acceptance_summary_v1
- WHERE work_item_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'acceptance_verification_v1', t
-  FROM proxima_code.acceptance_verification_v1
- WHERE work_item_memory_id IN (SELECT t FROM erased)
-    OR verifier_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'execution_plan_v1', t
-  FROM proxima_code.execution_plan_v1
- WHERE goal_activated_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'execution_result_v1', t
-  FROM proxima_code.execution_result_v1
- WHERE work_requested_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'test_result_v1', t
-  FROM proxima_code.test_result_v1
- WHERE test_requested_memory_id IN (SELECT t FROM erased)
-UNION ALL
-SELECT 'work_assignment_v1', t
-  FROM proxima_code.work_assignment_v1
- WHERE work_item_memory_id IN (SELECT t FROM erased)
-    OR target_perspective_memory_id IN (SELECT t FROM erased)";
+ WHERE work_item_memory_id IN (SELECT t FROM work_items)
+) AS found
+ORDER BY t
+LIMIT $2";
 
 /// The repo row, locked.
 ///
-/// `FOR UPDATE` here serializes two erases of the same repository against
-/// each other, and blocks an ingestion run starting against a repository
-/// that is being erased — `repo_ingestion_runs` carries a foreign key to
-/// this row, so starting a run needs `FOR KEY SHARE` on it. The sidecar
-/// tables do NOT reference `repos`, so this lock reaches no sidecar write:
-/// what makes the erase safe against one is the `code-repo` scope fence
-/// (`proxima::flavor::lock_scope_fence_exclusive_tx`), taken before this and
-/// held through commit, plus [`lock_admissions_for_erase`] over the
-/// footprint.
+/// `FOR UPDATE` serializes two retirements of the same repository, and
+/// blocks an ingestion run starting against it — `repo_ingestion_runs`
+/// carries a foreign key to this row, so starting a run needs
+/// `FOR KEY SHARE` on it. The sidecar tables do NOT reference `repos`, so
+/// what separates the retirement from a sidecar write is the `code-repo`
+/// scope fence, taken before this.
 const REPO_EXISTS_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
  WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
@@ -344,46 +138,93 @@ const DELETE_REPO_SQL: &str = "\
 DELETE FROM proxima_code.repos
  WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3";
 
+/// How long the retirement waits for any one lock before giving up on the
+/// attempt.
+///
+/// Five seconds, the figure the erase verb and the migration path use:
+/// waiting FOR a lock is not the same as holding one. Without it the wait
+/// inherits the pool's five-minute `statement_timeout` and ends in `57014`,
+/// which nothing retries. With it the same wait is a `55P03` in five
+/// seconds, which IS transient, so the attempt rolls back and comes round
+/// again.
+const ERASE_LOCK_TIMEOUT_SQL: &str = "SET LOCAL lock_timeout = '5s'";
+
 /// Erase one registered repo's code-flavor rows and the admissions behind
-/// them.
+/// them, then its registration.
 ///
-/// Cold objects are enqueued, not destroyed. A version of a repo memory that
-/// was cooled has its bytes in the object store, and destroying them from
-/// inside this transaction would lose them outright on a rollback — so the
-/// erase leaves a durable `cold_purge_pending` row per object and
-/// `proxima-mcp maintain-storage --retry-cold-object-purges` (the lane
-/// that already exists for exactly this) destroys them. The receipt reports
-/// how many, so a caller can see the queue it just added to. The version
-/// this replaced never deleted the `cooled` rows at all, which leaked both
-/// the locator and the bytes.
+/// Runs on [`proxima_core::UnitOfWork::erase_own_series`], so the verb's
+/// gates are this function's: Admin on `owner` (an Ingest-only principal
+/// cannot erase a repository), and, inside a tool handler, a tool the code
+/// flavor's contract declares destructive.
 ///
-/// A deadlock is retried, not surfaced. The erase takes `FOR UPDATE` on
-/// admissions in `t` order and an ordinary writer takes `FOR KEY SHARE` on
-/// them in whatever order its own statement produces, so the pair can
-/// always be made cyclic and no lock ordering on this side prevents it.
-/// `PostgreSQL` then picks the cheapest transaction to abort, which is the
-/// one that has not yet written anything — this one. Re-running the whole
-/// transaction is the correct response and the only one: by the time the
-/// retry starts, the writer that won has committed, so its row is visible
-/// to the new attempt's discovery and gets erased with the rest.
+/// Paged. Each page is one erase unit of at most the verb's cap, halved
+/// while its reference closure is over the cap; each commits on its own,
+/// and re-erasing an erased series is a no-op, so a failure between pages
+/// leaves a repository that is partly erased and still registered — the
+/// next call finishes it. Cold objects of each page are purged after that
+/// page commits; one that fails stays in `cold_purge_pending` for
+/// `proxima-mcp maintain-storage --retry-cold-object-purges`.
+///
+/// The first page runs even when the finder returns nothing, so the verb's
+/// Admin gate stands in front of the registry-row delete too.
+///
+/// A deadlock, a lock-wait timeout, a series replaced mid-erase, or a row
+/// the retirement finds under the fence is retried, not surfaced: the whole
+/// attempt re-runs from discovery, up to [`MAX_TRANSACTION_ATTEMPTS`]. The
+/// erase takes `FOR UPDATE` on admissions and an ordinary writer takes
+/// `FOR KEY SHARE` on them in its own order, so the pair can always be made
+/// cyclic, and `PostgreSQL` aborts whichever closed the cycle. By the time
+/// the retry starts the writer that won has committed, so its row is
+/// visible to the new attempt's discovery and gets erased with the rest.
 ///
 /// # Errors
-/// Returns `RepoRegistryError::NotFound` if the repo is not registered for
-/// `owner`, `RepoRegistryError::CrossOwnerReference` if another principal's
-/// rows point into this repo; otherwise returns database/storage errors
-/// from the transaction.
+/// `RepoRegistryError::NotFound` if the repo is not registered for `owner`;
+/// `CrossOwnerReference` if another principal's rows point into this repo;
+/// `EraseRefused` for any other refusal of the verb; `Protocol` for its
+/// authorization and declaration faults; `FootprintIncomplete` when writes
+/// keep landing past the retry budget; otherwise database/storage errors.
 pub async fn erase_repo(
+    engine: &Engine,
+    authz: &AuthzContext,
     store: &CodeFlavorStore,
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
-    with_erase_retry(MAX_TRANSACTION_ATTEMPTS, || {
-        erase_repo_once(store, owner, repo_id)
+    let tally = Tally::default();
+    let repo_record_deleted = with_erase_retry(MAX_TRANSACTION_ATTEMPTS, || {
+        erase_repo_once(engine, authz, store, owner, repo_id, &tally)
     })
-    .await
+    .await?;
+    Ok(RepoEraseReceipt {
+        repo_id,
+        completed_at: time::OffsetDateTime::now_utc(),
+        memories_deleted: tally.memories_deleted.load(Ordering::Relaxed),
+        cold_objects_pending: tally.cold_objects_pending.load(Ordering::Relaxed),
+        repo_record_deleted,
+    })
 }
 
-/// Re-run a whole erase transaction while it fails transiently, `attempts`
+/// What the committed pages erased, across attempts.
+///
+/// Atomics rather than a `&mut`: the retry loop re-borrows it on every
+/// attempt, and a page that committed before a later page failed stays
+/// erased, so its counts belong in the receipt.
+#[derive(Default)]
+struct Tally {
+    memories_deleted: AtomicU64,
+    cold_objects_pending: AtomicU64,
+}
+
+impl Tally {
+    fn add(&self, receipt: &SeriesEraseReceipt) {
+        self.memories_deleted
+            .fetch_add(receipt.versions_erased, Ordering::Relaxed);
+        self.cold_objects_pending
+            .fetch_add(receipt.cold_objects_pending, Ordering::Relaxed);
+    }
+}
+
+/// Re-run a whole erase attempt while it fails transiently, `attempts`
 /// times in total.
 ///
 /// Separated from [`erase_repo`] so the loop itself is reachable from a
@@ -409,98 +250,163 @@ where
     }
 }
 
-/// Whether the whole erase transaction is worth re-running.
+/// Whether the whole erase attempt is worth re-running.
 fn is_transient(err: &RepoRegistryError) -> bool {
     match err {
         RepoRegistryError::Database(err) => is_transient_conflict(err),
         // `FootprintIncomplete` is here for a reason of its own, not because
-        // it resembles a deadlock: the ordinary cause is a row committed in
-        // the discovery-to-lock window, and re-discovery is exactly what
-        // fixes it. The refusal checks run again on the way, so a
-        // CROSS-OWNER row arriving in that window still comes back as
-        // `CrossOwnerReference` rather than looping.
+        // it resembles a deadlock: the ordinary cause is a row committed
+        // after the last page and before the retirement took the fence, and
+        // re-discovery is exactly what fixes it. The verb's refusals run
+        // again on the way, so a CROSS-OWNER row arriving in that window
+        // still comes back as `CrossOwnerReference` rather than looping.
         RepoRegistryError::Storage(StorageError::Retryable(_))
         | RepoRegistryError::FootprintIncomplete { .. } => true,
         _ => false,
     }
 }
 
-/// How long the erase waits for any one lock before giving up on the
-/// attempt.
-///
-/// Five seconds, the same figure and the same reasoning as the migration
-/// path: waiting FOR a lock is not the same as holding one. Without it the
-/// erase inherits the pool's five-minute `statement_timeout`, so a
-/// long-lived `FOR KEY SHARE` holder turns the lock statement into a
-/// five-minute stall ending in `57014` — which is not a transient code, so
-/// nothing retries it, and the erase fails hard after five minutes of
-/// blocking every writer queued behind it. With the timeout the same
-/// situation is a `55P03` in five seconds, which IS transient, so the
-/// transaction rolls back (releasing what it held) and comes round again.
-const ERASE_LOCK_TIMEOUT_SQL: &str = "SET LOCAL lock_timeout = '5s'";
-
-/// One attempt: begin, compute, lock, delete, commit.
+/// One attempt: check, erase page by page, retire.
 async fn erase_repo_once(
+    engine: &Engine,
+    authz: &AuthzContext,
     store: &CodeFlavorStore,
     owner: &Owner,
     repo_id: Uuid,
-) -> Result<RepoEraseReceipt, RepoRegistryError> {
-    if store.platform_scope().is_some() {
-        let scope = store.owner_scope().ok_or_else(|| {
-            RepoRegistryError::Storage(StorageError::ConstraintViolation(
-                "repository erase requires an authenticated owner scope".into(),
-            ))
-        })?;
-        if scope.is_expired() || !scope.may_write(owner, AccessKind::Fact) {
-            return Err(RepoRegistryError::Storage(
-                StorageError::ConstraintViolation(
-                    "repository erase owner scope does not authorize the bound owner".into(),
-                ),
-            ));
+    tally: &Tally,
+) -> Result<bool, RepoRegistryError> {
+    if super::registry::get_repo(store.pool(), store.owner_scope(), owner, repo_id)
+        .await?
+        .is_none()
+    {
+        return Err(RepoRegistryError::NotFound { repo_id });
+    }
+    let mut page = MAX_ERASE_SERIES_PER_CALL;
+    let mut gated = false;
+    loop {
+        let found = find_repo_rows(store, repo_id, page).await?;
+        if found.is_empty() && gated {
+            break;
+        }
+        let mut seeds: Vec<MemoryId> = found.iter().map(|(_, t)| MemoryId::new(*t)).collect();
+        seeds.dedup();
+        let mut unit = engine.unit_of_work(authz).await?;
+        let receipt = match unit
+            .erase_own_series(
+                crate::contract::FLAVOR_ID,
+                *owner,
+                SeriesSelection::Ids(seeds),
+                EraseMode::Erase,
+            )
+            .await
+        {
+            Ok(receipt) => receipt,
+            // The page's closure is over the cap: the unit rolled back with
+            // nothing deleted, so ask again for less.
+            Err(SeriesEraseError::Refused(refusal))
+                if refusal.kind == SeriesEraseRefusalKind::OverCap && page > 1 =>
+            {
+                page /= 2;
+                continue;
+            }
+            Err(err) => return Err(page_error(repo_id, err, &found)),
+        };
+        unit.commit().await?;
+        gated = true;
+        tally.add(&receipt);
+        // A page the finder named and the verb erased nothing of: a
+        // concurrent erase took it (the retry's discovery no longer finds
+        // it), or the finder reaches a row no series erase removes (the
+        // budget runs out). Looping here would never end in the second case.
+        if let Some((_, first)) = found.first()
+            && receipt.versions_erased == 0
+        {
+            return Err(RepoRegistryError::FootprintIncomplete {
+                repo_id,
+                memory_id: *first,
+            });
         }
     }
+    retire_repo(store, owner, repo_id).await
+}
+
+/// Up to `limit` rows filed under `repo_id`, as this owner sees them.
+async fn find_repo_rows(
+    store: &CodeFlavorStore,
+    repo_id: Uuid,
+    limit: usize,
+) -> Result<Vec<(String, Uuid)>, RepoRegistryError> {
+    let mut tx = begin_compatible_owner_transaction(store.pool(), store.owner_scope()).await?;
+    let found = sqlx::query_as(FIND_REPO_ROWS_SQL)
+        .bind(repo_id)
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(found)
+}
+
+/// The verb's answer, in this registry's terms.
+///
+/// A refused seed is named by the table the finder found it in, so a
+/// refusal names something an operator can go and look at; a series the
+/// verb reached through a reference is already named by the referencing
+/// column.
+fn page_error(repo_id: Uuid, err: SeriesEraseError, found: &[(String, Uuid)]) -> RepoRegistryError {
+    match err {
+        SeriesEraseError::Refused(refusal)
+            if refusal.kind == SeriesEraseRefusalKind::CrossOwner =>
+        {
+            let tables: BTreeMap<Uuid, &str> = found
+                .iter()
+                .map(|(table, t)| (*t, table.as_str()))
+                .collect();
+            let blocking = refusal
+                .offending
+                .into_iter()
+                .map(|offender| {
+                    match offender
+                        .strip_prefix("t=")
+                        .and_then(|t| t.parse::<Uuid>().ok())
+                        .and_then(|t| tables.get(&t))
+                    {
+                        Some(table) => format!("proxima_code.{table} {offender}"),
+                        None => offender,
+                    }
+                })
+                .collect();
+            RepoRegistryError::CrossOwnerReference { repo_id, blocking }
+        }
+        SeriesEraseError::Refused(refusal) => RepoRegistryError::EraseRefused { repo_id, refusal },
+        SeriesEraseError::Retryable(message) => {
+            RepoRegistryError::Storage(StorageError::Retryable(message))
+        }
+        SeriesEraseError::Protocol(err) => RepoRegistryError::Protocol(err),
+    }
+}
+
+/// Delete the registry row once nothing is filed under it.
+///
+/// The declared `code-repo` scope fence, exclusively, BEFORE the last read.
+/// Every admission of a payload declaring `CODE_REPO_SCOPE` takes the same
+/// key shared — generated from one declaration, so the two sides cannot
+/// drift onto two locks — so a same-repository write that has not started
+/// waits here and then finds the scope unregistered, and one that has
+/// started committed before the read below and is found by it. A row found
+/// under the fence is a write that landed after the last page: the attempt
+/// is refused as `FootprintIncomplete`, and the retry erases it.
+async fn retire_repo(
+    store: &CodeFlavorStore,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<bool, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
-    let pool: &PgPool = store.pool();
-    let mut tx = if let Some(platform) = store.platform_scope() {
-        platform.begin().await?
-    } else {
-        proxima_storage_pg::begin_compatible_owner_transaction(pool, None).await?
-    };
-    // Configure bounded waits before the first advisory lock, including the
-    // global host-lifecycle fence. SET LOCAL is transaction setup; it does
-    // not inspect or mutate erase targets.
+    let mut tx = begin_compatible_owner_transaction(store.pool(), store.owner_scope()).await?;
     sqlx::query(ERASE_LOCK_TIMEOUT_SQL)
         .execute(&mut *tx)
         .await?;
-    store
-        .erase_context()
-        .lock_before_physical_erase(&mut tx)
-        .await?;
-
-    // Transfer takes both endpoint owner fences exclusively before it moves
-    // any Memory. Holding the source fence shared from before repository
-    // discovery through commit makes the footprint one ownership snapshot:
-    // a series cannot leave after the owner check and before its flavor rows
-    // are deleted.
-    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner).await?;
-
-    // The declared `code-repo` scope fence, exclusively, BEFORE the first
-    // read of anything this erase intends to delete. The owner fence above
-    // is shared with every admission of this owner and the source fence is
-    // one lane for every repository, so neither separates this erase from a
-    // write into THIS repository; the sidecar tables carry a bare `repo_id`
-    // and no foreign key, so the row lock below does not either. Taking the
-    // fence here rather than after discovery is the same fence-before-select
-    // rule the whole-owner and source-scope erases follow: a same-repository
-    // write that has not started waits here, and one that has started
-    // committed before the footprint was read and is therefore in it.
-    //
-    // This is the SAME key the Engine takes shared on every admission of a
-    // payload declaring `CODE_REPO_SCOPE` — generated from one declaration,
-    // so the two sides cannot drift onto two locks.
     proxima::flavor::lock_scope_fence_exclusive_tx(&mut tx, super::CODE_REPO_SCOPE, owner, repo_id)
         .await?;
-
     let exists: Option<(Uuid,)> = sqlx::query_as(REPO_EXISTS_SQL)
         .bind(kind)
         .bind(principal_id)
@@ -510,33 +416,18 @@ async fn erase_repo_once(
     if exists.is_none() {
         return Err(RepoRegistryError::NotFound { repo_id });
     }
-
-    let ts = erase_footprint(&mut tx, owner, repo_id).await?;
-    let held: BTreeSet<Uuid> = ts.iter().copied().collect();
-
-    let swept: Vec<Uuid> = sqlx::query_scalar(DELETE_REPO_ROWS_SQL)
+    let left: Vec<(String, Uuid)> = sqlx::query_as(FIND_REPO_ROWS_SQL)
         .bind(repo_id)
+        .bind(1_i64)
         .fetch_all(&mut *tx)
         .await?;
-    let closed: Vec<Uuid> = sqlx::query_scalar(CLOSE_DANGLING_REFERENCES_SQL)
-        .bind(&ts)
-        .fetch_all(&mut *tx)
-        .await?;
-    // Every row the two deletes reach was in the footprint, or the
-    // footprint was not a footprint and the locks are on the wrong rows.
-    // Cheap, and the only check that sees the real rows rather than the
-    // statements.
-    if let Some(missed) = swept.iter().chain(&closed).find(|t| !held.contains(t)) {
+    if let Some((_, memory_id)) = left.first() {
         return Err(RepoRegistryError::FootprintIncomplete {
             repo_id,
-            memory_id: *missed,
+            memory_id: *memory_id,
         });
     }
-
-    let (memories_deleted, cold_purge) =
-        erase_memory_series(&mut tx, store.sidecars(), store.erase_context(), owner, &ts).await?;
-
-    let repo_record_deleted = sqlx::query(DELETE_REPO_SQL)
+    let deleted = sqlx::query(DELETE_REPO_SQL)
         .bind(kind)
         .bind(principal_id)
         .bind(repo_id)
@@ -545,139 +436,19 @@ async fn erase_repo_once(
         .rows_affected()
         > 0;
     tx.commit().await?;
-
-    Ok(RepoEraseReceipt {
-        repo_id,
-        completed_at: time::OffsetDateTime::now_utc(),
-        memories_deleted,
-        cold_objects_pending: cold_purge.object_keys().len() as u64,
-        repo_record_deleted,
-    })
+    Ok(deleted)
 }
 
-/// The statements whose column lists the `pg_constraint` tests check, so
-/// that neither the question nor the deletion can drift from the schema.
+/// The finder, for the catalog tests that hold it to the schema.
 #[cfg(any(test, debug_assertions))]
 #[must_use]
-pub fn reference_closure_sql() -> [&'static str; 2] {
-    [FIND_DANGLING_REFERENCES_SQL, CLOSE_DANGLING_REFERENCES_SQL]
-}
-
-/// Every admission this repo's erase will delete, locked, before anything
-/// is deleted.
-///
-/// Three things grow the set and they grow each other, so the answer is a
-/// JOINT fixpoint and not two passes:
-///
-/// 1. the repo's own rows, found by `repo_id`;
-/// 2. every other version of those rows' series — the substrate erases a
-///    series whole ([`expand_series_for_erase`]), and nothing constrains a
-///    later version of a handle to name the same repository as the first,
-///    so the expansion routinely adds admissions the sweep never saw;
-/// 3. every flavor row that POINTS at any admission already in the set,
-///    whichever repository it is filed under, plus that row's own
-///    admission — which is a new admission, whose series expands, whose
-///    versions may be pointed at in turn.
-///
-/// Computing 1 and 3 without 2 is what made a repo erase abort on an
-/// ordinary superseded memory: the sweep found v1, the closure ran over v1
-/// and found nothing, the substrate then deleted v2 as part of the series,
-/// and v2's referencing row was still there.
-///
-/// Termination is by `seen`, which only ever grows and is bounded by the
-/// number of this owner's admissions — not by "a round deletes a row",
-/// which is false here because no round deletes anything, and which was
-/// false before too for a cycle's last round.
-///
-/// The lock is taken ONCE, over the whole answer, for the reason written on
-/// [`lock_admissions_for_erase`]: locking per round leaves a window between
-/// rounds in which this transaction holds part of the set and is not yet
-/// asking for the rest. The ownership question is asked once too, over the
-/// whole answer, for a reason of the same shape — see below.
-///
-/// A retry re-runs all of this, which is what keeps the refusal a refusal:
-/// a cross-owner row that arrives during the discovery window is found by
-/// the next attempt's fixpoint and refused, rather than retried forever.
-///
-/// # Errors
-/// Returns `RepoRegistryError::CrossOwnerReference` if any admission in the
-/// footprint — however it was reached — belongs to another principal;
-/// otherwise database/storage errors.
-pub async fn erase_footprint(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<Vec<Uuid>, RepoRegistryError> {
-    let mut found: Vec<(String, Uuid)> = sqlx::query_as(FIND_REPO_ROWS_SQL)
-        .bind(repo_id)
-        .fetch_all(&mut **tx)
-        .await?;
-    let mut seen: BTreeSet<Uuid> = BTreeSet::new();
-    // Which row each admission was found through, so a refusal can name
-    // something an operator can go and look at. A version added by the
-    // series expansion has no flavor row of its own and so no entry; it
-    // also cannot be foreign, because the expansion is owner-scoped.
-    let mut found_through: BTreeMap<Uuid, String> = BTreeMap::new();
-
-    loop {
-        let frontier: Vec<Uuid> = found
-            .iter()
-            .map(|(table, t)| {
-                found_through.entry(*t).or_insert_with(|| table.clone());
-                *t
-            })
-            .filter(|t| !seen.contains(t))
-            .collect();
-        if frontier.is_empty() {
-            break;
-        }
-        seen.extend(frontier.iter().copied());
-
-        let expanded: Vec<Uuid> = expand_series_for_erase(tx, owner, &frontier).await?;
-        found = sqlx::query_as(FIND_DANGLING_REFERENCES_SQL)
-            .bind(&frontier)
-            .fetch_all(&mut **tx)
-            .await?;
-        found.extend(expanded.into_iter().map(|t| (String::new(), t)));
-    }
-
-    // ONE ownership question, over the WHOLE footprint, and after the
-    // fixpoint rather than inside it.
-    //
-    // Asking it only of the rows reached by following references left the
-    // seed leg unguarded, and the seed leg is the ordinary case: a
-    // transferred memory keeps the `repo_id` it was written with — nothing
-    // in the transfer touches flavor columns, only `owner_id` — so
-    // `repo_id = $1` still finds it under the source owner's repo while the
-    // admission itself belongs to someone else. Erasing it would destroy the
-    // destination's sidecar row on the source's authority and leave their
-    // `memory` row stamping a table it is absent from — silently, because
-    // the row is in the footprint, so nothing else complains.
-    let footprint: Vec<Uuid> = seen.into_iter().collect();
-    let foreign = admissions_outside_owner(tx, owner, &footprint).await?;
-    if !foreign.is_empty() {
-        let blocking: Vec<String> = foreign
-            .into_iter()
-            .map(|t| match found_through.get(&t) {
-                Some(table) if !table.is_empty() => format!("proxima_code.{table} t={t}"),
-                _ => format!("t={t}"),
-            })
-            .collect();
-        return Err(RepoRegistryError::CrossOwnerReference { repo_id, blocking });
-    }
-
-    // Sorted, because `seen` was a BTreeSet: two erases whose footprints
-    // overlap ask for the shared rows in the same order.
-    lock_admissions_for_erase(tx, owner, &footprint).await?;
-    Ok(footprint)
+pub fn repo_finder_sql() -> &'static str {
+    FIND_REPO_ROWS_SQL
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CLOSE_DANGLING_REFERENCES_SQL, DELETE_REPO_ROWS_SQL, DELETE_REPO_SQL,
-        FIND_DANGLING_REFERENCES_SQL, FIND_REPO_ROWS_SQL, RepoRegistryError,
-    };
+    use super::{DELETE_REPO_SQL, FIND_REPO_ROWS_SQL, RepoRegistryError};
     use crate::contract::CODE_FLAVOR_CONTRACT;
     use proxima_core::flavor::{EraseRule, Surface};
     use std::collections::BTreeSet;
@@ -718,51 +489,34 @@ mod tests {
             .collect()
     }
 
-    /// Every `(table, col)` the statement tests with
-    /// `col IN (SELECT t FROM erased)`.
-    ///
-    /// Pairs, not columns: `work_item_memory_id` names four different
-    /// tables, so a set of bare column names would report nine references
-    /// as six and let three of them be dropped without a word.
-    fn erased_pairs_of(sql: &'static str) -> BTreeSet<(&'static str, &'static str)> {
-        let mut table = "";
-        let mut pairs = BTreeSet::new();
-        for line in sql.lines() {
-            let line = line.trim();
-            if let Some(named) = line
-                .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\''))
-                .find(|token| token.starts_with("proxima_code."))
-            {
-                table = named;
-            }
-            if let Some(rest) = line.strip_suffix(" IN (SELECT t FROM erased)")
-                && let Some(column) = rest.rsplit(' ').next()
-            {
-                pairs.insert((table, column));
-            }
-        }
-        pairs
+    /// Every `src` label the finder reports, which is how a refusal names
+    /// the table a seed came from.
+    fn labels_in(sql: &'static str) -> BTreeSet<&'static str> {
+        sql.lines()
+            .filter_map(|line| line.trim().strip_prefix("SELECT '"))
+            .filter_map(|rest| rest.split('\'').next())
+            .collect()
     }
 
     /// The point of the whole move: a table added to this flavor and not to
-    /// the sweep is a table `proxima-code_erase_repo` silently leaves
+    /// the finder is a table `proxima-code_erase_repo` silently leaves
     /// behind. The core spine could not run this test — it did not know
     /// what the flavor declared, which is exactly how the version this
     /// replaced came to reach five of sixteen sidecars.
     #[test]
     fn every_declared_surface_is_reached_by_the_repo_erase_or_named_as_an_exemption() {
-        let swept = tables_deleted_by(DELETE_REPO_ROWS_SQL);
+        let found = tables_named_in(FIND_REPO_ROWS_SQL);
         assert_eq!(
-            swept.len(),
+            found.len(),
             14,
-            "the row sweep should delete from fourteen tables, found {swept:?}"
+            "the repo-row finder should name fourteen tables, found {found:?}"
         );
         let repo_row = tables_deleted_by(DELETE_REPO_SQL);
 
         let mut unreached: Vec<&str> = every_declared_surface()
             .filter(|surface| {
                 let table = surface.table;
-                !(swept.contains(table)
+                !(found.contains(table)
                     || repo_row.contains(table)
                     || OWNER_SCOPED.contains(&table)
                     || CASCADES_FROM_THE_REPO_ROW.contains(&table)
@@ -775,8 +529,24 @@ mod tests {
         assert!(
             unreached.is_empty(),
             "these declared surfaces are erased by nothing when a repo is erased: {unreached:?} \
-             — add them to the sweep, or add them to an exemption list with a reason"
+             — add them to the finder, or add them to an exemption list with a reason"
         );
+    }
+
+    /// A refusal names a seed by its finder label, so every label has to be
+    /// the table it is found in — a copy-pasted label would send an
+    /// operator to the wrong table.
+    #[test]
+    fn every_finder_label_is_the_table_it_reads() {
+        let labels: BTreeSet<String> = labels_in(FIND_REPO_ROWS_SQL)
+            .into_iter()
+            .map(|label| format!("proxima_code.{label}"))
+            .collect();
+        let tables: BTreeSet<String> = tables_named_in(FIND_REPO_ROWS_SQL)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(labels, tables, "finder labels and finder tables disagree");
     }
 
     /// A deadlock is a retry; a refusal is an answer.
@@ -797,6 +567,16 @@ mod tests {
             repo_id: uuid::Uuid::nil(),
             blocking: vec!["proxima_code.execution_result_v1 t=…".into()],
         }));
+        assert!(!is_transient(&RepoRegistryError::EraseRefused {
+            repo_id: uuid::Uuid::nil(),
+            refusal: proxima::flavor::SeriesEraseRefusal {
+                kind: proxima::flavor::SeriesEraseRefusalKind::UnerasableReference,
+                offending: vec!["proxima_x.y.z t=…".into()],
+            },
+        }));
+        assert!(!is_transient(&RepoRegistryError::Protocol(
+            proxima_core::ProtocolError::forbidden("not an admin")
+        )));
         // Not drift until the budget says so: the ordinary cause is an
         // ordinary write landing in the discovery window, and re-discovery
         // is the fix.
@@ -871,34 +651,34 @@ mod tests {
         assert_eq!(calls.get(), 1, "a non-transient answer is not re-asked");
     }
 
-    /// The erase asks before it deletes, which means the question and the
-    /// deletion are two statements that must mean the same thing. They are
-    /// hand-written, so nothing but this stops a table being added to one
-    /// and not the other — and the failure mode is quiet: the sweep deletes
-    /// a row the footprint never locked, or the footprint locks a row the
-    /// sweep never reaches.
+    /// A seed the verb refuses as another owner's is named by the table the
+    /// finder found it in; a series reached through a reference keeps the
+    /// verb's own name for it.
     #[test]
-    fn the_finder_and_the_sweep_ask_the_same_question() {
-        assert_eq!(
-            tables_named_in(FIND_REPO_ROWS_SQL),
-            tables_named_in(DELETE_REPO_ROWS_SQL),
-            "the repo-row finder and the repo-row sweep name different tables"
+    fn a_cross_owner_refusal_names_the_table_each_seed_came_from() {
+        use proxima::flavor::{SeriesEraseError, SeriesEraseRefusal, SeriesEraseRefusalKind};
+        let seed = uuid::Uuid::now_v7();
+        let joined = uuid::Uuid::now_v7();
+        let err = super::page_error(
+            uuid::Uuid::nil(),
+            SeriesEraseError::Refused(SeriesEraseRefusal {
+                kind: SeriesEraseRefusalKind::CrossOwner,
+                offending: vec![
+                    format!("t={seed}"),
+                    format!("proxima_code.execution_result_v1.work_requested_memory_id t={joined}"),
+                ],
+            }),
+            &[("work_requested_v1".to_owned(), seed)],
         );
+        let RepoRegistryError::CrossOwnerReference { blocking, .. } = err else {
+            panic!("a cross-owner refusal is a CrossOwnerReference, got {err:?}");
+        };
         assert_eq!(
-            tables_named_in(FIND_DANGLING_REFERENCES_SQL),
-            tables_named_in(CLOSE_DANGLING_REFERENCES_SQL),
-            "the reference finder and the reference closure name different tables"
-        );
-        let pairs = erased_pairs_of(FIND_DANGLING_REFERENCES_SQL);
-        assert_eq!(
-            pairs,
-            erased_pairs_of(CLOSE_DANGLING_REFERENCES_SQL),
-            "the reference finder and the reference closure test different columns"
-        );
-        assert_eq!(
-            pairs.len(),
-            9,
-            "nine non-`t` foreign keys into the core admission table exist; found {pairs:?}"
+            blocking,
+            vec![
+                format!("proxima_code.work_requested_v1 t={seed}"),
+                format!("proxima_code.execution_result_v1.work_requested_memory_id t={joined}"),
+            ]
         );
     }
 
@@ -907,39 +687,15 @@ mod tests {
         let declared: BTreeSet<&str> = every_declared_surface()
             .map(|surface| surface.table)
             .collect();
-        let mut stray: Vec<&str> = tables_deleted_by(DELETE_REPO_ROWS_SQL)
+        let mut stray: Vec<&str> = tables_named_in(FIND_REPO_ROWS_SQL)
             .union(&tables_deleted_by(DELETE_REPO_SQL))
             .copied()
-            .chain(tables_deleted_by(CLOSE_DANGLING_REFERENCES_SQL))
-            .chain(tables_named_in(FIND_REPO_ROWS_SQL))
-            .chain(tables_named_in(FIND_DANGLING_REFERENCES_SQL))
             .filter(|table| !declared.contains(table))
             .collect();
         stray.sort_unstable();
         assert!(
             stray.is_empty(),
-            "the repo erase deletes from tables the contract does not declare: {stray:?}"
-        );
-    }
-
-    /// The closure may only reach tables the sweep already reaches.
-    ///
-    /// It exists to catch a row the sweep's `repo_id` filter missed, in a
-    /// table the sweep already knows about. A table appearing ONLY in the
-    /// closure would mean a whole surface whose erasure depends on someone
-    /// else pointing at it, which is not a rule anyone could state.
-    #[test]
-    fn the_reference_closure_reaches_no_table_the_sweep_does_not() {
-        let swept = tables_deleted_by(DELETE_REPO_ROWS_SQL);
-        let mut only_in_closure: Vec<&str> = tables_deleted_by(CLOSE_DANGLING_REFERENCES_SQL)
-            .into_iter()
-            .filter(|table| !swept.contains(table))
-            .collect();
-        only_in_closure.sort_unstable();
-        assert!(
-            only_in_closure.is_empty(),
-            "the reference closure deletes from tables the repo sweep never touches: \
-             {only_in_closure:?}"
+            "the repo erase names tables the contract does not declare: {stray:?}"
         );
     }
 }

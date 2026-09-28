@@ -298,6 +298,23 @@ reach to the destination owner. See
 [Consumer Projector Guidance](#consumer-projector-guidance) below for what
 that means when deciding where to send a memory.
 
+## Flavor-Scoped Erase API
+
+| Type | Import | Status |
+|---|---|---|
+| `SeriesSelection`, `EraseMode` | `proxima::flavor::*`, `proxima::host::*` | Flavor SDK / Host API |
+| `SeriesEraseReceipt` | same | Flavor SDK / Host API |
+| `SeriesEraseError`, `SeriesEraseRefusal`, `SeriesEraseRefusalKind` | same | Flavor SDK / Host API |
+| `MAX_ERASE_SERIES_PER_CALL`, `MAX_ERASE_VERSIONS_PER_CALL` | same | Flavor SDK / Host API |
+
+| Entry | Authority |
+|---|---|
+| `engine.unit_of_work(&authz)` → `erase_own_series(flavor_id, owner, selection, mode)` | Admin on `owner`; inside a tool handler, a tool the flavor declares `destructive` |
+| `engine.system_unit_of_work(&authority)` → `erase_own_series(..)` | the host's `SystemAuthority` for this boot; the unit admits no other operation |
+
+One entry point for flavors and hosts; the scope rules are the same on both.
+Contract: [13 §Flavor-scoped erase](../13-compliance.md#flavor-scoped-erase).
+
 ## Who may erase — the provider seam
 
 `OwnerEraseAuthorityPort` is the seam, and the only place the question is

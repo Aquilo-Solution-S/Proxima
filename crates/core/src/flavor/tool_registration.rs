@@ -115,6 +115,11 @@ impl FlavorRegistry {
         // closure preserves the descriptor's copyable call-handle semantics.
         let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {
             let properties = properties.clone();
+            // Every transport reaches the handler through this closure, so
+            // stamping here is what lets a verb ask which tool is calling
+            // without trusting anything the call carried.
+            let mut ctx: crate::mcp::McpToolCtx = ctx;
+            ctx.authz = ctx.authz.invoked_by_tool(T::NAME);
             Box::pin(async move {
                 // Dispatcher tools (non-empty specs) run per-action validation;
                 // argv-keyed tools resolve the action key (closed set — argv

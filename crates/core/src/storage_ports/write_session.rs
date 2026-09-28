@@ -9,6 +9,7 @@ use crate::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
 };
+use crate::verbs::own_erase::{SeriesEraseOutcome, SeriesEraseRequest};
 use crate::verbs::query::SidecarAtom;
 use crate::{MemoryId, SchemaId};
 
@@ -81,6 +82,29 @@ pub trait WriteSessionFactory: Send + Sync {
         &self,
         owner_scope: Option<&crate::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError>;
+
+    /// Begin the transaction one flavor-scoped erase runs in
+    /// ([`WriteSession::erase_series`]).
+    ///
+    /// A separate begin because the erase's locks come FIRST: the backend
+    /// takes the exclusive lifecycle fence before anything else in the
+    /// transaction, where an ordinary session would already hold it shared.
+    /// `permit` is the Admin-level owner permit the engine minted; the
+    /// session erases for that owner only.
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` from a backend without a physical erase path, or
+    /// storage faults from beginning the transaction.
+    async fn begin_series_erase(
+        &self,
+        permit: &OwnerWritePermit,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
+        let _ = permit;
+        Err(StorageError::Unavailable(
+            "this backend has no flavor-scoped erase".into(),
+        ))
+    }
 }
 
 /// One transaction the Engine can attach several authorized writes to.
@@ -211,6 +235,32 @@ pub trait WriteSession: Send {
         permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError>;
+
+    /// Hard-erase the whole series `request` selects, in THIS transaction.
+    ///
+    /// Only valid on a session from
+    /// [`WriteSessionFactory::begin_series_erase`], as its first and only
+    /// operation. The engine has authorized `permit` (Admin on the owner, or
+    /// system authority) and resolved the named flavor's schemas; the backend
+    /// expands the selection to whole series plus every series whose rows
+    /// reference it, refuses anything outside the owner or those schemas, and
+    /// erases. Cold objects are enqueued here and destroyed after
+    /// [`Self::commit`].
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` from a backend without a physical erase path; storage
+    /// faults, `Retryable` included.
+    async fn erase_series(
+        &mut self,
+        permit: &OwnerWritePermit,
+        request: &SeriesEraseRequest<'_>,
+    ) -> Result<SeriesEraseOutcome, StorageError> {
+        let _ = (permit, request);
+        Err(StorageError::Unavailable(
+            "this backend has no flavor-scoped erase".into(),
+        ))
+    }
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError>;
 }

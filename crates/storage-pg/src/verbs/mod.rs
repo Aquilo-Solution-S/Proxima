@@ -26,6 +26,7 @@ pub(crate) mod owner_export;
 pub(crate) mod publication_outbox;
 pub mod query;
 pub mod query_timeseries;
+pub(crate) mod series_erase;
 pub(crate) mod sketch;
 pub mod source_cursors;
 pub mod wake_timeseries;

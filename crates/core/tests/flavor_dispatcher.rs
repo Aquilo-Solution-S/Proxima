@@ -107,6 +107,7 @@ static DISPATCH_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
         wire_name: DISPATCH,
         actions: &["look", "touch"],
         idempotent: false,
+        destructive: false,
     }],
     resources: &[],
     bespoke_erase_legs: &[],

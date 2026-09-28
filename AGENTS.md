@@ -115,7 +115,7 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
 source-owned pins with target redaction, optional Memory/Goal sidecars,
 `MemoryGraphValid`, `OperatorInvocation` for writes that declare a
-derivation, abandonment-only hard deletion, build-time flavor
+derivation, hard deletion only through `wipeable`, build-time flavor
 registries, set-based authorized reads, atomic command-port writes.
 
 ## Agent operating discipline
@@ -243,7 +243,9 @@ runtime checklist most likely to prevent regressions.
   Wake is armed Goal behavior, not a separate kernel entity.
 - **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on
   Fact ∪ Abstraction (a Perspective never cites). Hard deletion is
-  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`.
+  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy) ∨ flavorScoped`;
+  a flavor-scoped erase is whole series of the flavor's own schemas, one
+  owner, Admin or system authority (Lean `FlavorScopedErase`, 13 §Flavor-scoped erase).
   Embeddings are independent rows and never graph authors.
 - **Flavor/API/storage:** flavor composition is build-time; no runtime registry
   or plugin tier. Flavor code must use authorized helpers/private permits, not
@@ -293,7 +295,7 @@ runtime checklist most likely to prevent regressions.
 - Restoring runtime registration, raw flavor writes/reads against core tables,
   or public access to storage internals.
 - Turning compliance into broad source-scope deletion. Hard delete needs
-  abandonment proof.
+  abandonment proof, or a flavor-scoped erase within its own schemas.
 - Using embeddings/similarity to author a connection.
 - Reaching for a verb that writes an edge, or a third edge kind. A feature that
   seems to need one fails the node-home test and is missing a node.

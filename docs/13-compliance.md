@@ -38,16 +38,17 @@ host's.
 |---|---|
 | cognitive lifecycle | append-only; Facts immutable; A/P/Goals supersede (see [02 §Re-derivation and supersession](02-memory.md#re-derivation-and-supersession)) |
 | inverse lifecycle | out-of-band host operation; hard-deletes rows |
-| scope | one `Owner`, or one source object inside one `Owner` |
+| scope | one `Owner`; one source object inside one `Owner`; or whole series of one flavor's own schemas inside one `Owner` (§Flavor-scoped erase) |
 | authorship | a host-authorized principal; never operator-authored |
 | operator visibility | diminished graph only |
-| protocol | host API; see [14](14-protocol-surface.md) |
+| protocol | host API (see [14](14-protocol-surface.md)); the flavor-scoped lane is `UnitOfWork::erase_own_series` |
 | record | the returned receipt; core keeps no history of the operation |
 
 ## Operations
 
-Two verbs, each in a four-cell grid of owner kind × scope. The names carry no
-adjectives, because a name is not the place to promise a check.
+Two verbs, each in a four-cell grid of owner kind × scope, plus one
+flavor-scoped lane. The names carry no adjectives, because a name is not the
+place to promise a check.
 
 | Operation | Scope | Contract |
 |---|---|---|
@@ -56,10 +57,10 @@ adjectives, because a name is not the place to promise a check.
 | `erase_group_source_scope` | one source object inside a group `Owner` | destroys the rows attributable to that source only, under the same live-roster refusal |
 | `erase_personal_source_scope` | one source object inside a personal `Owner` | the same, under the same drop proof |
 | `export_owner_bundle` | one personal or group `Owner` | a deterministic bundle of every surface the contracts declare exportable |
+| `UnitOfWork::erase_own_series` | whole series of one flavor's own schemas inside one live `Owner` | destroys every version, hot and cooled, of each selected series; Admin or the host's system authority (§Flavor-scoped erase) |
 
-The public scope operations above remain the authority boundary. A physical
-single-Fact or series erase is available only inside an already-authorized
-hard-delete path; its selected Fact IDs are passed to registered lifecycle
+A physical exact-Fact erase happens inside one of these operations and
+nowhere else; its selected Fact IDs are passed to registered lifecycle
 callbacks and do not let those callbacks choose additional core rows.
 
 The preconditions are real and they live in the transaction, not the name.
@@ -85,6 +86,42 @@ rows and cannot use or reuse witnesses. An exact cooled restoration may use a
 correctly kinded witness under the sealed historical path; legacy or
 unwitnessed cooled rows remain unsupported until an operator supplies an
 independent integrity witness.
+
+## Flavor-scoped erase
+
+A flavor that holds third-party data must be able to destroy it on request,
+not keep a cold copy. `UnitOfWork::erase_own_series(flavor_id, owner,
+selection, mode) -> SeriesEraseReceipt` is that lane. Kernel: Lean
+`FlavorScopedErase`, the third disjunct of `wipeable` (COVERAGE CO-FS).
+
+| Property | Contract |
+|---|---|
+| selection | `Ids(memory ids)` — each expanded to its whole series; an id of no admission selects nothing — or `AdmittedBefore { schema, cutoff }` — every series of one own schema whose NEWEST version's UUIDv7 `t` is older than `cutoff`, oldest first |
+| scope | one `Owner`; only Fact, Abstraction and Perspective schemas the named flavor registers; `flavor_id` names a registered flavor other than core |
+| unit | the whole series, hot and cooled; a series with one version newer than the cutoff keeps every version |
+| references | a row of any table holding a `NO ACTION`/`RESTRICT` foreign key into `memory(t)` that points at the erase set is erased with it, and its series joins the set (fixpoint); a referencing table with no declared memory key refuses the erase |
+| refusal | before any delete, naming each offender: `ForeignSchema` (core or another flavor's schema), `CrossOwner` (a version or referencing row of another owner — a transferred series), `UnerasableReference`, `OverCap` |
+| authority | Admin on `owner` (the Goal write ceiling, the gate transfer takes), or the host's `SystemAuthority` through `Engine::system_unit_of_work`, which admits this verb and nothing else |
+| tools | a call from a tool handler is refused unless the named flavor's contract declares that tool `destructive: true`; freeze requires the declaration to equal the tool's MCP `destructiveHint` |
+| bound | `MAX_ERASE_SERIES_PER_CALL` = 256 series, `MAX_ERASE_VERSIONS_PER_CALL` = 1024 versions, reference closure included. `Ids` over the cap is refused; `AdmittedBefore` stops at it and sets `more_remaining`. Re-erasing an erased series is a no-op, so callers page |
+| unit shape | the verb is the unit's first and only operation; an empty `Ids` is authorized and answered without a transaction |
+| modes | `Erase` commits with the unit; `DryRun` runs the same path and rolls back — same counts, no change |
+| effect | exactly the exact-Fact hard erase: every version, sidecars, embeddings, heads, content, publication record and origin by `t`, erase witnesses; cited blobs no remaining admission cites; cold objects enqueued and destroyed after commit |
+| receipt | `SeriesEraseReceipt`: versions erased, series erased, of which joined by reference, blobs removed, cold objects pending, `dangling_pins` (memories outside the erase whose `origins[]`/`refs[]` name an erased `t` — the graph is diminished, not refused), `more_remaining` |
+| order | lifecycle fence exclusive → owner fence shared → handle/`t` row locks, `lock_timeout` 5 s; a lock wait, deadlock, or a series that gained a version mid-erase is `Retryable` with nothing deleted |
+
+Retention runs here: the host's schedule calls `AdmittedBefore` under system
+authority. Retention is measured from ADMISSION, which the substrate stamps
+and a payload cannot back- or future-date — so a flavor that backfills
+history must not admit events older than the host's retention window, or a
+backfilled event gets a full new period.
+
+Scope fences are the flavor's, not the verb's. A flavor erasing one of its
+declared scopes finds the scope's admissions itself, erases them page by
+page, and retires the registry row in a transaction that takes the scope
+fence exclusively before its last read (see [09 §Declare the
+scope](09-developing-flavors.md#declare-the-scope-the-substrate-fences-every-admission-your-erase-takes-it-exclusive)).
+Code's `proxima-code_erase_repo` is the shipped instance.
 
 ## The authority seam
 
@@ -231,9 +268,10 @@ after them is a write that follows a completed erase. Either way the writer is
 whole — the erase never observes a partial one. Transfer exclusively fences
 both endpoints in sorted owner order before its complete sorted series
 handle/`t` locks and membership reread, so owner- and source-scope erase have
-defined boundaries. Custom single-Fact/series erase first takes the same
-lifecycle-exclusive fence, then its existing owner/scope/handle/target locks,
-and applies the exact-Fact callback and core deletion in one transaction.
+defined boundaries. The flavor-scoped erase first takes the same
+lifecycle-exclusive fence, then the owner fence shared, then its handle/target
+row locks, and applies the exact-Fact callback and core deletion in one
+transaction.
 Per-entity hydration and forget retain their existing per-`t`/handle contract.
 A flavor-owned lifecycle scope narrower than a source is declared, and the
 substrate fences it the same way in one namespace
@@ -242,14 +280,17 @@ scope erase takes that fence exclusively before it selects, and every
 admission that persists a payload declaring the scope takes it shared before
 its handle/`t` locks and reruns the declaration's liveness probe under it —
 shared, so concurrent writers into one scope do not serialize against each
-other, exclusive only for the erase they are being separated from. The fence
+other, exclusive only for the erase they are being separated from — for a
+paged scope erase, the transaction that retires the scope's registry row. The fence
 is the Engine's, not the flavor's, so no caller can reach an admission path
 that skips it. That extends the erase order to lifecycle → owner → source → scope → Memory
 handle → lifecycle `t` → rows. A scope sweep therefore carries the same
 exact-snapshot claim as owner and source scope, and an admission that races it
 is refused as `NotFound` (`scope not registered: <kind>:<id>`) rather than
-admitted into an erased scope. Code's repository erase is the shipped
-instance.
+admitted into an erased scope. A write that lands between the scope erase's
+last page and its retirement is found under the fence, and the retirement
+re-runs rather than retiring the scope over it. Code's repository erase is
+the shipped instance.
 
 ## Outcomes
 
@@ -280,7 +321,10 @@ and pruning an unbounded log.
 
 There is no Fact-retention enforcement. An owner retention window is a
 promise about someone's data, made by whoever made it, and the host that made
-it schedules its own `forget_memory` calls.
+it schedules the erase: `UnitOfWork::erase_own_series` with
+`SeriesSelection::AdmittedBefore`, under system authority, paging while
+`more_remaining` (§Flavor-scoped erase). Not `forget_memory`: forget keeps a
+cold copy. The period, the cadence and any hold stay with the host.
 
 ## External side effects
 
@@ -340,6 +384,7 @@ is the substrate's to hold.
 - `the-position`
 - `contract-boundary`
 - `operations`
+- `flavor-scoped-erase`
 - `the-authority-seam`
 - `receipts`
 - `what-an-erase-destroys`

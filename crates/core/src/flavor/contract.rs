@@ -1443,6 +1443,12 @@ pub struct ToolContract {
     /// Non-empty ⇒ scope keys are `"<wire_name>:<action>"`.
     pub actions: &'static [&'static str],
     pub idempotent: bool,
+    /// The tool destroys data, and may therefore call
+    /// [`crate::UnitOfWork::erase_own_series`]. Freeze holds it equal to the
+    /// resolved MCP `destructive` annotation, so the one declaration that
+    /// admits the erase is the one that makes a client ask before
+    /// auto-approving the call.
+    pub destructive: bool,
 }
 
 /// One `proxima://` resource.

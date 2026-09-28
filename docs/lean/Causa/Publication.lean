@@ -3,9 +3,10 @@ Causa — Publication (the Fact outbox, doc 18)
 
 A listenable Fact's admission yields ONE publication record keyed by the Fact's
 own `t`. The CAPTURED half never changes; only DELIVERY moves. No delivery step
-removes a record. Exactly two things remove one: owner erasure (doc 13), which
-reaches a record whatever its delivery state, and retention, which provably
-cannot reach a record that has not been delivered.
+removes a record. Exactly three things remove one: owner erasure (doc 13) and
+the flavor-scoped erase of the record's own Fact (doc 13 §Flavor-scoped
+erase), which reach a record whatever its delivery state, and retention, which
+provably cannot reach a record that has not been delivered.
 
 What this module carries:
 
@@ -14,7 +15,9 @@ What this module carries:
   G2  the captured event is immutable: `step_preserves_capture`.
   G3  a closed delivery vocabulary (`Delivery`) and a closed admitted
       transition relation (`Step`), with `no_step_deletes`,
-      `expiry_preserves_record`, `erasure_is_the_only_removal`.
+      `expiry_preserves_record`, `erasure_is_the_only_removal`,
+      `selected_erasure_removes_only_selected`,
+      `selected_erasure_removes_the_selected`.
   G4  a record carries the Fact's owner and no second read path:
       `owner_follows_fact`.
   G5  at-least-once SAFETY only: `duplicates_share_identity`.
@@ -114,11 +117,20 @@ def outboxStep (rs : Set Record) (r : Record) (d : Delivery) : Set Record :=
     an abandoned owner (doc 13). Not `wipeable` — a publication record has no
     cooled/unreferenced analogue, so that disjunct has nothing to bind.
 
-    The only other removal is `prunePublished`, and G6 proves it cannot reach an
-    undelivered record. So an unkept promise leaves this table through erasure
-    and nothing else. -/
+    The other erasure is `outboxEraseSelected`; the only other removal is
+    `prunePublished`, and G6 proves it cannot reach an undelivered record. So
+    an unkept promise leaves this table through erasure and nothing else. -/
 def outboxErase (rs : Set Record) (o : Owner) : Set Record :=
   fun r => r ∈ rs ∧ ¬ (record_owner r = o ∧ abandoned o)
+
+/-- Removal by exact Fact, in ANY delivery state: a flavor-scoped erase
+    (doc 13 §Flavor-scoped erase) deletes the record of every Fact it
+    selects, keyed by `t` alone. No owner predicate: a transferred Fact's
+    record still carries the ORIGINAL owner, and the erase of the Fact is
+    the erase of its record. -/
+def outboxEraseSelected {memories : Set Memory} {stubs : Set Cooled}
+    (rs : Set Record) (e : FlavorScopedErase memories stubs) : Set Record :=
+  fun r => r ∈ rs ∧ ¬ e.selects (record_t r)
 
 /-- G6 — retention. Reclaims storage from records whose delivery is DONE and
     older than `horizon`; everything else stays, whatever its age.
@@ -207,6 +219,22 @@ theorem erasure_is_the_only_removal
     (hkeep : ¬ (record_owner r = o ∧ abandoned o)) : r ∈ outboxErase rs o :=
   ⟨hr, hkeep⟩
 
+/-- G3 — a flavor-scoped erase removes only the records of the Facts it
+    selects … -/
+theorem selected_erasure_removes_only_selected
+    {memories : Set Memory} {stubs : Set Cooled}
+    (rs : Set Record) (e : FlavorScopedErase memories stubs) (r : Record)
+    (hr : r ∈ rs) (hkeep : ¬ e.selects (record_t r)) : r ∈ outboxEraseSelected rs e :=
+  ⟨hr, hkeep⟩
+
+/-- … and every one of them, whatever its delivery state: an erased Fact
+    leaves no undelivered copy behind. -/
+theorem selected_erasure_removes_the_selected
+    {memories : Set Memory} {stubs : Set Cooled}
+    (rs : Set Record) (e : FlavorScopedErase memories stubs) (r : Record)
+    (hsel : e.selects (record_t r)) : r ∉ outboxEraseSelected rs e :=
+  fun h => h.2 hsel
+
 /-- G6 — no horizon cancels an unkept promise. A record that is not
     `.published` survives every retention pass, at every horizon, at every
     `now`: `pending` and `claimed` are simply outside the predicate. -/
@@ -238,6 +266,8 @@ theorem prune_keeps_recent_deliveries
 #print axioms replay_no_second_record
 #print axioms duplicates_share_identity
 #print axioms erasure_is_the_only_removal
+#print axioms selected_erasure_removes_only_selected
+#print axioms selected_erasure_removes_the_selected
 #print axioms prune_never_removes_undelivered
 #print axioms prune_keeps_recent_deliveries
 

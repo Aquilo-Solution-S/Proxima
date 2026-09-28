@@ -1,14 +1,26 @@
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_code::CodeFlavorStore;
-use proxima_code::CommitV1;
-use proxima_code::RepoScope;
-use proxima_code::testkit::{erase_footprint, erase_repo, register_repo};
-use proxima_core::{FactPayload, Owner};
+use proxima::flavor::{EraseMode, SeriesSelection};
+use proxima_code::testkit::{build_engine, erase_repo, register_repo};
+use proxima_code::{CodeFlavorStore, CommitV1, RepoEraseReceipt, RepoRegistryError, RepoScope};
+use proxima_core::{AuthPath, AuthzContext, FactPayload, MemoryId, Owner};
 use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS;
+use proxima_storage_pg::{MAX_TRANSACTION_ATTEMPTS, PgStorage};
 use uuid::Uuid;
+
+/// The erase as `proxima-code_erase_repo` runs it: the Engine's
+/// `erase_own_series`, under the owner's own authority.
+async fn erase_repo_as_owner(
+    pg: &PgStorage,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    let engine = build_engine(pg.clone());
+    let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+    erase_repo(&engine, &authz, &store, owner, repo_id).await
+}
 
 /// The transfer's registry-resolved legs, over BOTH flavors.
 ///
@@ -109,12 +121,13 @@ async fn insert_repo_commit_with_test_request(
 #[tokio::test]
 async fn erase_repo_deletes_repo_rows_and_preserves_other_repos() {
     let (db_name, pg) = migrated_db().await;
-    let result = exercise_repo_erase(pg.pool_for_tests()).await;
+    let result = exercise_repo_erase(&pg).await;
     let _ = drop_db(&db_name).await;
     result.expect("erase_repo_deletes_repo_rows_and_preserves_other_repos failed");
 }
 
-async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+async fn exercise_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     let owner = test_owner();
     let repo_id = Uuid::now_v7();
     let other_repo_id = Uuid::now_v7();
@@ -155,8 +168,7 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     .execute(pool)
     .await?;
 
-    let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-    let receipt = erase_repo(&store, &owner, repo_id).await?;
+    let receipt = erase_repo_as_owner(pg, &owner, repo_id).await?;
     assert_eq!(receipt.repo_id, repo_id);
     assert_eq!(receipt.memories_deleted, 1);
     assert_eq!(receipt.cold_objects_pending, 0);
@@ -294,6 +306,96 @@ async fn assert_repo_rebuild_allowed(
     Ok(())
 }
 
+/// Erasing a repository needs Admin on its owner.
+///
+/// The erase used to check `may_write(owner, Fact)`, which resolves to the
+/// Ingest relation, so a principal allowed only to add commits could
+/// destroy the whole repository — while a transfer, which destroys
+/// nothing, needed Admin. The erase now runs on the Engine's
+/// `erase_own_series`, whose gate is Admin, and nothing below Admin gets
+/// past it: not for a repository with rows, and not for an empty one,
+/// whose registration is the only thing left to delete.
+#[tokio::test]
+async fn an_ingest_only_principal_cannot_erase_a_repository() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let group = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group') ON CONFLICT DO NOTHING",
+        )
+        .bind(group.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let (with_rows, empty) = (Uuid::now_v7(), Uuid::now_v7());
+        for repo_id in [with_rows, empty] {
+            register_repo(
+                pool,
+                None,
+                &group,
+                repo_id,
+                &format!("/tmp/proxima-erase-ingest-only-{repo_id}"),
+                "ingest-only fixture",
+                &RepoScope::default(),
+            )
+            .await?;
+        }
+        let memory_id = Uuid::now_v7();
+        insert_repo_commit_with_test_request(pool, &group, with_rows, memory_id).await?;
+
+        let engine = build_engine(pg.clone());
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
+        for role in [proxima_core::Role::ingest(), proxima_core::Role::editor()] {
+            let below_admin = AuthzContext::for_subject_with_role(
+                proxima_core::UserId::new(Uuid::now_v7()),
+                [(group, role)],
+                AuthPath::HostBearer,
+            );
+            for repo_id in [with_rows, empty] {
+                let err = erase_repo(&engine, &below_admin, &store, &group, repo_id)
+                    .await
+                    .expect_err("less than Admin must not erase a repository");
+                assert!(
+                    matches!(
+                        err,
+                        RepoRegistryError::Protocol(ref err)
+                            if err.code == proxima_core::ErrorCode::Forbidden
+                    ),
+                    "{role:?} on {repo_id}: the verb's gate refuses as forbidden, got {err:?}"
+                );
+            }
+        }
+        let intact: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1)::bigint,
+                    (SELECT count(*) FROM proxima_code.repos WHERE repo_id = ANY($2))::bigint",
+        )
+        .bind(memory_id)
+        .bind(vec![with_rows, empty])
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            intact,
+            (1, 2),
+            "a refused erase erases nothing, registrations included"
+        );
+
+        let admin = AuthzContext::for_subject_with_role(
+            proxima_core::UserId::new(Uuid::now_v7()),
+            [(group, proxima_core::Role::admin())],
+            AuthPath::HostBearer,
+        );
+        for repo_id in [with_rows, empty] {
+            let receipt = erase_repo(&engine, &admin, &store, &group, repo_id).await?;
+            assert!(receipt.repo_record_deleted, "Admin erases {repo_id}");
+        }
+        assert_repo_erased(pool, with_rows, memory_id).await
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("an_ingest_only_principal_cannot_erase_a_repository failed");
+}
+
 /// The kernel's `code_repo_erase` collected `t`s from five sidecars —
 /// `file_revision_v1`, `code_chunk_v1`, `commit_v1`, `commit_summary_v1`,
 /// `test_requested_v1` — and deleted rows from those plus two detail
@@ -312,7 +414,7 @@ async fn assert_repo_rebuild_allowed(
 #[tokio::test]
 async fn erase_reaches_the_work_item_sidecars_and_spares_the_owner_self_model() {
     let (db_name, pg) = migrated_db().await;
-    let result = exercise_work_item_erase(pg.pool_for_tests()).await;
+    let result = exercise_work_item_erase(&pg).await;
     let _ = drop_db(&db_name).await;
     result.expect("erase_reaches_the_work_item_sidecars_and_spares_the_owner_self_model failed");
 }
@@ -389,9 +491,9 @@ async fn insert_next_version_in_tx(
 
 /// `memory.sidecar_tables` as the write path stamps it.
 ///
-/// Not decoration: it is how [`erase_memory`] knows which flavor rows
-/// belong to an admission, and it is the ONLY path to a sidecar row whose
-/// `repo_id` is not the repo being erased — the flavor sweep filters on
+/// Not decoration: it is how the erase verb knows which flavor rows belong
+/// to an admission, and it is the ONLY path to a sidecar row whose
+/// `repo_id` is not the repo being erased — the flavor's finder filters on
 /// `repo_id = $1` and never sees it. A fixture that leaves it empty is a
 /// fixture no write path produces.
 fn stamp(sidecars: &[&str]) -> Vec<String> {
@@ -677,7 +779,8 @@ async fn seed_work_item_fixture(
     })
 }
 
-async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+async fn exercise_work_item_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     let owner = test_owner();
     let repo_id = Uuid::now_v7();
     let WorkItemFixture {
@@ -689,8 +792,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
         perspective,
     } = seed_work_item_fixture(pool, &owner, repo_id).await?;
 
-    let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-    let receipt = erase_repo(&store, &owner, repo_id).await?;
+    let receipt = erase_repo_as_owner(pg, &owner, repo_id).await?;
     assert!(receipt.repo_record_deleted);
     assert_eq!(
         receipt.memories_deleted, 5,
@@ -734,9 +836,9 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
 ///
 /// Nine `proxima_code` columns reference `proxima_core.memory` outside their
 /// own `t`, all `NO ACTION`, and nothing constrains the referencing row's
-/// `repo_id` to agree with the repo of the memory it names — the sweep
-/// filters each table by its own `repo_id`, so a cross-repo pointer simply
-/// survives it. Before the reference closure this ABORTED: repo B's
+/// `repo_id` to agree with the repo of the memory it names — the finder
+/// filters each table by its own `repo_id`, so it never finds a cross-repo
+/// pointer. Before the reference closure this ABORTED: repo B's
 /// `execution_result_v1` still named repo A's work item when A's admission
 /// was deleted, and `execution_result_v1_work_requested_memory_id_fkey`
 /// raised. Erasing A was impossible for as long as B held the pointer.
@@ -747,12 +849,13 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
 #[tokio::test]
 async fn a_cross_repo_reference_is_erased_with_what_it_points_at() {
     let (db_name, pg) = migrated_db().await;
-    let result = exercise_cross_repo_erase(pg.pool_for_tests()).await;
+    let result = exercise_cross_repo_erase(&pg).await;
     let _ = drop_db(&db_name).await;
     result.expect("a_cross_repo_reference_is_erased_with_what_it_points_at failed");
 }
 
-async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+async fn exercise_cross_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     let owner = test_owner();
     let erased_repo = Uuid::now_v7();
     let other_repo = Uuid::now_v7();
@@ -793,8 +896,7 @@ async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     .await?;
     stamped.commit().await?;
 
-    let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-    let receipt = erase_repo(&store, &owner, erased_repo).await?;
+    let receipt = erase_repo_as_owner(pg, &owner, erased_repo).await?;
     assert!(receipt.repo_record_deleted);
     assert_eq!(
         receipt.memories_deleted, 6,
@@ -827,10 +929,10 @@ async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// `development_perspective_v1.repo_id` is nullable, and the sweep filters
+/// `development_perspective_v1.repo_id` is nullable, and the finder filters
 /// `WHERE repo_id = $1`.
 ///
-/// A nullable column silently excluded from a sweep looks exactly like a
+/// A nullable column silently excluded from a finder looks exactly like a
 /// bug, so the intent is written down here rather than left to be
 /// rediscovered: the payload documents `repo_id: None` as "cross-repo
 /// observations", which makes a perspective SERIES that never named this
@@ -872,8 +974,7 @@ async fn a_perspective_about_no_particular_repo_survives_a_repo_erase() {
         .await?;
         stamped.commit().await?;
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-        erase_repo(&store, &owner, repo_id).await?;
+        erase_repo_as_owner(&pg, &owner, repo_id).await?;
 
         let survived: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
@@ -903,42 +1004,24 @@ async fn a_perspective_about_no_particular_repo_survives_a_repo_erase() {
     result.expect("a_perspective_about_no_particular_repo_survives_a_repo_erase failed");
 }
 
-/// Every `(table, column)` a statement tests with
-/// `column IN (SELECT t FROM erased)`.
-///
-/// Pairs, not two independent `contains` checks. `work_item_memory_id`
-/// names four different tables, so asking "is the table mentioned" and "is
-/// the column mentioned" separately passes for a table that is named for
-/// some other column entirely, and passes for three of the nine references
-/// on the strength of the fourth.
-fn erased_pairs_of(sql: &str) -> std::collections::BTreeSet<(String, String)> {
-    let mut table = String::new();
-    let mut pairs = std::collections::BTreeSet::new();
-    for line in sql.lines() {
-        let line = line.trim();
-        if let Some(named) = line
-            .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\''))
-            .find(|token| token.starts_with("proxima_code."))
-        {
-            named.clone_into(&mut table);
-        }
-        if let Some(rest) = line.strip_suffix(" IN (SELECT t FROM erased)")
-            && let Some(column) = rest.rsplit(' ').next()
-        {
-            pairs.insert((table.clone(), column.to_owned()));
-        }
-    }
-    pairs
+/// Every `proxima_code` relation the finder names.
+fn tables_named_in(sql: &str) -> std::collections::BTreeSet<String> {
+    sql.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\''))
+        .filter(|token| token.starts_with("proxima_code."))
+        .map(str::to_owned)
+        .collect()
 }
 
-/// The closure statements' column lists, asked of the database.
+/// The verb's reference closure, asked of the database.
 ///
-/// The list is nine `(table, column)` pairs hand-written into two SQL
-/// constants — the one that finds the references and the one that deletes
-/// them. A tenth added by a migration and not added there is not a stale
-/// row: it is a repo erase that raises a foreign-key violation the first
-/// time anyone points across. `pg_constraint` is the only thing that knows
-/// the real list, so this asks it.
+/// `UnitOfWork::erase_own_series` reads its `(table, column)` references
+/// out of `pg_constraint` itself, so a tenth added by a migration is closed
+/// without an edit anywhere. What it cannot do is erase a referencing row
+/// whose table has no memory key: that row has no series to join, and the
+/// verb refuses the whole erase as `UnerasableReference`. So every
+/// referencing table must be a surface the contract declares with a
+/// `MemoryT` key — and, for the repo erase, a table the finder names, or
+/// its erasure would depend on someone else pointing at it.
 ///
 /// `RESTRICT` is asked for as well as `NO ACTION`. They differ only in when
 /// the check runs, never in whether it fires, so a tenth reference written
@@ -946,7 +1029,7 @@ fn erased_pairs_of(sql: &str) -> std::collections::BTreeSet<(String, String)> {
 /// does — while a filter on `confdeltype = 'a'` alone would keep counting
 /// nine and stay green.
 #[tokio::test]
-async fn the_reference_closure_covers_every_non_t_foreign_key_into_memory() {
+async fn every_non_t_foreign_key_into_memory_is_closed_by_the_erase() {
     let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let found: Vec<(String, String)> = sqlx::query_as(
@@ -966,26 +1049,36 @@ async fn the_reference_closure_covers_every_non_t_foreign_key_into_memory() {
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
-        let mut missed = Vec::new();
-        for sql in proxima_code::testkit::reference_closure_sql() {
-            let pairs = erased_pairs_of(sql);
-            for (table, column) in &found {
-                if !pairs.contains(&(format!("proxima_code.{table}"), column.clone())) {
-                    missed.push(format!("{table}.{column}"));
-                }
+        let keyed: std::collections::BTreeSet<&str> = proxima_code::contract::CODE_FLAVOR_CONTRACT
+            .all_surfaces()
+            .filter(|surface| matches!(surface.key, proxima_core::flavor::KeyShape::MemoryT { .. }))
+            .map(|surface| surface.table)
+            .collect();
+        let finder = tables_named_in(proxima_code::testkit::repo_finder_sql());
+        let mut unkeyed = Vec::new();
+        let mut unfound = Vec::new();
+        for (table, column) in &found {
+            let qualified = format!("proxima_code.{table}");
+            if !keyed.contains(qualified.as_str()) {
+                unkeyed.push(format!("{table}.{column}"));
+            }
+            if !finder.contains(&qualified) {
+                unfound.push(format!("{table}.{column}"));
             }
         }
-        missed.sort_unstable();
-        missed.dedup();
         assert!(
-            missed.is_empty(),
-            "these references into proxima_core.memory are not closed by the repo erase, \
-             so a cross-repo pointer through any of them aborts it: {missed:?}"
+            unkeyed.is_empty(),
+            "these references into proxima_core.memory live in tables with no declared \
+             memory key, so the erase verb refuses every erase they point into: {unkeyed:?}"
+        );
+        assert!(
+            unfound.is_empty(),
+            "these references live in tables the repo finder never names: {unfound:?}"
         );
         assert_eq!(
             found.len(),
             9,
-            "the closure was written against nine such columns; the schema now has \
+            "nine such columns existed when this was written; the schema now has \
              {} — {found:?}",
             found.len()
         );
@@ -993,13 +1086,13 @@ async fn the_reference_closure_covers_every_non_t_foreign_key_into_memory() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("the_reference_closure_covers_every_non_t_foreign_key_into_memory failed");
+    result.expect("every_non_t_foreign_key_into_memory_is_closed_by_the_erase failed");
 }
 
 /// `EraseRule::Cascade { via }` is a claim about the database, and until now
 /// nothing checked it.
 ///
-/// The repo-erase completeness test exempts a surface from the sweep on the
+/// The repo-erase completeness test exempts a surface from the finder on the
 /// strength of that declaration alone. Declare `Cascade` and write the
 /// foreign key without `ON DELETE CASCADE` and both tests stay green while
 /// the rows survive every erase. This asks `pg_constraint` whether the
@@ -1156,12 +1249,12 @@ async fn every_declared_subject_column_is_a_column_the_catalog_has() {
     result.expect("every_declared_subject_column_is_a_column_the_catalog_has failed");
 }
 
-/// The version the sweep never saw.
+/// The version the finder never saw.
 ///
 /// Reproduces the abort that survived the first repo-erase fix. A work item
 /// is superseded — the ordinary write path, `derive_append` reuses the
 /// handle — and the new version is filed under a different repository,
-/// which nothing forbids. Erasing the first repository sweeps v1 only; the
+/// which nothing forbids. Erasing the first repository finds v1 only; the
 /// substrate then erases the whole series, v2 included, and v2's
 /// `work_assignment_v1` is still pointing at it:
 /// `work_assignment_v1_work_item_memory_id_fkey`, and the whole erase rolls
@@ -1173,7 +1266,7 @@ async fn every_declared_subject_column_is_a_column_the_catalog_has() {
 #[tokio::test]
 async fn a_superseded_version_filed_elsewhere_is_part_of_the_footprint() {
     let (db_name, pg) = migrated_db().await;
-    let result = exercise_superseded_version_erase(pg.pool_for_tests()).await;
+    let result = exercise_superseded_version_erase(&pg).await;
     let _ = drop_db(&db_name).await;
     result.expect("a_superseded_version_filed_elsewhere_is_part_of_the_footprint failed");
 }
@@ -1294,13 +1387,13 @@ async fn seed_superseded_series(
 }
 
 async fn exercise_superseded_version_erase(
-    pool: &sqlx::PgPool,
+    pg: &PgStorage,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.pool_for_tests();
     {
         let (owner, erased_repo, [v1, v2, engineer, assignment]) =
             seed_superseded_series(pool).await?;
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-        let receipt = erase_repo(&store, &owner, erased_repo).await?;
+        let receipt = erase_repo_as_owner(pg, &owner, erased_repo).await?;
         assert!(receipt.repo_record_deleted);
         assert_eq!(
             receipt.memories_deleted, 3,
@@ -1347,7 +1440,7 @@ async fn exercise_superseded_version_erase(
 /// version that says `repo_id: None`. The version says "no particular
 /// repo"; the SERIES was this repository's, and a series is erased whole —
 /// keeping v2 while v1 goes would leave a head pointing at a row that no
-/// longer exists. So it goes, and the doc on the sweep says so.
+/// longer exists. So it goes, and the doc on the finder says so.
 #[tokio::test]
 async fn a_perspective_that_dropped_its_repo_id_still_goes_with_the_repo() {
     let (db_name, pg) = migrated_db().await;
@@ -1401,8 +1494,7 @@ async fn a_perspective_that_dropped_its_repo_id_still_goes_with_the_repo() {
         .await?;
         stamped.commit().await?;
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-        erase_repo(&store, &owner, repo_id).await?;
+        erase_repo_as_owner(&pg, &owner, repo_id).await?;
 
         let left: Vec<String> = sqlx::query_scalar(
             "SELECT 'development_perspective_v1 v2' AS relation
@@ -1483,8 +1575,7 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
         .await?;
         stamped.commit().await?;
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-        let err = erase_repo(&store, &owner, erased_repo)
+        let err = erase_repo_as_owner(&pg, &owner, erased_repo)
             .await
             .expect_err("another principal's reference must stop the erase");
         let message = err.to_string();
@@ -1564,20 +1655,21 @@ fn sqlstate_of(err: &sqlx::Error) -> Option<String> {
 
 /// The lock is load-bearing, and this is what says so.
 ///
-/// Everything else about the erase passes with `lock_admissions_for_erase`
+/// Everything else about the erase passes with the erase set's row locks
 /// replaced by nothing: the deletes are correct, the footprint is correct,
 /// and the only thing missing is the guarantee that no row referencing the
-/// footprint can be committed between computing it and deleting it. That
-/// guarantee is only observable from a second session, so this opens one:
-/// the same INSERT lands immediately when the footprint is not held, gives
-/// up WAITING FOR A LOCK when it is, and lands again once the erase rolls
-/// back.
+/// footprint can be committed between computing it and committing the
+/// delete. That guarantee is only observable from a second session, so
+/// this opens one: the same INSERT lands immediately when no erase is in
+/// flight, gives up WAITING FOR A LOCK while an erase unit holds the work
+/// item, and lands again once that unit rolls back.
 ///
-/// `FOR UPDATE` on the referenced admission is what does it. Inserting a
-/// row with a foreign key takes `FOR KEY SHARE` on the row it references,
-/// and `FOR KEY SHARE` conflicts with `FOR UPDATE` and with nothing weaker
-/// — so the writer waits, and then fails its own foreign key in its own
-/// transaction instead of aborting the erase in ours.
+/// An erase unit holds its session until commit, so the unit itself is the
+/// pause: `erase_own_series` has run, nothing is committed. Inserting a row
+/// with a foreign key takes `FOR KEY SHARE` on the row it references, which
+/// conflicts with the erase's lock on it — so the writer waits, and then
+/// fails its own foreign key in its own transaction instead of aborting the
+/// erase in ours.
 #[tokio::test]
 async fn the_footprint_is_locked_against_a_concurrent_reference() {
     let (db_name, pg) = migrated_db().await;
@@ -1600,11 +1692,20 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
             .await
             .expect("with no erase in flight the reference is an ordinary write");
 
-        let mut tx = pool.begin().await?;
-        let footprint = erase_footprint(&mut tx, &owner, repo_id).await?;
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut unit = engine.unit_of_work(&authz).await?;
+        let receipt = unit
+            .erase_own_series(
+                proxima_code::contract::FLAVOR_ID,
+                owner,
+                SeriesSelection::Ids(vec![MemoryId::new(work_item)]),
+                EraseMode::Erase,
+            )
+            .await?;
         assert!(
-            footprint.contains(&work_item),
-            "the work item is in the footprint the erase just locked"
+            receipt.versions.contains(&MemoryId::new(work_item)),
+            "the work item is in the footprint the open erase unit holds"
         );
 
         let err =
@@ -1620,7 +1721,7 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
 
         // And once the erase lets go, the same write is ordinary again: the
         // lock was the whole reason, not anything about the row.
-        tx.rollback().await?;
+        drop(unit);
         insert_assignment_with_timeout(&writer, &owner, blocked, repo_id, work_item, engineer)
             .await
             .expect("once the erase has rolled back the reference lands");
@@ -1640,13 +1741,14 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
 /// prevents it, because the writer's order is its own. `PostgreSQL` breaks
 /// the cycle by aborting whichever transaction closed it.
 ///
-/// Computing the whole footprint first and locking it in ONE statement
-/// shrinks the erase's half of this window to the inside of that statement,
-/// which is why the interleaving below has to be staged by hand rather than
-/// driven through `erase_repo`. What makes the erase survive the residue is
-/// that `40P01` is classified as transient and the whole transaction is
-/// re-run — so this pins the classification against a deadlock this
-/// database really raised, not against a table of SQLSTATEs.
+/// The erase verb computes its whole footprint first and locks it in ONE
+/// statement, which shrinks its half of this window to the inside of that
+/// statement — which is why the interleaving below has to be staged by hand
+/// rather than driven through `erase_repo`. What makes the erase survive
+/// the residue is that `40P01` is classified as transient, the verb reports
+/// it `Retryable`, and `erase_repo` re-runs the attempt — so this pins the
+/// classification against a deadlock this database really raised, not
+/// against a table of SQLSTATEs.
 #[tokio::test]
 async fn a_deadlock_against_a_concurrent_writer_is_classified_as_retryable() {
     let (db_name, pg) = migrated_db().await;
@@ -1772,14 +1874,18 @@ async fn a_deadlock_against_a_concurrent_writer_is_classified_as_retryable() {
 /// `memory.owner_id` and nothing else — `repo_id` is a flavor column and
 /// appears nowhere in the owner-column machinery — so the row keeps the
 /// source's `repo_id` while the admission belongs to the destination, and
-/// the repo sweep's `repo_id = $1` finds it on the SEED leg, before any
+/// the repo finder's `repo_id = $1` finds it on the SEED leg, before any
 /// reference is followed.
 ///
-/// Without a guard on this leg the ownership question is asked only of rows
-/// reached in step 3, so the erase destroys the destination's sidecar row on
-/// the source's authority and leaves their `memory` row stamping a table it
-/// is absent from, with no error of any kind — the row is in the footprint,
-/// so even `FootprintIncomplete` stays quiet.
+/// Without an ownership check over the whole footprint, seeds included, the
+/// erase destroys the destination's sidecar row on the source's authority
+/// and leaves their `memory` row stamping a table it is absent from, with no
+/// error of any kind. The erase verb asks it of every version it will
+/// delete, however the version was reached.
+///
+/// Without owner RLS, as here, the finder sees the transferred row; under
+/// RLS it is the destination's and the finder never sees it. The refusal is
+/// the answer for the case where the erase can see it.
 #[tokio::test]
 async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
     let (db_name, pg) = migrated_db().await;
@@ -1820,11 +1926,10 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
             still_here,
             Some(repo_id),
             "the transfer moves owner_id and nothing else, so the sidecar row keeps \
-             the repo it was written into — which is what puts it on the sweep's seed leg"
+             the repo it was written into — which is what puts it on the finder's seed leg"
         );
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
-        let err = erase_repo(&store, &owner, repo_id)
+        let err = erase_repo_as_owner(&pg, &owner, repo_id)
             .await
             .expect_err("a transferred admission is not this owner's to erase");
         let message = err.to_string();
@@ -1857,18 +1962,18 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
     result.expect("a_transferred_admission_stops_the_erase_instead_of_being_swept failed");
 }
 
-/// Repository erase owns one source-owner snapshot from discovery through
-/// deletion. A transfer that starts after that snapshot must wait and then
-/// observe the erased admission, rather than moving it between the ownership
-/// check and the flavor sweep.
+/// An erase owns one owner snapshot from its footprint through its commit.
+/// A transfer that starts while an erase unit is open must wait and then
+/// observe the erased admission, rather than moving it between the
+/// ownership check and the delete.
 ///
-/// The repository row lock is a deterministic pause after erase has joined
-/// the shared owner fence. Transfer needs that fence exclusively, so it stays
-/// queued until the blocker releases erase; without the shared fence the move
-/// completes in this window and turns a valid erase into a cross-owner
-/// refusal.
+/// The open erase unit is the pause: `erase_own_series` has run under the
+/// shared owner fence and nothing is committed. Transfer needs that fence
+/// exclusively, so it stays queued until the unit commits; without the
+/// shared fence the move completes in this window and the erase commits the
+/// deletion of a series that is no longer this owner's.
 #[tokio::test]
-async fn repository_erase_holds_the_owner_boundary_against_transfer() {
+async fn an_erase_unit_holds_the_owner_boundary_against_transfer() {
     let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
@@ -1878,50 +1983,19 @@ async fn repository_erase_holds_the_owner_boundary_against_transfer() {
             seed_work_item_fixture(pool, &owner, repo_id).await?;
         let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
         let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
-        let (owner_kind, owner_id) = owner.columns();
 
-        // Pause erase on the repository row. Its owner fence is acquired
-        // immediately before this lock, which leaves a visible queueing point
-        // without adding a production test hook.
-        let mut blocker = pool.begin().await?;
-        sqlx::query(
-            "SELECT repo_id FROM proxima_code.repos
-              WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
-              FOR UPDATE",
-        )
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(repo_id)
-        .execute(&mut *blocker)
-        .await?;
-
-        let erase_pool = pool.clone();
-        let erase_owner = owner;
-        let erase = tokio::spawn(async move {
-            let store = CodeFlavorStore::from_backend_pool_for_tests(erase_pool);
-            erase_repo(&store, &erase_owner, repo_id).await
-        });
-
-        let mut erase_waiting = false;
-        for _ in 0..100 {
-            erase_waiting = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (
-                     SELECT 1 FROM pg_stat_activity
-                      WHERE datname = current_database()
-                        AND wait_event_type = 'Lock'
-                 )",
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut unit = engine.unit_of_work(&authz).await?;
+        let receipt = unit
+            .erase_own_series(
+                proxima_code::contract::FLAVOR_ID,
+                owner,
+                SeriesSelection::Ids(vec![MemoryId::new(work_item)]),
+                EraseMode::Erase,
             )
-            .fetch_one(pool)
             .await?;
-            if erase_waiting {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(
-            erase_waiting,
-            "erase never reached the repository-row pause"
-        );
+        assert!(receipt.versions.contains(&MemoryId::new(work_item)));
 
         let transfer_pg = pg.clone();
         let transfer = tokio::spawn(async move {
@@ -1938,15 +2012,10 @@ async fn repository_erase_holds_the_owner_boundary_against_transfer() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(
             !transfer.is_finished(),
-            "transfer crossed the owner boundary while repository erase held its snapshot"
+            "transfer crossed the owner boundary while an erase unit held its snapshot"
         );
 
-        blocker.rollback().await?;
-        let receipt = tokio::time::timeout(std::time::Duration::from_secs(10), erase)
-            .await
-            .expect("repository erase timed out")??;
-        assert!(receipt.repo_record_deleted);
-
+        unit.commit().await?;
         let moved = tokio::time::timeout(std::time::Duration::from_secs(10), transfer)
             .await
             .expect("queued transfer timed out")??;
@@ -1968,7 +2037,7 @@ async fn repository_erase_holds_the_owner_boundary_against_transfer() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("repository_erase_holds_the_owner_boundary_against_transfer failed");
+    result.expect("an_erase_unit_holds_the_owner_boundary_against_transfer failed");
 }
 
 /// Waiting for a lock is bounded, and giving up is retried.
@@ -2017,9 +2086,8 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
         .execute(&mut *holder)
         .await?;
 
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
         let started = std::time::Instant::now();
-        let err = erase_repo(&store, &owner, repo_id)
+        let err = erase_repo_as_owner(&pg, &owner, repo_id)
             .await
             .expect_err("a footprint this erase cannot lock is not a footprint it may delete");
         let waited = started.elapsed();
@@ -2047,7 +2115,7 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
         // Released: the same erase is ordinary again, which is what makes
         // the give-up worth retrying rather than surfacing.
         holder.rollback().await?;
-        erase_repo(&store, &owner, repo_id)
+        erase_repo_as_owner(&pg, &owner, repo_id)
             .await
             .expect("once the holder is gone the erase takes the lock and completes");
         holder_pool.close().await;

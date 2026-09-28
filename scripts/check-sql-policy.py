@@ -869,7 +869,11 @@ def run_fixture(path: Path) -> int:
 # compile-time `&'static str` with every value bound. No production site added.
 # 141 -> 166: privileged-object RLS regressions add 25 fixture-only sites;
 # identifiers are generated and quoted, values are bound, clauses are closed.
-EXPECTED_DYNAMIC_SQL_SITES = 166
+# 166 -> 169: the flavor-scoped erase (`verbs/series_erase.rs`) follows the
+# catalog's foreign keys into `memory(t)` — find referencing rows, re-probe
+# them after the lock, delete them. Table and column names come from
+# `pg_constraint` through `PgIdent`; every value is bound.
+EXPECTED_DYNAMIC_SQL_SITES = 169
 
 
 def run_self_test() -> int:

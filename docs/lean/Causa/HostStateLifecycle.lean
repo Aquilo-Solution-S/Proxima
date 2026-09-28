@@ -2,8 +2,10 @@ import Causa.HostStateMaintenance
 
 /-
 Host-state lifecycle callbacks are an inverse inside an already selected core
-owner/source/exact-Fact transaction. This module adds no erase authority and leaves
-Compliance.wipeable and its hard-erase transitions unchanged. It models exact
+owner/source/exact-Fact transaction. This module adds no erase authority and
+does not touch Compliance.wipeable or its hard-erase transitions; an exact-Fact
+selection reaches it from a flavor-scoped erase (Compliance.FlavorScopedErase)
+as from any other hard erase. It models exact
 coverage, receipt shape, atomic commit choice, and one owner-bound export
 snapshot. Selection, authorization, SQL isolation, callback SQL fidelity, and
 the truth of reported row counts remain runtime obligations.

@@ -66,8 +66,9 @@ SELECT count(*)::bigint
  WHERE datname = current_database()
    AND wait_event_type = 'Lock'";
 
-/// The erase's own repo-row lock, held by the test so the erase parks
-/// between taking its fence and reading its footprint.
+/// The erase's own repo-row lock, held by the test so the erase parks in its
+/// retirement: every page erased, the fence held, the last read not yet
+/// taken.
 const HOLD_REPO_ROW_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
  WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
@@ -186,15 +187,34 @@ fn spawn_ingest(
     })
 }
 
+/// One repository erase, as the tool runs it, on its own pool, spawned so it
+/// can block.
+fn spawn_erase(
+    db_name: String,
+    owner: Owner,
+    repo_id: Uuid,
+) -> tokio::task::JoinHandle<Result<proxima_code::RepoEraseReceipt, String>> {
+    tokio::spawn(async move {
+        let pg = connect_storage(&db_name).await?;
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+        erase_repo(&engine, &authz, &store, &owner, repo_id)
+            .await
+            .map_err(|err| err.to_string())
+    })
+}
+
 /// Erase first: the ingest waits on the fence, and what it finds when it
 /// gets it is a repository that is gone.
 ///
 /// The erase is parked exactly where the fence has to be taken for any of
-/// this to work — after the fence, before the footprint — by holding the
-/// repo row it locks one statement later. Without the fence the ingest
-/// would not be waiting at all: it would commit a `commit_v1` row for a
-/// repository whose footprint had already been computed, and the erase
-/// would succeed while leaving it behind. That is proxima-docs #37.
+/// this to work — every page erased, the fence held, the retirement's last
+/// read not yet taken — by holding the repo row it locks one statement
+/// after the fence. Without the fence the ingest would not be waiting at
+/// all: it would commit a `commit_v1` row after the last page, and the
+/// erase would retire the repository while leaving it behind. That is
+/// proxima-docs #37.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
     let (db_name, pg) = migrated_db().await;
@@ -227,14 +247,7 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
             .fetch_all(&mut *barrier)
             .await?;
 
-        let erase_db = db_name.clone();
-        let erase = tokio::spawn(async move {
-            let pg = connect_storage(&erase_db).await?;
-            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-            erase_repo(&store, &owner, repo_id)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        let erase = spawn_erase(db_name.clone(), owner, repo_id);
         assert!(
             wait_for_count(pool, Probe::AnyLock, 1).await,
             "the erase never parked on the repo row; the interleaving did not set up"
@@ -283,9 +296,10 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
 ///
 /// The writer here holds the fence the way an admission holds it and
 /// commits a `commit_v1` row that no earlier snapshot could have seen. The
-/// erase must not compute its footprint until that row is committed —
-/// which is what taking the fence BEFORE the first read buys, and what the
-/// census then checks on real rows.
+/// erase's pages cannot see it, so the retirement must not take its last
+/// read until that row is committed — which is what taking the fence BEFORE
+/// that read buys: the read finds the row, the attempt re-runs and erases
+/// it, and the census then checks that on real rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_erase_waits_for_an_in_flight_same_repo_write_and_sweeps_it() {
     let (db_name, pg) = migrated_db().await;
@@ -304,14 +318,7 @@ async fn an_erase_waits_for_an_in_flight_same_repo_write_and_sweeps_it() {
         let late_t = Uuid::now_v7();
         insert_commit_row(&mut writer, &owner, repo_id, late_t).await?;
 
-        let erase_db = db_name.clone();
-        let erase = tokio::spawn(async move {
-            let pg = connect_storage(&erase_db).await?;
-            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-            erase_repo(&store, &owner, repo_id)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        let erase = spawn_erase(db_name.clone(), owner, repo_id);
         assert!(
             wait_for_count(pool, Probe::Advisory, 1).await,
             "the erase did not wait on the repository fence a writer was holding"
@@ -371,14 +378,7 @@ async fn an_erase_of_one_repository_does_not_fence_another() {
             .fetch_all(&mut *barrier)
             .await?;
 
-        let erase_db = db_name.clone();
-        let erase = tokio::spawn(async move {
-            let pg = connect_storage(&erase_db).await?;
-            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-            erase_repo(&store, &owner, erased)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        let erase = spawn_erase(db_name.clone(), owner, erased);
         assert!(
             wait_for_count(pool, Probe::AnyLock, 1).await,
             "the erase never parked; the interleaving did not set up"
@@ -477,14 +477,7 @@ async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both(
         );
 
         // And the erase, behind the writer that is still holding.
-        let erase_db = db_name.clone();
-        let erase = tokio::spawn(async move {
-            let pg = connect_storage(&erase_db).await?;
-            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-            erase_repo(&store, &owner, repo_id)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        let erase = spawn_erase(db_name.clone(), owner, repo_id);
         assert!(
             wait_for_count(pool, Probe::Advisory, 1).await,
             "the erase did not queue behind the writer still holding the fence"
@@ -552,6 +545,21 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         )
         .await?
         .memory_id;
+        // The late summary pins a commit of ANOTHER repository. The erase
+        // pages out this repository's commit before it takes the fence, so
+        // a late write pinning that one would be refused for its missing
+        // pin before it ever reached the fence — a refusal, but not the one
+        // this test is about.
+        let elsewhere = Uuid::now_v7();
+        register(pool, &owner, elsewhere).await?;
+        let surviving_commit = ingest_commit(
+            &engine,
+            &authz,
+            &commit_payload(elsewhere, "0000000000000000000000000000000000000006"),
+            time::OffsetDateTime::now_utc(),
+        )
+        .await?
+        .memory_id;
 
         // The write that gets in first. No flavor code in its path — this is
         // the host's own call.
@@ -574,14 +582,7 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
             .fetch_all(&mut *barrier)
             .await?;
 
-        let erase_db = db_name.clone();
-        let erase = tokio::spawn(async move {
-            let pg = connect_storage(&erase_db).await?;
-            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-            erase_repo(&store, &owner, repo_id)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        let erase = spawn_erase(db_name.clone(), owner, repo_id);
         assert!(
             wait_for_count(pool, Probe::AnyLock, 1).await,
             "the erase never parked on the repo row; the interleaving did not set up"
@@ -593,9 +594,16 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
             let pg = connect_storage(&late_db).await?;
             let engine = build_engine(pg.clone());
             let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-            host_write_commit_summary(&engine, &authz, owner, repo_id, "late00001", commit)
-                .await
-                .map_err(|err| err.to_string())
+            host_write_commit_summary(
+                &engine,
+                &authz,
+                owner,
+                repo_id,
+                "late00001",
+                surviving_commit,
+            )
+            .await
+            .map_err(|err| err.to_string())
         });
         assert!(
             wait_for_count(pool, Probe::Advisory, 1).await,

@@ -759,7 +759,13 @@ async fn erase_repo_tool_clears_the_index_and_allows_a_fresh_one()
         "a refused erase must leave the index intact"
     );
 
-    let receipt = run_tool::<CodeEraseRepoTool>(
+    // Through the REGISTERED call, not `T::call`: the registration stamps
+    // the tool's name on the caller's authority, and the erase verb admits
+    // the call only because the contract declares this tool destructive.
+    let registered_erase = registry
+        .mcp_tool("proxima-code_erase_repo")
+        .expect("erase_repo is registered");
+    let receipt = (registered_erase.call)(
         ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "repo_handle": repo_handle, "confirm_canonical_path": canonical_path }),
     )

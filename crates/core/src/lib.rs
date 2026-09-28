@@ -111,6 +111,10 @@ pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
     GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
 };
+pub use verbs::own_erase::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
+};
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
 

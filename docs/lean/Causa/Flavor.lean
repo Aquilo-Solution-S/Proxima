@@ -182,6 +182,19 @@ theorem wipeable_when_abandoned (handle : Handle) (owner : Owner) (id : MemoryId
     (fact handle owner id tick).owner r = none :=
   h r
 
+/-- A flavor may hard-erase what it admitted under a LIVE owner: a Fact of a
+    series its flavor-scoped erase selects is `wipeable` with no abandonment
+    (docs/13 §Flavor-scoped erase). -/
+theorem own_fact_wipeable_by_flavor_scoped_erase
+    (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instant)
+    (memories : Set Memory) (stubs : Set Cooled) (policy : Prop)
+    (hm : fact handle owner id tick ∈ memories)
+    (e : FlavorScopedErase memories stubs) (ho : e.owner = owner)
+    (hh : handle ∈ e.handles) :
+    wipeable owner memories stubs id policy :=
+  wipeable_when_flavor_scoped owner memories stubs id policy e ho
+    (flavor_erase_takes_whole_series e _ hm hh)
+
 #print axioms memory_sidecar_payload_irrelevant
 #print axioms goal_sidecar_payload_irrelevant
 #print axioms fact_receipt_payload_irrelevant
@@ -197,5 +210,6 @@ theorem wipeable_when_abandoned (handle : Handle) (owner : Owner) (id : MemoryId
 #print axioms transferred_readable_by_destination_member
 #print axioms transferred_denies_non_members
 #print axioms wipeable_when_abandoned
+#print axioms own_fact_wipeable_by_flavor_scoped_erase
 
 end Causa.Flavor
