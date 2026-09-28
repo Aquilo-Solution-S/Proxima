@@ -1,6 +1,9 @@
 use super::*;
 use crate::mcp::{McpToolCtx, McpToolError};
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct DemoOutput {}
+
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 struct EmptyDemoArgs {}
 
@@ -17,13 +20,13 @@ impl McpTool for Demo {
             .open_world(false),
     );
     type Args = EmptyDemoArgs;
-    type Output = ();
+    type Output = DemoOutput;
 
     fn call(
         _ctx: McpToolCtx,
         _args: EmptyDemoArgs,
-    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Ok(DemoOutput {}) })
     }
 }
 
@@ -224,13 +227,13 @@ fn add_mcp_tool_rejects_unprefixed_tool_name() {
         const NAME: &'static str = "wrong/demo";
         const DESCRIPTION: &'static str = "x";
         type Args = EmptyDemoArgs;
-        type Output = ();
+        type Output = DemoOutput;
 
         fn call(
             _ctx: McpToolCtx,
             _args: EmptyDemoArgs,
-        ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(DemoOutput {}) })
         }
     }
 

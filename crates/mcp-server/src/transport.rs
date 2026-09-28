@@ -436,6 +436,11 @@ mod tests {
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct StubArgs {}
 
+    #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+    struct StubOutput {
+        client_name: String,
+    }
+
     impl proxima_core::mcp::McpTool for StubTool {
         const NAME: &'static str = "proxima-stub_ping";
         const DESCRIPTION: &'static str = "Answers with the calling client's name.";
@@ -445,13 +450,81 @@ mod tests {
                 .open_world(false),
         );
         type Args = StubArgs;
-        type Output = String;
+        type Output = StubOutput;
         fn call(
             ctx: proxima_core::mcp::McpToolCtx,
             _: Self::Args,
-        ) -> futures_util::future::BoxFuture<'static, Result<String, proxima_core::mcp::McpToolError>>
-        {
-            Box::pin(async move { Ok(ctx.author.client_name) })
+        ) -> futures_util::future::BoxFuture<
+            'static,
+            Result<Self::Output, proxima_core::mcp::McpToolError>,
+        > {
+            Box::pin(async move {
+                Ok(StubOutput {
+                    client_name: ctx.author.client_name,
+                })
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct HostOutputFixture(serde_json::Value);
+
+    #[async_trait::async_trait]
+    impl crate::McpHostTools for HostOutputFixture {
+        fn list(&self, _: &crate::McpAuthContext) -> Vec<crate::McpHostTool> {
+            vec![crate::McpHostTool {
+                name: "host_output".into(),
+                description: "Host output contract fixture".into(),
+                args_schema: serde_json::json!({"type": "object"}),
+                output_schema: serde_json::json!({"type": "object"}),
+                annotations: proxima_core::McpToolAnnotations::new().read_only(true),
+            }]
+        }
+
+        async fn call(
+            &self,
+            _: proxima_core::mcp::ToolCall,
+        ) -> Result<serde_json::Value, proxima_core::mcp::McpToolError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_refuses_host_nonobject_outputs_and_preserves_object_outputs() {
+        for output in [
+            serde_json::json!(null),
+            serde_json::json!("private-output"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!(["private-output"]),
+            serde_json::json!({"answer": [42], "nested": {"value": null}}),
+        ] {
+            let host = stub_host().with_host_tools(Arc::new(HostOutputFixture(output.clone())));
+            let mut request = per_request_rpc(
+                "2026-07-28",
+                "tools/call",
+                serde_json::json!({"name": "host_output", "arguments": {}}),
+            );
+            request
+                .headers_mut()
+                .insert("Mcp-Name", "host_output".parse().unwrap());
+            request.extensions_mut().insert(auth_for(personal_owner()));
+            let message = first_message(mcp_service_for(host), request).await;
+            if output.is_object() {
+                assert!(message.get("error").is_none(), "{message}");
+                assert_eq!(message["result"]["structuredContent"], output);
+                let text = message["result"]["content"][0]["text"].as_str().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(text).unwrap(),
+                    output
+                );
+            } else {
+                assert!(message.get("result").is_none(), "{message}");
+                assert_eq!(message["error"]["code"], -32603);
+                assert_eq!(message["error"]["message"], "internal server error");
+                assert!(message["error"].get("data").is_none());
+                assert!(!message.to_string().contains("private-output"));
+            }
         }
     }
 
@@ -650,7 +723,8 @@ mod tests {
         assert_eq!(message["result"]["isError"], false, "{message}");
         // The forwarder names no client; nothing is invented for it.
         assert_eq!(
-            message["result"]["structuredContent"], "unknown",
+            message["result"]["structuredContent"],
+            serde_json::json!({"client_name": "unknown"}),
             "{message}"
         );
     }
@@ -670,7 +744,8 @@ mod tests {
         request.extensions_mut().insert(auth_for(personal_owner()));
         let message = first_message(mcp_service(), request).await;
         assert_eq!(
-            message["result"]["structuredContent"], "claude-code",
+            message["result"]["structuredContent"],
+            serde_json::json!({"client_name": "claude-code"}),
             "{message}"
         );
     }

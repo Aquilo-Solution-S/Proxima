@@ -484,12 +484,17 @@ struct TierLabelledArgs {
     model_id: Option<String>,
 }
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct TierLabelledOutput {
+    label: String,
+}
+
 impl proxima::flavor::Tool for TierLabelledTool {
     const NAME: &'static str = "tier_labelled";
     const DESCRIPTION: &'static str = "resolve an operator label from a flavor tool";
 
     type Args = TierLabelledArgs;
-    type Output = String;
+    type Output = TierLabelledOutput;
 
     fn call(
         ctx: proxima::flavor::ToolCtx,
@@ -499,7 +504,11 @@ impl proxima::flavor::Tool for TierLabelledTool {
         // fields are private and which cannot produce an `McpToolCtx`. If
         // this does not compile, an out-of-tree tool that takes `model_id`
         // has no way to honour a token-bound model identity.
-        Box::pin(async move { ctx.operator_label(args.model_id.as_deref()) })
+        Box::pin(async move {
+            Ok(TierLabelledOutput {
+                label: ctx.operator_label(args.model_id.as_deref())?,
+            })
+        })
     }
 }
 

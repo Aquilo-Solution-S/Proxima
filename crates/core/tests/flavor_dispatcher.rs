@@ -27,6 +27,9 @@ use proxima_core::{
 const FLAVOR: &str = "proxima-core";
 const DISPATCH: &str = "proxima-core_dispatch";
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct DispatchOutput {}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[expect(
@@ -75,10 +78,13 @@ impl Tool for DispatchTool {
         },
     ];
     type Args = DispatchArgs;
-    type Output = ();
+    type Output = DispatchOutput;
 
-    fn call(_ctx: ToolCtx, _args: Self::Args) -> BoxFuture<'static, Result<(), ToolError>> {
-        Box::pin(async { Ok(()) })
+    fn call(
+        _ctx: ToolCtx,
+        _args: Self::Args,
+    ) -> BoxFuture<'static, Result<Self::Output, ToolError>> {
+        Box::pin(async { Ok(DispatchOutput {}) })
     }
 }
 

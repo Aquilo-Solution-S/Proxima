@@ -144,8 +144,8 @@ validation remains the registry's build-time responsibility
 
 A tool's argument type *is* its schema. Shape, field descriptions,
 required/optional, and enum variants all derive from the Rust type via
-`schemars`. The only sanctioned post-generation pass is the client-safe
-normalization of action-dispatch tools described below.
+`schemars`. Post-generation passes apply client-safe argument normalization
+and object-root output normalization described below.
 
 - Every MCP tool argument schema is produced by one function,
   `mcp_tool_schema<T: JsonSchema>()` in `crates/core/src/mcp/schema.rs`.
@@ -158,8 +158,12 @@ normalization of action-dispatch tools described below.
   `mcp_output_schema<T: JsonSchema>()` and carried on
   `McpToolDescriptor.output_schema` / MCP `outputSchema`. It is a sibling
   of `mcp_tool_schema`, not a caller of it: the action-dispatch
-  normalization below is an argument-side pass, and an output union stays a
-  union. Recursion is a registration error at this end too.
+  normalization below is an argument-side pass. MCP requires an object
+  output root: object-only `anyOf` / `oneOf` unions gain `type: "object"`
+  without changing their branches. Non-object outputs and recursion fail
+  registration; use an empty struct instead of `()`. Host schemas use the
+  same rule; invalid host tools are omitted with a warning. The handler
+  refuses non-object `structuredContent` as an internal error.
 - Tool outputs are *also* advertised by registered-schema-id reference
   (`McpToolDescriptor.produces_schema_ids`) and resolved against the
   `FlavorRegistry`. The two answer different questions: `output_schema` is

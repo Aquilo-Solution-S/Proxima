@@ -28,21 +28,28 @@ struct EchoArgs {
 
 struct EchoTool;
 
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct EchoOutput {
+    payload: Value,
+}
+
 impl McpTool for EchoTool {
     const NAME: &'static str = TOOL;
     const DESCRIPTION: &'static str = "Return the fixture argument without storage access.";
     const ANNOTATIONS: Option<McpToolAnnotations> =
         Some(McpToolAnnotations::new().read_only(true).open_world(false));
     type Args = EchoArgs;
-    type Output = Value;
+    type Output = EchoOutput;
 
     fn call(
         _ctx: McpToolCtx,
         args: EchoArgs,
-    ) -> futures_util::future::BoxFuture<'static, Result<Value, McpToolError>> {
+    ) -> futures_util::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
         Box::pin(async move {
             INVOCATIONS.fetch_add(1, Ordering::SeqCst);
-            Ok(args.payload)
+            Ok(EchoOutput {
+                payload: args.payload,
+            })
         })
     }
 }
@@ -216,12 +223,12 @@ async fn rest_and_mcp_reject_nul_arguments_before_tool_invocation() {
             assert!(observed.mcp.get("error").is_none(), "normal MCP input");
             assert_eq!(
                 observed.mcp["result"]["structuredContent"],
-                observed.payload
+                json!({"payload": observed.payload})
             );
             assert_eq!(observed.mcp_calls, 1);
             for (_, answer, calls) in &observed.rest {
                 assert_eq!(answer.status, StatusCode::OK);
-                assert_eq!(answer.json(), observed.payload);
+                assert_eq!(answer.json(), json!({"payload": observed.payload}));
                 assert_eq!(*calls, 1);
             }
         }

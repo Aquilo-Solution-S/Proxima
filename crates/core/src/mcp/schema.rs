@@ -41,50 +41,72 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
 
 /// Generate a `$ref`-free draft-2020-12 *output* schema for `T`.
 ///
-/// Deliberately a sibling of [`mcp_tool_schema`] rather than a reuse of it.
-/// The two share the generator settings and the recursion guard — the
-/// `$ref`-free promise is about clients, not about direction — but the two
-/// normalization passes `mcp_tool_schema` runs afterwards both encode
-/// argument-side assumptions that are wrong here:
-///
-/// - `flatten_root_tagged_enum` rewrites an internally tagged enum into a
-///   flat object with a merged property set, `additionalProperties: false`
-///   and an `x-proxima-actions` extension. That is the *dispatcher call
-///   surface* — a description of which fields a caller may send for which
-///   action. An output union is not a call surface: a client validating a
-///   reply needs to know which variant it got, and a merged object claims
-///   every variant's fields belong to every variant.
-/// - `ensure_client_safe_root` forces an object root and rejects root
-///   combinators, because a provider tool `inputSchema` must be an object.
-///   Nothing constrains an output that way, and the in-tree outputs prove
-///   it: the four action-dispatcher tools answer with `#[serde(untagged)]`
-///   enums whose schema root is `anyOf`, and a tool with nothing to say
-///   answers `()`, whose root is `type: "null"`.
-///
-/// A union root is therefore preserved as generated: it is the honest
-/// description of a reply that really is one of several shapes.
-pub(crate) fn mcp_output_schema<T: JsonSchema>() -> serde_json::Value {
+/// MCP output schemas declare an object root. Output unions retain their
+/// branches, so clients can validate each reply variant; unlike argument
+/// dispatchers, their fields are never merged into one flat call surface.
+/// Recursive output types still panic at registration because their `$ref`
+/// cannot be inlined.
+pub(crate) fn mcp_output_schema<T: JsonSchema>() -> Result<serde_json::Value, String> {
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
     let schema = settings.into_generator().into_root_schema_for::<T>();
     let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
-    // JSON Schema permits a bare boolean as a whole document (`true` accepts
-    // everything, `false` accepts nothing), and schemars emits `true` for an
-    // unconstrained type such as `serde_json::Value`. MCP's `outputSchema`
-    // is typed as an object, so spell the same two schemas as the object
-    // forms that mean exactly the same thing.
-    match value {
-        serde_json::Value::Bool(true) => value = serde_json::json!({}),
-        serde_json::Value::Bool(false) => value = serde_json::json!({ "not": {} }),
-        _ => {}
-    }
     assert!(
         !schema_contains_ref(&value),
         "MCP tool output type `{}` is recursive: schemars emitted a $ref that \
          cannot be inlined. MCP tool output types must be non-recursive.",
         std::any::type_name::<T>(),
     );
-    value
+    normalize_mcp_output_schema(&mut value)?;
+    Ok(value)
+}
+
+/// Require an MCP output schema to declare an object root.
+///
+/// When the root type is absent, nonempty `anyOf`/`oneOf` unions whose branches
+/// each declare `type: "object"` receive that root type. Every present union
+/// must meet this condition; branches and other keywords are preserved.
+///
+/// # Errors
+///
+/// Rejects non-object root types, boolean schemas, and missing object evidence.
+/// The schema is unchanged on failure.
+pub fn normalize_mcp_output_schema(value: &mut serde_json::Value) -> Result<(), String> {
+    let root = value.as_object_mut().ok_or_else(|| {
+        "MCP output schema must be a JSON object declaring type object".to_owned()
+    })?;
+    if let Some(kind) = root.get("type") {
+        return if kind == "object" {
+            Ok(())
+        } else {
+            Err("MCP output schema root type must be exactly object".to_owned())
+        };
+    }
+    let mut has_union = false;
+    for keyword in ["anyOf", "oneOf"] {
+        let Some(branches) = root.get(keyword) else {
+            continue;
+        };
+        has_union = true;
+        let branches = branches
+            .as_array()
+            .filter(|branches| !branches.is_empty())
+            .ok_or_else(|| {
+                format!("MCP output schema {keyword} must be a nonempty object union")
+            })?;
+        for (index, branch) in branches.iter().enumerate() {
+            if branch.get("type").and_then(serde_json::Value::as_str) != Some("object") {
+                return Err(format!(
+                    "MCP output schema {keyword} branch {index} must declare type object"
+                ));
+            }
+        }
+    }
+    if !has_union {
+        return Err("MCP output schema must declare type object or an object union".to_owned());
+    }
+    root.insert("type".to_owned(), serde_json::json!("object"));
+    Ok(())
 }
 
 /// Phrases a description uses to promise that a parameter's floor is 1.
@@ -1632,6 +1654,64 @@ mod tests {
     use super::*;
     use schemars::JsonSchema;
     use serde::Deserialize;
+
+    #[test]
+    fn output_object_unions_gain_a_root_type_without_changing_branches() {
+        for keyword in ["anyOf", "oneOf"] {
+            let branches = serde_json::json!([
+                { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+                { "type": "object", "properties": { "count": { "type": "integer" } }, "required": ["count"] }
+            ]);
+            let mut schema = serde_json::json!({ "title": "Output union", keyword: branches });
+            normalize_mcp_output_schema(&mut schema).unwrap();
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema[keyword], branches);
+            assert_eq!(schema["title"], "Output union");
+            assert!(schema.get("properties").is_none());
+        }
+    }
+
+    #[test]
+    fn output_normalization_requires_every_present_union_to_be_objects() {
+        let object_branch = serde_json::json!([{ "type": "object" }]);
+        let mut valid = serde_json::json!({ "anyOf": object_branch, "oneOf": object_branch });
+        normalize_mcp_output_schema(&mut valid).unwrap();
+        assert_eq!(valid["type"], "object");
+        for mut invalid in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!({}),
+            serde_json::json!({ "properties": { "value": { "type": "string" } } }),
+            serde_json::json!({ "type": ["object"] }),
+            serde_json::json!({ "type": "null" }),
+            serde_json::json!({ "type": "array" }),
+            serde_json::json!({ "type": "string", "anyOf": object_branch }),
+            serde_json::json!({ "anyOf": [] }),
+            serde_json::json!({ "oneOf": true }),
+            serde_json::json!({ "anyOf": [{ "type": "object" }, { "type": "string" }] }),
+            serde_json::json!({ "oneOf": [{ "type": "object" }, {}] }),
+            serde_json::json!({ "anyOf": object_branch, "oneOf": [] }),
+        ] {
+            let original = invalid.clone();
+            assert!(
+                normalize_mcp_output_schema(&mut invalid).is_err(),
+                "{invalid}"
+            );
+            assert_eq!(invalid, original, "invalid schemas must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn generated_output_unions_preserve_variant_validation() {
+        let untagged = mcp_output_schema::<UntaggedRootUnion>().unwrap();
+        assert_eq!(untagged["type"], "object");
+        assert_eq!(untagged["anyOf"].as_array().unwrap().len(), 2);
+        let tagged = mcp_output_schema::<CollidingDispatcher>().unwrap();
+        assert_eq!(tagged["type"], "object");
+        assert_eq!(tagged["oneOf"].as_array().unwrap().len(), 2);
+        assert!(tagged.get("x-proxima-actions").is_none());
+        assert!(tagged.get("properties").is_none());
+    }
 
     #[derive(JsonSchema)]
     #[allow(dead_code)]

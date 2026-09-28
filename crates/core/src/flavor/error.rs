@@ -40,6 +40,8 @@ pub enum FlavorRegistryError {
         expected_prefix: String,
         message: String,
     },
+    #[error("tool {name} has invalid MCP output schema: {message}")]
+    InvalidToolOutputSchema { name: &'static str, message: String },
     #[error("duplicate owner resolver registered")]
     DuplicateOwnerResolver,
     #[error(

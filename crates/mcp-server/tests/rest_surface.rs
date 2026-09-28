@@ -112,6 +112,9 @@ enum StubDispatchArgs {
 #[derive(Debug)]
 struct StubDispatchTool;
 
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct StubDispatchOutput {}
+
 impl proxima_core::mcp::McpTool for StubDispatchTool {
     const NAME: &'static str = FLAVOR_DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher.";
@@ -145,13 +148,16 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
         },
     ];
     type Args = StubDispatchArgs;
-    type Output = ();
+    type Output = StubDispatchOutput;
 
     fn call(
         _ctx: proxima_core::mcp::McpToolCtx,
         _args: Self::Args,
-    ) -> futures_util::future::BoxFuture<'static, Result<(), proxima_core::mcp::McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<Self::Output, proxima_core::mcp::McpToolError>,
+    > {
+        Box::pin(async { Ok(StubDispatchOutput {}) })
     }
 }
 
@@ -167,6 +173,11 @@ struct StubArgvArgs {
 /// command declares nothing, so it classifies from the tool.
 #[derive(Debug)]
 struct StubArgvTool;
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct StubArgvOutput {
+    argv: Vec<String>,
+}
 
 impl proxima_core::mcp::McpTool for StubArgvTool {
     const NAME: &'static str = FLAVOR_ARGV;
@@ -195,16 +206,16 @@ impl proxima_core::mcp::McpTool for StubArgvTool {
         },
     ];
     type Args = StubArgvArgs;
-    type Output = Vec<String>;
+    type Output = StubArgvOutput;
 
     fn call(
         _ctx: proxima_core::mcp::McpToolCtx,
         args: Self::Args,
     ) -> futures_util::future::BoxFuture<
         'static,
-        Result<Vec<String>, proxima_core::mcp::McpToolError>,
+        Result<Self::Output, proxima_core::mcp::McpToolError>,
     > {
-        Box::pin(async move { Ok(args.argv) })
+        Box::pin(async move { Ok(StubArgvOutput { argv: args.argv }) })
     }
 }
 
@@ -1240,7 +1251,10 @@ async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool(
     )
     .await;
     assert_eq!(read.status, StatusCode::OK, "viewer QUERY {uri}");
-    assert_eq!(read.json(), serde_json::json!(["approval", "--list"]));
+    assert_eq!(
+        read.json(),
+        serde_json::json!({"argv": ["approval", "--list"]})
+    );
 
     // The unannotated sibling classifies from the tool, which writes: no
     // QUERY for anyone, and no call at all for a viewer.

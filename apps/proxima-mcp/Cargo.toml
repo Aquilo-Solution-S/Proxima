@@ -35,6 +35,7 @@ rest = ["proxima/rest"]
 nats = ["proxima/outbox-nats"]
 
 [dev-dependencies]
+boon = { workspace = true }
 async-nats = { workspace = true, features = ["nkeys"] }
 async-trait = { workspace = true }
 reqwest = { workspace = true }

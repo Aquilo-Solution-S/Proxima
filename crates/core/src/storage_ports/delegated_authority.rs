@@ -701,6 +701,9 @@ mod tests {
     #[derive(schemars::JsonSchema, Deserialize)]
     struct WorkerArgs {}
 
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct WorkerOutput {}
+
     struct WorkerTool;
 
     impl McpTool for WorkerTool {
@@ -709,13 +712,13 @@ mod tests {
         const ANNOTATIONS: Option<McpToolAnnotations> =
             Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = WorkerArgs;
-        type Output = ();
+        type Output = WorkerOutput;
 
         fn call(
             _ctx: McpToolCtx,
             _args: WorkerArgs,
-        ) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(WorkerOutput {}) })
         }
     }
 
@@ -748,13 +751,13 @@ mod tests {
             },
         ];
         type Args = DispatcherArgs;
-        type Output = ();
+        type Output = WorkerOutput;
 
         fn call(
             _ctx: McpToolCtx,
             _args: DispatcherArgs,
-        ) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(WorkerOutput {}) })
         }
     }
 

@@ -275,6 +275,11 @@ mod tests {
     /// authoring tools do, and answers with it.
     struct LabelEchoTool;
 
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct LabelEchoOutput {
+        label: String,
+    }
+
     impl McpTool for LabelEchoTool {
         const NAME: &'static str = "test_label_echo";
         const DESCRIPTION: &'static str = "echo the resolved operator label";
@@ -285,13 +290,18 @@ mod tests {
         );
 
         type Args = LabelEchoArgs;
-        type Output = String;
+        type Output = LabelEchoOutput;
 
         fn call(
             ctx: McpToolCtx,
             args: Self::Args,
         ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
-            async move { proxima_core::operator_label(&ctx, args.model_id.as_deref()) }.boxed()
+            async move {
+                Ok(LabelEchoOutput {
+                    label: proxima_core::operator_label(&ctx, args.model_id.as_deref())?,
+                })
+            }
+            .boxed()
         }
     }
 
@@ -308,6 +318,11 @@ mod tests {
 
     struct MarkerTool;
 
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct MarkerOutput {
+        marker: String,
+    }
+
     impl McpTool for MarkerTool {
         const NAME: &'static str = "test_marker";
         const DESCRIPTION: &'static str = "test marker";
@@ -318,18 +333,20 @@ mod tests {
         );
 
         type Args = serde_json::Value;
-        type Output = String;
+        type Output = MarkerOutput;
 
         fn call(
             ctx: McpToolCtx,
             _args: Self::Args,
         ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
             async move {
-                Ok(ctx
-                    .service::<MarkerService>()
-                    .expect("boot service must survive handler conversion")
-                    .0
-                    .to_string())
+                Ok(MarkerOutput {
+                    marker: ctx
+                        .service::<MarkerService>()
+                        .expect("boot service must survive handler conversion")
+                        .0
+                        .to_string(),
+                })
             }
             .boxed()
         }
@@ -438,7 +455,7 @@ mod tests {
             )
             .await
             .expect("an agreeing argument is accepted");
-        assert_eq!(agreeing, serde_json::json!("acme/runner-v3"));
+        assert_eq!(agreeing, serde_json::json!({ "label": "acme/runner-v3" }));
 
         let absent = tools
             .call_core_tool(
@@ -450,7 +467,7 @@ mod tests {
             )
             .await
             .expect("an omitted argument records the bound identity");
-        assert_eq!(absent, serde_json::json!("acme/runner-v3"));
+        assert_eq!(absent, serde_json::json!({ "label": "acme/runner-v3" }));
     }
 
     #[tokio::test]
@@ -487,7 +504,7 @@ mod tests {
             .call_tool("test_marker", serde_json::json!({}), author, Some(auth))
             .await
             .expect("authorized marker call");
-        assert_eq!(answer, serde_json::json!("boot-wired"));
+        assert_eq!(answer, serde_json::json!({ "marker": "boot-wired" }));
 
         let denied = handler
             .server

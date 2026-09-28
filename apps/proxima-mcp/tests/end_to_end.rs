@@ -1,6 +1,6 @@
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,10 +9,13 @@ use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use boon::{Compiler, Schemas};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
-use proxima_core::{OwnerAccessPort, OwnerRef, ToolScope, UserId};
+use proxima_core::{
+    FlavorRegistry, OwnerAccessPort, OwnerRef, ToolScope, UserId, provider_safe_tool_name,
+};
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::PgOwnerAccessResolver;
 use serde_json::json;
@@ -23,6 +26,34 @@ use common::require_env_or_skip;
 const KID: &str = "end-to-end-key";
 const ISSUER: &str = "https://idp.end-to-end.test";
 const AUDIENCE: &str = "proxima-mcp";
+const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
+
+#[test]
+fn composed_tools_publish_object_output_schemas() {
+    let mut registry = FlavorRegistry::new();
+    <ProximaMcpApp as proxima::flavor::FlavorBundle>::register(&mut registry)
+        .expect("compiled flavors register");
+    let registry = registry.try_freeze().expect("compiled registry freezes");
+    for tool in registry.list_mcp_tools() {
+        assert_eq!(
+            tool.output_schema["type"], "object",
+            "{} must publish an object output root: {}",
+            tool.name, tool.output_schema
+        );
+    }
+    for name in ["core_goal", "core_fact", "core_membership", "core_upload"] {
+        let tool = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == name)
+            .expect("core union tool registered");
+        let branches = tool.output_schema["anyOf"]
+            .as_array()
+            .expect("output union must remain intact");
+        assert!(!branches.is_empty(), "{name} must retain its variants");
+        assert!(branches.iter().all(|branch| branch["type"] == "object"));
+    }
+}
 
 fn keypair() -> (RsaKeyPair, StaticJwksResolver) {
     let signing = RsaKeyPair::generate(KeySize::Rsa2048).expect("generate test RSA key");
@@ -115,16 +146,85 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .await?;
-    let names: Vec<_> = body["result"]["tools"]
-        .as_array()
-        .expect("tools")
+    let listed = body["result"]["tools"].as_array().expect("tools");
+    let names: Vec<_> = listed
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(names.contains(&"core_remember"), "got {names:?}");
     assert!(names.contains(&"core_goal"), "got {names:?}");
 
+    let expected: BTreeSet<_> = running
+        .host()
+        .registry()
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| provider_safe_tool_name(tool.name))
+        .collect();
+    let actual: BTreeSet<_> = names.iter().map(|name| (*name).to_owned()).collect();
+    assert_eq!(
+        actual, expected,
+        "the full authorized catalog must be listed"
+    );
+    for tool in listed {
+        assert_eq!(
+            tool["outputSchema"]["type"], "object",
+            "strict MCP clients require object output roots: {tool}"
+        );
+    }
+
+    assert_union_reply_matches_schema(&client, &url, &session_id, &bearer, listed).await?;
+
     running.shutdown().await;
+    Ok(())
+}
+
+async fn assert_union_reply_matches_schema(
+    client: &reqwest::Client,
+    url: &str,
+    session_id: &str,
+    bearer: &str,
+    listed: &[serde_json::Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cited_object_id = Uuid::now_v7().to_string();
+    let called = post_rpc(
+        client,
+        url,
+        Some(session_id),
+        bearer,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "core_fact",
+                "arguments": {
+                    "action": "facts_citing_object",
+                    "cited_object_id": cited_object_id,
+                },
+            },
+        }),
+    )
+    .await?;
+    assert!(called.get("error").is_none(), "{called}");
+    let output = &called["result"]["structuredContent"];
+    assert!(output.is_object(), "{called}");
+    assert_eq!(output["cited_object_id"], cited_object_id);
+    assert_eq!(output["facts"], json!([]));
+    let schema = &listed
+        .iter()
+        .find(|tool| tool["name"] == "core_fact")
+        .expect("core_fact listed")["outputSchema"];
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(OUTPUT_SCHEMA_URL, schema.clone())
+        .expect("published output schema loads");
+    let mut schemas = Schemas::new();
+    let index = compiler
+        .compile(OUTPUT_SCHEMA_URL, &mut schemas)
+        .expect("published output schema compiles");
+    if let Err(error) = schemas.validate(output, index) {
+        panic!("structuredContent must validate against outputSchema: {error:#}");
+    }
+
     Ok(())
 }
 

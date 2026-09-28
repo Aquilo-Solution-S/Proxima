@@ -208,6 +208,9 @@ fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
     assert_eq!(flat.as_str(), protocol_tool::CORE_SEARCH_MEMORIES);
 }
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct StubDispatchOutput {}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[expect(
@@ -241,13 +244,13 @@ impl McpTool for StubDispatchTool {
         audience: McpToolAudience::Shared,
     }];
     type Args = StubDispatchArgs;
-    type Output = ();
+    type Output = StubDispatchOutput;
 
     fn call(
         _ctx: McpToolCtx,
         _args: Self::Args,
-    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
-        Box::pin(async { Ok(()) })
+    ) -> futures::future::BoxFuture<'static, Result<Self::Output, McpToolError>> {
+        Box::pin(async { Ok(StubDispatchOutput {}) })
     }
 }
 

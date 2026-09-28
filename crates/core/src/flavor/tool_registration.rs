@@ -32,8 +32,14 @@ fn warn_undescribed_properties(tool_name: &str, args_schema: &serde_json::Value)
 fn serialize_tool_output<T: serde::Serialize>(
     output: T,
 ) -> Result<serde_json::Value, McpToolError> {
-    serde_json::to_value(output)
-        .map_err(|err| McpToolError::Other(format!("serialize tool output: {err}")))
+    let value = serde_json::to_value(output)
+        .map_err(|err| McpToolError::Other(format!("serialize tool output: {err}")))?;
+    if !value.is_object() {
+        return Err(McpToolError::Other(
+            "tool output must serialize to a JSON object".to_owned(),
+        ));
+    }
+    Ok(value)
 }
 
 /// Name the argument keys an
@@ -41,9 +47,8 @@ fn serialize_tool_output<T: serde::Serialize>(
 /// tool dropped back to the caller, on the tool's own result, so tolerating
 /// them stays observable rather than silent.
 ///
-/// Nothing is added when nothing was dropped — the key would otherwise read
-/// as a permanent part of the reply — nor when the result is not a JSON
-/// object, which has no place to say it and must not be reshaped into one.
+/// Nothing is added when nothing was dropped. Serialization has already
+/// required the result to be a JSON object.
 fn report_ignored_fields(result: &mut serde_json::Value, ignored: Vec<String>) {
     if ignored.is_empty() {
         return;
@@ -65,8 +70,8 @@ impl FlavorRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidToolName` when the tool name does not match the expected
-    /// prefix or provider-safe form.
+    /// Returns `InvalidToolName` for invalid names, or `InvalidToolOutputSchema`
+    /// when the output type does not describe an object root.
     pub fn try_add_tool<T: Tool>(
         &mut self,
         expected_prefix: &str,
@@ -98,7 +103,12 @@ impl FlavorRegistry {
             return Err(FlavorRegistryError::ConflictingActionVocabularies { name: T::NAME });
         }
         let args_schema = mcp_tool_schema::<T::Args>();
-        let output_schema = mcp_output_schema::<T::Output>();
+        let output_schema = mcp_output_schema::<T::Output>().map_err(|message| {
+            FlavorRegistryError::InvalidToolOutputSchema {
+                name: T::NAME,
+                message,
+            }
+        })?;
         warn_undescribed_properties(T::NAME, &args_schema);
         let properties = flat_tool_property_names(&args_schema);
         // Tool registrations live for the process lifetime; leaking the
@@ -224,6 +234,22 @@ mod tests {
         assert_eq!(err.kind(), McpToolErrorKind::Internal);
         assert_eq!(err.client_message(), "internal server error");
     }
+
+    #[test]
+    fn nonobject_serialized_outputs_are_internal_and_redacted() {
+        for output in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!("fixture secret scalar"),
+        ] {
+            let error = serialize_tool_output(output)
+                .expect_err("a typed output cannot emit a nonobject structured result");
+            assert_eq!(error.kind(), McpToolErrorKind::Internal);
+            assert_eq!(error.client_message(), "internal server error");
+            assert!(matches!(error, McpToolError::Other(ref message)
+                if message == "tool output must serialize to a JSON object"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +272,14 @@ mod action_vocabulary_tests {
         #[schemars(description = "command words followed by flags")]
         argv: Vec<String>,
     }
+
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct ArgvOutput {
+        argv: Vec<String>,
+    }
+
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct EmptyOutput {}
 
     const ARGV_SPECS: &[McpArgvActionSpec] = &[
         McpArgvActionSpec {
@@ -273,12 +307,12 @@ mod action_vocabulary_tests {
         const ANNOTATIONS: Option<McpToolAnnotations> =
             Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = ArgvArgs;
-        type Output = Vec<String>;
+        type Output = ArgvOutput;
         fn call(
             _ctx: McpToolCtx,
             args: Self::Args,
-        ) -> BoxFuture<'static, Result<Vec<String>, McpToolError>> {
-            Box::pin(async move { Ok(args.argv) })
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async move { Ok(ArgvOutput { argv: args.argv }) })
         }
     }
 
@@ -302,9 +336,12 @@ mod action_vocabulary_tests {
             audience: McpToolAudience::Shared,
         }];
         type Args = ArgvArgs;
-        type Output = ();
-        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
-            Box::pin(async { Ok(()) })
+        type Output = EmptyOutput;
+        fn call(
+            _: McpToolCtx,
+            _: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
+            Box::pin(async { Ok(EmptyOutput {}) })
         }
     }
 
@@ -321,12 +358,12 @@ mod action_vocabulary_tests {
         const ANNOTATIONS: Option<McpToolAnnotations> =
             Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = ArgvArgs;
-        type Output = ();
+        type Output = EmptyOutput;
         fn call(
             _: crate::ToolCtx,
             _: Self::Args,
-        ) -> BoxFuture<'static, Result<(), crate::ToolError>> {
-            Box::pin(async { Ok(()) })
+        ) -> BoxFuture<'static, Result<Self::Output, crate::ToolError>> {
+            Box::pin(async { Ok(EmptyOutput {}) })
         }
     }
 
@@ -444,7 +481,7 @@ mod action_vocabulary_tests {
         .expect("declared command dispatches");
         assert_eq!(
             output,
-            serde_json::json!(["approval", "decide", "--id", "7"])
+            serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] })
         );
 
         let err = (descriptor.call)(test_ctx(), serde_json::json!({ "argv": ["unknown"] }))
@@ -526,7 +563,6 @@ mod unknown_field_policy_tests {
     fn registry() -> crate::FlavorRegistryFrozen {
         let mut registry = FlavorRegistry::new();
         registry.add_tool_or_panic_for_tests::<TolerantEcho>("proxima-stub");
-        registry.add_tool_or_panic_for_tests::<TolerantScalar>("proxima-stub");
         registry.add_tool_or_panic_for_tests::<StrictEcho>("proxima-stub");
         registry.freeze_or_panic_for_tests()
     }
@@ -566,17 +602,18 @@ mod unknown_field_policy_tests {
         assert_eq!(output, serde_json::json!({ "text": "x" }));
     }
 
-    /// A non-object answer is left exactly as the tool wrote it rather than
-    /// reshaped into an object to carry the report.
-    #[tokio::test]
-    async fn a_non_object_result_is_left_alone() {
-        let output = call(
-            TolerantScalar::NAME,
-            serde_json::json!({ "text": "x", "has_more": true }),
-        )
-        .await
-        .expect("undeclared fields do not fail the call");
-        assert_eq!(output, serde_json::json!("x"));
+    #[test]
+    fn a_scalar_output_is_refused_even_when_unknown_fields_are_tolerated() {
+        let error = FlavorRegistry::new()
+            .try_add_tool::<TolerantScalar>("proxima-stub")
+            .expect_err("unknown-field tolerance cannot admit a nonobject output schema");
+        assert!(matches!(
+            error,
+            crate::FlavorRegistryError::InvalidToolOutputSchema {
+                name: TolerantScalar::NAME,
+                ..
+            }
+        ));
     }
 
     /// Silence still refuses, at the dispatch path a real call takes.
