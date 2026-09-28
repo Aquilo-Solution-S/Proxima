@@ -247,6 +247,25 @@ fn caller_context_host() -> McpToolHost {
     )
 }
 
+#[derive(Debug)]
+struct ReplaceOutputBehavior(serde_json::Value);
+
+#[async_trait::async_trait]
+impl proxima_core::RequestBehavior for ReplaceOutputBehavior {
+    async fn handle(
+        &self,
+        call: proxima_core::mcp::ToolCall,
+        next: proxima_core::mcp::Next<'_>,
+    ) -> Result<serde_json::Value, proxima_core::mcp::McpToolError> {
+        let output = next.run(call).await?;
+        assert!(
+            output.is_object(),
+            "the registered tool returns its declared object"
+        );
+        Ok(self.0.clone())
+    }
+}
+
 /// A principal with full owner rights, so the owner-role gate never
 /// confounds a test about tool scope.
 fn auth(scope: ToolScope) -> McpAuthContext {
@@ -353,6 +372,44 @@ async fn call_with_headers(
         status,
         headers,
         body,
+    }
+}
+
+#[tokio::test]
+async fn rest_refuses_nonobject_outputs_introduced_by_request_behaviors() {
+    for output in [
+        serde_json::json!(null),
+        serde_json::json!("private-output"),
+        serde_json::json!(42),
+        serde_json::json!(true),
+        serde_json::json!(["private-output"]),
+    ] {
+        let mut registry = FlavorRegistry::new();
+        registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxima-stub");
+        registry.add_request_behavior(ReplaceOutputBehavior(output));
+        let host = McpToolHost::from_parts(
+            Arc::new(registry.freeze_or_panic_for_tests()),
+            FlavorServices::default(),
+        );
+        let answer = call(
+            &app(host),
+            Method::POST,
+            &format!("/v1/tools/{CALLER_CONTEXT_TOOL}"),
+            &auth(ToolScope::All),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            answer.header(header::CONTENT_TYPE),
+            Some("application/problem+json")
+        );
+        assert_eq!(
+            answer.header(header::CACHE_CONTROL),
+            Some("private, no-store")
+        );
+        assert_eq!(answer.json()["detail"], "internal server error");
+        assert!(!String::from_utf8_lossy(&answer.body).contains("private-output"));
     }
 }
 

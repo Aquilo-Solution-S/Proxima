@@ -29,6 +29,37 @@ const AUDIENCE: &str = "proxima-mcp";
 const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
 
 #[test]
+fn an_explicit_object_root_constrains_every_union_branch() {
+    for keyword in ["anyOf", "oneOf"] {
+        let mut schema = json!({
+            "type": "object",
+            keyword: [{"type": "object"}, {"type": "string"}],
+        });
+        let original = schema.clone();
+        proxima_core::mcp::normalize_mcp_output_schema(&mut schema)
+            .expect("an explicit object root already constrains the union");
+        assert_eq!(schema, original);
+        let mut compiler = Compiler::new();
+        compiler.add_resource(OUTPUT_SCHEMA_URL, schema).unwrap();
+        let mut schemas = Schemas::new();
+        let index = compiler.compile(OUTPUT_SCHEMA_URL, &mut schemas).unwrap();
+        schemas.validate(&json!({}), index).unwrap();
+        for value in [
+            json!("scalar"),
+            json!(null),
+            json!([]),
+            json!(42),
+            json!(true),
+        ] {
+            assert!(
+                schemas.validate(&value, index).is_err(),
+                "{keyword} cannot override the root object constraint: {value}"
+            );
+        }
+    }
+}
+
+#[test]
 fn composed_tools_publish_object_output_schemas() {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as proxima::flavor::FlavorBundle>::register(&mut registry)

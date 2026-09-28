@@ -313,7 +313,8 @@ impl McpToolHost {
 
     /// # Errors
     ///
-    /// Returns `ToolNotFound` or the called tool error.
+    /// Returns `ToolNotFound`, the called tool error, or an internal error
+    /// when the final output after request behaviors is not a JSON object.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -356,7 +357,7 @@ impl McpToolHost {
                 call_fn(ctx, args)
             });
             return self
-                .dispatch_through_behaviors(descriptor.name.to_string(), args, ctx, terminal)
+                .dispatch_tool_output(descriptor.name.to_string(), args, ctx, terminal)
                 .await;
         }
         if let Some(source) = &self.host_tools
@@ -375,11 +376,28 @@ impl McpToolHost {
             let terminal: TerminalDispatch<'_> =
                 Box::new(move |call| Box::pin(async move { source.call(call).await }));
             return self
-                .dispatch_through_behaviors(tool.name, args, ctx, terminal)
+                .dispatch_tool_output(tool.name, args, ctx, terminal)
                 .await;
         }
 
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
+    }
+
+    async fn dispatch_tool_output<'a>(
+        &'a self,
+        name: String,
+        args: serde_json::Value,
+        ctx: McpToolCtx,
+        terminal: TerminalDispatch<'a>,
+    ) -> Result<serde_json::Value, ToolInvocationError> {
+        let output = self
+            .dispatch_through_behaviors(name.clone(), args, ctx, terminal)
+            .await?;
+        if !output.is_object() {
+            tracing::error!(tool = %name, "tool output after request behaviors must be a JSON object");
+            return Err(McpToolError::Other("tool output must be a JSON object".into()).into());
+        }
+        Ok(output)
     }
 
     /// # Errors
@@ -889,6 +907,58 @@ mod tests {
 
     #[derive(Debug)]
     struct EchoHostTools;
+
+    #[derive(Debug)]
+    struct OutputHostTools(serde_json::Value);
+
+    #[async_trait::async_trait]
+    impl McpHostTools for OutputHostTools {
+        fn list(&self, _: &McpAuthContext) -> Vec<McpHostTool> {
+            vec![host_tool("host_output", true)]
+        }
+
+        async fn call(&self, _: ToolCall) -> Result<serde_json::Value, McpToolError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_host_tool_calls_require_object_outputs() {
+        let owner = fake_owner();
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        };
+        for output in [
+            serde_json::json!(null),
+            serde_json::json!("private-output"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!(["private-output"]),
+            serde_json::json!({"answer": [42], "nested": {"value": null}}),
+        ] {
+            let server = make_server().with_host_tools(Arc::new(OutputHostTools(output.clone())));
+            let result = server
+                .call_tool(
+                    "host_output",
+                    serde_json::json!({}),
+                    author(),
+                    Some(auth.clone()),
+                )
+                .await;
+            if output.is_object() {
+                assert_eq!(result.unwrap(), output);
+            } else {
+                let Err(ToolInvocationError::Tool(error)) = result else {
+                    panic!("non-object output must return a tool error: {result:?}");
+                };
+                assert!(matches!(&error, McpToolError::Other(_)));
+                assert_eq!(error.kind(), McpToolErrorKind::Internal);
+                assert_eq!(error.client_message(), "internal server error");
+                assert!(!error.to_string().contains("private-output"));
+            }
+        }
+    }
 
     fn host_tool(name: &str, read_only: bool) -> McpHostTool {
         McpHostTool {
