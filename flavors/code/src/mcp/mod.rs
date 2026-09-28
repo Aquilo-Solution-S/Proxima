@@ -3,35 +3,10 @@ mod sql;
 use std::sync::Arc;
 
 use crate::CodeFlavorStore;
-use proxima_core::mcp::McpToolAnnotations;
 use proxima_core::{ToolCtx, ToolError};
 
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
-
-/// MCP behaviour hints, one set so this flavor's tools cannot drift on the
-/// same four booleans. `ScopeGateBehavior` demands WRITE when it cannot tell
-/// read-only. `open_world(false)`: every tool here reads or writes this
-/// deployment's own Postgres and reaches nothing else.
-pub(crate) const READ_ONLY: McpToolAnnotations =
-    McpToolAnnotations::new().read_only(true).open_world(false);
-pub(crate) const WRITE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(true)
-    .open_world(false);
-pub(crate) const WRITE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(false)
-    .open_world(false);
-/// `proxima-code_erase_repo` only. Irreversible, and the one annotation a
-/// client most needs before deciding what to auto-approve.
-pub(crate) const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(true)
-    .idempotent(false)
-    .open_world(false);
 
 pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolError> {
     let store = ctx.service::<CodeFlavorStore>().ok_or_else(|| {

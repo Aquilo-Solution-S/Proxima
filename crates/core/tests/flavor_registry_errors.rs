@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proxima_core::authz::OwnerResolver;
 use proxima_core::error::ProtocolError;
 use proxima_core::mcp::{
-    McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+    McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError, Replay, ToolEffect,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -22,8 +22,7 @@ where
 {
     const NAME: &'static str = "proxima-test_output";
     const DESCRIPTION: &'static str = "output schema fixture";
-    const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = EmptyArgs;
     type Output = T;
 
@@ -163,16 +162,20 @@ impl McpTool for ProviderUnsafeTool {
     }
 }
 
-/// The behaviour declaration every stub below shares, so that
-/// `UndeclaredToolBehavior` (checked first at freeze) never stands in for
-/// the dispatcher guard under test.
-const STUB_ANNOTATIONS: Option<McpToolAnnotations> =
-    Some(McpToolAnnotations::new().read_only(false).open_world(false));
+/// The effect every stub action below declares.
+const STUB_EFFECT: ToolEffect = ToolEffect::Additive(Replay::NonIdempotent);
 
-/// The same declaration with the read/write answer flipped, for the one stub
-/// whose tool-level `read_only` is the subject.
-const READ_ONLY_ANNOTATIONS: Option<McpToolAnnotations> =
-    Some(McpToolAnnotations::new().read_only(true).open_world(false));
+/// A stub's tool-level declaration: its effect when it registers flat, so
+/// that `UndeclaredToolBehavior` (checked first at freeze) never stands in
+/// for the dispatcher guard under test, and none when it dispatches, where
+/// `DispatcherToolEffect` would.
+const fn stub_tool_effect(specs: &[McpActionArgSpec]) -> Option<ToolEffect> {
+    if specs.is_empty() {
+        Some(STUB_EFFECT)
+    } else {
+        None
+    }
+}
 
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -221,16 +224,13 @@ enum TwoActionArgs {
 
 macro_rules! stub_tool {
     ($tool:ident, $name:literal, $args:ty, $specs:expr) => {
-        stub_tool!($tool, $name, $args, $specs, STUB_ANNOTATIONS);
-    };
-    ($tool:ident, $name:literal, $args:ty, $specs:expr, $annotations:expr) => {
         struct $tool;
 
         impl McpTool for $tool {
             const NAME: &'static str = $name;
             const DESCRIPTION: &'static str = "test";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = $specs;
-            const ANNOTATIONS: Option<McpToolAnnotations> = $annotations;
+            const EFFECT: Option<ToolEffect> = stub_tool_effect($specs);
             type Args = $args;
             type Output = EmptyOutput;
 
@@ -293,10 +293,9 @@ macro_rules! malformed_dispatch_tool {
                 action: "run",
                 allowed_fields: &["value"],
                 required_fields: &["value"],
-                annotations: None,
+                effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
             }];
-            const ANNOTATIONS: Option<McpToolAnnotations> = STUB_ANNOTATIONS;
             type Args = $args;
             type Output = EmptyOutput;
 
@@ -402,7 +401,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
-        annotations: None,
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }]
 );
@@ -414,7 +413,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &[],
         required_fields: &[],
-        annotations: None,
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }]
 );
@@ -426,7 +425,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
-        annotations: None,
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }]
 );
@@ -439,14 +438,14 @@ stub_tool!(
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id", "note"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
     ]
@@ -459,10 +458,9 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
-        annotations: READ_ONLY_ANNOTATIONS,
+        effect: ToolEffect::ReadOnly,
         audience: McpToolAudience::Shared,
-    }],
-    READ_ONLY_ANNOTATIONS
+    }]
 );
 // Two specs for one action, with identical field lists so the field-set loop
 // has nothing to report either: only counting the specs catches this.
@@ -475,14 +473,14 @@ stub_tool!(
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
     ]
@@ -861,7 +859,7 @@ fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
 /// Per-action annotations: the action spec, not the parent, answers
 /// read versus write.
 #[test]
-fn a_read_only_flavor_dispatcher_with_per_action_annotations_freezes() {
+fn a_read_only_flavor_dispatcher_with_per_action_effects_freezes() {
     let mut registry = FlavorRegistry::new();
     registry.add_mcp_tool_or_panic_for_tests::<ReadOnlyDispatcherTool>("proxima-test");
     let frozen = registry.try_freeze().expect("per-action behavior seals");

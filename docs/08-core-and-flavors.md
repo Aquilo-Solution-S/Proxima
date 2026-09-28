@@ -233,7 +233,9 @@ writes use the same tool with the matching action key.
 4. Any schema/ingress mismatch: each typed schema has exactly one protocol
    ingress parser, each opaque citation schema has none, and every parser
    resolves to a typed schema.
-5. A registered MCP tool with no resolvable behaviour declaration.
+5. A tool without exactly one behaviour declaration: a flat tool with no
+   `EFFECT`, or a dispatcher with a tool-level `EFFECT` beside its per-action
+   `effect`s (see [12 §Tool Effect](12-tool-manifest.md#tool-effect)).
 6. A tool whose `Args` is an internally tagged enum — so its schema carries
    `x-proxima-actions` and clients see a dispatcher — that declares no
    `ACTION_ARG_SPECS`. Nothing would then enumerate its actions: the scope
@@ -258,8 +260,8 @@ writes use the same tool with the matching action key.
    schema nothing registered, a schema registered under a flavor whose
    contract does not declare it, and a contract naming an unregistered MCP
    tool.
-9. A declaration that disagrees with the registration it duplicates. Four,
-   all of the same shape — the contract says one thing, something else in the
+9. A declaration that disagrees with the registration it duplicates. Two,
+   both of the same shape — the contract says one thing, something else in the
    binary already said another, and until these checks nothing kept the two
    equal:
    - `natural_key_columns` that are not the columns the registration carries.
@@ -268,13 +270,9 @@ writes use the same tool with the matching action key.
      are `"<wire_name>:<action>"`, so the list is read by people, and one
      that agrees on membership while disagreeing on order has stopped being
      a copy of the thing it describes.
-   - A `ToolContract::idempotent` that is not what the tool's resolved
-     annotations say. Read-only resolves as idempotent: calling a read twice
-     is calling it once, and MCP's `readOnlyHint` carries that.
-   - A `ToolContract::destructive` that is not the tool's resolved
-     `destructiveHint` (absent reads as `false`). The declaration is also the
-     erase gate: `UnitOfWork::erase_own_series` refuses a call from a tool it
-     does not mark destructive (see 13 §Flavor-scoped erase).
+
+   `ToolContract` states no behaviour, so there is nothing of it to
+   disagree: a tool's `ToolEffect` is declared once, on the tool.
 10. A surface whose declared rule names no leg the generator can run:
     `UndeletableSurface`, `UnmovableSurface`, `UnforgettableSurface`.
     Each of the three partitions (`EraseLeg`, `TransferLeg`, `ForgetLeg`) has

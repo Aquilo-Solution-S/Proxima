@@ -38,14 +38,14 @@ Implement transport-neutral `Tool`; MCP and REST adapt the same implementation.
 Import the authoring types from `proxima::flavor`:
 
 ```rust
-use proxima::flavor::{FlavorContract, McpToolAnnotations, ProjectionDecl, Tool, ToolContract, ToolCtx, ToolError};
+use proxima::flavor::{FlavorContract, ProjectionDecl, Tool, ToolContract, ToolCtx, ToolEffect, ToolError};
 
 pub struct ExampleLookupTool;
 
 impl Tool for ExampleLookupTool {
     const NAME: &'static str = "my-flavor_lookup";
     const DESCRIPTION: &'static str = "Look up a my-flavor example row.";
-    const ANNOTATIONS: Option<McpToolAnnotations> = Some(McpToolAnnotations::new().read_only(true).idempotent(true));
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = ExampleLookupArgs;
     type Output = ExampleLookupOutput;
@@ -69,7 +69,7 @@ const CONTRACT: FlavorContract = FlavorContract {
     state_surfaces: &[],
     scopes: &[],
     kernel_surfaces: &[],
-    tools: &[ToolContract { wire_name: "my-flavor_lookup", actions: &[], idempotent: true }],
+    tools: &[ToolContract { wire_name: "my-flavor_lookup", actions: &[] }],
     resources: &[],
     projection: ProjectionDecl::None { why: "this lookup example declares no memory schemas" },
     bespoke_erase_legs: &[],

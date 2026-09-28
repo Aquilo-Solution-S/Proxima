@@ -150,7 +150,9 @@ proxima::flavor_bundle! {
 #[cfg(test)]
 mod tests {
 
-    use proxima_core::{EntityKind, FlavorRegistry, MemoryId, PerspectivePayload};
+    use proxima_core::{
+        EntityKind, FlavorRegistry, McpToolDescriptor, MemoryId, PerspectivePayload,
+    };
 
     /// Every connection this flavor creates is a field on a payload, and the
     /// payload says so itself.
@@ -270,9 +272,9 @@ mod tests {
             if !tool.name.starts_with("proxima-code") {
                 continue; // core's own tools answer through core's table.
             }
-            let annotations = tool.annotations.unwrap_or_else(|| {
+            let annotations = tool.annotations().unwrap_or_else(|| {
                 panic!(
-                    "{} declares no ANNOTATIONS, so the owner-role gate will bill it as a write",
+                    "{} declares no EFFECT, so the owner-role gate will bill it as a write",
                     tool.name
                 )
             });
@@ -308,7 +310,7 @@ mod tests {
             .list_mcp_tools()
             .iter()
             .find(|tool| tool.name == "proxima-code_erase_repo")
-            .and_then(|tool| tool.annotations)
+            .and_then(McpToolDescriptor::annotations)
             .expect("erase_repo is registered and annotated");
         assert_eq!(
             erase.destructive,

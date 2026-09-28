@@ -1,3 +1,4 @@
+use crate::mcp::{Replay, ToolEffect};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,6 @@ use crate::mcp::{
 };
 use crate::owner::parse_external_key;
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
-
-use super::DESTRUCTIVE_NON_IDEMPOTENT;
 
 pub const CORE_TRANSFER_ACTIONS: &[CoreActionMeta] = &[CoreActionMeta {
     tool: CoreTransferTool::NAME,
@@ -55,7 +54,7 @@ impl McpTool for CoreTransferTool {
         action: "transfer_to_owner",
         allowed_fields: &["entity", "to_owner"],
         required_fields: &["entity", "to_owner"],
-        annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
+        effect: ToolEffect::Destructive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }];
     type Args = CoreTransferArgs;

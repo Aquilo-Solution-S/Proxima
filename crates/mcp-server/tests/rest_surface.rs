@@ -19,6 +19,7 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode, header};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
+use proxima_core::mcp::{Replay, ToolEffect};
 use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
@@ -55,11 +56,7 @@ struct CallerContextTool;
 impl proxima_core::Tool for CallerContextTool {
     const NAME: &'static str = CALLER_CONTEXT_TOOL;
     const DESCRIPTION: &'static str = "Echo transport-neutral caller context.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
-        proxima_core::mcp::McpToolAnnotations::new()
-            .read_only(true)
-            .open_world(false),
-    );
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = CallerContextArgs;
     type Output = CallerContextOutput;
@@ -118,32 +115,19 @@ struct StubDispatchOutput {}
 impl proxima_core::mcp::McpTool for StubDispatchTool {
     const NAME: &'static str = FLAVOR_DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
-        proxima_core::mcp::McpToolAnnotations::new()
-            .read_only(true)
-            .open_world(false),
-    );
     const ACTION_ARG_SPECS: &'static [proxima_core::mcp::McpActionArgSpec] = &[
         proxima_core::mcp::McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(
-                proxima_core::mcp::McpToolAnnotations::new()
-                    .read_only(true)
-                    .open_world(false),
-            ),
+            effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(
-                proxima_core::mcp::McpToolAnnotations::new()
-                    .read_only(false)
-                    .open_world(false),
-            ),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
@@ -182,26 +166,17 @@ struct StubArgvOutput {
 impl proxima_core::mcp::McpTool for StubArgvTool {
     const NAME: &'static str = FLAVOR_ARGV;
     const DESCRIPTION: &'static str = "An argv-keyed flavor dispatcher.";
-    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
-        proxima_core::mcp::McpToolAnnotations::new()
-            .read_only(false)
-            .open_world(false),
-    );
     const ARGV_ACTION_SPECS: &'static [proxima_core::mcp::McpArgvActionSpec] = &[
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
-            annotations: Some(
-                proxima_core::mcp::McpToolAnnotations::new()
-                    .read_only(true)
-                    .open_world(false),
-            ),
+            effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];

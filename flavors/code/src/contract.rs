@@ -652,86 +652,60 @@ const STATE_SURFACES: &[Surface] = &[
 
 // ── Tools ───────────────────────────────────────────────────────────────
 
-/// The thirteen wire names, with `idempotent` mirroring each tool's
-/// `ANNOTATIONS`. No code tool is a dispatcher, so every `actions` is empty.
+/// The thirteen wire names. No code tool is a dispatcher, so every
+/// `actions` is empty.
 const TOOLS: &[ToolContract] = &[
     ToolContract {
         wire_name: "proxima-code_list_repos",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_register_repo",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_ingest_head_snapshot",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_start_ingest_head_snapshot",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_get_ingest_run",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_erase_repo",
         actions: &[],
-        idempotent: false,
-        destructive: true,
     },
     ToolContract {
         wire_name: "proxima-code_search_chunks",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_open_file_revision",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_search_commits",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_emit_execution_request",
         actions: &[],
-        idempotent: false,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_emit_execution_plan",
         actions: &[],
-        idempotent: false,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_retry_execution_request",
         actions: &[],
-        idempotent: false,
-        destructive: false,
     },
     ToolContract {
         wire_name: "proxima-code_work_item_bundle",
         actions: &[],
-        idempotent: true,
-        destructive: false,
     },
 ];
 

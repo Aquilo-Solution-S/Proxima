@@ -1,5 +1,6 @@
 //! `core_think` — paged pin walk. Not search.
 
+use crate::mcp::ToolEffect;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,7 @@ pub struct ThinkVisit {
 impl McpTool for ThinkTool {
     const NAME: &'static str = protocol_tool::CORE_THINK;
     const DESCRIPTION: &'static str = "Paged graph walk from seeds. Directions: ancestors, descendants, episode_siblings. No ANN. Hydrate bodies separately via proxima://memory/{id}. Cursor pages, not a live stream.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = ThinkArgs;
     type Output = ThinkOutput;
 

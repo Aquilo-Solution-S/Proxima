@@ -5,6 +5,7 @@
 //! the Perspective payload — nobody writes them except by writing the node.
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{DerivedMemory, InterpretationSubjectKind, InterpretationV1, MemoryId, SeriesHandle};
@@ -70,6 +71,9 @@ impl McpTool for InterpretTool {
     const NAME: &'static str = protocol_tool::CORE_INTERPRET;
     const DESCRIPTION: &'static str =
         "Author an interpretation Perspective: a claim about existing memories, with a confidence.";
+    // Idempotent by content: the interpretation's memory id is folded from
+    // the claim, so re-asserting it lands on one memory.
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
     type Args = InterpretArgs;
     type Output = InterpretOutput;
 

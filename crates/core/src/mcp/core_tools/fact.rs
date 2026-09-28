@@ -1,3 +1,4 @@
+use crate::mcp::ToolEffect;
 use crate::mcp::{
     CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
@@ -6,7 +7,6 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::READ_ONLY;
 use super::citation_of_fact::{CitationOfFactArgs, CitationOfFactOutput, citation_of_fact};
 use super::facts_citing_object::{
     FactsCitingObjectArgs, FactsCitingObjectOutput, facts_citing_object,
@@ -55,14 +55,14 @@ impl McpTool for CoreFactTool {
             action: "citation_of_fact",
             allowed_fields: &["fact"],
             required_fields: &["fact"],
-            annotations: Some(READ_ONLY),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "facts_citing_object",
             allowed_fields: &["cited_object_id", "limit", "cursor"],
             required_fields: &["cited_object_id"],
-            annotations: Some(READ_ONLY),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
     ];

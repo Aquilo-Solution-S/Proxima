@@ -1,5 +1,5 @@
 use proxima_core::mcp::{
-    McpActionArgSpec, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolError,
+    McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError, Replay, ToolEffect,
 };
 use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 use proxima_core::verbs::goal_write::{
@@ -230,17 +230,11 @@ struct StubDispatchTool;
 impl McpTool for StubDispatchTool {
     const NAME: &'static str = "proxima-stub_dispatch";
     const DESCRIPTION: &'static str = "A flavor dispatcher.";
-    // A write, because a flavor dispatcher has nowhere to put a per-action
-    // annotation and `try_freeze` refuses `read_only(true)` at tool level for
-    // that reason (docs/08 §Freeze Guards). Nothing below reads this; the
-    // subject here is leaf parsing.
-    const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(false).open_world(false));
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
-        annotations: None,
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }];
     type Args = StubDispatchArgs;

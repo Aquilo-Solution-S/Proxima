@@ -115,11 +115,6 @@ impl FlavorRegistry {
         // closure preserves the descriptor's copyable call-handle semantics.
         let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {
             let properties = properties.clone();
-            // Every transport reaches the handler through this closure, so
-            // stamping here is what lets a verb ask which tool is calling
-            // without trusting anything the call carried.
-            let mut ctx: crate::mcp::McpToolCtx = ctx;
-            ctx.authz = ctx.authz.invoked_by_tool(T::NAME);
             Box::pin(async move {
                 // Dispatcher tools (non-empty specs) run per-action validation;
                 // argv-keyed tools resolve the action key (closed set — argv
@@ -128,10 +123,20 @@ impl FlavorRegistry {
                 // unknown-field + space-alias guard instead of silently
                 // accepting unknown fields.
                 let mut ignored = Vec::new();
-                if !T::ACTION_ARG_SPECS.is_empty() {
+                let effect = if !T::ACTION_ARG_SPECS.is_empty() {
                     validate_action_args(T::NAME, T::ACTION_ARG_SPECS, &args)?;
+                    let action = args.get("action").and_then(serde_json::Value::as_str);
+                    T::ACTION_ARG_SPECS
+                        .iter()
+                        .find(|spec| Some(spec.action) == action)
+                        .map(|spec| spec.effect)
                 } else if !T::ARGV_ACTION_SPECS.is_empty() {
-                    crate::mcp::resolve_argv_action(T::NAME, T::ARGV_ACTION_SPECS, &args)?;
+                    let action =
+                        crate::mcp::resolve_argv_action(T::NAME, T::ARGV_ACTION_SPECS, &args)?;
+                    T::ARGV_ACTION_SPECS
+                        .iter()
+                        .find(|spec| spec.action == action)
+                        .map(|spec| spec.effect)
                 } else {
                     ignored = prepare_flat_tool_args(
                         T::NAME,
@@ -139,7 +144,17 @@ impl FlavorRegistry {
                         &mut args,
                         <T as McpTool>::UNKNOWN_FIELD_POLICY,
                     )?;
-                }
+                    <T as McpTool>::EFFECT
+                };
+                // Every transport reaches the handler through this closure,
+                // so stamping here is what lets a verb ask which tool — and
+                // which action's effect — is calling without trusting
+                // anything the call carried.
+                let mut ctx: crate::mcp::McpToolCtx = ctx;
+                ctx.authz = ctx.authz.invoked_by_tool(crate::InvokingTool {
+                    name: T::NAME,
+                    effect,
+                });
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = T::call(ctx, typed).await?;
@@ -164,7 +179,7 @@ impl FlavorRegistry {
             output_schema,
             action_arg_specs: T::ACTION_ARG_SPECS,
             argv_action_specs: T::ARGV_ACTION_SPECS,
-            annotations: <T as McpTool>::ANNOTATIONS,
+            effect: <T as McpTool>::EFFECT,
             audience: <T as McpTool>::AUDIENCE,
             call,
         });
@@ -264,8 +279,8 @@ mod action_vocabulary_tests {
     use futures::future::BoxFuture;
 
     use crate::mcp::{
-        McpActionArgSpec, McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAnnotations,
-        McpToolAudience, McpToolCtx, McpToolError, McpToolErrorKind,
+        McpActionArgSpec, McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAudience,
+        McpToolCtx, McpToolError, McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerRef,
@@ -290,13 +305,13 @@ mod action_vocabulary_tests {
         McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
-            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Owner,
         },
     ];
@@ -309,8 +324,6 @@ mod action_vocabulary_tests {
         const NAME: &'static str = "proxima-stub_cli";
         const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = ARGV_SPECS;
-        const ANNOTATIONS: Option<McpToolAnnotations> =
-            Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = ArgvArgs;
         type Output = ArgvOutput;
         fn call(
@@ -331,13 +344,13 @@ mod action_vocabulary_tests {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         }];
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[McpArgvActionSpec {
             action: "look",
             argv_prefix: &["look"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         }];
         type Args = ArgvArgs;
@@ -360,8 +373,7 @@ mod action_vocabulary_tests {
         const NAME: &'static str = "proxima-stub_admin";
         const DESCRIPTION: &'static str = "A flat fixture in the owner-only class.";
         const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
-        const ANNOTATIONS: Option<McpToolAnnotations> =
-            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
         type Args = ArgvArgs;
         type Output = EmptyOutput;
         fn call(
@@ -501,11 +513,10 @@ mod unknown_field_policy_tests {
     use futures::future::BoxFuture;
 
     use super::action_vocabulary_tests::test_ctx;
-    use crate::mcp::{McpToolAnnotations, McpToolError, McpToolErrorKind, McpUnknownFieldPolicy};
+    use crate::mcp::{McpToolError, McpToolErrorKind, McpUnknownFieldPolicy, ToolEffect};
     use crate::{FlavorRegistry, Tool, ToolCtx, ToolError};
 
-    const READ_ONLY: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    const READ_ONLY: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct EchoArgs {
@@ -526,7 +537,7 @@ mod unknown_field_policy_tests {
     impl Tool for TolerantEcho {
         const NAME: &'static str = "proxima-stub_tolerant";
         const DESCRIPTION: &'static str = "A flat fixture tolerating unknown argument fields.";
-        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        const EFFECT: Option<ToolEffect> = READ_ONLY;
         const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::IgnoreAndReport;
         type Args = EchoArgs;
         type Output = EchoOutput;
@@ -542,7 +553,7 @@ mod unknown_field_policy_tests {
     impl Tool for TolerantScalar {
         const NAME: &'static str = "proxima-stub_tolerant_scalar";
         const DESCRIPTION: &'static str = "A tolerating flat fixture answering with a scalar.";
-        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        const EFFECT: Option<ToolEffect> = READ_ONLY;
         const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::IgnoreAndReport;
         type Args = EchoArgs;
         type Output = String;
@@ -557,7 +568,7 @@ mod unknown_field_policy_tests {
     impl Tool for StrictEcho {
         const NAME: &'static str = "proxima-stub_strict";
         const DESCRIPTION: &'static str = "A flat fixture keeping the default guard.";
-        const ANNOTATIONS: Option<McpToolAnnotations> = READ_ONLY;
+        const EFFECT: Option<ToolEffect> = READ_ONLY;
         type Args = EchoArgs;
         type Output = EchoOutput;
         fn call(_: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<EchoOutput, ToolError>> {

@@ -465,12 +465,13 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
 #[test]
 fn flavor_sdk_exposes_tool_authoring_and_metadata() {
     use proxima::flavor::{
-        McpActionArgSpec, McpAuthorContext, McpToolAnnotations, Tool, ToolCtx, ToolError,
+        McpActionArgSpec, McpAuthorContext, Replay, Tool, ToolCtx, ToolEffect, ToolError,
     };
     fn needs_tool<T: Tool>() {}
     needs_tool::<TierLabelledTool>();
     let _: &[McpActionArgSpec] = &[];
-    let _: Option<(&ToolCtx, &ToolError, &McpAuthorContext, &McpToolAnnotations)> = None;
+    let _: Option<(&ToolCtx, &ToolError, &McpAuthorContext)> = None;
+    let _: ToolEffect = ToolEffect::Additive(Replay::Idempotent);
 }
 
 /// A flavor tool that accepts its own `model_id`, written against the

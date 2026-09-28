@@ -37,8 +37,6 @@ pub use think::ThinkTool;
 pub use transfer::CoreTransferTool;
 pub use upload::CoreUploadTool;
 
-use crate::mcp::McpToolAnnotations;
-
 /// Shared page bounds for the keyset-paginated read surfaces (edges,
 /// goals, citations, membership, lineage, wake candidates). One pair of
 /// constants so six tools cannot drift apart on the same contract;
@@ -55,23 +53,6 @@ pub(crate) fn resolve_page_limit(limit: Option<u32>) -> Result<u32, crate::mcp::
     crate::reject_zero_limit(limit)?;
     Ok(limit.unwrap_or(DEFAULT_PAGE_LIMIT).min(MAX_PAGE_LIMIT))
 }
-
-const READ_ONLY: McpToolAnnotations = McpToolAnnotations::new().read_only(true).open_world(false);
-const WRITE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(false)
-    .open_world(false);
-const WRITE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(false)
-    .idempotent(true)
-    .open_world(false);
-const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(true)
-    .idempotent(false)
-    .open_world(false);
 
 /// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.

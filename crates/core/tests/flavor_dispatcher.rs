@@ -13,9 +13,8 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use proxima_core::flavor::{FlavorContract, ProjectionDecl, ToolContract};
 use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpToolAnnotations, McpToolAudience, McpToolCtx,
-    McpToolError, McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    ToolCall,
+    McpActionArgSpec, McpAuthorContext, McpToolAudience, McpToolCtx, McpToolError, McpToolOrigin,
+    Next, Replay, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall, ToolEffect,
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
@@ -57,23 +56,19 @@ struct DispatchTool;
 impl Tool for DispatchTool {
     const NAME: &'static str = DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher declared through proxima_flavor!.";
-    // Deliberately read-only at parent level: action specs remain authoritative
-    // and keep the mixed dispatcher conservative as a whole.
-    const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(true).open_world(false));
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id", "note"],
             required_fields: &["id"],
-            annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
     ];
@@ -106,8 +101,6 @@ static DISPATCH_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     tools: &[ToolContract {
         wire_name: DISPATCH,
         actions: &["look", "touch"],
-        idempotent: false,
-        destructive: false,
     }],
     resources: &[],
     bespoke_erase_legs: &[],

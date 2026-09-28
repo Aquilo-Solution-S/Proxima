@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode, header};
-use proxima_core::mcp::{McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError, ToolEffect};
 use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use serde_json::{Value, json};
@@ -36,8 +36,7 @@ struct EchoOutput {
 impl McpTool for EchoTool {
     const NAME: &'static str = TOOL;
     const DESCRIPTION: &'static str = "Return the fixture argument without storage access.";
-    const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = EchoArgs;
     type Output = EchoOutput;
 

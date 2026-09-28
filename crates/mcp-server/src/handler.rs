@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_resources,
-    normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolEffect,
+    all_core_resources, normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action,
+    tool_name_matches,
 };
 use proxima_core::{
     AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
@@ -900,58 +901,28 @@ fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
     }
 }
 
-/// MCP/REST tool-level projection for the actions visible to one caller.
-///
-/// `read_only` is conservative: every visible action must explicitly be a
-/// read. The remaining hints are retained only when all visible actions agree;
-/// a mixed answer is left unspecified rather than mislabelled.
+/// MCP/REST tool-level projection for the actions visible to one caller:
+/// the [`ToolEffect::join`](proxima_core::ToolEffect::join) of those
+/// actions, so a caller who sees only a dispatcher's reads is told it reads.
+/// `None` when the caller sees no action at all.
 pub(crate) fn annotations_for_auth(
     auth: Option<&McpAuthContext>,
     descriptor: &McpToolDescriptor,
 ) -> Option<McpToolAnnotations> {
-    // Both dispatcher vocabularies project the same way; the classification
-    // of each action — including whether it falls back to the tool — is the
-    // descriptor's single rule, never re-derived here.
-    let actions: Vec<&str> = if descriptor.action_arg_specs.is_empty() {
-        descriptor
-            .argv_action_specs
-            .iter()
-            .map(|spec| spec.action)
-            .collect()
-    } else {
-        descriptor
-            .action_arg_specs
-            .iter()
-            .map(|spec| spec.action)
-            .collect()
-    };
-    if actions.is_empty() {
-        return descriptor.resolved_annotations();
+    if descriptor.action_arg_specs.is_empty() && descriptor.argv_action_specs.is_empty() {
+        return descriptor.annotations();
     }
-    let visible = actions
-        .into_iter()
-        .filter(|action| auth.is_none() || action_allowed_for_auth(auth, descriptor, action))
-        .map(|action| descriptor.effective_action_annotations(action))
-        .collect::<Vec<_>>();
-    let first = *visible.first()?;
-    let common = |field: fn(McpToolAnnotations) -> Option<bool>| {
-        let first = first.and_then(field);
-        visible
-            .iter()
-            .all(|annotations| annotations.and_then(field) == first)
-            .then_some(first)
-            .flatten()
-    };
-    Some(McpToolAnnotations {
-        read_only: Some(
-            visible
-                .iter()
-                .all(|annotations| annotations.and_then(|value| value.read_only) == Some(true)),
-        ),
-        destructive: common(|value| value.destructive),
-        idempotent: common(|value| value.idempotent),
-        open_world: common(|value| value.open_world),
-    })
+    // Each action's classification is the descriptor's single rule, never
+    // re-derived here.
+    ToolEffect::strongest(
+        descriptor
+            .actions()
+            .filter(|(action, _)| {
+                auth.is_none() || action_allowed_for_auth(auth, descriptor, action)
+            })
+            .map(|(_, effect)| effect),
+    )
+    .map(McpToolAnnotations::registered)
 }
 
 /// Whether a request that carries no bound auth context may see or call
@@ -1046,7 +1017,7 @@ fn host_tool_allowed_for_auth(auth: Option<&McpAuthContext>, tool: &McpHostTool)
     let in_scope = auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
         ctx.authz.tool_scope().allows(&tool.name)
     });
-    in_scope && owner_role_allows(auth, tool.annotations.read_only.unwrap_or(false))
+    in_scope && owner_role_allows(auth, tool.effect.is_read_only())
 }
 
 /// A host tool's `tools/list` entry; `None` (and a warning) when its
@@ -1069,7 +1040,7 @@ fn host_tool_metadata(mut tool: McpHostTool) -> Option<Tool> {
             Arc::new(args),
         )
         .with_raw_output_schema(Arc::new(output))
-        .annotate(to_rmcp_annotations(tool.annotations)),
+        .annotate(to_rmcp_annotations(McpToolAnnotations::host(tool.effect))),
     )
 }
 
@@ -1167,10 +1138,7 @@ mod output_contract_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The lib reaches every gate through
-    // `McpToolDescriptor::resolved_annotations`, not the core manifest
-    // directly. These tests assert the manifest's own contents.
-    use proxima_core::mcp::core_tool_annotations;
+    use proxima_core::mcp::Replay;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 
     // Retain the existing guard and JSON-RPC error assertions through the
@@ -1180,10 +1148,7 @@ mod tests {
             .map_err(|error| mcp_tool_error_to_error_data(&error))
     }
 
-    fn flavor_descriptor(
-        name: &'static str,
-        annotations: Option<McpToolAnnotations>,
-    ) -> McpToolDescriptor {
+    fn flavor_descriptor(name: &'static str, effect: Option<ToolEffect>) -> McpToolDescriptor {
         McpToolDescriptor {
             name,
             description: "stub",
@@ -1193,7 +1158,7 @@ mod tests {
             output_schema: serde_json::json!({"type": "object"}),
             action_arg_specs: &[],
             argv_action_specs: &[],
-            annotations,
+            effect,
             audience: proxima_core::mcp::McpToolAudience::Shared,
             call: &|_, _| Box::pin(async { Ok(serde_json::json!({})) }),
         }
@@ -1204,31 +1169,31 @@ mod tests {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
-            annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
 
-    /// The argv twin of [`MIXED_ACTIONS`]: one command that declares itself
-    /// a read, one that declares nothing and so classifies from the tool.
+    /// The argv twin of [`MIXED_ACTIONS`]: one command that reads, one that
+    /// writes.
     const MIXED_ARGV_ACTIONS: &[proxima_core::mcp::McpArgvActionSpec] = &[
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
-            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
-            annotations: None,
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
@@ -1564,9 +1529,7 @@ mod tests {
     fn not_authorized_lists_a_flavor_dispatchers_allowed_actions() {
         use futures_util::future::BoxFuture;
         use proxima_core::ToolScope;
-        use proxima_core::mcp::{
-            McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-        };
+        use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
         #[serde(tag = "action", rename_all = "snake_case")]
@@ -1591,21 +1554,19 @@ mod tests {
         impl McpTool for StubDispatchTool {
             const NAME: &'static str = "proxima-stub_dispatch";
             const DESCRIPTION: &'static str = "A flavor dispatcher.";
-            const ANNOTATIONS: Option<McpToolAnnotations> =
-                Some(McpToolAnnotations::new().read_only(false).open_world(false));
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
                 McpActionArgSpec {
                     action: "look",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
-                    annotations: None,
+                    effect: ToolEffect::Additive(Replay::NonIdempotent),
                     audience: proxima_core::mcp::McpToolAudience::Shared,
                 },
                 McpActionArgSpec {
                     action: "touch",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
-                    annotations: None,
+                    effect: ToolEffect::Additive(Replay::NonIdempotent),
                     audience: proxima_core::mcp::McpToolAudience::Shared,
                 },
             ];
@@ -1728,8 +1689,8 @@ mod tests {
     }
 
     /// A viewer sees a flavor's read tool in `tools/list`.
-    /// Read-vs-write comes from the tool descriptor's annotations, not
-    /// `core_tool_annotations(name)` (core names only).
+    /// Read-vs-write comes from the descriptor's own effect, never from its
+    /// name.
     #[test]
     fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
         use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
@@ -1744,20 +1705,21 @@ mod tests {
             ),
         };
 
-        let read = flavor_descriptor(
-            "proxima-stub_search",
-            Some(McpToolAnnotations::new().read_only(true).open_world(false)),
-        );
+        let read = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
         let write = flavor_descriptor(
             "proxima-stub_write",
-            Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+            Some(ToolEffect::Additive(Replay::NonIdempotent)),
         );
-        // Core still answers through the manifest, with no descriptor
-        // annotations of its own.
-        let core_read = McpToolDescriptor {
+        // No name-keyed fallback: a substrate descriptor that declares
+        // nothing is a write, whatever its name.
+        let silent_core = McpToolDescriptor {
             origin: proxima_core::mcp::McpToolOrigin::Substrate,
             ..flavor_descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
         };
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let core_read = registry
+            .mcp_tool(protocol_tool::CORE_SEARCH_MEMORIES)
+            .expect("core search is registered");
 
         assert!(
             tool_allowed_for_auth(Some(&viewer), &read),
@@ -1768,8 +1730,12 @@ mod tests {
             "a flavor write tool must stay hidden from a viewer"
         );
         assert!(
-            tool_allowed_for_auth(Some(&viewer), &core_read),
-            "core still resolves through the manifest"
+            !tool_allowed_for_auth(Some(&viewer), &silent_core),
+            "a name is not a declaration"
+        );
+        assert!(
+            tool_allowed_for_auth(Some(&viewer), core_read),
+            "core search declares its own read effect"
         );
     }
 
@@ -1778,10 +1744,7 @@ mod tests {
         use proxima_core::{AuthPath, AuthzContext, Owner, ToolScope, UserId};
 
         let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let descriptor = flavor_descriptor(
-            "proxima-stub_search",
-            Some(McpToolAnnotations::new().read_only(true).open_world(false)),
-        );
+        let descriptor = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
         let auth = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject(
@@ -1819,10 +1782,7 @@ mod tests {
             }),
             action_arg_specs: MIXED_ACTIONS,
             // Parent says read; the write action must not inherit it.
-            ..flavor_descriptor(
-                "proxima-stub_dispatch",
-                Some(McpToolAnnotations::new().read_only(true).open_world(false)),
-            )
+            ..flavor_descriptor("proxima-stub_dispatch", Some(ToolEffect::ReadOnly))
         };
         assert!(
             tool_allowed_for_auth(Some(&viewer), &mixed),
@@ -1922,7 +1882,7 @@ mod tests {
             // The tool writes; only the annotated command opts out.
             ..flavor_descriptor(
                 "proxima-stub_cli",
-                Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+                Some(ToolEffect::Additive(Replay::NonIdempotent)),
             )
         };
 
@@ -1960,39 +1920,32 @@ mod tests {
         );
     }
 
-    /// A descriptor whose argv commands say nothing keeps classifying from
-    /// the tool — the pre-annotation behaviour, and what makes `None`
-    /// additive rather than a silent reclassification.
+    /// An argv command classifies from its own effect, never the tool's:
+    /// even a hand-built descriptor carrying a read-only tool-level effect
+    /// (which `try_freeze` refuses on a dispatcher) lends it to no command.
     #[test]
-    fn unannotated_argv_commands_still_classify_from_the_tool() {
-        const SILENT: &[proxima_core::mcp::McpArgvActionSpec] =
+    fn an_argv_command_classifies_from_its_own_effect_never_the_tools() {
+        const WRITE: &[proxima_core::mcp::McpArgvActionSpec] =
             &[proxima_core::mcp::McpArgvActionSpec {
                 action: "approval",
                 argv_prefix: &["approval"],
-                annotations: None,
+                effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: proxima_core::mcp::McpToolAudience::Shared,
             }];
 
-        let read_tool = McpToolDescriptor {
-            argv_action_specs: SILENT,
-            ..flavor_descriptor(
-                "proxima-stub_cli",
-                Some(McpToolAnnotations::new().read_only(true).open_world(false)),
-            )
+        let tool = McpToolDescriptor {
+            argv_action_specs: WRITE,
+            ..flavor_descriptor("proxima-stub_cli", Some(ToolEffect::ReadOnly))
         };
-        assert!(read_tool.action_is_read_only("approval"));
-
-        let write_tool = McpToolDescriptor {
-            argv_action_specs: SILENT,
-            ..flavor_descriptor(
-                "proxima-stub_cli",
-                Some(McpToolAnnotations::new().read_only(false).open_world(false)),
-            )
-        };
-        assert!(!write_tool.action_is_read_only("approval"));
+        assert!(!tool.action_is_read_only("approval"));
         assert!(
-            !write_tool.action_is_read_only("not-a-command"),
-            "a key the vocabulary does not emit is a write under a write tool"
+            !tool.action_is_read_only("not-a-command"),
+            "a key the vocabulary does not emit is a write"
+        );
+        assert_eq!(
+            tool.effect(),
+            Some(ToolEffect::Additive(Replay::NonIdempotent)),
+            "the tool-level effect is its commands' join"
         );
     }
 
@@ -2024,16 +1977,16 @@ mod tests {
         );
     }
 
-    // Completeness gate: every substrate tool resolves annotations from its
-    // descriptor. Flat tools use `core_tool_annotations`; dispatchers derive
-    // their conservative whole-tool answer from their action specs.
+    // Completeness gate: every substrate tool resolves an effect from its
+    // descriptor — a flat tool's `EFFECT`, a dispatcher's join over its
+    // action specs.
     #[test]
     fn every_core_tool_is_annotated() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         for descriptor in registry.list_mcp_tools() {
             if descriptor.name.starts_with("core_") {
                 assert!(
-                    descriptor.resolved_annotations().is_some(),
+                    descriptor.annotations().is_some(),
                     "core tool {} has no resolvable MCP annotations",
                     descriptor.name
                 );
@@ -2042,57 +1995,60 @@ mod tests {
     }
 
     #[test]
-    fn core_tool_annotations_encode_expected_semantics() {
+    fn core_tool_effects_encode_expected_semantics() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let hints = |name: &str| {
+            registry
+                .mcp_tool(name)
+                .and_then(McpToolDescriptor::annotations)
+                .unwrap_or_else(|| panic!("{name} resolves hints"))
+        };
+
         // Closed substrate: open_world is always false.
-        let read = core_tool_annotations(protocol_tool::CORE_SEARCH_MEMORIES).expect("read tool");
+        let read = hints(protocol_tool::CORE_SEARCH_MEMORIES);
         assert_eq!(read.read_only, Some(true));
         assert_eq!(read.open_world, Some(false));
 
         // Convergent additive write (required idempotency key).
-        let derive = core_tool_annotations(protocol_tool::CORE_DERIVE).expect("write tool");
+        let derive = hints(protocol_tool::CORE_DERIVE);
         assert_eq!(derive.read_only, Some(false));
         assert_eq!(derive.destructive, Some(false));
         assert_eq!(derive.idempotent, Some(true));
 
         // Additive write with an OPTIONAL idempotency key: identical args
         // without a key create a new Fact, so it is not replay-safe.
-        let remember =
-            core_tool_annotations(protocol_tool::CORE_REMEMBER).expect("non-idempotent write");
+        let remember = hints(protocol_tool::CORE_REMEMBER);
         assert_eq!(remember.read_only, Some(false));
         assert_eq!(remember.destructive, Some(false));
         assert_eq!(remember.idempotent, Some(false));
 
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-
-        // Grouped fact dispatcher now contains only citation reads; the
-        // answer is aggregated from its action specs, not duplicated here.
-        let fact = registry
-            .mcp_tool(protocol_tool::CORE_FACT)
-            .and_then(McpToolDescriptor::resolved_annotations)
-            .expect("fact dispatcher");
-        assert_eq!(fact.read_only, Some(true));
+        // Grouped fact dispatcher contains only citation reads; the answer
+        // is the join of its action specs, not duplicated here.
+        assert_eq!(hints(protocol_tool::CORE_FACT).read_only, Some(true));
 
         // Idempotent by content: the interpretation's memory id folds the
         // claim, its confidence and its subjects, so re-asserting the same
         // judgment lands on one memory rather than a pile of duplicates.
-        let interpret =
-            core_tool_annotations(protocol_tool::CORE_INTERPRET).expect("interpret tool");
+        let interpret = hints(protocol_tool::CORE_INTERPRET);
         assert_eq!(interpret.read_only, Some(false));
         assert_eq!(interpret.destructive, Some(false));
         assert_eq!(interpret.idempotent, Some(true));
 
-        // Grouped goal dispatcher aggregates write actions with mixed
-        // idempotence, so only the common behavior survives.
-        let goal = registry
-            .mcp_tool(protocol_tool::CORE_GOAL)
-            .and_then(McpToolDescriptor::resolved_annotations)
-            .expect("goal dispatcher");
+        // Grouped goal dispatcher joins write actions with mixed
+        // idempotence: one non-idempotent action makes the tool one.
+        let goal = hints(protocol_tool::CORE_GOAL);
         assert_eq!(goal.read_only, Some(false));
         assert_eq!(goal.destructive, Some(false));
-        assert_eq!(goal.idempotent, None);
+        assert_eq!(goal.idempotent, Some(false));
 
-        // Flavor-shipped / unknown tools get no substrate hints here.
-        assert!(core_tool_annotations("company/upsert").is_none());
+        // One destructive action (`remove_member`) makes the dispatcher
+        // destructive, so a client asks before auto-approving any of it.
+        let membership = hints(protocol_tool::CORE_MEMBERSHIP);
+        assert_eq!(membership.read_only, Some(false));
+        assert_eq!(membership.destructive, Some(true));
+
+        // Flavor-shipped / unknown tools are not in the substrate registry.
+        assert!(registry.mcp_tool("company/upsert").is_none());
     }
 
     /// A NUL is well-formed JSON and fatal to Postgres, so it has to be

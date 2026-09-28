@@ -1,5 +1,6 @@
 use crate::Relation;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::FactWriteCommand;
@@ -57,6 +58,7 @@ pub struct RecordUtteranceTool;
 impl McpTool for RecordUtteranceTool {
     const NAME: &'static str = protocol_tool::CORE_RECORD_UTTERANCE;
     const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = RecordUtteranceArgs;
     type Output = RecordUtteranceOutput;
 

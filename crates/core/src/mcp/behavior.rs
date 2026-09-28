@@ -5,7 +5,7 @@ use futures::future::BoxFuture;
 
 use crate::AccessKind;
 
-use super::{McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, core_tool_annotations};
+use super::{McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, ToolEffect};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -83,15 +83,15 @@ pub trait RequestBehavior: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpHostToolCall {
     name: String,
-    annotations: super::McpToolAnnotations,
+    effect: ToolEffect,
 }
 
 impl McpHostToolCall {
     #[must_use]
-    pub fn new(name: impl Into<String>, annotations: super::McpToolAnnotations) -> Self {
+    pub fn new(name: impl Into<String>, effect: ToolEffect) -> Self {
         Self {
             name: name.into(),
-            annotations,
+            effect,
         }
     }
 
@@ -101,8 +101,8 @@ impl McpHostToolCall {
     }
 
     #[must_use]
-    pub const fn annotations(&self) -> super::McpToolAnnotations {
-        self.annotations
+    pub const fn effect(&self) -> ToolEffect {
+        self.effect
     }
 }
 
@@ -199,10 +199,8 @@ impl ScopeGateBehavior {
         {
             // Same per-action authority for the argv vocabulary, resolved
             // through the same longest-prefix match `enforce_scope` just
-            // ran. An argv action that declared nothing classifies from the
-            // tool (see `McpArgvActionSpec::annotations`); argv the
-            // vocabulary does not emit — already refused above, so
-            // unreachable through the chain — is a write.
+            // ran. Argv the vocabulary does not emit — already refused
+            // above, so unreachable through the chain — is a write.
             descriptor
                 .argv_action(args)
                 .is_some_and(|action| descriptor.action_is_read_only(action))
@@ -212,17 +210,12 @@ impl ScopeGateBehavior {
             .flatten()
             .filter(|host| host.name == tool)
         {
-            // A host tool is flat; its declaration is the host's. Silence
-            // is still a write.
-            host.annotations.read_only.unwrap_or(false)
+            // A host tool is flat; its declaration is the host's.
+            host.effect.is_read_only()
         } else {
-            // Flat tools still resolve their own declaration, then the
-            // substrate manifest.
-            descriptor
-                .and_then(McpToolDescriptor::resolved_annotations)
-                .or_else(|| core_tool_annotations(tool))
-                .and_then(|annotations| annotations.read_only)
-                .unwrap_or(false)
+            // A flat tool's own declaration. A name the registry does not
+            // hold has none, and is a write.
+            descriptor.is_some_and(McpToolDescriptor::is_read_only)
         };
         let allowed = if read_only {
             ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
@@ -502,8 +495,8 @@ mod argv_scope_tests {
 
     use super::ScopeGateBehavior;
     use crate::mcp::{
-        McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolAudience,
-        McpToolCtx, McpToolError, McpToolErrorKind,
+        McpArgvActionSpec, McpAuthorContext, McpTool, McpToolAudience, McpToolCtx, McpToolError,
+        McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, ToolScope, UserId,
@@ -519,9 +512,8 @@ mod argv_scope_tests {
     /// the gate's derivation has to pick by longest prefix.
     ///
     /// Mixed on purpose, and in the shape the field exists for: the tool
-    /// must declare itself writable because one command writes, and the
-    /// read command says so itself. The sibling declares nothing and so
-    /// classifies from the tool — a write.
+    /// is writable because one command writes, and the read command says
+    /// so itself; the sibling declares a write.
     struct ArgvTool;
 
     impl McpTool for ArgvTool {
@@ -531,18 +523,16 @@ mod argv_scope_tests {
             McpArgvActionSpec {
                 action: "approval",
                 argv_prefix: &["approval"],
-                annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+                effect: ToolEffect::ReadOnly,
                 audience: McpToolAudience::Shared,
             },
             McpArgvActionSpec {
                 action: "approval-decide",
                 argv_prefix: &["approval", "decide"],
-                annotations: None,
+                effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
             },
         ];
-        const ANNOTATIONS: Option<McpToolAnnotations> =
-            Some(McpToolAnnotations::new().read_only(false).open_world(false));
         type Args = ArgvArgs;
         type Output = super::StubOutput;
         fn call(
@@ -635,11 +625,9 @@ mod argv_scope_tests {
     /// A read-capable-only owner keeps the read commands of a writable argv
     /// dispatcher.
     ///
-    /// Without per-action argv annotations every command classified from
-    /// the tool-level declaration, so a dispatcher whose commands are mostly
-    /// reads lost its whole read surface to a viewer. The unannotated
-    /// sibling is the negative control: it still classifies from the tool,
-    /// and the tool declares a write.
+    /// Each command declares its own effect, so a dispatcher whose commands
+    /// are mostly reads keeps its read surface for a viewer. The writing
+    /// sibling is the negative control.
     #[test]
     fn a_viewer_keeps_the_read_command_of_a_writable_argv_dispatcher() {
         let ctx = argv_viewer_ctx();
@@ -689,7 +677,7 @@ mod argv_scope_tests {
 mod owner_role_tests {
     use super::ScopeGateBehavior;
     use crate::access::Role;
-    use crate::mcp::{McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+    use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, ToolEffect};
     use crate::{
         AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerRef, UserId,
     };
@@ -709,8 +697,7 @@ mod owner_role_tests {
     impl McpTool for DeclaredReadTool {
         const NAME: &'static str = "proxima-stub_search";
         const DESCRIPTION: &'static str = "A flavor read tool that declares itself read-only.";
-        const ANNOTATIONS: Option<McpToolAnnotations> =
-            Some(McpToolAnnotations::new().read_only(true).open_world(false));
+        const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
         type Args = StubArgs;
         type Output = super::StubOutput;
         fn call(
@@ -767,7 +754,7 @@ mod owner_role_tests {
     }
 
     /// A read-only role can call a flavor tool that declares itself read-only.
-    /// `enforce_owner_role` reads the descriptor's annotations; a missing
+    /// `enforce_owner_role` reads the descriptor's effect; a missing
     /// declaration is treated as WRITE.
     #[test]
     fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
@@ -817,10 +804,10 @@ mod owner_role_tests {
             ),
             "got {err:?}",
         );
-        // The message names `ANNOTATIONS`; a silent tool is otherwise
-        // billed as a write with no stated cause.
+        // The message names `EFFECT`; a silent tool is otherwise billed as
+        // a write with no stated cause.
         let rendered = err.to_string();
-        assert!(rendered.contains("ANNOTATIONS"), "{rendered}");
+        assert!(rendered.contains("EFFECT"), "{rendered}");
     }
 
     /// Declaring nothing still means write. The default has to stay

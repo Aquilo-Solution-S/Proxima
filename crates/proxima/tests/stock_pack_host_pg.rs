@@ -31,8 +31,8 @@ use axum::routing::get;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::future::BoxFuture;
 use proxima::flavor::{
-    FlavorBundle, FlavorRegistry, FlavorRegistryError, McpToolAnnotations, NamedMigrator,
-    RequestHeaders, Tool, ToolCtx, ToolError,
+    FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator, RequestHeaders, Tool,
+    ToolCtx, ToolEffect, ToolError,
 };
 use proxima::{
     AccessKind, AppContext, AppInfo, Authz, FlavorApp, Proxima, Role, RunningProxima,
@@ -92,8 +92,7 @@ impl Tool for Probe {
     const NAME: &'static str = PROBE_TOOL;
     const DESCRIPTION: &'static str =
         "Reports the request headers, owner, and role a forwarded call carries.";
-    const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
 
     type Args = ProbeArgs;
     type Output = ProbeOutput;

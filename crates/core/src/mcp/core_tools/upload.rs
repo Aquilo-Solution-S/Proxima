@@ -8,6 +8,7 @@
 //! [`CitedBlobService`] service; a host without S3 configured fails
 //! typed at call time with a `PROXIMA_S3_*` hint.
 
+use crate::mcp::{Replay, ToolEffect};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -25,7 +26,6 @@ use crate::{AccessKind, AuthzContext, Owner, Relation};
 
 use super::facts_citing_object::parse_cited_object_id;
 use super::memory_spaces::resolve_space_for_write;
-use super::{READ_ONLY, WRITE_NON_IDEMPOTENT};
 
 pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
@@ -175,28 +175,28 @@ impl McpTool for CoreUploadTool {
             action: "prepare",
             allowed_fields: &["filename", "mime", "byte_len", "space"],
             required_fields: &["filename", "mime", "byte_len"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "complete",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "abort",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
-            annotations: Some(WRITE_NON_IDEMPOTENT),
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
         McpActionArgSpec {
             action: "read_url",
             allowed_fields: &["cited_object_id", "space"],
             required_fields: &["cited_object_id"],
-            annotations: Some(READ_ONLY),
+            effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
         },
     ];

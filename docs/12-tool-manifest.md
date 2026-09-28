@@ -25,7 +25,7 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 | Host tools | host binary | `RuntimeBuilder::host_tools(Arc<dyn McpHostTools>)`, listed per caller | `ToolCall` through the registry's request behaviors |
 
 `try_add_tool` delegates to `try_add_mcp_tool`: the blanket
-`impl<T: Tool> McpTool for T` adapts the context and forwards `ANNOTATIONS`
+`impl<T: Tool> McpTool for T` adapts the context and forwards `EFFECT`
 and `ACTION_ARG_SPECS`, so a flavor dispatcher is registered, validated, and
 gated exactly as a substrate one. Two registration bodies is what let those
 two drift.
@@ -38,7 +38,7 @@ Stored ids:
 | Flavor MCP projection | provider-safe `<flavor>_<name>` |
 
 Host tools are not registered: they are listed per caller at request time,
-flat, gated by their name and declared `read_only`, and never shadow a
+flat, gated by their name and declared `effect`, and never shadow a
 registry tool ([10 §MCP Endpoint and Authentication](10-configuration.md#mcp-endpoint-and-authentication)).
 A palette's keys come from `McpToolDescriptor::palette_keys()` — the bare
 name of a flat tool, `tool:action` for every action of either dispatcher
@@ -56,9 +56,9 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
-    /// Whole-tool behaviour hints for a flat tool. Dispatcher actions declare
-    /// behaviour on `McpActionArgSpec`; the parent is not a fallback.
-    const ANNOTATIONS: Option<McpToolAnnotations> = None;
+    /// What a flat tool does (§Tool Effect). Required on a flat tool,
+    /// refused on a dispatcher, whose actions each declare one.
+    const EFFECT: Option<ToolEffect> = None;
     /// The actions this tool dispatches, or `&[]` for a flat tool. THE
     /// enumeration of a dispatcher's action set — the scope gate, the tool
     /// catalog, the REST action routes, and the OpenAPI document all read it
@@ -103,7 +103,9 @@ pub struct McpToolDescriptor {
     pub args_schema: serde_json::Value,
     pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
-    pub annotations: Option<McpToolAnnotations>,
+    pub argv_action_specs: &'static [McpArgvActionSpec],
+    pub effect: Option<ToolEffect>,       // flat tools only
+    pub audience: McpToolAudience,
     pub call: McpCallFn,
 }
 
@@ -111,9 +113,39 @@ pub struct McpActionArgSpec {
     pub action: &'static str,
     pub allowed_fields: &'static [&'static str],
     pub required_fields: &'static [&'static str],
-    pub annotations: Option<McpToolAnnotations>,
+    pub effect: ToolEffect,
+    pub audience: McpToolAudience,
 }
 ```
+
+### Tool Effect
+
+```rust
+pub enum ToolEffect { ReadOnly, Additive(Replay), Destructive(Replay) }
+pub enum Replay { Idempotent, NonIdempotent }
+```
+
+The one behaviour declaration: `Tool::EFFECT` on a flat tool,
+`McpActionArgSpec::effect` / `McpArgvActionSpec::effect` on each action of a
+dispatcher, `McpHostTool::effect` on a host tool. Five legal values; a read
+carries no destructive or idempotent claim. Everything else is derived:
+
+| Reader | Derived answer |
+|---|---|
+| owner-role gate, `tools/list` visibility | `ReadOnly` → `may_read`; else `may_write` |
+| REST method | `ReadOnly` → `QUERY` + `POST`; else `POST` ([17 §Methods](17-rest-surface.md#methods-post-for-writes-query-for-reads)) |
+| MCP / REST / `proxima://tools` hints | `McpToolAnnotations::registered(effect)`: `readOnlyHint`; `destructiveHint`, `idempotentHint` for a write only; `openWorldHint: false`. Host tools: `McpToolAnnotations::host(effect)`, no `openWorldHint` |
+| `UnitOfWork::erase_own_series` | admits a tool call only when the dispatched action's effect is `Destructive` ([13 §Flavor-scoped erase](13-compliance.md#flavor-scoped-erase)) |
+
+A dispatcher's tool-level effect is `ToolEffect::join` over its actions:
+strength `ReadOnly < Additive < Destructive`, idempotent only when every
+action is. One destructive action makes the tool destructive on the wire.
+Per caller, the join runs over the actions that caller may see.
+
+`ToolContract` states no behaviour: the contract names the tool and its
+actions; the effect lives on the tool, once. `try_freeze` refuses a flat tool
+with no `EFFECT` (`UndeclaredToolBehavior`) and a dispatcher that declares
+one (`DispatcherToolEffect`).
 
 Registration:
 
@@ -218,19 +250,19 @@ Three carriers, split authority:
 
 | Surface | What it is |
 |---|---|
-| `McpToolDescriptor.action_arg_specs` | THE enumeration and per-action behavior authority. Every scope/role gate, catalog, REST method gate, and OpenAPI operation reads its `annotations`; missing annotations or missing `read_only` means write. |
+| `McpToolDescriptor.action_arg_specs` | THE enumeration and per-action behavior authority. Every scope/role gate, catalog, REST method gate, and OpenAPI operation reads its `effect`. |
 | `x-proxima-actions` | Derived from the `Args` type by the schema pass: variant description, action-only `argument_schema`, and allowed/required fields with their prose. |
 | `CoreActionMeta` | Substrate-only decoration: per-action scope key, curated description, and produced schema ids. Never an existence or behavior claim. |
 
 `FlavorRegistry::try_freeze` refuses a registry where the first two disagree
 (see [08 §Freeze Guards](08-core-and-flavors.md#freeze-guards)).
 
-Per-action behavior does not inherit the parent tool's `ANNOTATIONS` and does
-not consult `CoreActionMeta`. `McpActionArgSpec.annotations` is the sole
-answer for substrate and flavor dispatchers. `None`, or an annotation without
-`read_only: Some(true)`, fails closed as write authorization and `POST`-only
-REST exposure. Mixed read/write dispatchers therefore admit a viewer and
-`QUERY` only on the explicitly read-only action.
+Per-action behavior has no parent to inherit — a dispatcher declares no
+`EFFECT` — and does not consult `CoreActionMeta`. `McpActionArgSpec.effect`
+is the sole answer for substrate and flavor dispatchers; anything but
+`ReadOnly` is write authorization and `POST`-only REST exposure. Mixed
+read/write dispatchers therefore admit a viewer and `QUERY` only on the
+read-only action.
 
 A flavor action's enum-variant doc comment becomes
 `x-proxima-actions.<action>.description`; the tool catalog and OpenAPI action
