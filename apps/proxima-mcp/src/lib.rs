@@ -233,6 +233,12 @@ impl FlavorApp for BlobMaintenanceApp {
             version: env!("CARGO_PKG_VERSION"),
         }
     }
+
+    /// Serves no tools: the empty palette satisfies the required scope
+    /// without granting any.
+    fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
+        builder.tool_scope(ToolScope::Palette(Vec::new()))
+    }
 }
 
 /// # Errors
@@ -1107,6 +1113,19 @@ mod tests {
             database_url: DEFAULT_DATABASE_URL.to_string(),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
         }
+    }
+
+    /// `maintain-blobs` resolves with no environment: its app names the
+    /// required tool scope, empty, and starts no listener.
+    #[test]
+    fn blob_maintenance_resolves_without_env_and_serves_nothing() {
+        let (config, _) = BlobMaintenanceApp::configure(RuntimeBuilder::default())
+            .database_url(DEFAULT_DATABASE_URL)
+            .platform_database_url(DEFAULT_DATABASE_URL)
+            .resolve()
+            .expect("maintain-blobs resolves");
+        assert_eq!(config.tool_scope, ToolScope::Palette(Vec::new()));
+        assert!(config.mcp.is_none());
     }
 
     /// Every id `registered_tool_ids` produces resolves back against the
