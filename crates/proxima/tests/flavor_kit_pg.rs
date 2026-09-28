@@ -499,7 +499,7 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
     transaction.rollback().await.unwrap();
     runtime.close().await;
     admin.close().await;
-    built.shutdown();
+    built.shutdown().await;
 }
 
 #[tokio::test]
