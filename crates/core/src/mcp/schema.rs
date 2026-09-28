@@ -66,6 +66,8 @@ pub(crate) fn mcp_output_schema<T: JsonSchema>() -> Result<serde_json::Value, St
 /// When the root type is absent, nonempty `anyOf`/`oneOf` unions whose branches
 /// each declare `type: "object"` receive that root type. Every present union
 /// must meet this condition; branches and other keywords are preserved.
+/// An explicit object root already excludes non-objects: `type` and root
+/// combinators are conjunctive, so a union cannot override that constraint.
 ///
 /// # Errors
 ///
