@@ -367,6 +367,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
     )
     .await;
     for unsafe_path in [
+        "pg_temp".to_owned(),
         format!("pg_catalog, {name}"),
         format!("pg_temp, pg_catalog, {name}"),
         format!("pg_catalog, {writable_name}, pg_temp"),

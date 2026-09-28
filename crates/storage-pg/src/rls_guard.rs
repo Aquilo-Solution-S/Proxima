@@ -291,6 +291,7 @@ fn path_identifier(entry: &str) -> Option<String> {
 fn path_is_pinned(path: &[String]) -> bool {
     path.split_last().is_some_and(|(last, schemas)| {
         last == "pg_temp"
+            && !schemas.is_empty()
             && schemas
                 .iter()
                 .all(|schema| !matches!(schema.as_str(), "$user" | "pg_temp"))
@@ -636,13 +637,14 @@ mod tests {
     fn pinned_path_rejects_dynamic_user_and_early_temp_aliases() {
         for value in [
             "pg_catalog",
+            "pg_temp",
             "\"$user\",pg_temp",
             "pg_temp,pg_catalog,pg_temp",
         ] {
             let path = search_path(Some(&[format!("search_path={value}")])).unwrap();
             assert!(!path_is_pinned(&path), "{value}");
         }
-        for value in ["pg_temp", "pg_catalog,pg_temp", "\"trusted\",pg_temp"] {
+        for value in ["pg_catalog,pg_temp", "\"trusted\",pg_temp"] {
             let path = search_path(Some(&[format!("search_path={value}")])).unwrap();
             assert!(path_is_pinned(&path), "{value}");
         }
