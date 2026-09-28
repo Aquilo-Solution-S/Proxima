@@ -136,6 +136,52 @@ carries it. Flavor code assembles nothing and can neither set nor read it.
 | Identity | NOT identity material. `identity_for_revalidation()` does not carry them, and a redeemed delegated phase rebuilds without them, exactly as it does for `trusted_model_id` |
 | Consumers | parsed into `CloudEventEnvelope::extensions` (name-ordered); a signature check still reads `ReceivedEvent::raw` |
 
+## AsyncAPI Catalog
+
+`asyncapi_document(&registry, &AsyncApiInfo::new(title, version), prefix)`
+(`proxima_outbox_nats`; `proxima::` under feature `outbox-nats`) describes what
+the publisher sends as an AsyncAPI 3.0.0 document, so a consumer (schema
+catalog, deployment manifest, codegen) reads one generated file instead of
+copying schema ids, subjects and JSON schemas by hand. Offline: frozen registry
+in, `serde_json::Value` out; no database, broker or boot. Not served at
+runtime.
+
+| Part | Content |
+|---|---|
+| `asyncapi` | `3.0.0` |
+| `info` | host-supplied `title`, `version` |
+| `servers` | omitted: topology belongs to the deployment (§Deployment topology) |
+| `channels` | one per listenable schema id, keyed by its `type_token`. `address` = `<prefix>.{ownerKind}.{ownerId}.<type_token>`, from the formatter `subject_for` uses; parameters `ownerKind` (`personal` \| `group`), `ownerId` (UUID) |
+| `operations` | one `send` per channel, same key |
+| `components.messages` | one per registered (schema id, version), keyed `<type_token>.v<version>`. `contentType: application/cloudevents+json`; `payload` = the envelope below |
+
+Message payload: the §Publication Contract envelope as an AsyncAPI Schema
+Object (JSON Schema draft-07 base).
+
+| Attribute | Schema |
+|---|---|
+| `specversion` | const `"1.0"` |
+| `id` | string matching `^F:` |
+| `source` | `uri-reference`; the deployment's value, unknown at build time |
+| `type` | const: the schema id |
+| `dataschema` | const `proxima://schema/{id}/{version}` |
+| `datacontenttype` | const `application/json` |
+| `time` | `date-time` |
+| `proximaowner` | string |
+| `proximamodel` | string, optional |
+| `data` | the registered `json_schema()` (rule below) |
+| host-bound extensions | name `^[a-z0-9]{1,20}$`, not `subject`, not `proxima*`; value a non-empty string of ≤ 256 characters without control characters, an int32, or a boolean (§Host-bound extension attributes). The ≤ 8 count and the 256-**byte** bound stay capture's |
+
+| Rule | |
+|---|---|
+| deterministic | channels, operations and messages ordered by schema id, then version; the same registry yields byte-identical output, so a host commits the file and CI checks that it is current |
+| listenable only | non-listenable schemas never appear; a registry with none yields a valid document with no channels |
+| `data` placement | verbatim, except local `$ref`s (`#`, `#/…`, e.g. schemars' `#/$defs/…`), which are rebased onto the schema's place in the document. A schema declaring both `$id` and a local `$ref` is refused (`IdentifiedLocalReference`): JSON Schema resolves such a ref against the `$id`, AsyncAPI against the document |
+| structured mode | AsyncAPI has no CloudEvents binding; the envelope is the payload. No NATS bindings: JetStream topology is the deployment's |
+| prefix | the publisher's: `DEFAULT_SUBJECT_PREFIX` unless `PROXIMA_NATS_SUBJECT_PREFIX` is set. An invalid one is refused (`InvalidSubjectPrefix`) |
+
+Build-step recipe: [how-to/fact-outbox.md §6](how-to/fact-outbox.md#6-export-the-asyncapi-catalog).
+
 ## Outbox Row and State Machine
 
 Table `proxima_core.publication_outbox` (migration `0011`), one row per

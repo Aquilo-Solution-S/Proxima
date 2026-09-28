@@ -241,9 +241,10 @@ pub use proxima_outbox_nats::{
 /// (listenable schema ⇒ bound source) holds without this feature.
 #[cfg(feature = "outbox-nats")]
 pub use proxima_outbox_nats::{
-    ConfigError as NatsConfigError, ConsumerError, DrainReport, DrainSummary, DurableIntake,
-    Intake, IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
-    ParsedSubject, PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError,
+    AsyncApiError, AsyncApiInfo, ConfigError as NatsConfigError, ConsumerError,
+    DEFAULT_SUBJECT_PREFIX, DrainReport, DrainSummary, DurableIntake, Intake, IntakeError,
+    JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, ParsedSubject,
+    PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError, asyncapi_document,
     parse_subject, subject_for,
 };
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts

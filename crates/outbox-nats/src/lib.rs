@@ -6,7 +6,8 @@
 //! a host-only [`PublicationOutboxPort`]. This crate is one implementation
 //! of the other half — claim the captured bytes, put them on a broker,
 //! record the receipt — and a reference consumer showing what a durable
-//! sink owes the stream in return.
+//! sink owes the stream in return. [`asyncapi_document`] describes what
+//! it publishes, offline, as an `AsyncAPI` 3.0.0 document.
 //!
 //! ```text
 //! publication_outbox (Postgres)          NATS JetStream           sink
@@ -53,6 +54,7 @@ macro_rules! const_inbox_prefix {
     }};
 }
 
+pub mod asyncapi;
 pub mod cleaner;
 pub mod config;
 pub mod consumer;
@@ -60,6 +62,10 @@ pub mod publisher;
 
 use std::time::Duration;
 
+pub use asyncapi::{
+    ASYNCAPI_VERSION, AsyncApiError, AsyncApiInfo, OWNER_ID_PARAMETER, OWNER_KIND_PARAMETER,
+    asyncapi_document,
+};
 pub use cleaner::{
     COPY_CLEANER_INBOX_PREFIX, COPY_CLEANER_STREAM, COPY_CLEANER_SUBJECT_PREFIX,
     CleanerConfigError, CopyCleanerConnectError, CopyCleanerConnectionState, CopyCleanerFailure,
@@ -68,8 +74,9 @@ pub use cleaner::{
     spawn_supervised_copy_cleaner,
 };
 pub use config::{
-    ConfigError, InboxPrefix, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, ParsedSubject,
-    SubjectParseError, inbox_prefix_is_valid, parse_subject, subject_for, type_token,
+    ConfigError, DEFAULT_SUBJECT_PREFIX, InboxPrefix, NatsAuth, NatsConsumerConfig,
+    NatsPublisherConfig, ParsedSubject, SubjectParseError, inbox_prefix_is_valid, parse_subject,
+    subject_for, type_token,
 };
 pub use consumer::{
     AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState,

@@ -99,6 +99,44 @@ PROXIMA_TEST_NATS_URL=nats://127.0.0.1:4224 CI=true \
 Unset `PROXIMA_TEST_NATS_URL` and the broker tests skip with a message rather
 than passing vacuously.
 
+## 6. Export the AsyncAPI catalog
+
+Describe what the host publishes as an AsyncAPI 3.0.0 file
+([18 §AsyncAPI Catalog](../18-fact-outbox.md#asyncapi-catalog)). Build it from
+the bundles the host boots, commit it, and let a test keep it current:
+
+```rust
+// tests/asyncapi.rs in the host crate
+use proxima::flavor::{FlavorBundle, FlavorRegistry};
+
+#[test]
+fn asyncapi_json_is_current() {
+    let mut registry = FlavorRegistry::new();
+    HostBundle::register(&mut registry).expect("the bundles register");
+    let registry = registry.try_freeze().expect("the registry freezes");
+    let document = proxima::asyncapi_document(
+        &registry,
+        &proxima::AsyncApiInfo::new("acme-host", env!("CARGO_PKG_VERSION")),
+        proxima::DEFAULT_SUBJECT_PREFIX, // or the deployment's PROXIMA_NATS_SUBJECT_PREFIX
+    )
+    .expect("the catalog exports");
+    let text = serde_json::to_string_pretty(&document).expect("renders") + "\n";
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/asyncapi.json");
+    if std::env::var_os("UPDATE_ASYNCAPI").is_some() {
+        std::fs::write(path, &text).expect("writes");
+    }
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap_or_default(),
+        text,
+        "asyncapi.json is stale: rerun with UPDATE_ASYNCAPI=1"
+    );
+}
+```
+
+`HostBundle` is the bundle passed to `Proxima::<HostBundle>`. Requires
+`proxima = { features = ["outbox-nats"] }`. No database, broker or boot is
+involved, so it runs in the plain `cargo test` lane.
+
 ## Signal → action
 
 | Signal | Meaning | Action |

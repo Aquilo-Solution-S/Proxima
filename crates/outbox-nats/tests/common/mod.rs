@@ -471,33 +471,16 @@ impl Fixture {
         note: &str,
         ingest_key: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        let payload = ListenableProbeV1 {
-            probe_id: Uuid::now_v7(),
-            note: note.to_owned(),
-        };
-        let command = fact_command_for_source(ingest_key, source_id);
-        let plan = PublicationPlan::new(
-            PublicationDraft::new(
-                ListenableProbeV1::schema_id(),
-                SchemaVersion::new(ListenableProbeV1::SCHEMA_VERSION),
-                source,
-                owner,
-                Some("trusted/runner".to_owned()),
-                PublicationExtensions::new(),
-                serde_json::to_value(&payload).expect("the probe serializes"),
-            ),
-            PublicationLimits::default(),
-        );
-        let authorized = AuthorizedFactWrite::new_for_tests(
-            OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
-            command,
-            None,
-            Vec::new(),
+        capture_probe(
+            &self.pg,
+            owner,
+            source,
+            PublicationExtensions::new(),
+            source_id,
+            note,
+            ingest_key,
         )
-        .with_publication_for_tests(plan);
-        self.pg
-            .ingest_fact_with_typed_sidecar(&authorized, &[])
-            .await
+        .await
     }
 
     /// The stored envelope bytes for one captured Fact.
@@ -532,13 +515,51 @@ impl Fixture {
     }
 }
 
+/// Admit one listenable probe Fact into `pg`, capturing its event under
+/// `source` with the host-bound `extensions`. No broker is involved.
+pub async fn capture_probe(
+    pg: &PgStorage,
+    owner: Owner,
+    source: PublicationSource,
+    extensions: PublicationExtensions,
+    source_id: Option<&str>,
+    note: &str,
+    ingest_key: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError> {
+    let payload = ListenableProbeV1 {
+        probe_id: Uuid::now_v7(),
+        note: note.to_owned(),
+    };
+    let command = fact_command_for_source(ingest_key, source_id);
+    let plan = PublicationPlan::new(
+        PublicationDraft::new(
+            ListenableProbeV1::schema_id(),
+            SchemaVersion::new(ListenableProbeV1::SCHEMA_VERSION),
+            source,
+            owner,
+            Some("trusted/runner".to_owned()),
+            extensions,
+            serde_json::to_value(&payload).expect("the probe serializes"),
+        ),
+        PublicationLimits::default(),
+    );
+    let authorized = AuthorizedFactWrite::new_for_tests(
+        OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+        command,
+        None,
+        Vec::new(),
+    )
+    .with_publication_for_tests(plan);
+    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
+}
+
 /// The producer identity this deployment is configured with.
 #[must_use]
 pub fn source() -> PublicationSource {
     PublicationSource::new("urn:proxima:outbox-nats-tests").expect("a URN is absolute")
 }
 
-async fn register_owner(pool: &sqlx::PgPool, owner: &Owner) {
+pub async fn register_owner(pool: &sqlx::PgPool, owner: &Owner) {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, $2::proxima_core.owner_kind)

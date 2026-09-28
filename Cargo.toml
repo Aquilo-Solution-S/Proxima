@@ -49,6 +49,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
 rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = { version = "1", features = ["uuid1", "preserve_order"] }
+# JSON Schema validator for tests only: the AsyncAPI export is checked against
+# the vendored official AsyncAPI 3.0.0 schema (draft-07), and captured events
+# against the payload schemas it emits.
+boon = "0.6"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 # v10 split the crypto backend out of default features (default = ["use_pem"] only),
 # so a bare dep panics at first RS256 sign/verify ("could not determine CryptoProvider").
