@@ -90,7 +90,7 @@ base and receives no raw platform connection.
 Owner RLS backstops the engine: a statement that missed its scope reads and
 writes nothing. It is not a boundary against the runtime credential. The
 owner settings are custom settings any session may set, so whoever holds
-`DATABASE_URL`, or a pool from `clone_pool_for_host`, holds every Owner's
+`DATABASE_URL`, or a pool from `ProximaHost::clone_pool_for_host`, holds every Owner's
 data. Only platform authority is bound to a role.
 
 Runtime roles are `NOBYPASSRLS`, are not table owners, and use `FORCE ROW

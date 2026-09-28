@@ -381,12 +381,12 @@ async fn exercise_full_registry_erase(
     let mut sidecars = PgSidecarRegistry::new();
     proxima::flavor::register_core_pg_sidecars(&mut sidecars);
     <FullRegistryApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
-    let sidecars = sidecars.freeze_against(built.registry())?;
+    let sidecars = sidecars.freeze_against(built.host().registry())?;
     let source_storage = common::runtime_storage(&runtime_url, &platform_url)
         .await?
         .with_host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .with_sidecars(sidecars)
-        .try_with_flavors(built.registry())?;
+        .try_with_flavors(built.host().registry())?;
     let Owner::Personal(user_id) = owner else {
         unreachable!("fixture owner is personal")
     };
@@ -415,7 +415,7 @@ async fn exercise_full_registry_erase(
     drop(source_storage);
     pool.close().await;
     drop(store);
-    built.shutdown();
+    built.shutdown().await;
     Ok(())
 }
 

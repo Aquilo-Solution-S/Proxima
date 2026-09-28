@@ -91,7 +91,6 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
-            .with_mcp()
             .mcp_bind(occupied.local_addr()?)
             .run()
             .await

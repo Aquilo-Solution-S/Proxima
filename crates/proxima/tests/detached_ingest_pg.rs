@@ -5,25 +5,48 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima::{EmbedConfig, EmbeddedProxima, FactWrite, ProximaBuilder, QueryRequest};
+use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
+use proxima::{AppInfo, BuiltProxima, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
 use proxima_core::{AgentNoteV1, AuthPath, AuthzContext, Owner, ToolCtx, ToolServices, UserId};
 use proxima_pg_testkit::SplitRoleDb;
 use proxima_storage_pg::PgPoolConfig;
 
-async fn boot(db: &SplitRoleDb, owner: Owner) -> EmbeddedProxima {
-    ProximaBuilder::new(
-        EmbedConfig {
-            database_url: db.runtime_url().to_owned(),
-            platform_database_url: Some(db.platform_url().to_owned()),
-            s3: None,
-        },
-        owner,
-    )
-    .pg_pool_config(PgPoolConfig::default())
-    .bundle::<proxima_code::CodeFlavor>()
-    .boot()
-    .await
-    .expect("split-role boot")
+struct CodeApp;
+
+impl FlavorBundle for CodeApp {
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        proxima_code::CodeFlavor::register(registry)
+    }
+
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
+        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        proxima_code::CodeFlavor::migrators()
+    }
+}
+
+impl FlavorApp for CodeApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "detached-ingest-test",
+            title: "Detached Ingest Test",
+            version: "1",
+        }
+    }
+}
+
+async fn boot(db: &SplitRoleDb, owner: Owner) -> BuiltProxima {
+    Proxima::<CodeApp>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(owner)
+        .tool_scope(ToolScope::All)
+        .pg_pool_config(PgPoolConfig::default())
+        .build()
+        .await
+        .expect("split-role boot")
 }
 
 fn note(title: &str) -> AgentNoteV1 {
@@ -36,9 +59,10 @@ fn note(title: &str) -> AgentNoteV1 {
     }
 }
 
-async fn memory_count(booted: &EmbeddedProxima, authz: &AuthzContext) -> usize {
+async fn memory_count(booted: &BuiltProxima, authz: &AuthzContext) -> usize {
     booted
-        .engine
+        .host()
+        .engine()
         .query(authz, &QueryRequest::readable())
         .await
         .expect("owner query")
@@ -48,13 +72,14 @@ async fn memory_count(booted: &EmbeddedProxima, authz: &AuthzContext) -> usize {
 
 /// Whether `note` was committed: re-ingesting the same write replays it.
 async fn committed(
-    booted: &EmbeddedProxima,
+    booted: &BuiltProxima,
     authz: &AuthzContext,
     owner: Owner,
     note: &AgentNoteV1,
 ) -> bool {
     booted
-        .engine
+        .host()
+        .engine()
         .ingest_fact(authz, FactWrite::new(owner, "test/detached", note))
         .await
         .expect("re-ingest")
@@ -68,6 +93,7 @@ async fn a_dropped_request_still_records_its_fact() {
         .expect("PG required");
     let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
     let booted = boot(&db, owner).await;
+    let engine = booted.host().engine();
     let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
@@ -78,11 +104,8 @@ async fn a_dropped_request_still_records_its_fact() {
     // when its client disconnects, rolls back.
     let plain = note("plain");
     {
-        let mut request = Box::pin(
-            booted
-                .engine
-                .ingest_fact(&authz, FactWrite::new(owner, "test/detached", &plain)),
-        );
+        let mut request =
+            Box::pin(engine.ingest_fact(&authz, FactWrite::new(owner, "test/detached", &plain)));
         assert!(futures::poll!(request.as_mut()).is_pending());
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -95,7 +118,7 @@ async fn a_dropped_request_still_records_its_fact() {
     // The same drop after `ingest_fact_detached` has been polled once.
     let detached = note("detached");
     {
-        let mut request = Box::pin(booted.engine.ingest_fact_detached(
+        let mut request = Box::pin(engine.ingest_fact_detached(
             &authz,
             FactWrite::new(owner, "test/detached", &detached),
             Duration::from_secs(30),
@@ -132,8 +155,7 @@ async fn a_dropped_request_still_records_its_fact() {
         .execute(&mut *fence)
         .await
         .expect("hold the owner fence");
-    let error = booted
-        .engine
+    let error = engine
         .ingest_fact_detached(
             &authz,
             FactWrite::new(owner, "test/detached", &late),
@@ -150,14 +172,14 @@ async fn a_dropped_request_still_records_its_fact() {
 
     // The tool-facing form resolves the engine and authorization from the
     // tool context.
-    let registry = Arc::new(booted.engine.registry().clone());
+    let registry = Arc::new(engine.registry().clone());
     let ctx = ToolCtx::new(
         owner,
         authz.clone(),
         Arc::clone(&registry),
         ToolServices::default(),
     )
-    .with_engine(Some(Arc::clone(&booted.engine)));
+    .with_engine(Some(Arc::clone(engine)));
     let from_tool = note("from tool");
     let outcome = proxima::flavor::ingest_fact_detached(
         &ctx,

@@ -92,7 +92,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     grant_member(&storage, owner_b, group_b, subject_a, Relation::Viewer).await?;
     grant_member(&storage, owner_b, group_b, subject_b, Relation::Admin).await?;
 
-    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
     let url = format!("http://{addr}/mcp");
     let client = reqwest::Client::new();
     let bearer_a = format!("Bearer {}", mint(&signing, "subject-a"));
@@ -299,7 +299,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         )
         .await?;
 
-        let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+        let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
         let url = format!("http://{addr}/mcp");
         let client = reqwest::Client::new();
         let source_key = owner_header(source);

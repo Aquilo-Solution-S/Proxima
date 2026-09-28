@@ -14,14 +14,11 @@ use proxima_mcp_server::{
 };
 use proxima_storage_pg::{PgHostStateParticipant, PgPlatformScope, PgPoolConfig, PgTuning};
 
-use crate::EmbedError;
 use crate::config::{
     parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup,
     publication_config_from_lookup, s3_from_lookup,
 };
 use crate::owner_access::{ForwarderPolicy, LateOwnerAccess, forwarder_from_lookup};
-
-const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
 /// What an authenticator built at boot receives
 /// ([`RuntimeBuilder::authenticator_with_platform_scope`]).
@@ -56,7 +53,6 @@ pub struct RuntimeBuilder {
     platform_database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
-    mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
@@ -84,6 +80,8 @@ pub struct RuntimeBuilder {
     published_retention: Option<Duration>,
     #[cfg(feature = "outbox-nats")]
     nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
+    #[cfg(feature = "outbox-nats")]
+    copy_cleaner: Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>,
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// A second participant was registered; [`Self::resolve`] refuses.
     duplicate_host_state_participant: bool,
@@ -113,7 +111,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             )
             .field("s3", &self.s3)
             .field("owner", &self.owner)
-            .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
@@ -176,7 +173,6 @@ impl RuntimeBuilder {
             platform_database_url: self.platform_database_url.or(base.platform_database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
-            mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
             allowed_origins: self.allowed_origins.or(base.allowed_origins),
@@ -203,6 +199,8 @@ impl RuntimeBuilder {
             published_retention: self.published_retention.or(base.published_retention),
             #[cfg(feature = "outbox-nats")]
             nats: self.nats.or(base.nats),
+            #[cfg(feature = "outbox-nats")]
+            copy_cleaner: self.copy_cleaner.or(base.copy_cleaner),
             duplicate_host_state_participant: self.duplicate_host_state_participant
                 || base.duplicate_host_state_participant
                 || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
@@ -284,12 +282,25 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Configure the `JetStream` publisher. Env equivalent: the
-    /// `PROXIMA_NATS_*` block.
+    /// Configure the `JetStream` publisher: set, it starts. Env equivalent:
+    /// the `PROXIMA_NATS_*` block.
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
         self.nats = Some(nats);
+        self
+    }
+
+    /// Configure the retained-copy cleaner (docs/18 §Retained-copy cleanup):
+    /// set, it starts, under its own broker role and independent of the
+    /// publisher. Env equivalent: the `PROXIMA_COPY_CLEANER_*` block.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn copy_cleaner(
+        mut self,
+        cleaner: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+    ) -> Self {
+        self.copy_cleaner = Some(cleaner);
         self
     }
 
@@ -311,17 +322,12 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Enable the MCP transport on the default loopback bind.
-    #[must_use]
-    pub fn with_mcp(mut self) -> Self {
-        self.mcp_enabled = true;
-        self
-    }
-
-    /// Enable MCP and bind it to `bind`. Env equivalent: `PROXIMA_MCP_BIND`.
+    /// The MCP listener's bind address: set, MCP starts — `run()` listens
+    /// on it, `build()` hands the router to the host. Unset, MCP is off.
+    /// Env equivalent: `PROXIMA_MCP_BIND`. A flavor that serves MCP by
+    /// default sets it in [`crate::FlavorApp::configure`].
     #[must_use]
     pub fn mcp_bind(mut self, bind: SocketAddr) -> Self {
-        self.mcp_enabled = true;
         self.mcp_bind = Some(bind);
         self
     }
@@ -453,7 +459,7 @@ impl RuntimeBuilder {
 
     /// Host services published beside the flavors' own: visible to
     /// [`crate::FlavorApp::services`] through
-    /// [`crate::AppContext::services`], and to every tool, request
+    /// [`crate::ProximaHost::services`], and to every tool, request
     /// behavior, route, and worker through the composed set. Repeatable; a
     /// type published twice — by two calls or by a host and a flavor — is a
     /// boot error.
@@ -627,7 +633,6 @@ impl RuntimeBuilder {
                     "PROXIMA_MCP_BIND must be a socket address, got {raw:?}"
                 ))
             })?);
-            self.mcp_enabled = true;
         }
         if self.expose_network.is_none() {
             self.expose_network = lookup("PROXIMA_EXPOSE_NETWORK")
@@ -694,6 +699,12 @@ impl RuntimeBuilder {
         if self.nats.is_none() {
             self.nats = crate::config::nats_from_lookup(&lookup)?;
         }
+        #[cfg(feature = "outbox-nats")]
+        if self.copy_cleaner.is_none() {
+            self.copy_cleaner = crate::config::copy_cleaner_from_lookup(&lookup)?;
+        }
+        #[cfg(not(feature = "outbox-nats"))]
+        crate::config::refuse_uncompiled_broker(&lookup)?;
         Ok(self)
     }
 
@@ -861,13 +872,7 @@ impl RuntimeBuilder {
             services,
             mcp_transport,
         } = self.take_served_path()?;
-        let mcp = if self.mcp_enabled {
-            Some(McpSettings {
-                bind: self.mcp_bind.unwrap_or_else(default_mcp_bind),
-            })
-        } else {
-            None
-        };
+        let mcp = self.mcp_bind.map(|bind| McpSettings { bind });
         let default_revalidation = RevalidationConfig::default();
         let stream_revalidation = RevalidationConfig {
             max_stream_lifetime: self
@@ -945,6 +950,8 @@ impl RuntimeBuilder {
             published_retention: self.published_retention,
             #[cfg(feature = "outbox-nats")]
             nats: self.nats,
+            #[cfg(feature = "outbox-nats")]
+            copy_cleaner: self.copy_cleaner,
         };
         config.validate()?;
         Ok((config, parts))
@@ -1045,6 +1052,10 @@ pub struct RuntimeConfig {
     /// the publisher can be started later against the same records.
     #[cfg(feature = "outbox-nats")]
     pub nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
+    /// The retained-copy cleaner (`PROXIMA_COPY_CLEANER_*`; docs/18
+    /// §Retained-copy cleanup). `None` — the default — leaves it off.
+    #[cfg(feature = "outbox-nats")]
+    pub copy_cleaner: Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1261,24 +1272,6 @@ pub enum ProximaError {
         "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
     )]
     SchemaResetRequired { details: String },
-}
-
-impl From<EmbedError> for ProximaError {
-    fn from(value: EmbedError) -> Self {
-        match value {
-            EmbedError::Config(err) => Self::Config(err),
-            EmbedError::Registry(err) => Self::Registry(err),
-            EmbedError::Storage(err) => Self::Storage(err),
-            EmbedError::Engine(err) => Self::Engine(err),
-            EmbedError::SchemaResetRequired { details } => Self::SchemaResetRequired { details },
-        }
-    }
-}
-
-fn default_mcp_bind() -> SocketAddr {
-    DEFAULT_MCP_BIND
-        .parse()
-        .expect("DEFAULT_MCP_BIND must be a valid SocketAddr")
 }
 
 fn parse_allowed_origins(raw: &str) -> Vec<String> {
@@ -1508,22 +1501,98 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_embedded_builder_refuses_a_second_participant_before_connecting() {
-        let config = crate::EmbedConfig {
-            database_url: "postgres://nobody@127.0.0.1:1/unreachable".into(),
-            platform_database_url: None,
-            s3: None,
+    /// MCP's start rule at resolve: a bind address is the whole switch.
+    #[test]
+    fn mcp_is_configured_exactly_when_a_bind_address_is() {
+        let base = || {
+            RuntimeBuilder::default()
+                .database_url("postgres://localhost/proxima")
+                .tool_scope(ToolScope::All)
+                .authenticator(Arc::new(TestAuthenticator))
         };
-        let refused = crate::ProximaBuilder::new(config, owner(uuid::Uuid::now_v7()))
-            .host_state_participant(Arc::new(NoopParticipant))
-            .host_state_participant(Arc::new(NoopParticipant))
-            .boot()
-            .await
-            .err()
-            .map(|error| error.to_string())
-            .expect("two participants refuse");
-        assert!(refused.contains("already registered"), "{refused}");
+        let (off, _) = base().resolve().expect("no bind resolves");
+        assert!(off.mcp.is_none(), "no bind address means MCP is off");
+
+        let (from_env, _) = base()
+            .apply_lookup(lookup(&[("PROXIMA_MCP_BIND", "127.0.0.1:0")]))
+            .expect("bind env parses")
+            .resolve()
+            .expect("env bind resolves");
+        assert_eq!(
+            from_env.mcp.map(|mcp| mcp.bind),
+            Some(addr_port([127, 0, 0, 1], 0))
+        );
+
+        // Code wins over the environment.
+        let (code, _) = base()
+            .mcp_bind(addr_port([127, 0, 0, 1], 7))
+            .apply_lookup(lookup(&[("PROXIMA_MCP_BIND", "127.0.0.1:0")]))
+            .expect("bind env parses")
+            .resolve()
+            .expect("code bind resolves");
+        assert_eq!(
+            code.mcp.map(|mcp| mcp.bind),
+            Some(addr_port([127, 0, 0, 1], 7))
+        );
+    }
+
+    #[cfg(feature = "outbox-nats")]
+    #[test]
+    fn the_cleaner_section_is_read_from_env_refused_half_configured_and_overridden_by_code() {
+        let base = || {
+            RuntimeBuilder::default()
+                .database_url("postgres://localhost/proxima")
+                .tool_scope(ToolScope::All)
+        };
+        let (off, _) = base()
+            .apply_lookup(lookup(&[]))
+            .expect("empty env")
+            .resolve()
+            .expect("resolves");
+        assert!(off.copy_cleaner.is_none());
+
+        let (on, _) = base()
+            .apply_lookup(lookup(&[("PROXIMA_COPY_CLEANER_URL", "nats://env:4222")]))
+            .expect("cleaner env parses")
+            .resolve()
+            .expect("resolves");
+        assert!(on.copy_cleaner.is_some());
+
+        let half = base()
+            .apply_lookup(lookup(&[(
+                "PROXIMA_COPY_CLEANER_CREDS_FILE",
+                "/run/cleaner.creds",
+            )]))
+            .expect_err("a cleaner section without a broker");
+        assert!(matches!(half, ProximaError::Config(_)), "{half}");
+        assert!(
+            half.to_string().contains("PROXIMA_COPY_CLEANER_URL"),
+            "the refusal names the missing part: {half}"
+        );
+
+        // Code wins: a programmatic section suppresses the env block, broken
+        // or not.
+        let (code, _) = base()
+            .copy_cleaner(proxima_outbox_nats::JetStreamCopyCleanerConfig::new(
+                "nats://code:4222",
+            ))
+            .apply_lookup(lookup(&[(
+                "PROXIMA_COPY_CLEANER_CREDS_FILE",
+                "/run/cleaner.creds",
+            )]))
+            .expect("the env block is not read")
+            .resolve()
+            .expect("resolves");
+        assert!(format!("{:?}", code.copy_cleaner).contains("code:4222"));
+    }
+
+    #[cfg(not(feature = "outbox-nats"))]
+    #[test]
+    fn a_broker_in_a_build_without_outbox_nats_refuses_before_storage() {
+        let err = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_NATS_URL", "nats://127.0.0.1:4222")]))
+            .expect_err("a broker this build cannot reach");
+        assert!(err.to_string().contains("outbox-nats"), "{err}");
     }
 
     #[derive(Debug)]
@@ -1545,6 +1614,8 @@ mod tests {
             published_retention: None,
             #[cfg(feature = "outbox-nats")]
             nats: None,
+            #[cfg(feature = "outbox-nats")]
+            copy_cleaner: None,
             database_url: "postgres://localhost/proxima".to_string(),
             platform_database_url: None,
             s3: None,
@@ -1575,7 +1646,11 @@ mod tests {
     }
 
     fn addr(ip: [u8; 4]) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), 31415)
+        addr_port(ip, 31415)
+    }
+
+    fn addr_port(ip: [u8; 4], port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port)
     }
 
     #[test]
@@ -2083,12 +2158,12 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind(addr([127, 0, 0, 1]))
             .authenticator(Arc::new(TestAuthenticator))
             .resolve()
             .unwrap();
 
-        assert_eq!(config.mcp.unwrap().bind, default_mcp_bind());
+        assert_eq!(config.mcp.unwrap().bind, addr([127, 0, 0, 1]));
     }
 
     /// The two ways to install an authenticator are one slot: an overlay

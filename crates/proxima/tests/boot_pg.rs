@@ -4,8 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppInfo, EmbedConfig, EmbedError, FlavorApp, NamedMigrator, PayloadKind, Proxima,
-    ProximaBuilder, company_owner, run_core_and_flavor_migrations,
+    AppInfo, Feature, FeatureState, FlavorApp, NamedMigrator, PayloadKind, Proxima, ProximaError,
+    company_owner, run_core_and_flavor_migrations,
 };
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
@@ -248,20 +248,18 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
         pg.pool_for_tests().close().await;
         drop(pg);
 
-        let config = EmbedConfig {
-            database_url: db_url.clone(),
-            platform_database_url: None,
-            s3: None,
-        };
         let owner = company_owner(Uuid::now_v7());
 
-        let err = ProximaBuilder::new(config, owner)
-            .boot()
+        let err = Proxima::<GoalTestApp>::app()
+            .database_url(db_url.clone())
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
             .await
-            .expect_err("stale ledger must fail closed through boot()");
+            .expect_err("stale ledger must fail closed through build()");
 
         match err {
-            EmbedError::SchemaResetRequired { details } => {
+            ProximaError::SchemaResetRequired { details } => {
                 assert!(
                     details.contains("0001_v008") || details.contains("checksum"),
                     "reset details should name the schema mismatch, got: {details}"
@@ -269,7 +267,7 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
             }
             other => {
                 panic!(
-                    "expected EmbedError::SchemaResetRequired, boot() collapsed it to: {other:?}"
+                    "expected ProximaError::SchemaResetRequired, build() collapsed it to: {other:?}"
                 )
             }
         }
@@ -296,16 +294,15 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
-            .with_mcp()
             .mcp_bind("127.0.0.1:0".parse()?)
             .run()
             .await?;
 
-        let addr = running.mcp_addr.expect("mcp bound");
+        let addr = running.mcp_addr().expect("mcp bound");
         assert!(addr.ip().is_loopback());
         let expected_url = format!("http://{addr}/mcp");
         assert_eq!(
-            running.engine.mcp_url().as_deref(),
+            running.host().engine().mcp_url().as_deref(),
             Some(expected_url.as_str())
         );
         running.shutdown().await;
@@ -317,8 +314,10 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
     result.expect("facade run integration test failed");
 }
 
+/// #389: a host that sets an embedding client and nothing else gets its
+/// embeddings drained — the runtime starts the worker, no extra call.
 #[tokio::test]
-async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
+async fn facade_boot_exposes_pg_sidecars_and_drains_embedding_jobs_with_no_extra_call() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
@@ -336,6 +335,14 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
                 model_id,
                 &[0.25, 0.5, 0.75],
             )))
+            // The worker's first pass finds the queue empty and idles one
+            // interval; the default (5 s) would race the 5 s drain deadline.
+            .embedding_runtime_policy(proxima::EmbeddingRuntimePolicy::new(
+                Duration::from_mins(2),
+                32,
+                Duration::from_secs(1),
+                Duration::from_mins(15),
+            )?)
             .build()
             .await?;
         let note_key = PgSidecarKey::new(
@@ -344,35 +351,28 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             SchemaVersion::new(proxima_core::AgentNoteV1::SCHEMA_VERSION),
         );
         assert!(
-            built.pg_sidecars.contains(&note_key),
+            built.host().pg_sidecars_for_host().contains(&note_key),
             "boot result exposes the frozen core PG sidecar registry"
+        );
+        assert_eq!(
+            built.boot_report().get(Feature::EmbeddingWorker).state,
+            FeatureState::Started,
+            "an embedding client is the whole switch"
         );
 
         let payload = drain_note("facade worker drain fact");
         let authz = host_context(owner, AuthPath::HostBearer);
         let outcome = built
-            .engine
+            .host()
+            .engine()
             .ingest_fact(
                 &authz,
                 proxima::FactWrite::new(owner, "test/facade-worker", &payload),
             )
             .await?;
-        assert_eq!(
-            count_fact_embeddings(&inspection, outcome.memory_id, model_id).await?,
-            0
-        );
-        assert_eq!(
-            count_embedding_jobs(&inspection, outcome.memory_id, model_id).await?,
-            1
-        );
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let worker = built.spawn_embedding_worker(cancel.clone());
         wait_for_embedding_drain(&inspection, outcome.memory_id, model_id).await?;
-        cancel.cancel();
-        tokio::time::timeout(Duration::from_secs(1), worker).await??;
 
-        built.shutdown();
+        tokio::time::timeout(Duration::from_secs(5), built.shutdown()).await?;
         inspection.close().await;
         Ok(())
     }
@@ -390,21 +390,23 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
-        let config = || EmbedConfig {
-            database_url: runtime_url.clone(),
-            platform_database_url: Some(platform_url.clone()),
-            s3: None,
+        let app = || {
+            Proxima::<GoalTestApp>::app()
+                .database_url(runtime_url.clone())
+                .platform_database_url(platform_url.clone())
+                .owner(owner)
+                .tool_scope(ToolScope::All)
         };
 
         // A width no lane indexes must fail fast at boot with Config,
         // before any job is claimed and then refused at insert.
-        let err = ProximaBuilder::new(config(), owner)
+        let err = app()
             .embed_client(Arc::new(FixedDimEmbedding::new("unlaned", 512)))
-            .boot()
+            .build()
             .await
             .expect_err("an unsupported embedding width must be rejected at boot");
         match err {
-            EmbedError::Config(msg) => {
+            ProximaError::Config(msg) => {
                 assert!(
                     msg.contains("512"),
                     "message names the offending width: {msg}"
@@ -414,38 +416,38 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
                     "message explains the width is unsupported: {msg}"
                 );
             }
-            other => panic!("expected EmbedError::Config, got {other:?}"),
+            other => panic!("expected ProximaError::Config, got {other:?}"),
         }
 
         // One client and a router are two answers to one question.
         let lane_768 = proxima_core::llm::BoundEmbeddingClient::bind(Arc::new(
             FixedDimEmbedding::new("lane-768", 768),
         ))?;
-        let err = ProximaBuilder::new(config(), owner)
+        let err = app()
             .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
             .embedding_router(Arc::new(proxima_core::llm::SingleClientRouter::new(
                 lane_768,
             )))
-            .boot()
+            .build()
             .await
             .expect_err("a client and a router together must be rejected at boot");
         assert!(
-            matches!(&err, EmbedError::Config(msg) if msg.contains("not both")),
+            matches!(&err, ProximaError::Config(msg) if msg.contains("not both")),
             "expected the either-or config error, got {err:?}"
         );
 
         // A supported width other than the 1024 default boots.
-        let booted = ProximaBuilder::new(config(), owner)
+        let booted = app()
             .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
-            .boot()
+            .build()
             .await?;
-        let route = booted.engine.embedding_route(&owner).await?;
+        let route = booted.host().engine().embedding_route(&owner).await?;
         assert_eq!(
             route.current_client().map(|client| client.space().dim()),
             Some(proxima_core::llm::EmbeddingDim::D768),
             "a supported-width client routes every Owner"
         );
-        booted.engine.stop(booted.handle);
+        booted.shutdown().await;
         Ok(())
     }
     .await;

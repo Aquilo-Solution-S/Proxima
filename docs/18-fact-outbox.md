@@ -309,10 +309,12 @@ cannot work.
 
 ### Publisher task health
 
-`BuiltProxima` and `RunningProxima` keep `spawn_publication_publisher` returning
-the ordinary abortable and joinable `JoinHandle<()>`. Their supervised variant
-returns a read-only health reader plus that same handle through `into_parts()`.
-Health keeps task, live connection, and latest drain-pass status separate. The
+The runtime starts the publisher when a broker is configured
+(`PROXIMA_NATS_URL` / `nats(..)`; [10 §Runtime features](10-configuration.md#runtime-features)),
+in `build()` and `run()` alike, owns its cancellation, and joins it on
+`shutdown()`. `BuiltProxima::publisher_health()` /
+`RunningProxima::publisher_health()` return its read-only health reader;
+`None` when it is off. Health keeps task, live connection, and latest drain-pass status separate. The
 connection sample comes from the publisher's actual async-nats client, even
 when no outbox rows are available. A pass is failed when it returns an error or
 reports one or more failed records; a later clean pass recovers the latest-pass
@@ -392,8 +394,12 @@ prove the consumer durably accepts or retains its outcome before ACK.
 
 ### Retained-copy cleanup
 
-An embedding host may separately own `spawn_publication_copy_cleaner` even
-when Fact intake or publication is disabled. It scans the fixed
+The runtime starts the cleaner when its section is configured
+(`PROXIMA_COPY_CLEANER_URL` + `PROXIMA_COPY_CLEANER_*`, or `copy_cleaner(..)`;
+[10 §Runtime features](10-configuration.md#runtime-features)), independent of
+Fact intake and of the publisher, and joins it on `shutdown()`;
+`copy_cleaner_health()` reads it. A cleaner key without the URL refuses boot.
+It scans the fixed
 `PROXIMA_FACTS` stream for the canonical `proxima.fact` source subjects and
 uses its own bounded API-only NATS role and `PROXIMA_PURGE_INBOX` reply
 namespace. Configure the cleaner against the **same Proxima database and cell**

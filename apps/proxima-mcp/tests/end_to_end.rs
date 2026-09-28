@@ -101,7 +101,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .run()
         .await?;
-    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
     let bearer = format!("Bearer {}", mint(&signing, "operator-sub"));

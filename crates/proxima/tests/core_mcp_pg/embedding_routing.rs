@@ -52,7 +52,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                 .tool_scope(ToolScope::All)
                 .build()
                 .await?;
-            let tools = built.core_mcp_tools();
+            let tools = built.host().core_mcp_tools();
             let authz = host_authz(&owner, ToolScope::All);
 
             let mut handles = Vec::new();
@@ -72,7 +72,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                 handles.push(remembered["handle"].as_str().expect("handle").to_owned());
             }
 
-            let drained = built.engine.drain_embedding_jobs(10).await?;
+            let drained = built.host().engine().drain_embedding_jobs(10).await?;
             assert_eq!((drained.processed, drained.failed), (2, 0), "{dim}");
             let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
             let stored: Vec<(String, i16, i32)> = sqlx::query_as(
@@ -103,7 +103,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                 assert_eq!(found["memories"].as_array().map(Vec::len), Some(2));
             }
 
-            built.shutdown();
+            built.shutdown().await;
             Ok(())
         }
         .await;
@@ -200,7 +200,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let remembered = call_test_model_tool(
@@ -215,7 +215,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
             }),
         )
         .await?;
-        built.engine.drain_embedding_jobs(10).await?;
+        built.host().engine().drain_embedding_jobs(10).await?;
         let stored = recorder.texts();
         assert!(
             !stored.is_empty() && stored.iter().all(|text| !text.starts_with("note: ")),
@@ -247,7 +247,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
             ["note: needle", "note: needle"]
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -283,7 +283,7 @@ impl TwoOwnerFixture {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = space_authz(personal, vec![personal, shared], Role::admin());
         let shared_space =
             server_issued_group_space_selector(&tools, authz.clone(), personal).await;
@@ -426,7 +426,12 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
         let shared_far = fixture
             .remember(&fixture.shared_space, "shared needle far")
             .await?;
-        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        let drained = fixture
+            .built
+            .host()
+            .engine()
+            .drain_embedding_jobs(10)
+            .await?;
         assert_eq!((drained.processed, drained.failed), (4, 0));
 
         let personal_texts = personal_client.texts();
@@ -486,7 +491,7 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
             "no personal text reaches the shared endpoint"
         );
 
-        fixture.built.shutdown();
+        fixture.built.shutdown().await;
         Ok(())
     }
     .await;
@@ -532,7 +537,12 @@ async fn a_route_failure_stays_with_its_owner() {
         let shared = fixture
             .remember(&fixture.shared_space, "shared needle routed")
             .await?;
-        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        let drained = fixture
+            .built
+            .host()
+            .engine()
+            .drain_embedding_jobs(10)
+            .await?;
         assert_eq!((drained.processed, drained.failed), (1, 0));
         assert!(personal_client.texts().is_empty());
         assert_eq!(shared_client.texts().len(), 1);
@@ -564,7 +574,7 @@ async fn a_route_failure_stays_with_its_owner() {
             .await?;
         assert!(fixture.job_statuses(&unrouted).await?.is_empty());
 
-        fixture.built.shutdown();
+        fixture.built.shutdown().await;
         Ok(())
     }
     .await;
@@ -593,7 +603,12 @@ async fn one_client_across_owners_ranks_by_score() {
         let far = fixture
             .remember(&fixture.shared_space, "shared needle far")
             .await?;
-        let drained = fixture.built.engine.drain_embedding_jobs(10).await?;
+        let drained = fixture
+            .built
+            .host()
+            .engine()
+            .drain_embedding_jobs(10)
+            .await?;
         assert_eq!((drained.processed, drained.failed), (3, 0));
 
         let page = fixture.search("semantic", 10, None).await?;
@@ -614,7 +629,7 @@ async fn one_client_across_owners_ranks_by_score() {
             .count();
         assert_eq!(queries, 1, "one shared client embeds the query once");
 
-        fixture.built.shutdown();
+        fixture.built.shutdown().await;
         Ok(())
     }
     .await;
@@ -690,7 +705,7 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
         .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
-        let engine = &fixture.built.engine;
+        let engine = &fixture.built.host().engine();
         let owner = fixture.personal;
         let old = RecordingRouteEmbedding::new("route-old", EmbeddingDim::D768);
         let new = RecordingRouteEmbedding::new("route-new", EmbeddingDim::D1024);
@@ -854,7 +869,7 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
         .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
-        let engine = &fixture.built.engine;
+        let engine = &fixture.built.host().engine();
         let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
         let shared_client = RecordingRouteEmbedding::new("route-b", EmbeddingDim::D1024);
         fixture
@@ -944,7 +959,7 @@ async fn an_unroutable_owner_is_never_purged() {
         .expect("PG required for tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
-        let engine = &fixture.built.engine;
+        let engine = &fixture.built.host().engine();
         let owner = fixture.personal;
         let client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
         fixture.router.set_owner(owner, Some(client.bound()));

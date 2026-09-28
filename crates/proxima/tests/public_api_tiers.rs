@@ -1088,13 +1088,14 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
 }
 
 #[test]
-fn host_extra_table_bridge_is_on_app_context() {
-    // The one sanctioned PgPool leak is AppContext::clone_pool_for_host
-    // (docs/08). Flavor SDK still must not name the type. app.rs is
-    // scanned so this cannot hide in a submodule the host.rs scan misses.
+fn host_extra_table_bridge_is_on_proxima_host() {
+    // The one sanctioned PgPool leak is ProximaHost::clone_pool_for_host,
+    // reached through `AppContext::host` (docs/08). Flavor SDK still must
+    // not name the type. The host accessors are scanned so this cannot hide
+    // in a submodule the host.rs scan misses.
     let flavor_exports = include_str!("../src/flavor.rs");
     let authorized_read = include_str!("../src/flavor/authorized_read.rs");
-    let app = include_str!("../src/app.rs");
+    let host = include_str!("../src/proxima_host.rs");
 
     assert!(!flavor_exports.contains("PgPool"));
     assert!(
@@ -1102,15 +1103,66 @@ fn host_extra_table_bridge_is_on_app_context() {
         "code-series pool helpers must not live on the Flavor SDK"
     );
     assert!(
-        app.contains("pub fn clone_pool_for_host"),
-        "host extra-table bridge must stay on AppContext"
+        host.contains("pub fn clone_pool_for_host"),
+        "host extra-table bridge must stay on ProximaHost"
     );
     assert!(
-        !app.contains("pub pool"),
+        !host.contains("pub pool"),
         "the pool field stays crate-private"
     );
-    let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
-    let _: fn(&proxima::AppContext) -> proxima::PgTuning = proxima::AppContext::pg_tuning_for_host;
+    let _: fn(&proxima::ProximaHost) -> sqlx::PgPool = proxima::ProximaHost::clone_pool_for_host;
+    let _: fn(&proxima::ProximaHost) -> proxima::PgTuning =
+        proxima::ProximaHost::pg_tuning_for_host;
+    let _: fn(&proxima::AppContext) -> &proxima::ProximaHost = proxima::AppContext::host;
+}
+
+/// #389: one set of host accessors, reached the same way from every handle
+/// on a booted runtime.
+#[test]
+fn every_runtime_handle_reaches_the_one_host_accessor_set() {
+    let _: fn(&proxima::AppContext) -> &proxima::ProximaHost = proxima::AppContext::host;
+    let _: fn(&proxima::BuiltProxima) -> &proxima::ProximaHost = proxima::BuiltProxima::host;
+    let _: fn(&proxima::RunningProxima) -> &proxima::ProximaHost = proxima::RunningProxima::host;
+    let _: fn(&proxima::ProximaHost) -> Option<proxima::PgPlatformScope> =
+        proxima::ProximaHost::platform_scope_for_host;
+    let _: fn(&proxima::ProximaHost) -> proxima_storage_pg::PgHostStateEraseContext =
+        proxima::ProximaHost::host_state_erase_context_for_host;
+    let _: fn(&proxima::ProximaHost) -> proxima_core::storage_ports::publication::OriginScope =
+        proxima::ProximaHost::origin_scope_for_host;
+}
+
+/// #389: the embedded builder, its config and boot result, the host-called
+/// spawners and the MCP enable flag are gone, not deprecated.
+#[test]
+fn the_second_builder_and_the_host_spawners_are_not_public() {
+    let sources = [
+        include_str!("../src/lib.rs"),
+        include_str!("../src/host.rs"),
+        include_str!("../src/runtime.rs"),
+        include_str!("../src/runtime_config.rs"),
+        include_str!("../src/config.rs"),
+        include_str!("../src/boot.rs"),
+        include_str!("../src/features.rs"),
+        include_str!("../src/app.rs"),
+        include_str!("../src/proxima_host.rs"),
+    ];
+    for removed in [
+        "ProximaBuilder",
+        "EmbeddedProxima",
+        "EmbedConfig",
+        "EmbedError",
+        "fn spawn_embedding_worker(&self",
+        "pub fn spawn_publication_publisher",
+        "pub fn spawn_publication_copy_cleaner",
+        "fn with_mcp",
+    ] {
+        for source in sources {
+            assert!(
+                !source.contains(removed),
+                "`{removed}` is back on the facade"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1300,10 +1352,10 @@ fn auth_module_names_oidc_primitives() {
         proxima::auth::OwnerRoles,
     )> = None;
     let _: fn(
-        &proxima::BuiltProxima,
+        &proxima::ProximaHost,
         proxima::flavor::FlavorServices,
     ) -> Result<proxima::CoreMcpTools, proxima::flavor::FlavorServiceError> =
-        proxima::BuiltProxima::core_mcp_tools_with_request_services;
+        proxima::ProximaHost::core_mcp_tools_with_request_services;
 }
 
 /// One write path: `Engine` / `UnitOfWork`.

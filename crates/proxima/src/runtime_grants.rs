@@ -1,4 +1,4 @@
-//! Opt-in boot step (`PROXIMA_RUNTIME_GRANTS`, [`crate::ProximaBuilder::runtime_grants`]):
+//! Opt-in boot step (`PROXIMA_RUNTIME_GRANTS`, [`crate::RuntimeBuilder::runtime_grants`]):
 //! the platform role grants the runtime role its privileges — the runtime
 //! half of docs/15 §Owner-RLS rollout step 2.
 //!
@@ -27,7 +27,7 @@
 //! and unused by this release (the scope is bound transaction-locally).
 //!
 //! Runtime role = the `DATABASE_URL` user. Refused with
-//! [`EmbedError::Config`] before any SQL unless
+//! [`ProximaError::Config`] before any SQL unless
 //! `PROXIMA_PLATFORM_DATABASE_URL` is set and names a different user.
 
 use std::str::FromStr;
@@ -35,7 +35,7 @@ use std::str::FromStr;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{AssertSqlSafe, PgPool};
 
-use crate::EmbedError;
+use crate::ProximaError;
 use crate::migrations::NamedMigrator;
 
 /// `pg_advisory_xact_lock` key owned by this step: ASCII `proxgrnt`, beside
@@ -58,16 +58,16 @@ impl RuntimeGrants {
     ///
     /// # Errors
     ///
-    /// [`EmbedError::Config`] when `platform_database_url` is unset, either
+    /// [`ProximaError::Config`] when `platform_database_url` is unset, either
     /// URL does not parse, or both URLs name the same user.
     pub(crate) fn plan(
         database_url: &str,
         platform_database_url: Option<&str>,
         schemas: Vec<String>,
         ledgers: Vec<String>,
-    ) -> Result<Self, EmbedError> {
+    ) -> Result<Self, ProximaError> {
         let Some(platform_database_url) = platform_database_url else {
-            return Err(EmbedError::Config(
+            return Err(ProximaError::Config(
                 "runtime grants require PROXIMA_PLATFORM_DATABASE_URL: the platform role \
                  grants the DATABASE_URL role"
                     .into(),
@@ -76,7 +76,7 @@ impl RuntimeGrants {
         let runtime_role = url_user(database_url, "DATABASE_URL")?;
         let platform_role = url_user(platform_database_url, "PROXIMA_PLATFORM_DATABASE_URL")?;
         if runtime_role == platform_role {
-            return Err(EmbedError::Config(format!(
+            return Err(ProximaError::Config(format!(
                 "runtime grants require split roles: DATABASE_URL and \
                  PROXIMA_PLATFORM_DATABASE_URL both connect as {runtime_role:?}"
             )));
@@ -92,10 +92,10 @@ impl RuntimeGrants {
     ///
     /// # Errors
     ///
-    /// [`EmbedError::Config`] when the runtime role does not exist;
-    /// [`EmbedError::Storage`] naming the statement class that failed. The
+    /// [`ProximaError::Config`] when the runtime role does not exist;
+    /// [`ProximaError::Storage`] naming the statement class that failed. The
     /// transaction rolls back: nothing is granted.
-    pub(crate) async fn apply(&self, platform: &PgPool) -> Result<(), EmbedError> {
+    pub(crate) async fn apply(&self, platform: &PgPool) -> Result<(), ProximaError> {
         let mut tx = platform
             .begin()
             .await
@@ -112,7 +112,7 @@ impl RuntimeGrants {
                 .await
                 .map_err(|error| failed("role lookup", &self.runtime_role, &error))?;
         if !runtime_exists {
-            return Err(EmbedError::Config(format!(
+            return Err(ProximaError::Config(format!(
                 "runtime grants: DATABASE_URL role {:?} does not exist",
                 self.runtime_role
             )));
@@ -201,15 +201,15 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn url_user(url: &str, variable: &str) -> Result<String, EmbedError> {
+fn url_user(url: &str, variable: &str) -> Result<String, ProximaError> {
     // The parse error is not echoed: it could carry URL fragments.
     PgConnectOptions::from_str(url)
         .map(|options| options.get_username().to_owned())
-        .map_err(|_| EmbedError::Config(format!("{variable} is not a valid Postgres URL")))
+        .map_err(|_| ProximaError::Config(format!("{variable} is not a valid Postgres URL")))
 }
 
-fn failed(class: &str, object: &str, error: &sqlx::Error) -> EmbedError {
-    EmbedError::Storage(format!(
+fn failed(class: &str, object: &str, error: &sqlx::Error) -> ProximaError {
+    ProximaError::Storage(format!(
         "runtime grants: {class} on {object} failed: {error}"
     ))
 }
@@ -338,7 +338,7 @@ fn grant_statements(
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbedError, Ledger, RuntimeGrants, grant_statements, ledger_names, quote_ident};
+    use super::{Ledger, ProximaError, RuntimeGrants, grant_statements, ledger_names, quote_ident};
 
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
@@ -509,7 +509,7 @@ mod tests {
         let missing =
             RuntimeGrants::plan("postgres://rt@localhost/db", None, Vec::new(), Vec::new())
                 .expect_err("no platform URL");
-        assert!(matches!(missing, EmbedError::Config(_)), "{missing}");
+        assert!(matches!(missing, ProximaError::Config(_)), "{missing}");
         let same = RuntimeGrants::plan(
             "postgres://same:a@localhost/db",
             Some("postgres://same:b@localhost/db"),
@@ -518,7 +518,7 @@ mod tests {
         )
         .expect_err("same user");
         assert!(
-            matches!(same, EmbedError::Config(ref m) if m.contains("split roles")),
+            matches!(same, ProximaError::Config(ref m) if m.contains("split roles")),
             "{same}"
         );
         let split = RuntimeGrants::plan(

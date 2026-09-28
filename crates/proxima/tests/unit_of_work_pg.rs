@@ -130,7 +130,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
         let authz = proxima_core::test_fixtures::authenticated_context(
             built.single_owner_authz().expect("single owner"),
         );
-        let engine = built.engine();
+        let engine = built.host().engine();
         let fact = engine
             .ingest_fact(
                 &authz,
@@ -318,7 +318,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
         );
         assert_eq!(topology.1, vec![committed_fact.memory_id.into_inner()]);
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -351,7 +351,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
                 AuthPath::HostBearer,
             ),
         );
-        let engine = built.engine();
+        let engine = built.host().engine();
         let mut uow = engine.unit_of_work(&authz).await?;
         let foreign_fact = uow
             .ingest_fact(proxima::FactWrite::new(
@@ -399,7 +399,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
         .fetch_one(&admin_pool)
         .await?;
         assert_eq!(missing_memory, 0, "dropped UoW must roll back foreign rows");
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -432,7 +432,7 @@ async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let authz_a = admin_authz_for(owner_a);
         let authz_b = admin_authz_for(owner_b);
 
@@ -582,7 +582,7 @@ async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
         );
 
         uow.commit().await?;
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

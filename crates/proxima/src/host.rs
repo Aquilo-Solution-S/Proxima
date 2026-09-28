@@ -7,8 +7,8 @@ pub use proxima_core::mcp::{
 pub use proxima_core::operator_label;
 
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
-pub use crate::config::EmbedConfig;
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
+pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
@@ -16,6 +16,7 @@ pub use crate::migrations::{
     is_flavor_ledger_id, preflight_without_migrations, run_core_and_flavor_migrations,
 };
 pub use crate::owner_access::ForwarderPolicy;
+pub use crate::proxima_host::ProximaHost;
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
     serve,
@@ -26,7 +27,7 @@ pub use crate::runtime_config::{
 };
 /// The S3-backed cited-blob lane.
 ///
-/// [`BuiltProxima::blobs`] is a `pub` field of type `Option<CitedBlobStore>`
+/// [`ProximaHost::blobs`] returns `Option<&CitedBlobStore>`
 /// and [`crate::Proxima::s3`] is a `pub` method taking `S3RuntimeConfig`, so
 /// both types were already part of the public surface — just not nameable
 /// from `proxima`. A flavor could reach them by inference and could not
@@ -221,6 +222,17 @@ pub use proxima_mcp_server::{
     HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
     RequestHeaderAllowlist, ResourceServerMetadata,
 };
+/// The retained-copy cleaner's config ([`RuntimeBuilder::copy_cleaner`]) and
+/// the health views [`BuiltProxima::publisher_health`] /
+/// [`BuiltProxima::copy_cleaner_health`] return, with every type their
+/// snapshots carry.
+#[cfg(feature = "outbox-nats")]
+pub use proxima_outbox_nats::{
+    CleanerConfigError, CopyCleanerConnectionState, CopyCleanerFailure, CopyCleanerHealth,
+    CopyCleanerHealthReader, CopyCleanerScanState, CopyCleanerTaskState, InboxPrefix,
+    JetStreamCopyCleanerConfig, PublisherConnectionState, PublisherDrainState, PublisherHealth,
+    PublisherHealthReader, PublisherTaskState,
+};
 /// The shipped NATS `JetStream` publisher and its reference consumer
 /// (docs/18, `crates/outbox-nats`).
 ///
@@ -237,8 +249,7 @@ pub use proxima_outbox_nats::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
-/// Cancellation token type used by [`BuiltProxima::cancel`] and
-/// [`RunningProxima::cancel`].
+/// Cancellation token type of [`crate::flavor::FlavorWorkerContext::cancel`].
 pub use tokio_util::sync::CancellationToken;
 
 /// Build the complete REST `OpenAPI` document from a frozen registry.
@@ -305,7 +316,7 @@ pub use proxima_mcp_server::{
     strip_call_context_args, tool_invocation_error_to_error_data,
 };
 /// Owner-RLS boot: the runtime-role guard, the platform scope
-/// [`AppContext::platform_scope_for_host`] returns, and the sqlx →
+/// [`ProximaHost::platform_scope_for_host`] returns, and the sqlx →
 /// [`StorageError`] classifier for host-state SQL.
 pub use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, map_err};
 

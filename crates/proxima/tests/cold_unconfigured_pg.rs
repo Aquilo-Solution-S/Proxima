@@ -1,10 +1,11 @@
 use std::error::Error;
 use std::time::Duration;
 
+use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
-    AuthPath, AuthzContext, EmbedConfig, EmbeddedProxima, FactWrite, GetMemoriesReadRequest,
-    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerRef, ProximaBuilder, Role,
-    UserId,
+    AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GetMemoriesReadRequest,
+    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerRef, Proxima, Role,
+    ToolScope, UserId,
 };
 use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
@@ -107,7 +108,8 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let initial = boot(database, owner).await?;
     let expected = note("cold durability");
     let written = initial
-        .engine
+        .host()
+        .engine()
         .ingest_fact(&authz, FactWrite::new(owner, "test/no-s3-cold", &expected))
         .await?;
     if read_note(&initial, &authz, written.memory_id)
@@ -125,7 +127,8 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
         return Err("fixture must have a persisted admission head and announcement".into());
     }
     let forget = initial
-        .engine
+        .host()
+        .engine()
         .forget_memory(&authz, owner, written.memory_id)
         .await;
     let rows_after_forget = rows(&admin_pool, written.memory_id).await?;
@@ -139,7 +142,8 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let rows_after_restart = rows(&admin_pool, written.memory_id).await?;
     let lifecycle_after_restart = lifecycle(&admin_pool, written.handle).await?;
     let hydration = restarted
-        .engine
+        .host()
+        .engine()
         .hydrate_memory(&authz, owner, written.memory_id)
         .await
         .map(|outcome| outcome.status);
@@ -177,7 +181,8 @@ async fn database_only_control(database: &str) -> TestResult<()> {
     let initial = boot(database, owner).await?;
     let expected = note("database-only control");
     let written = initial
-        .engine
+        .host()
+        .engine()
         .ingest_fact(&authz, FactWrite::new(owner, "test/no-s3-read", &expected))
         .await?;
     let initial_read = read_note(&initial, &authz, written.memory_id).await?;
@@ -185,12 +190,13 @@ async fn database_only_control(database: &str) -> TestResult<()> {
     let restarted = boot(database, owner).await?;
     let restarted_read = read_note(&restarted, &authz, written.memory_id).await?;
     let receipt = restarted
-        .engine
+        .host()
+        .engine()
         .erase_group_owner(&host_context(owner, AuthPath::System), group)
         .await?;
-    let after_erase = rows(restarted.pool_for_tests(), written.memory_id).await?;
+    let after_erase = rows(restarted.host().pool_for_tests(), written.memory_id).await?;
     let debt: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
-        .fetch_one(restarted.pool_for_tests())
+        .fetch_one(restarted.host().pool_for_tests())
         .await?;
     stop(restarted).await;
     if initial_read.as_ref() != Some(&expected) || restarted_read.as_ref() != Some(&expected) {
@@ -213,23 +219,43 @@ async fn database_only_control(database: &str) -> TestResult<()> {
     Ok(())
 }
 
-async fn boot(database: &str, owner: OwnerRef) -> TestResult<EmbeddedProxima> {
-    let (runtime_url, platform_url) = split_role_urls(database).await?;
-    Ok(ProximaBuilder::new(
-        EmbedConfig {
-            database_url: runtime_url,
-            platform_database_url: Some(platform_url),
-            s3: None,
-        },
-        owner,
-    )
-    .boot()
-    .await?)
+/// Core only: no flavor, no S3.
+struct CoreApp;
+
+impl FlavorBundle for CoreApp {
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
 }
 
-async fn stop(runtime: EmbeddedProxima) {
-    let pool = runtime.pool_for_tests().clone();
-    runtime.engine.stop(runtime.handle);
+impl FlavorApp for CoreApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "cold-unconfigured-test",
+            title: "Cold Unconfigured Test",
+            version: "1",
+        }
+    }
+}
+
+async fn boot(database: &str, owner: OwnerRef) -> TestResult<BuiltProxima> {
+    let (runtime_url, platform_url) = split_role_urls(database).await?;
+    Ok(Proxima::<CoreApp>::app()
+        .database_url(runtime_url)
+        .platform_database_url(platform_url)
+        .owner(owner)
+        .tool_scope(ToolScope::All)
+        .build()
+        .await?)
+}
+
+async fn stop(runtime: BuiltProxima) {
+    let pool = runtime.host().pool_for_tests().clone();
+    runtime.shutdown().await;
     pool.close().await;
 }
 
@@ -256,12 +282,13 @@ fn note(title: &str) -> AgentNoteV1 {
 }
 
 async fn read_note(
-    runtime: &EmbeddedProxima,
+    runtime: &BuiltProxima,
     authz: &AuthzContext,
     memory_id: MemoryId,
 ) -> TestResult<Option<AgentNoteV1>> {
     let response = runtime
-        .engine
+        .host()
+        .engine()
         .get_memories(
             authz,
             &GetMemoriesReadRequest {

@@ -1,5 +1,24 @@
 # Migrate the Flavor SDK
 
+## v0.0.24
+
+Pin all Proxima Rust dependencies to the same `v0.0.24` tag. No database
+change. **Breaking, no shims** (#389): one builder, one host accessor set,
+and every runtime feature starts when its config is present
+([10 §Runtime features](../10-configuration.md#runtime-features)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| `ProximaBuilder`, `EmbeddedProxima`, `EmbedConfig`, `EmbedError` | Boot through `Proxima::<App>::app()…build()` (or `.run()`). `flavor` / `flavor_named` / `bundle` / `pg_sidecars` → the app type's `FlavorBundle` impl; `pg_tuning`, `pg_pool_config`, `embed_client`, `embedding_router`, `embedding_runtime_policy`, `publication`, `host_state_participant`, `skip_migrations`, `runtime_grants(bool)` → the same-named `Proxima<A>` / `RuntimeBuilder` call; `deployment_tool_scope` → `tool_scope`. Errors are `ProximaError` (`EmbedError::X` → `ProximaError::X`) |
+| `with_mcp()`, implicit `127.0.0.1:31415` | `mcp_bind(addr)` / `PROXIMA_MCP_BIND`. A flavor that wants MCP by default sets `mcp_bind` in `FlavorApp::configure` |
+| `spawn_embedding_worker`, `spawn_publication_publisher`, `spawn_publication_publisher_supervised`, `spawn_publication_copy_cleaner` | Delete the call. The runtime starts each feature in `build()` and `run()` when configured and joins it on `shutdown()`. Cleaner config moves onto the builder: `copy_cleaner(JetStreamCopyCleanerConfig)` or `PROXIMA_COPY_CLEANER_*`. Health: `publisher_health()` / `copy_cleaner_health()` on the runtime handle |
+| Public fields of `BuiltProxima` / `RunningProxima` (`engine`, `registry`, `pg_sidecars`, `blobs`, `owner`, `system_authority`, `handle`, `cancel`, `insecure_single_owner`, `service`, `mcp_addr`, `server`) | `.host().engine()` / `.registry()` / `.pg_sidecars_for_host()` / `.blobs()` / `.owner()`; `.system_authority()`; `.service()`; `.mcp_addr()`; `.shutdown().await` replaces `cancel` / `server` / `handle` |
+| `BuiltProxima::shutdown` | Now `async`: `.shutdown().await` joins every started task |
+| `AppContext` fields and `*_for_host` methods | `ctx.host()` → `ProximaHost`: `engine()`, `blobs()`, `owner()`, `services()`, `clone_pool_for_host()`, `pg_tuning_for_host()`, `platform_scope_for_host()`, `pg_sidecars_for_host()`, `host_state_erase_context_for_host()`, `origin_scope_for_host()`, `publication_origin_eligibility_for_host()`. The same set from `BuiltProxima` / `RunningProxima` via `.host()` |
+| `RuntimeConfig` struct literals | Gains `copy_cleaner` (`outbox-nats`). `mcp` is `Some` exactly when a bind address is set |
+| `PROXIMA_NATS_*` / `PROXIMA_COPY_CLEANER_*` key without its URL | Now refuses boot, naming the missing URL. `PROXIMA_NATS_URL` / `PROXIMA_COPY_CLEANER_URL` in a build without `outbox-nats` refuses boot |
+| New | `boot_report()` → `BootReport`; one INFO line per feature `feature=<name> state=started\|off reason=<rule>` |
+
 ## v0.0.23
 
 Pin all Proxima Rust dependencies to the same `v0.0.23` tag. No database
@@ -63,7 +82,7 @@ so a caller with Fact rights alone no longer reaches plan rows.
 | Bundle | `proxima::flavor_bundle! { bundle = …, <proxima_flavor! keys>, migrations = …, app = { … } }` replaces `proxima_flavor!` + `register_pg_sidecars` + `impl FlavorBundle` (+ `FlavorApp::app_info`) ([09 §FlavorBundle](../09-developing-flavors.md#flavorbundle)). |
 | Tests | `proxima = { features = ["testkit"] }`: `proxima::testkit::{SplitRoleDb, split_role_urls_for, scoped_authz, assert_trigger_migrations}`; the feature now also enables `proxima-core/test-fixtures`. `proxima::testkit` is a module re-exporting `proxima-pg-testkit`, so existing `proxima::testkit::…` paths still resolve. |
 | Side-effect Facts | `proxima::flavor::ingest_fact_detached(&ctx, write, deadline)` / `Engine::ingest_fact_detached` replace hand-rolled spawn + timeout + join. |
-| Host state (behavior change) | A second `host_state_participant` registration — same builder, or overlay over `FlavorApp::configure` — now refuses boot (`ProximaError::Config` / `EmbedError::Config`) instead of replacing the first. `HostStateRequest::is::<C>()` / `try_downcast::<C>()` dispatch without consuming the request. |
+| Host state (behavior change) | A second `host_state_participant` registration — same builder, or overlay over `FlavorApp::configure` — now refuses boot (`ProximaError::Config`) instead of replacing the first. `HostStateRequest::is::<C>()` / `try_downcast::<C>()` dispatch without consuming the request. |
 | NATS subjects | `proxima_outbox_nats::parse_subject(prefix, subject)` inverts `subject_for` ([18 §The `type_token` rule](../18-fact-outbox.md#the-type_token-rule)). |
 
 ## v0.0.14
@@ -100,7 +119,7 @@ versions remain unpublished; MCP initialization and REST OpenAPI report `0.0.12`
 | Database | Normal facade boot applies additive core migration `0011_v012_fact_outbox.sql`; no reset of a compatible v0.0.11 database. See [migration policy](migrations.md#v0012). |
 | Cold operations (breaking behavior) | Database-only facade hosts no longer use in-memory cold storage. Configure durable S3 for forget/hydration; unavailable storage preserves hot data and pending external purge debts. Hot ingest/query remain available. See [S3 configuration](../10-configuration.md). |
 | Split Fact authorization/persistence (breaking Rust API) | Supply sidecars to `authorize_fact_ingest*`; the authorized value now owns them. Remove the sidecar argument from Engine/`FactIngestPort` `ingest_fact_with_*typed_sidecar` calls and `WriteSession::ingest_fact_with_typed_sidecar`. Backend implementations read `authorized.sidecar_payloads()`. |
-| Custom `WriteSession` implementations | Implement `apply_host_state`; unsupported backends must refuse before mutation. PostgreSQL hosts register typed participants with `ProximaBuilder::host_state_participant`. See [transactional host state](../reference/public-api.md#supported-tiers). |
+| Custom `WriteSession` implementations | Implement `apply_host_state`; unsupported backends must refuse before mutation. PostgreSQL hosts register typed participants with `RuntimeBuilder::host_state_participant`. See [transactional host state](../reference/public-api.md#supported-tiers). |
 | Typed flavor writes | `ingest_fact(FactWrite::new(...))` and UoW `ingest_fact` retain their entry points. |
 | Fact outbox (opt-in) | `FactPayload::LISTENABLE = true` requires a publication source at facade boot (`PROXIMA_PUBLICATION_SOURCE` or builder configuration). Capture is atomic with admission; without NATS configuration, records remain pending. Enable the host `nats` feature and configure the deployment-owned broker topology to deliver them. See [setup](fact-outbox.md). |
 | MCP/REST schemas | Schema projections add `listenable`; `proxima://schema/{schema_id}/{schema_version}` resolves one registered JSON Schema. Existing tool names remain. |

@@ -148,7 +148,7 @@ mod embedding_failure_regressions {
         router: &TestEmbeddingRouter,
         owner: Owner,
     ) -> TestResult<String> {
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
         let remembered = call_test_model_tool(
             &tools,
@@ -167,7 +167,7 @@ mod embedding_failure_regressions {
             .ok_or("memory handle")?
             .to_owned();
         router.set_default(bound(test_embedding()));
-        ensure_fact_embedding_for_handle(&built.engine, &owner, &memory).await?;
+        ensure_fact_embedding_for_handle(built.host().engine(), &owner, &memory).await?;
         Ok(memory)
     }
 
@@ -186,7 +186,7 @@ mod embedding_failure_regressions {
         router: &TestEmbeddingRouter,
         owner: Owner,
     ) -> TestResult<Observed> {
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
         let memory = prepare_fact(built, router, owner).await?;
         let endpoint = overflow_endpoint().await?;
@@ -252,7 +252,7 @@ mod embedding_failure_regressions {
                 .build()
                 .await?;
             let result = exercise(&built, &router, owner).await;
-            built.shutdown();
+            built.shutdown().await;
             result
         }
         .await;
@@ -605,7 +605,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let pg = PgStorage::connect(&runtime_url).await?;
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
         let authz = space_authz(
@@ -651,7 +651,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         .await;
         assert!(denied.is_err(), "shared write must be denied");
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -677,7 +677,7 @@ async fn shared_space_include_body_uses_shared_owner() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = space_authz(
             personal,
             vec![personal, shared],
@@ -744,7 +744,7 @@ async fn shared_space_include_body_uses_shared_owner() {
             "the degraded search still returns the hit: {degraded}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -771,7 +771,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = space_authz(
             personal,
             vec![personal, shared],
@@ -855,7 +855,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         // hand back, and re-running the derivation re-asserts the same rows.
         assert_eq!(derived["edge_count"], serde_json::json!(2));
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -900,7 +900,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
 
         let listed = tools.list_core_tools();
         assert!(!listed.is_empty(), "core tool registry is non-empty");
@@ -915,7 +915,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             .find(|tool| tool.name == "core_recall")
             .expect("core_recall registered");
         assert_eq!(recall.read_only, Some(true));
-        assert_facade_projects_output_schema(built.registry(), recall);
+        assert_facade_projects_output_schema(built.host().registry(), recall);
         let search = listed
             .iter()
             .find(|tool| tool.name == "core_search_memories")
@@ -929,7 +929,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
         assert_eq!(search.read_only, Some(true));
         assert_eq!(search.open_world, Some(false));
-        assert_facade_projects_output_schema(built.registry(), search);
+        assert_facade_projects_output_schema(built.host().registry(), search);
         let remember = listed
             .iter()
             .find(|tool| tool.name == "core_remember")
@@ -982,7 +982,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
 
         let empty_request = built
-            .core_mcp_tools_with_request_services(FlavorServices::default())
+            .host().core_mcp_tools_with_request_services(FlavorServices::default())
             .expect("empty request bag merges");
         let listed_after_merge = empty_request.list_core_tools();
         assert!(
@@ -1026,7 +1026,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             .await;
         assert!(matches!(unknown, Err(CoreMcpError::NotFound(tool)) if tool == "core/not_a_tool"));
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1052,7 +1052,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let remembered = call_test_model_tool(
@@ -1102,7 +1102,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
             matches!(denied, Err(CoreMcpError::NotAuthorized(scope)) if scope == "resource:memory")
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1130,7 +1130,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let empty = tools
@@ -1322,7 +1322,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
             "question cue must find the Fact: {by_question}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1359,7 +1359,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let subject = call_test_model_tool(
@@ -1447,7 +1447,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
              through origins: {page}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1474,7 +1474,7 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let empty = tools
@@ -1570,7 +1570,7 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
             "descendant page must include the Abstraction: {down}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1596,7 +1596,7 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let committed = call_test_model_tool(
@@ -1640,7 +1640,7 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
             "bound sibling must appear: {siblings}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1682,7 +1682,7 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = trusted_host_authz(&owner, "acme/runner-v3");
 
         let episode = |derive_label: Option<&str>, stance_label: Option<&str>| {
@@ -1798,7 +1798,7 @@ async fn facade_core_episode_commit_bound_replay_fails() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         call_test_model_tool(
@@ -1964,7 +1964,7 @@ async fn facade_core_episode_commit_bound_replay_fails() {
             "goal H9: {goal_err}"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -1994,7 +1994,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         call_test_model_tool(
@@ -2057,7 +2057,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
             "explicit semantic search must error without an embedding client"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -2086,7 +2086,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .await?;
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         create_citation_sidecars(&admin_pool).await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let remembered = call_test_model_tool(
@@ -2165,7 +2165,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         .await?;
         assert!(cross_owner["facts"].as_array().expect("facts").is_empty());
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -2239,7 +2239,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
         let remembered = call_test_model_tool(
@@ -2269,7 +2269,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
             AuthPath::HostBearer,
         ));
         built
-            .engine
+            .host().engine()
             .transfer_to_owner(
                 &transfer_authz,
                 proxima_core::EntityId::Memory(MemoryId::new(memory_id)),
@@ -2306,7 +2306,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
             AuthPath::HostBearer,
         ));
         let visible = proxima::flavor::authorized_memory_ids(
-            &built.engine,
+            built.host().engine(),
             &member_authz,
             &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
@@ -2325,7 +2325,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let stranger = UserId::new(Uuid::now_v7());
         let stranger_authz = verified(AuthzContext::for_subject(stranger, AuthPath::HostBearer));
         let hidden = proxima::flavor::authorized_memory_ids(
-            &built.engine,
+            built.host().engine(),
             &stranger_authz,
             &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
@@ -2338,7 +2338,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
             "a transfer is not a publish: a caller outside the destination group sees nothing"
         );
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -2373,7 +2373,7 @@ async fn core_forget_cools_a_remembered_fact() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let tools = built.core_mcp_tools();
+        let tools = built.host().core_mcp_tools();
         let listed = tools.list_core_tools();
         assert!(
             listed.iter().any(|tool| tool.name == "core_forget"),
@@ -2434,7 +2434,8 @@ async fn core_forget_cools_a_remembered_fact() {
         assert_eq!(announce, "forget");
 
         let cold = built
-            .blobs
+            .host()
+            .blobs()
             .as_ref()
             .expect("configured S3 fixture")
             .cold_store();
@@ -2442,7 +2443,7 @@ async fn core_forget_cools_a_remembered_fact() {
         assert!(!cold.get(&cold_key).await?.is_empty());
         cold.delete(&cold_key).await?;
 
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;
@@ -2471,13 +2472,14 @@ async fn request_services_reject_duplicate_boot_type() {
         let mut request = FlavorServices::new();
         request.try_insert(BootMark)?;
         let err = built
+            .host()
             .core_mcp_tools_with_request_services(request)
             .expect_err("boot Marker + request Marker");
         assert!(
             matches!(err, FlavorServiceError::DuplicateService { .. }),
             "{err:?}"
         );
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

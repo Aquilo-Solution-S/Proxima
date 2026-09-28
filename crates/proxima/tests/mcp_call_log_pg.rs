@@ -137,11 +137,11 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let engine = built.engine();
+        let engine = built.host().engine();
         let authz = admin_authz_for(owner);
         let t0 = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
 
-        let first = proxima::log_mcp_call(&engine, &authz, call(&owner, t0)).await?;
+        let first = proxima::log_mcp_call(engine, &authz, call(&owner, t0)).await?;
         assert!(!first.idempotent_replay, "{first:?}");
         assert!(
             first.cited_object_id.is_some(),
@@ -149,7 +149,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         );
 
         // The read that exists for this write sees it.
-        let calls = history(&engine, &authz, owner).await?;
+        let calls = history(engine, &authz, owner).await?;
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].memory_id, first.fact_memory_id);
         assert_eq!(calls[0].tool_name, TOOL);
@@ -164,14 +164,14 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         );
 
         // Whole-verb replay: the same call is the same Fact.
-        let again = proxima::log_mcp_call(&engine, &authz, call(&owner, t0)).await?;
+        let again = proxima::log_mcp_call(engine, &authz, call(&owner, t0)).await?;
         assert!(again.idempotent_replay, "{again:?}");
         assert_eq!(again.fact_memory_id, first.fact_memory_id);
 
         // The same call at a later time is a new Fact — the timestamps are
         // part of the receipt — sharing the content-addressed I/O object.
         let later = proxima::log_mcp_call(
-            &engine,
+            engine,
             &authz,
             call(&owner, t0 + time::Duration::seconds(1)),
         )
@@ -182,7 +182,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             later.cited_object_id, first.cited_object_id,
             "identical I/O bytes under one owner share one cited object"
         );
-        let calls = history(&engine, &authz, owner).await?;
+        let calls = history(engine, &authz, owner).await?;
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert_eq!(calls[0].memory_id, later.fact_memory_id, "newest first");
 
@@ -193,7 +193,8 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             .forget_memory(&authz, owner, first.fact_memory_id)
             .await?;
         let cold = built
-            .blobs
+            .host()
+            .blobs()
             .as_ref()
             .expect("configured S3 fixture")
             .cold_store();
@@ -217,12 +218,12 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             1,
             "hydration must not duplicate the retained audit row"
         );
-        let calls = history(&engine, &authz, owner).await?;
+        let calls = history(engine, &authz, owner).await?;
         assert_eq!(calls.len(), 2, "retained audit history survives hydrate");
 
         // A stranger to this owner reads nothing.
         let stranger = admin_authz_for(company_owner(Uuid::now_v7()));
-        let err = history(&engine, &stranger, owner)
+        let err = history(engine, &stranger, owner)
             .await
             .expect_err("a foreign owner's history is not served");
         assert_eq!(err.code, proxima_core::ErrorCode::Forbidden, "{err:?}");
@@ -234,7 +235,7 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
             .map_err(|err| format!("logging left declaration drift: {err}"))?;
 
         cold.delete(&cold_key).await?;
-        built.shutdown();
+        built.shutdown().await;
         Ok(())
     }
     .await;

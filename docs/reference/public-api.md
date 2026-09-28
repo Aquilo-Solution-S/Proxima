@@ -42,7 +42,8 @@ Supported Rust tiers:
 | Tier | Import | Use |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken, AccessKind, AccessCeiling, OwnerRoles};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext`. `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name `AccessKind`, `AccessCeiling`, `AccessError`, `OwnerRoles` |
-| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL. **Not** the atomic path with Fact writes — that is a second connection |
+| Host API (runtime handle) | `use proxima::{BuiltProxima, RunningProxima, ProximaHost, BootReport, Feature, FeatureState};` | `Proxima<A>` is the one builder (over `RuntimeBuilder`); `build()` / `run()` start every configured feature ([10 §Runtime features](../10-configuration.md#runtime-features)). Both handles: `host()` → `ProximaHost` (the same accessor set `AppContext::host()` returns), `system_authority()`, `host_state_maintenance_authority()`, `single_owner_authz()`, `boot_report()`, `publisher_health()` / `copy_cleaner_health()` (`outbox-nats`), `shutdown().await` |
+| Host extra-table | `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL. **Not** the atomic path with Fact writes — that is a second connection |
 | Host-state in UnitOfWork | `UnitOfWork::apply_host_state` + `PgHostStateParticipant` | Host API only. Startup-register exactly one typed participant on `RuntimeBuilder` / `Proxima::host_state_participant` (a second refuses boot); dispatch several command types with `HostStateRequest::is` / `try_downcast`. Owner write-gate first; command tables must be `FlavorContract.state_surfaces`. Same backend transaction as Fact ingest; drop/poisoned commit rolls every participant back. Do not hold the unit open across broker/provider I/O |
 | Host API (MCP surface) | `use proxima::{McpHostTools, McpHostTool, McpHostToolCall, McpEdge, layered_router_mcp_only, PlatformAuthContext};` | `RuntimeBuilder::{host_tools, record_mcp_calls, authenticator_with_platform_scope}`, `BuiltProxima::mcp_edge`, and the handler helpers (`auth_context`, `author_from_args`, `strip_call_context_args`, `reject_nul_in_args`, `tool_invocation_error_to_error_data`, …) — [10 §MCP Endpoint and Authentication](../10-configuration.md#mcp-endpoint-and-authentication) |
 | Host API (OIDC) | `use proxima::auth::{OidcTokenValidator, ValidatedOidcToken, OidcRejection, OidcRoleShape, OidcRoleShaper, OidcClaimMap};` | `validate_with::<C>` reads host claims from the verified payload; `OidcRoleShape::Host` shapes a binding's context from every claim; requires feature `auth-oidc` |
@@ -84,7 +85,7 @@ Unsupported:
 
 | Surface | Status |
 |---|---|
-| raw `sqlx::PgPool` on Flavor SDK / tools | denied. The Host extra-table bridge is `AppContext::{clone_pool_for_host, pg_tuning_for_host}` (see below) |
+| raw `sqlx::PgPool` on Flavor SDK / tools | denied. The Host extra-table bridge is `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}` (see below) |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
 | `proxima-storage-pg` raw write verbs | backend API only; every owner write requires `OwnerWritePermit` minted by `Engine::authorize_owner_write` |
 | historical erase witness | internal database metadata only; not a public `Edge`, `PinNode`, export field, transfer field, MCP field, or REST field |
@@ -349,8 +350,8 @@ Contract:
 timeout, `5s` acquire timeout, `600s` idle timeout, and `1800s` max lifetime.
 `max_connections = 0` is invalid. Zero duration values preserve the env
 contract: statement timeout is omitted; SQLx pool durations receive zero
-unchanged. `RuntimeConfig::pg_pool_config` is the resolved value consumed by
-`ProximaBuilder`; it is not re-resolved during canonical boot.
+unchanged. `RuntimeConfig::pg_pool_config` is the resolved value boot
+consumes; it is not re-resolved during canonical boot.
 
 ## Embedding Ops Host API
 

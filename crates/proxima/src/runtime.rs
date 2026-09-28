@@ -2,8 +2,6 @@ use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
-#[cfg(feature = "outbox-nats")]
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -11,35 +9,37 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
-#[cfg(feature = "outbox-nats")]
-use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
     DelegatedAuthorityService,
 };
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
-    EmbeddingRouter, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, OwnerAccessPort,
-    RevalidationConfig, ToolScope,
+    EmbeddingRouter, FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig,
+    ToolScope,
 };
-use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
+use proxima_core::{EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
     body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
 };
-use sqlx::PgPool;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
+use crate::boot::Booted;
+use crate::features::{BootReport, FeatureDecision, FeatureInputs, Features};
 use crate::owner_access::ForwarderPolicy;
-use crate::workers::{FlavorWorker, FlavorWorkerContext};
-use crate::{
-    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
-};
-use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver, PgSidecarRegistryFrozen};
+use crate::{AppContext, FlavorApp, ProximaError, ProximaHost, RuntimeBuilder};
+use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver};
 
 /// Application runtime facade.
+///
+/// Configuration layers, lowest first: [`FlavorApp::configure`] (the app's
+/// defaults), the environment ([`Self::from_env`] / [`Self::from_lookup`]),
+/// then this value's own builder calls — code wins. Every feature starts
+/// when its config is present (docs/10 §Runtime features); [`Self::build`]
+/// and [`Self::run`] start the same ones.
 pub struct Proxima<A: FlavorApp> {
     overlay: RuntimeBuilder,
     use_env: bool,
@@ -119,6 +119,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// [`RuntimeBuilder::pg_tuning`].
+    #[must_use]
+    pub fn pg_tuning(mut self, tuning: proxima_storage_pg::PgTuning) -> Self {
+        self.overlay = self.overlay.pg_tuning(tuning);
+        self
+    }
+
     #[must_use]
     pub fn owner(mut self, owner: Owner) -> Self {
         self.overlay = self.overlay.owner(owner);
@@ -167,12 +174,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
-    #[must_use]
-    pub fn with_mcp(mut self) -> Self {
-        self.overlay = self.overlay.with_mcp();
-        self
-    }
-
+    /// [`RuntimeBuilder::mcp_bind`]: set, MCP starts.
     #[must_use]
     pub fn mcp_bind(mut self, bind: SocketAddr) -> Self {
         self.overlay = self.overlay.mcp_bind(bind);
@@ -336,8 +338,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
-    /// Configure the `JetStream` publisher. Env equivalent: the
-    /// `PROXIMA_NATS_*` block.
+    /// [`RuntimeBuilder::published_retention`]: with the publisher running,
+    /// the prune starts.
+    #[must_use]
+    pub fn published_retention(mut self, horizon: std::time::Duration) -> Self {
+        self.overlay = self.overlay.published_retention(horizon);
+        self
+    }
+
+    /// [`RuntimeBuilder::nats`]: set, the outbox publisher starts.
     #[cfg(feature = "outbox-nats")]
     #[must_use]
     pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
@@ -345,7 +354,22 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
-    /// Resolve, validate, boot, and return an in-process service.
+    /// [`RuntimeBuilder::copy_cleaner`]: set, the retained-copy cleaner
+    /// starts.
+    #[cfg(feature = "outbox-nats")]
+    #[must_use]
+    pub fn copy_cleaner(
+        mut self,
+        cleaner: proxima_outbox_nats::JetStreamCopyCleanerConfig,
+    ) -> Self {
+        self.overlay = self.overlay.copy_cleaner(cleaner);
+        self
+    }
+
+    /// Resolve, validate, boot, and start every configured feature, without
+    /// binding a listener: with a bind address configured, MCP is assembled
+    /// and handed to the host as [`BuiltProxima::service`] /
+    /// [`BuiltProxima::mcp_edge`].
     ///
     /// # Errors
     ///
@@ -358,66 +382,32 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             booted,
             cancel,
             app_ctx,
-            services,
             owner_access,
         } = self.boot_common().await?;
 
-        let (service, mcp_edge) = if let Some(allowlist) = allowlist {
-            let edge = resolve_mcp_edge(
-                &app_ctx,
-                services.clone(),
-                &parts,
-                owner_access,
-                allowlist,
-                &cancel,
-                &config,
-            );
-            let service = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
-            (Some(service), Some(edge))
-        } else {
-            (None, None)
+        let (service, mcp_edge, mcp) = match (config.mcp, allowlist) {
+            (Some(mcp), Some(allowlist)) => {
+                let edge =
+                    resolve_mcp_edge(&app_ctx, &parts, owner_access, allowlist, &cancel, &config);
+                let service = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
+                (
+                    Some(service),
+                    Some(edge),
+                    FeatureDecision::mcp_router_handed(mcp.bind),
+                )
+            }
+            _ => (None, None, FeatureDecision::mcp_off()),
         };
-
-        #[cfg(feature = "outbox-nats")]
-        let outbox = booted.outbox().clone();
-        #[cfg(feature = "outbox-nats")]
-        let outbox_retention = booted.outbox_retention().clone();
-        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
-        #[cfg(feature = "outbox-nats")]
-        let origin_scope = booted.origin_scope_for_host();
+        let runtime = Runtime::start::<A>(booted, app_ctx.host, cancel, &config, mcp);
         Ok(BuiltProxima {
+            runtime,
             service,
             mcp_edge,
-            engine: booted.engine,
-            system_authority: booted.system_authority,
-            host_state_maintenance_authority: booted.host_state_maintenance_authority,
-            handle: booted.handle,
-            pool: booted.pool,
-            registry: booted.registry,
-            pg_sidecars: booted.pg_sidecars,
-            publication_origin_eligibility,
-            #[cfg(feature = "outbox-nats")]
-            origin_scope,
-            blobs: booted.blobs,
-            owner: booted.owner,
-            cancel,
-            insecure_single_owner: config.insecure_single_owner,
-            services,
-            #[cfg(feature = "outbox-nats")]
-            outbox,
-            #[cfg(feature = "outbox-nats")]
-            outbox_retention,
-            #[cfg(feature = "outbox-nats")]
-            published_retention: config.published_retention,
-            #[cfg(feature = "outbox-nats")]
-            nats: config.nats.map(|mut nats| {
-                nats.origin_scope = Some(origin_scope);
-                nats
-            }),
         })
     }
 
-    /// Resolve, validate, boot, and serve the app/MCP facade when enabled.
+    /// Resolve, validate, boot, start every configured feature, and listen
+    /// when a bind address is configured.
     ///
     /// # Errors
     ///
@@ -430,29 +420,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             booted,
             cancel,
             app_ctx,
-            services,
             owner_access,
         } = self.boot_common().await?;
-        #[cfg(feature = "outbox-nats")]
-        let publication_origin_eligibility = booted.publication_origin_eligibility_for_host();
-        #[cfg(feature = "outbox-nats")]
-        let origin_scope = booted.origin_scope_for_host();
 
-        let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
+        let (mcp_addr, server, mcp) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist)
+        {
             if !config.expose_network {
                 assert_loopback(&mcp.bind)
                     .map_err(|err| ProximaError::Security(err.to_string()))?;
             }
-            let edge = resolve_mcp_edge(
-                &app_ctx,
-                services.clone(),
-                &parts,
-                owner_access,
-                allowlist,
-                &cancel,
-                &config,
-            );
-            let app = build_router::<A>(app_ctx, &edge, &cancel, &config);
+            let edge =
+                resolve_mcp_edge(&app_ctx, &parts, owner_access, allowlist, &cancel, &config);
+            let app = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProximaError::Mcp(err.to_string()))?;
@@ -474,58 +453,20 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 .engine
                 .set_mcp_url(format!("http://{bound}/mcp"))
                 .await;
-            (Some(bound), Some(server))
+            (
+                Some(bound),
+                Some(server),
+                FeatureDecision::mcp_listening(bound),
+            )
         } else {
-            (None, None)
+            (None, None, FeatureDecision::mcp_off())
         };
 
-        // Workers are spawned only after the last fallible step: an early
-        // `?` return would drop their join handles and the uncancelled
-        // token, leaving the tasks running detached. The child token lets
-        // workers observe the runtime's shutdown without being able to
-        // trigger it.
-        let worker_ctx = FlavorWorkerContext {
-            engine: booted.engine.clone(),
-            cancel: cancel.child_token(),
-            services: services.clone(),
-        };
-        let workers = A::spawn_workers(&worker_ctx);
-        #[cfg(feature = "outbox-nats")]
-        let outbox = booted.outbox().clone();
-        #[cfg(feature = "outbox-nats")]
-        let outbox_retention = booted.outbox_retention().clone();
-
+        let runtime = Runtime::start::<A>(booted, app_ctx.host, cancel, &config, mcp);
         Ok(RunningProxima {
-            engine: booted.engine,
-            system_authority: booted.system_authority,
-            host_state_maintenance_authority: booted.host_state_maintenance_authority,
-            handle: booted.handle,
-            pool: booted.pool,
-            registry: booted.registry,
-            pg_sidecars: booted.pg_sidecars,
-            #[cfg(feature = "outbox-nats")]
-            publication_origin_eligibility,
-            #[cfg(feature = "outbox-nats")]
-            origin_scope,
-            blobs: booted.blobs,
-            owner: booted.owner,
+            runtime,
             mcp_addr,
             server,
-            cancel,
-            insecure_single_owner: config.insecure_single_owner,
-            services,
-            workers,
-            #[cfg(feature = "outbox-nats")]
-            outbox,
-            #[cfg(feature = "outbox-nats")]
-            outbox_retention,
-            #[cfg(feature = "outbox-nats")]
-            published_retention: config.published_retention,
-            #[cfg(feature = "outbox-nats")]
-            nats: config.nats.map(|mut nats| {
-                nats.origin_scope = Some(origin_scope);
-                nats
-            }),
         })
     }
 
@@ -550,15 +491,20 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let booted = boot_app::<A>(&config, &parts).await?;
         let cancel = CancellationToken::new();
         let mut app_ctx = AppContext {
-            engine: booted.engine.clone(),
-            pool: booted.pool.clone(),
-            platform_scope: booted.platform_scope_for_host(),
-            pg_tuning: config.pg_tuning,
-            pg_sidecars: booted.pg_sidecars.clone(),
-            host_state_erase_context: booted.host_state_erase_context_for_host(),
-            blobs: booted.blobs.clone(),
-            owner: booted.owner,
-            services: parts.services.clone(),
+            host: ProximaHost {
+                engine: booted.engine.clone(),
+                registry: booted.registry.clone(),
+                pool: booted.pool.clone(),
+                platform_scope: booted.platform_scope.clone(),
+                pg_tuning: config.pg_tuning,
+                pg_sidecars: booted.pg_sidecars.clone(),
+                erase_context: booted.erase_context.clone(),
+                origin_scope: booted.origin_scope,
+                publication_origin_eligibility: booted.publication_origin_eligibility.clone(),
+                blobs: booted.blobs.clone(),
+                owner: config.owner,
+                services: parts.services.clone(),
+            },
         };
         let owner_access = runtime_owner_access(
             &app_ctx,
@@ -571,7 +517,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         if let Some(factory) = parts.platform_authenticator.take() {
             // `resolve` refused a missing platform URL, and boot built the
             // scope from it; absent here is a boot that skipped the census.
-            let platform_scope = app_ctx.platform_scope.clone().ok_or_else(|| {
+            let platform_scope = app_ctx.host.platform_scope.clone().ok_or_else(|| {
                 ProximaError::Config(
                     "authenticator_with_platform_scope: the runtime has no platform scope".into(),
                 )
@@ -589,7 +535,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             &owner_access,
             &booted.delegation_runtime_authority,
         )?;
-        app_ctx.services = services.clone();
+        app_ctx.host.services = services;
         Ok(BootedRuntime {
             config,
             parts,
@@ -597,7 +543,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             booted,
             cancel,
             app_ctx,
-            services,
             owner_access,
         })
     }
@@ -616,141 +561,165 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 }
 
-/// Booted app without a bound listener.
-pub struct BuiltProxima {
-    pub service: Option<Router>,
-    /// What [`Self::service`] was layered with; see [`Self::mcp_edge`].
-    mcp_edge: Option<crate::McpEdge>,
-    pub engine: Arc<Engine>,
-    pub system_authority: SystemAuthority,
+/// What `BuiltProxima` and `RunningProxima` share: the booted engine, its
+/// authorities, and the features the runtime started and owns.
+struct Runtime {
+    host: ProximaHost,
+    system_authority: SystemAuthority,
     host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
-    pub handle: EngineHandle,
-    pool: PgPool,
-    pub registry: Arc<FlavorRegistryFrozen>,
-    pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
-    publication_origin_eligibility:
-        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
-    /// This installation's identity, read at boot from the same database.
-    /// Stamped onto the publisher config below and handed to every cleaner
-    /// this runtime spawns, so neither can be pointed at a stream some
-    /// other installation published to.
-    #[cfg(feature = "outbox-nats")]
-    origin_scope: proxima_core::storage_ports::publication::OriginScope,
-    pub blobs: Option<CitedBlobStore>,
-    pub owner: Option<Owner>,
-    pub cancel: CancellationToken,
-    pub insecure_single_owner: bool,
-    services: FlavorServices,
-    /// The host-only drain over captured publication records. Private for
-    /// the same reason it is absent from `StoragePorts`: only a publisher
-    /// process may move a captured event through its delivery lifecycle —
-    /// a flavor able to claim a record could delay or suppress an export.
-    ///
-    /// Carried only when an adapter is compiled in. Without one there is
-    /// nothing that could drain it, and holding a handle no code can use
-    /// would just widen the surface.
-    #[cfg(feature = "outbox-nats")]
-    outbox: Arc<dyn PublicationOutboxPort>,
-    /// Reclaim of DELIVERED records, held apart from the drain handle so
-    /// that the loop able to publish is not the loop able to delete.
-    #[cfg(feature = "outbox-nats")]
-    outbox_retention: Arc<dyn PublicationRetentionPort>,
-    /// `None` keeps published records forever
-    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
-    #[cfg(feature = "outbox-nats")]
-    published_retention: Option<Duration>,
-    #[cfg(feature = "outbox-nats")]
-    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
+    handle: EngineHandle,
+    /// The runtime's own token. Every task it started observes a child of
+    /// it; [`Self::shutdown`] cancels it, and so does dropping the runtime
+    /// (`_cancel_on_drop`), so no feature outlives its last handle.
+    cancel: CancellationToken,
+    _cancel_on_drop: tokio_util::sync::DropGuard,
+    insecure_single_owner: bool,
+    features: Features,
+    /// The host-only outbox drain, kept for unit tests that drive a
+    /// publisher over a wrapped port. Production code never holds it
+    /// outside the publisher task.
+    #[cfg(all(test, feature = "outbox-nats"))]
+    outbox_for_tests: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
 }
 
-impl BuiltProxima {
-    /// Narrow host-only guard for deciding whether an event remains eligible
-    /// for intake or a retry/re-offer. It exposes no payload data.
-    #[must_use]
-    pub fn publication_origin_eligibility_for_host(
-        &self,
-    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort> {
-        self.publication_origin_eligibility.clone()
-    }
-
-    pub fn shutdown(self) {
-        self.cancel.cancel();
-        self.engine.stop(self.handle);
-    }
-
-    #[must_use]
-    pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
-        spawn_embedding_worker(self.engine.clone(), cancel)
-    }
-
-    /// Spawn the `JetStream` publisher that drains the captured outbox.
-    ///
-    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
-    /// is a safe steady state, not a degraded one: capture keeps working,
-    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
-    /// publisher started later drains exactly the same records.
-    ///
-    /// The task NEVER fails the boot. A broker that is down at start-up is
-    /// an outage, not a misconfiguration, and refusing to serve reads and
-    /// writes because a downstream consumer's transport is unavailable
-    /// would turn a delivery delay into a total outage. Connect failures
-    /// are retried with a bounded backoff and logged.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        self.spawn_publication_publisher_supervised(cancel)
-            .map(|publisher| publisher.into_parts().1)
-    }
-
-    /// Spawn the outbox publisher with a read-only health view and an
-    /// ordinary abortable, joinable task handle.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_publisher_supervised(
-        &self,
+impl Runtime {
+    /// Start every configured feature over a booted engine. Infallible: it
+    /// runs after the last fallible boot step.
+    fn start<A: FlavorApp>(
+        booted: Booted,
+        host: ProximaHost,
         cancel: CancellationToken,
-    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
-        Some(spawn_publication_publisher_supervised(
-            self.outbox.clone(),
-            self.nats.clone()?,
-            self.published_retention
-                .map(|older_than| PublicationRetention {
-                    port: self.outbox_retention.clone(),
-                    older_than,
-                }),
+        config: &crate::RuntimeConfig,
+        mcp: FeatureDecision,
+    ) -> Self {
+        let features = crate::features::start::<A>(
+            mcp,
+            &FeatureInputs {
+                engine: &host.engine,
+                services: &host.services,
+                cancel: &cancel,
+                config,
+                #[cfg(feature = "outbox-nats")]
+                publication: crate::features::PublicationHandles {
+                    outbox: booted.outbox.clone(),
+                    retention: booted.outbox_retention,
+                    eligibility: host.publication_origin_eligibility.clone(),
+                    origin_scope: host.origin_scope,
+                },
+            },
+        );
+        Self {
+            host,
+            system_authority: booted.system_authority,
+            host_state_maintenance_authority: booted.host_state_maintenance_authority,
+            handle: booted.handle,
+            _cancel_on_drop: cancel.clone().drop_guard(),
             cancel,
-        ))
+            insecure_single_owner: config.insecure_single_owner,
+            features,
+            #[cfg(all(test, feature = "outbox-nats"))]
+            outbox_for_tests: booted.outbox,
+        }
     }
 
-    /// Spawn retained-copy cleanup independently from GT intake and the
-    /// publication publisher. Centauri reads its own explicit config and
-    /// owns this returned task handle.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_copy_cleaner(
-        &self,
-        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
-        cancel: CancellationToken,
-    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
-        proxima_outbox_nats::spawn_supervised_copy_cleaner(
-            config,
-            self.publication_origin_eligibility.clone(),
-            self.origin_scope,
-            cancel,
-        )
-    }
-
-    #[must_use]
-    pub fn single_owner_authz(&self) -> Option<AuthzContext> {
+    fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
-            .then_some(self.owner.as_ref())
+            .then_some(self.host.owner.as_ref())
             .flatten()
             .map(|owner| insecure_single_owner_authz(owner, AuthPath::HostBearer))
     }
 
+    /// Cancel every started feature, join it, stop the engine.
+    async fn shutdown(self) {
+        self.cancel.cancel();
+        self.features.join().await;
+        self.host.engine.stop(self.handle);
+    }
+}
+
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runtime")
+            .field("host", &self.host)
+            .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("features", &self.features)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The handle methods `BuiltProxima` and `RunningProxima` share, spelled
+/// once.
+macro_rules! runtime_handle_methods {
+    () => {
+        /// The booted runtime's host accessors — the same [`ProximaHost`]
+        /// [`crate::AppContext::host`] returns.
+        #[must_use]
+        pub const fn host(&self) -> &ProximaHost {
+            &self.runtime.host
+        }
+
+        #[must_use]
+        pub const fn system_authority(&self) -> &SystemAuthority {
+            &self.runtime.system_authority
+        }
+
+        /// Boot-held authority for the registered host-state participant.
+        /// Absent when the runtime booted without such a participant.
+        #[must_use]
+        pub const fn host_state_maintenance_authority(
+            &self,
+        ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
+            self.runtime.host_state_maintenance_authority.as_ref()
+        }
+
+        /// The single owner's context in insecure single-owner mode; `None`
+        /// otherwise.
+        #[must_use]
+        pub fn single_owner_authz(&self) -> Option<AuthzContext> {
+            self.runtime.single_owner_authz()
+        }
+
+        /// Every feature's start decision for this boot, as logged.
+        #[must_use]
+        pub const fn boot_report(&self) -> &BootReport {
+            &self.runtime.features.report
+        }
+
+        /// The running outbox publisher's health; `None` when it is off.
+        #[cfg(feature = "outbox-nats")]
+        #[must_use]
+        pub fn publisher_health(&self) -> Option<proxima_outbox_nats::PublisherHealthReader> {
+            self.runtime.features.publisher_health()
+        }
+
+        /// The running retained-copy cleaner's health; `None` when it is off.
+        #[cfg(feature = "outbox-nats")]
+        #[must_use]
+        pub fn copy_cleaner_health(&self) -> Option<proxima_outbox_nats::CopyCleanerHealthReader> {
+            self.runtime.features.copy_cleaner_health()
+        }
+    };
+}
+
+/// A booted app whose features run, without a bound listener.
+///
+/// Dropping it cancels every started feature; [`Self::shutdown`] also joins
+/// them and stops the engine.
+pub struct BuiltProxima {
+    runtime: Runtime,
+    service: Option<Router>,
+    /// What [`Self::service`] was layered with; see [`Self::mcp_edge`].
+    mcp_edge: Option<crate::McpEdge>,
+}
+
+impl BuiltProxima {
+    runtime_handle_methods!();
+
+    /// The MCP router — `/mcp`, `/v1` and the health probes as configured —
+    /// for the host to serve; `None` without a bind address.
     #[must_use]
-    pub const fn system_authority(&self) -> &SystemAuthority {
-        &self.system_authority
+    pub const fn service(&self) -> Option<&Router> {
+        self.service.as_ref()
     }
 
     /// The resolved MCP edge [`Self::service`] was built from, `None`
@@ -763,58 +732,17 @@ impl BuiltProxima {
         self.mcp_edge.as_ref()
     }
 
-    /// Boot-held authority for the registered host-state participant.
-    /// Absent when the runtime booted without such a participant.
-    #[must_use]
-    pub const fn host_state_maintenance_authority(
+    /// Stop and join every started feature, then stop the engine.
+    pub async fn shutdown(self) {
+        self.runtime.shutdown().await;
+    }
+
+    /// The host-only outbox drain, for unit tests that wrap it.
+    #[cfg(all(test, feature = "outbox-nats"))]
+    pub(crate) fn outbox_for_tests(
         &self,
-    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
-        self.host_state_maintenance_authority.as_ref()
-    }
-
-    #[must_use]
-    pub fn core_mcp_tools(&self) -> CoreMcpTools {
-        CoreMcpTools::new(
-            self.registry.clone(),
-            self.engine.clone(),
-            self.services.clone(),
-        )
-    }
-
-    /// Same as [`Self::core_mcp_tools`], with a per-request
-    /// [`FlavorServices`] bag merged onto the boot set (`try_extend`).
-    ///
-    /// # Errors
-    ///
-    /// [`FlavorServiceError::DuplicateService`] when `request` repeats a
-    /// type already in the boot bag.
-    pub fn core_mcp_tools_with_request_services(
-        &self,
-        request: FlavorServices,
-    ) -> Result<CoreMcpTools, FlavorServiceError> {
-        let mut services = self.services.clone();
-        services.try_extend(request)?;
-        Ok(CoreMcpTools::new(
-            self.registry.clone(),
-            self.engine.clone(),
-            services,
-        ))
-    }
-
-    #[must_use]
-    pub fn engine(&self) -> Arc<Engine> {
-        self.engine.clone()
-    }
-
-    #[must_use]
-    pub fn registry(&self) -> &FlavorRegistryFrozen {
-        &self.registry
-    }
-
-    #[cfg(any(test, feature = "testkit", debug_assertions))]
-    #[must_use]
-    pub fn pool_for_tests(&self) -> &PgPool {
-        &self.pool
+    ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> {
+        self.runtime.outbox_for_tests.clone()
     }
 }
 
@@ -822,63 +750,34 @@ impl std::fmt::Debug for BuiltProxima {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BuiltProxima")
             .field("has_service", &self.service.is_some())
-            .field("pool", &self.pool)
-            .field("blobs", &self.blobs)
-            .field("owner", &self.owner)
-            .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("runtime", &self.runtime)
             .finish_non_exhaustive()
     }
 }
 
-/// Running app with an optional facade listener.
+/// A booted app whose features run, listening when a bind is configured.
+///
+/// Dropping it cancels the listener and every started feature;
+/// [`Self::shutdown`] also joins them and stops the engine.
 pub struct RunningProxima {
-    pub engine: Arc<Engine>,
-    pub system_authority: SystemAuthority,
-    host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
-    pub handle: EngineHandle,
-    pool: PgPool,
-    pub registry: Arc<FlavorRegistryFrozen>,
-    pub pg_sidecars: Arc<PgSidecarRegistryFrozen>,
-    pub blobs: Option<CitedBlobStore>,
-    pub owner: Option<Owner>,
-    pub mcp_addr: Option<SocketAddr>,
-    pub server: Option<JoinHandle<()>>,
-    pub cancel: CancellationToken,
-    pub insecure_single_owner: bool,
-    services: FlavorServices,
-    /// Flavor-contributed background workers spawned by [`Proxima::run`]
-    /// via `FlavorBundle::spawn_workers`; joined by [`Self::shutdown`].
-    workers: Vec<FlavorWorker>,
-    /// The host-only drain over captured publication records. See
-    /// `BuiltProxima`'s field of the same name.
-    #[cfg(feature = "outbox-nats")]
-    outbox: Arc<dyn PublicationOutboxPort>,
-    /// The narrow host-only origin check shared with the copy cleaner.
-    #[cfg(feature = "outbox-nats")]
-    publication_origin_eligibility:
-        Arc<dyn proxima_core::storage_ports::publication::PublicationOriginEligibilityPort>,
-    /// This installation's identity, read at boot from the same database.
-    /// Stamped onto the publisher config below and handed to every cleaner
-    /// this runtime spawns, so neither can be pointed at a stream some
-    /// other installation published to.
-    #[cfg(feature = "outbox-nats")]
-    origin_scope: proxima_core::storage_ports::publication::OriginScope,
-    /// Reclaim of DELIVERED records, held apart from the drain handle so
-    /// that the loop able to publish is not the loop able to delete.
-    #[cfg(feature = "outbox-nats")]
-    outbox_retention: Arc<dyn PublicationRetentionPort>,
-    /// `None` keeps published records forever
-    /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`).
-    #[cfg(feature = "outbox-nats")]
-    published_retention: Option<Duration>,
-    #[cfg(feature = "outbox-nats")]
-    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
+    runtime: Runtime,
+    mcp_addr: Option<SocketAddr>,
+    server: Option<JoinHandle<()>>,
 }
 
 impl RunningProxima {
+    runtime_handle_methods!();
+
+    /// The bound MCP address; `None` without a bind address.
+    #[must_use]
+    pub const fn mcp_addr(&self) -> Option<SocketAddr> {
+        self.mcp_addr
+    }
+
     /// Serve until SIGTERM or SIGINT (Ctrl-C off Unix), then drain as
     /// [`Self::shutdown`] does: readiness turns unavailable, the listener
-    /// stops accepting, in-flight requests and streams finish, workers join.
+    /// stops accepting, in-flight requests and streams finish, every feature
+    /// joins.
     ///
     /// Installs the process's signal handlers, so it belongs in a binary's
     /// `main`, never in a library.
@@ -927,148 +826,26 @@ impl RunningProxima {
         outcome
     }
 
+    /// Stop the listener, stop and join every started feature, then stop
+    /// the engine.
     pub async fn shutdown(self) {
-        self.cancel.cancel();
+        self.runtime.cancel.cancel();
         if let Some(server) = self.server
             && let Err(err) = server.await
         {
             tracing::warn!(error = %err, "proxima facade server join failed");
         }
-        for worker in self.workers {
-            if let Err(err) = worker.handle.await {
-                tracing::warn!(worker = worker.name, error = %err, "flavor worker join failed");
-            }
-        }
-        self.engine.stop(self.handle);
+        self.runtime.shutdown().await;
     }
+}
 
-    #[must_use]
-    pub fn spawn_embedding_worker(&self, cancel: CancellationToken) -> JoinHandle<()> {
-        spawn_embedding_worker(self.engine.clone(), cancel)
-    }
-
-    /// Spawn the `JetStream` publisher that drains the captured outbox.
-    ///
-    /// `None` when no broker is configured (`PROXIMA_NATS_URL` unset). That
-    /// is a safe steady state, not a degraded one: capture keeps working,
-    /// the backlog stays bounded by `PROXIMA_OUTBOX_MAX_PENDING`, and a
-    /// publisher started later drains exactly the same records.
-    ///
-    /// The task NEVER fails the boot. A broker that is down at start-up is
-    /// an outage, not a misconfiguration, and refusing to serve reads and
-    /// writes because a downstream consumer's transport is unavailable
-    /// would turn a delivery delay into a total outage. Connect failures
-    /// are retried with a bounded backoff and logged.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_publisher(&self, cancel: CancellationToken) -> Option<JoinHandle<()>> {
-        self.spawn_publication_publisher_supervised(cancel)
-            .map(|publisher| publisher.into_parts().1)
-    }
-
-    /// Spawn the outbox publisher with a read-only health view and an
-    /// ordinary abortable, joinable task handle.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_publisher_supervised(
-        &self,
-        cancel: CancellationToken,
-    ) -> Option<proxima_outbox_nats::SupervisedPublisher> {
-        Some(spawn_publication_publisher_supervised(
-            self.outbox.clone(),
-            self.nats.clone()?,
-            self.published_retention
-                .map(|older_than| PublicationRetention {
-                    port: self.outbox_retention.clone(),
-                    older_than,
-                }),
-            cancel,
-        ))
-    }
-
-    /// Spawn retained-copy cleanup independently from GT intake and the
-    /// publication publisher. Centauri reads its own explicit config and
-    /// owns this returned task handle.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn spawn_publication_copy_cleaner(
-        &self,
-        config: proxima_outbox_nats::JetStreamCopyCleanerConfig,
-        cancel: CancellationToken,
-    ) -> (proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>) {
-        proxima_outbox_nats::spawn_supervised_copy_cleaner(
-            config,
-            self.publication_origin_eligibility.clone(),
-            self.origin_scope,
-            cancel,
-        )
-    }
-
-    #[must_use]
-    pub fn single_owner_authz(&self) -> Option<AuthzContext> {
-        self.insecure_single_owner
-            .then_some(self.owner.as_ref())
-            .flatten()
-            .map(|owner| insecure_single_owner_authz(owner, AuthPath::HostBearer))
-    }
-
-    #[must_use]
-    pub const fn system_authority(&self) -> &SystemAuthority {
-        &self.system_authority
-    }
-
-    /// Boot-held authority for the registered host-state participant.
-    /// Absent when the runtime booted without such a participant.
-    #[must_use]
-    pub const fn host_state_maintenance_authority(
-        &self,
-    ) -> Option<&proxima_core::engine::HostStateMaintenanceAuthority> {
-        self.host_state_maintenance_authority.as_ref()
-    }
-
-    #[must_use]
-    pub fn core_mcp_tools(&self) -> CoreMcpTools {
-        CoreMcpTools::new(
-            self.registry.clone(),
-            self.engine.clone(),
-            self.services.clone(),
-        )
-    }
-
-    /// Same as [`Self::core_mcp_tools`], with a per-request
-    /// [`FlavorServices`] bag merged onto the boot set (`try_extend`).
-    ///
-    /// # Errors
-    ///
-    /// [`FlavorServiceError::DuplicateService`] when `request` repeats a
-    /// type already in the boot bag.
-    pub fn core_mcp_tools_with_request_services(
-        &self,
-        request: FlavorServices,
-    ) -> Result<CoreMcpTools, FlavorServiceError> {
-        let mut services = self.services.clone();
-        services.try_extend(request)?;
-        Ok(CoreMcpTools::new(
-            self.registry.clone(),
-            self.engine.clone(),
-            services,
-        ))
-    }
-
-    #[must_use]
-    pub fn engine(&self) -> Arc<Engine> {
-        self.engine.clone()
-    }
-
-    #[must_use]
-    pub fn registry(&self) -> &FlavorRegistryFrozen {
-        &self.registry
-    }
-
-    #[cfg(any(test, feature = "testkit", debug_assertions))]
-    #[must_use]
-    pub fn pool_for_tests(&self) -> &PgPool {
-        &self.pool
+impl std::fmt::Debug for RunningProxima {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunningProxima")
+            .field("mcp_addr", &self.mcp_addr)
+            .field("has_server", &self.server.is_some())
+            .field("runtime", &self.runtime)
+            .finish_non_exhaustive()
     }
 }
 
@@ -1087,181 +864,6 @@ fn insecure_single_owner_authz(owner: &Owner, auth_path: AuthPath) -> InsecureAu
         .narrowed_to_owner(*owner)
         .expect("group owner role is self-accessible"),
     }
-}
-
-impl std::fmt::Debug for RunningProxima {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunningProxima")
-            .field("pool", &self.pool)
-            .field("blobs", &self.blobs)
-            .field("owner", &self.owner)
-            .field("mcp_addr", &self.mcp_addr)
-            .field("has_server", &self.server.is_some())
-            .field("insecure_single_owner", &self.insecure_single_owner)
-            .field(
-                "workers",
-                &self
-                    .workers
-                    .iter()
-                    .map(|worker| worker.name)
-                    .collect::<Vec<_>>(),
-            )
-            .finish_non_exhaustive()
-    }
-}
-
-/// The configured reclaim of DELIVERED records, and the handle that can
-/// perform it. Absent when the deployment keeps published records forever.
-#[cfg(feature = "outbox-nats")]
-struct PublicationRetention {
-    port: Arc<dyn PublicationRetentionPort>,
-    older_than: Duration,
-}
-
-#[cfg(feature = "outbox-nats")]
-impl std::fmt::Debug for PublicationRetention {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PublicationRetention")
-            .field("older_than", &self.older_than)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Records one prune pass may remove.
-///
-/// Bounded because the statement runs beside the live write path: the
-/// table has no index on `published_at` (adding one is a migration this
-/// slice does not ship), so each pass is a sequential scan and must not
-/// also hold row locks over an unbounded delete. A backlog larger than this
-/// is reclaimed over several passes.
-#[cfg(feature = "outbox-nats")]
-const RETENTION_PRUNE_BATCH: u32 = 1_000;
-
-/// How often the prune runs.
-///
-/// DELIBERATELY not once per drain pass. The drain polls every
-/// `PROXIMA_NATS_POLL_MS` (500 ms by default), and a sequential scan at
-/// that rate would cost more than the storage it reclaims — while the
-/// horizon it enforces is at least a minute, so nothing becomes prunable
-/// faster than this either.
-#[cfg(feature = "outbox-nats")]
-const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
-
-#[cfg(feature = "outbox-nats")]
-fn spawn_publication_publisher_supervised(
-    outbox: Arc<dyn PublicationOutboxPort>,
-    config: proxima_outbox_nats::NatsPublisherConfig,
-    retention: Option<PublicationRetention>,
-    cancel: CancellationToken,
-) -> proxima_outbox_nats::SupervisedPublisher {
-    proxima_outbox_nats::spawn_supervised(config, outbox, cancel, move |cancel| {
-        prune_published_records(retention, cancel)
-    })
-}
-
-/// Reclaim delivered records older than the configured horizon, until
-/// cancellation. A no-op future when no horizon is configured.
-#[cfg(feature = "outbox-nats")]
-async fn prune_published_records(
-    retention: Option<PublicationRetention>,
-    cancel: CancellationToken,
-) {
-    let Some(retention) = retention else {
-        return;
-    };
-    let Some(limit) = std::num::NonZeroU32::new(RETENTION_PRUNE_BATCH) else {
-        return;
-    };
-    loop {
-        tokio::select! {
-            () = cancel.cancelled() => return,
-            () = tokio::time::sleep(RETENTION_PRUNE_INTERVAL) => {}
-        }
-        match retention
-            .port
-            .prune_published(retention.older_than, limit)
-            .await
-        {
-            Ok(0) => {}
-            Ok(pruned) => tracing::debug!(
-                pruned,
-                horizon_secs = retention.older_than.as_secs(),
-                "reclaimed delivered publication records"
-            ),
-            // Never fatal. Housekeeping that cannot run is a growing table,
-            // which is an operator's problem to see; stopping the publisher
-            // over it would turn it into an undelivered backlog.
-            Err(_) => {
-                tracing::warn!(
-                    "publication retention prune failed; delivered records are retained"
-                );
-            }
-        }
-    }
-}
-
-fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if engine.embedding_router().is_none() {
-            return;
-        }
-        let policy = engine.embedding_runtime_policy();
-        // Boot-time catch-up, not a recurring clock: memories written while
-        // no embedding client was configured never got a job (and exhausted
-        // `failed` jobs stay dead), so one reconcile pass before the first
-        // drain keeps a restart from leaving them silently unsearchable.
-        // Recurring maintenance stays outside the process
-        // (`proxima-mcp maintain-embeddings`).
-        match engine
-            .reconcile_embeddings(
-                proxima_core::EmbeddingReconcileScope::MissingOnly,
-                Some(proxima_core::EMBEDDING_RECONCILE_DEFAULT_LIMIT),
-            )
-            .await
-        {
-            Ok(outcome) if outcome.enqueued > 0 => {
-                tracing::info!(
-                    scanned = outcome.scanned,
-                    enqueued = outcome.enqueued,
-                    "startup embedding reconcile enqueued missing jobs"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, "startup embedding reconcile failed");
-            }
-        }
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            let mut processed = 0usize;
-            let mut failed = 0usize;
-            loop {
-                if cancel.is_cancelled() {
-                    return;
-                }
-                match engine.drain_embedding_jobs(policy.batch_size()).await {
-                    Ok(outcome) if outcome.processed > 0 => {
-                        processed += outcome.processed;
-                        failed += outcome.failed;
-                    }
-                    Ok(_) => break,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "embedding drain failed");
-                        break;
-                    }
-                }
-            }
-            if processed > 0 {
-                tracing::info!(processed, failed, "drained embedding jobs");
-            }
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                () = tokio::time::sleep(policy.worker_interval()) => {}
-            }
-        }
-    })
 }
 
 /// Run the configured app from process environment.
@@ -1392,15 +994,9 @@ fn cited_blob_services(
     })
 }
 
-/// Flavor services plus the substrate-owned services every composed
-/// binary gets for free. When S3 is configured (`app_ctx.blobs`), the store
-/// is published as [`CitedBlobService`] for presigned upload/read,
-/// [`CitedBlobReadService`] for bounded verified bytes, and the separately
-/// authorized [`CitedBlobOwnerReconcileService`] for redacted owner reports.
-/// Tools, REST, and flavor workers receive the same immutable service set.
 /// Everything [`Proxima::boot_common`] produced, for the two tails that
-/// diverge after it: `build` wraps the router in an `Option` and returns,
-/// `run` binds a listener, spawns the server and the flavor workers.
+/// diverge after it: `build` hands the router to the host, `run` binds a
+/// listener and spawns the server. Both then start the same features.
 ///
 /// A named struct rather than a tuple because the tail reads seven fields
 /// of four visually similar types, and a 7-tuple is both unreadable at the
@@ -1411,10 +1007,10 @@ struct BootedRuntime {
     /// `Some` exactly when MCP is configured — the two are resolved
     /// together so a tail can never serve MCP without an allowlist.
     allowlist: Option<OriginAllowlist>,
-    booted: crate::EmbeddedProxima,
+    booted: Booted,
     cancel: CancellationToken,
+    /// Its host carries the composed service set.
     app_ctx: AppContext,
-    services: FlavorServices,
     /// The one port the edge, the delegation service, and an environment
     /// OIDC authenticator resolve roles through.
     owner_access: Arc<dyn OwnerAccessPort>,
@@ -1427,7 +1023,6 @@ impl std::fmt::Debug for BootedRuntime {
             .field("parts", &self.parts)
             .field("booted", &self.booted)
             .field("app_ctx", &self.app_ctx)
-            .field("services", &self.services)
             .finish_non_exhaustive()
     }
 }
@@ -1440,11 +1035,12 @@ fn runtime_owner_access(
     forwarder: Option<ForwarderPolicy>,
 ) -> Arc<dyn OwnerAccessPort> {
     let port = host.unwrap_or_else(|| {
-        Arc::new(match &app_ctx.platform_scope {
+        let host = app_ctx.host();
+        Arc::new(match &host.platform_scope {
             Some(scope) => {
-                PgOwnerAccessResolver::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+                PgOwnerAccessResolver::new(host.pool.clone()).with_platform_scope(scope.clone())
             }
-            None => PgOwnerAccessResolver::new(app_ctx.pool.clone()),
+            None => PgOwnerAccessResolver::new(host.pool.clone()),
         })
     });
     match forwarder {
@@ -1453,6 +1049,13 @@ fn runtime_owner_access(
     }
 }
 
+/// Flavor services plus the substrate-owned services every composed
+/// binary gets for free. When S3 is configured, the store is published as
+/// [`CitedBlobService`] for presigned upload/read, [`CitedBlobReadService`]
+/// for bounded verified bytes, and the separately authorized
+/// [`CitedBlobOwnerReconcileService`] for redacted owner reports. Tools,
+/// REST, and flavor workers receive the same immutable service set.
+///
 /// The delegation service is published only with an authenticator, and
 /// redeems through `owner_access`.
 fn assemble_services<A: FlavorApp>(
@@ -1463,7 +1066,8 @@ fn assemble_services<A: FlavorApp>(
     owner_access: &Arc<dyn OwnerAccessPort>,
     runtime_authority: &DelegationRuntimeAuthority,
 ) -> Result<FlavorServices, ProximaError> {
-    let mut services = app_ctx.services.clone();
+    let host = app_ctx.host();
+    let mut services = host.services.clone();
     services.try_extend(A::services(app_ctx)?)?;
     debug_assert!(
         services
@@ -1472,7 +1076,7 @@ fn assemble_services<A: FlavorApp>(
         "host-state maintenance authority must remain outside FlavorServices"
     );
     if let Some((transfer, verified_read, owner_reconcile)) =
-        cited_blob_services(app_ctx.blobs.as_ref(), runtime_authority)
+        cited_blob_services(host.blobs.as_ref(), runtime_authority)
     {
         services.try_insert(transfer)?;
         services.try_insert(verified_read)?;
@@ -1486,11 +1090,11 @@ fn assemble_services<A: FlavorApp>(
         ));
     }
     if let Some(authenticator) = authenticator {
-        let store = Arc::new(match &app_ctx.platform_scope {
+        let store = Arc::new(match &host.platform_scope {
             Some(scope) => {
-                PgDelegationStore::new(app_ctx.pool.clone()).with_platform_scope(scope.clone())
+                PgDelegationStore::new(host.pool.clone()).with_platform_scope(scope.clone())
             }
-            None => PgDelegationStore::new(app_ctx.pool.clone()),
+            None => PgDelegationStore::new(host.pool.clone()),
         });
         services.try_insert(DelegatedAuthorityService::new(
             store,
@@ -1507,39 +1111,10 @@ fn assemble_services<A: FlavorApp>(
 async fn boot_app<A: FlavorApp + 'static>(
     config: &crate::RuntimeConfig,
     parts: &crate::RuntimeParts,
-) -> Result<crate::EmbeddedProxima, ProximaError> {
-    let mut builder = ProximaBuilder::new_optional(
-        EmbedConfig {
-            database_url: config.database_url.clone(),
-            platform_database_url: config.platform_database_url.clone(),
-            s3: config.s3.clone(),
-        },
-        config.owner,
-    )
-    .bundle::<A>()
-    .deployment_tool_scope(config.tool_scope.clone())
-    .pg_pool_config(config.pg_pool_config)
-    .pg_tuning(config.pg_tuning)
-    .embedding_runtime_policy(config.embedding_runtime_policy)
-    .publication(config.publication.clone());
-    if config.skip_migrations {
-        builder = builder.skip_migrations();
-    }
-    if config.runtime_grants {
-        builder = builder.runtime_grants();
-    }
-    if let Some(client) = parts.embed_client.clone() {
-        builder = builder.embed_client(client);
-    }
-    if let Some(router) = parts.embedding_router.clone() {
-        builder = builder.embedding_router(router);
-    }
-    if let Some(participant) = parts.host_state_participant.clone() {
-        builder = builder.host_state_participant(participant);
-    }
+) -> Result<Booted, ProximaError> {
     // Boot holds migration and role-census state. Keep that one-time future
     // out of every caller's runtime construction state machine.
-    Box::pin(builder.boot()).await.map_err(Into::into)
+    Box::pin(crate::boot::boot::<A>(config, parts)).await
 }
 
 /// Resolve the MCP edge both entry points serve: bearer auth over the
@@ -1547,14 +1122,14 @@ async fn boot_app<A: FlavorApp + 'static>(
 /// host tools, call recording), the Host allowlist and the REST routes.
 fn resolve_mcp_edge(
     app_ctx: &AppContext,
-    services: FlavorServices,
     parts: &crate::RuntimeParts,
     owner_access: Arc<dyn OwnerAccessPort>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> crate::McpEdge {
-    let engine = app_ctx.engine.clone();
+    let engine = app_ctx.host().engine.clone();
+    let services = app_ctx.host().services.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = parts.authenticator.clone() {
         // The runtime's one owner-access port, so a Group owner the eager
@@ -1594,7 +1169,7 @@ fn build_router<A: FlavorApp>(
     config: &crate::RuntimeConfig,
 ) -> Router {
     let health_router = if config.health_endpoints {
-        crate::health::router(app_ctx.pool.clone(), cancel.clone())
+        crate::health::router(app_ctx.host().pool.clone(), cancel.clone())
     } else {
         Router::new()
     };
@@ -1745,9 +1320,9 @@ mod tests {
 
     #[tokio::test]
     async fn extension_assembly_publishes_owner_blob_reconcile_separately() {
-        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let pool = sqlx::PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
         let store = CitedBlobStore::new(
-            pool.clone(),
+            pool,
             S3RuntimeConfig {
                 bucket: "test-bucket".to_string(),
                 region: "eu-central-1".to_string(),
@@ -1760,24 +1335,12 @@ mod tests {
         )
         .expect("test store config");
         let (engine, _system, delegation_runtime) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
                 .into_runtime_authorities();
         let registry = Arc::new(engine.registry().clone());
-        let app_ctx = AppContext {
-            platform_scope: None,
-            engine: Arc::new(engine),
-            pool,
-            pg_tuning: proxima_storage_pg::PgTuning::default(),
-            pg_sidecars: Arc::default(),
-            host_state_erase_context:
-                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
-                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
-                )
-                .expect("empty fixture registry has no host lifecycle tables"),
-            blobs: Some(store),
-            owner: None,
-            services: FlavorServices::default(),
-        };
+        let mut host = ProximaHost::for_tests(Arc::new(engine));
+        host.blobs = Some(store);
+        let app_ctx = AppContext { host };
 
         let services = assemble_services::<AlphaApp>(
             &app_ctx,
@@ -1816,26 +1379,13 @@ mod tests {
 
     #[tokio::test]
     async fn delegation_service_is_authenticator_gated_and_shared_by_identity() {
-        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
         let (engine, _system, delegation_runtime) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
                 .into_runtime_authorities();
         let engine = Arc::new(engine);
         let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
-            platform_scope: None,
-            engine: engine.clone(),
-            pool,
-            pg_tuning: proxima_storage_pg::PgTuning::default(),
-            pg_sidecars: Arc::default(),
-            host_state_erase_context:
-                proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
-                    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(Vec::new()),
-                )
-                .expect("empty fixture registry has no host lifecycle tables"),
-            blobs: None,
-            owner: None,
-            services: FlavorServices::default(),
+            host: ProximaHost::for_tests(engine.clone()),
         };
         let authenticator: Arc<dyn Authenticator> = Arc::new(StubAuth { owner: owner() });
         let services = assemble_services::<AlphaApp>(
@@ -1856,8 +1406,9 @@ mod tests {
             .expect("cloned services retain delegation service");
         assert!(Arc::ptr_eq(&service, &cloned_service));
 
-        let worker = FlavorWorkerContext::new_for_tests(engine, CancellationToken::new())
-            .with_services(cloned);
+        let worker =
+            crate::workers::FlavorWorkerContext::new_for_tests(engine, CancellationToken::new())
+                .with_services(cloned);
         let worker_service = worker
             .service::<DelegatedAuthorityService>()
             .expect("worker sees composed delegation service");
@@ -1897,7 +1448,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
             .unwrap();
@@ -1916,7 +1467,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_hosts(vec!["proxy.example.com:8443".to_string()])
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
@@ -1938,7 +1489,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_origins(vec!["https://app.example.com".to_string()])
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
                 public_url: "https://proxy.example.com".to_string(),
@@ -1971,7 +1522,6 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -2002,7 +1552,6 @@ mod tests {
             .database_url("postgres://unused/db")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -2039,7 +1588,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .build()
             .await
             .unwrap_err();
@@ -2053,7 +1602,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allow_insecure_single_owner()
             .expose_network(true)
             .allowed_origins(vec!["https://app.test".to_string()])
@@ -2070,7 +1619,6 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner())
             .tool_scope(ToolScope::All)
-            .with_mcp()
             .mcp_bind("0.0.0.0:31415".parse().unwrap())
             .allow_insecure_single_owner()
             .build()
@@ -2087,7 +1635,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .expose_network(true)
             .authenticator(Arc::new(StubAuth { owner }))
             .build()
@@ -2113,7 +1661,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .owner(owner)
             .tool_scope(ToolScope::All)
-            .with_mcp()
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_origins(vec!["*".to_string()])
             .authenticator(Arc::new(StubAuth { owner }))
             .run()
@@ -2142,7 +1690,3 @@ mod tests {
         assert!(err.to_string().contains("tool_scope is required"));
     }
 }
-
-#[cfg(all(test, feature = "outbox-nats"))]
-#[path = "publisher_supervision_tests.rs"]
-mod publisher_supervision_tests;

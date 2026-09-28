@@ -8,7 +8,9 @@
 //! `PROXIMA_NATS_URL` is the presence key. Unset means the publisher is
 //! OFF, not that the deployment is misconfigured: capture keeps running and
 //! records stay `pending`, which is this feature's rollback path
-//! (docs/18 §Rollback).
+//! (docs/18 §Rollback). A publisher key set WITHOUT it is a half-configured
+//! section and refused ([`ConfigError::MissingBroker`]): the operator asked
+//! for a publisher that could never start.
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -32,6 +34,40 @@ pub const ENV_CONSUMER_STREAM: &str = "PROXIMA_NATS_CONSUMER_STREAM";
 pub const ENV_CONSUMER_NAME: &str = "PROXIMA_NATS_CONSUMER_NAME";
 pub const ENV_PUBLISHER_INBOX_PREFIX: &str = "PROXIMA_NATS_PUBLISHER_INBOX_PREFIX";
 pub const ENV_CONSUMER_INBOX_PREFIX: &str = "PROXIMA_NATS_CONSUMER_INBOX_PREFIX";
+
+/// Every publisher key other than [`ENV_URL`]: any of them set without it is
+/// [`ConfigError::MissingBroker`]. The consumer's own keys are not listed —
+/// the reference consumer is not a runtime feature.
+const PUBLISHER_SECTION_KEYS: [&str; 11] = [
+    ENV_SUBJECT_PREFIX,
+    ENV_CREDS_FILE,
+    ENV_USER,
+    ENV_PASSWORD,
+    ENV_TOKEN,
+    ENV_BATCH,
+    ENV_LEASE_SECS,
+    ENV_POLL_MS,
+    ENV_PUBLISH_TIMEOUT_MS,
+    ENV_PUBLISHER_ID,
+    ENV_PUBLISHER_INBOX_PREFIX,
+];
+
+/// The four mutually exclusive auth keys of one section. The publisher and
+/// consumer share [`NATS_AUTH_KEYS`]; the retained-copy cleaner runs under
+/// its own role and so has its own four.
+pub(crate) struct AuthKeys {
+    pub(crate) creds_file: &'static str,
+    pub(crate) user: &'static str,
+    pub(crate) password: &'static str,
+    pub(crate) token: &'static str,
+}
+
+pub(crate) const NATS_AUTH_KEYS: AuthKeys = AuthKeys {
+    creds_file: ENV_CREDS_FILE,
+    user: ENV_USER,
+    password: ENV_PASSWORD,
+    token: ENV_TOKEN,
+};
 
 pub const DEFAULT_SUBJECT_PREFIX: &str = "proxima.fact";
 pub const DEFAULT_CONSUMER_STREAM: &str = "PROXIMA_FACTS";
@@ -161,7 +197,7 @@ impl InboxPrefix {
         Self(value.to_owned())
     }
 
-    fn parse(key: &'static str, value: String) -> Result<Self, ConfigError> {
+    pub(crate) fn parse(key: &'static str, value: String) -> Result<Self, ConfigError> {
         if !inbox_prefix_is_valid(&value) {
             return Err(ConfigError::InvalidInboxPrefix { key });
         }
@@ -284,19 +320,20 @@ impl NatsPublisherConfig {
 
     /// Read the block from an injected lookup.
     ///
-    /// `Ok(None)` when [`ENV_URL`] is unset — an optional lane a host did
-    /// not configure is not a misconfigured host.
+    /// `Ok(None)` when no key of the block is set — an optional lane a host
+    /// did not configure is not a misconfigured host.
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] for an invalid subject prefix, conflicting or
-    /// incomplete auth, or a malformed number.
+    /// [`ConfigError::MissingBroker`] when a publisher key is set without
+    /// [`ENV_URL`]; otherwise [`ConfigError`] for an invalid subject prefix,
+    /// conflicting or incomplete auth, or a malformed number.
     pub fn from_lookup(
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, ConfigError> {
         let lookup = |key: &str| proxima_core::env_value(&lookup, key);
         let Some(url) = lookup(ENV_URL) else {
-            return Ok(None);
+            return refuse_broker_less_section(&lookup, ENV_URL, &PUBLISHER_SECTION_KEYS);
         };
         let mut config = Self::new(url)?;
         if let Some(raw) = lookup(ENV_SUBJECT_PREFIX) {
@@ -314,7 +351,7 @@ impl NatsPublisherConfig {
             }
             None => default_publisher_id(&lookup)?,
         };
-        config.auth = auth_from_lookup(&lookup)?;
+        config.auth = auth_from_lookup(&lookup, &NATS_AUTH_KEYS)?;
         if let Some(raw) = lookup(ENV_BATCH) {
             config.batch = parse_non_zero_u32(ENV_BATCH, &raw)?;
         }
@@ -459,7 +496,7 @@ impl NatsConsumerConfig {
         if let Some(raw) = lookup(ENV_CONSUMER_NAME) {
             config.durable_name = validated_name(ENV_CONSUMER_NAME, &raw)?;
         }
-        config.auth = auth_from_lookup(&lookup)?;
+        config.auth = auth_from_lookup(&lookup, &NATS_AUTH_KEYS)?;
         Ok(Some(config))
     }
 
@@ -473,7 +510,7 @@ impl NatsConsumerConfig {
     }
 }
 
-/// Why a `PROXIMA_NATS_*` block was refused.
+/// Why a `PROXIMA_NATS_*` or `PROXIMA_COPY_CLEANER_*` block was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
     #[error("{key} must be a nonempty dot-separated NATS inbox prefix using only [A-Za-z0-9_-]")]
@@ -492,10 +529,16 @@ pub enum ConfigError {
         first: &'static str,
         second: &'static str,
     },
-    #[error(
-        "PROXIMA_NATS_USER and PROXIMA_NATS_PASSWORD must be set together; {missing} is missing"
-    )]
+    #[error("a NATS user and password must be set together; {missing} is missing")]
     IncompleteAuth { missing: &'static str },
+    /// A half-configured section: one of its keys is set, its broker URL is
+    /// not. Refused rather than read as "off", because the operator asked for
+    /// a lane that could never start.
+    #[error("{set} is set but {url} is not; the section names no broker")]
+    MissingBroker {
+        url: &'static str,
+        set: &'static str,
+    },
     #[error(
         "PROXIMA_NATS_LEASE_SECS must be at least one second, got {millis}ms; a lease \
          shorter than one broker round trip re-claims every record mid-flight"
@@ -547,27 +590,30 @@ fn default_publisher_id(
         .map_err(|error| ConfigError::PublisherId { error })
 }
 
-fn auth_from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Result<NatsAuth, ConfigError> {
-    let creds = lookup(ENV_CREDS_FILE);
-    let user = lookup(ENV_USER);
-    let password = lookup(ENV_PASSWORD);
-    let token = lookup(ENV_TOKEN);
+pub(crate) fn auth_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+    keys: &AuthKeys,
+) -> Result<NatsAuth, ConfigError> {
+    let creds = lookup(keys.creds_file);
+    let user = lookup(keys.user);
+    let password = lookup(keys.password);
+    let token = lookup(keys.token);
     if creds.is_some() && (user.is_some() || password.is_some()) {
         return Err(ConfigError::ConflictingAuth {
-            first: ENV_CREDS_FILE,
-            second: ENV_USER,
+            first: keys.creds_file,
+            second: keys.user,
         });
     }
     if creds.is_some() && token.is_some() {
         return Err(ConfigError::ConflictingAuth {
-            first: ENV_CREDS_FILE,
-            second: ENV_TOKEN,
+            first: keys.creds_file,
+            second: keys.token,
         });
     }
     if token.is_some() && (user.is_some() || password.is_some()) {
         return Err(ConfigError::ConflictingAuth {
-            first: ENV_TOKEN,
-            second: ENV_USER,
+            first: keys.token,
+            second: keys.user,
         });
     }
     if let Some(creds) = creds {
@@ -579,10 +625,23 @@ fn auth_from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Result<NatsAuth
     match (user, password) {
         (Some(user), Some(password)) => Ok(NatsAuth::UserPassword { user, password }),
         (Some(_), None) => Err(ConfigError::IncompleteAuth {
-            missing: ENV_PASSWORD,
+            missing: keys.password,
         }),
-        (None, Some(_)) => Err(ConfigError::IncompleteAuth { missing: ENV_USER }),
+        (None, Some(_)) => Err(ConfigError::IncompleteAuth { missing: keys.user }),
         (None, None) => Ok(NatsAuth::None),
+    }
+}
+
+/// `Ok(None)` for a section none of whose `keys` is set; the first set one
+/// otherwise, as [`ConfigError::MissingBroker`] against `url`.
+pub(crate) fn refuse_broker_less_section<T>(
+    lookup: &impl Fn(&str) -> Option<String>,
+    url: &'static str,
+    keys: &[&'static str],
+) -> Result<Option<T>, ConfigError> {
+    match keys.iter().find(|key| lookup(key).is_some()) {
+        Some(set) => Err(ConfigError::MissingBroker { url, set }),
+        None => Ok(None),
     }
 }
 
@@ -622,14 +681,14 @@ fn validated_subject_prefix(raw: &str) -> Result<String, ConfigError> {
     Ok(raw.to_owned())
 }
 
-fn parse_non_zero_u32(key: &'static str, raw: &str) -> Result<NonZeroU32, ConfigError> {
+pub(crate) fn parse_non_zero_u32(key: &'static str, raw: &str) -> Result<NonZeroU32, ConfigError> {
     raw.parse::<NonZeroU32>().map_err(|_| ConfigError::Number {
         key,
         value: raw.to_owned(),
     })
 }
 
-fn parse_positive_u64(key: &'static str, raw: &str) -> Result<u64, ConfigError> {
+pub(crate) fn parse_positive_u64(key: &'static str, raw: &str) -> Result<u64, ConfigError> {
     match raw.parse::<u64>() {
         Ok(value) if value > 0 => Ok(value),
         _ => Err(ConfigError::Number {
@@ -1039,6 +1098,31 @@ mod tests {
             "proxima.fact"
         );
         assert_eq!(validated_subject_prefix("a_b-c").expect("valid"), "a_b-c");
+    }
+
+    #[test]
+    fn a_publisher_key_without_a_broker_refuses_and_none_at_all_is_off() {
+        assert!(
+            NatsPublisherConfig::from_lookup(env(&[]))
+                .expect("no key is off")
+                .is_none()
+        );
+        let err = NatsPublisherConfig::from_lookup(env(&[(ENV_BATCH, "8")]))
+            .expect_err("a publisher key without PROXIMA_NATS_URL");
+        assert_eq!(
+            err,
+            ConfigError::MissingBroker {
+                url: ENV_URL,
+                set: ENV_BATCH
+            }
+        );
+        assert!(err.to_string().contains(ENV_URL), "{err}");
+        // The consumer's own keys belong to another process's section.
+        assert!(
+            NatsPublisherConfig::from_lookup(env(&[(ENV_CONSUMER_NAME, "sink")]))
+                .expect("a consumer key is not a publisher key")
+                .is_none()
+        );
     }
 
     #[test]

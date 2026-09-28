@@ -4,40 +4,14 @@ use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::{PublicationConfig, PublicationLimits, PublicationSource};
 use proxima_storage_pg::{PgPoolConfig, PgTuning};
 
-use crate::EmbedError;
-
-/// Low-level configuration for an embedded Proxima engine.
-///
-/// Plain data consumed by [`crate::ProximaBuilder::new`]. Environment
-/// resolution (`DATABASE_URL`, the `PROXIMA_S3_*` block) lives in
-/// [`crate::RuntimeBuilder`]; hosts driving the facade through it never
-/// construct this directly.
-#[derive(Clone)]
-pub struct EmbedConfig {
-    pub database_url: String,
-    pub platform_database_url: Option<String>,
-    pub s3: Option<S3RuntimeConfig>,
-}
-
-impl std::fmt::Debug for EmbedConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EmbedConfig")
-            .field("database_url", &"<redacted>")
-            .field(
-                "platform_database_url",
-                &self.platform_database_url.as_ref().map(|_| "<redacted>"),
-            )
-            .field("s3", &self.s3)
-            .finish()
-    }
-}
+use crate::ProximaError;
 
 /// Read the `PROXIMA_S3_*` block through the blob crate's parser.
 /// One parser for the block; the facade must not re-read it.
 pub(crate) fn s3_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<S3RuntimeConfig>, EmbedError> {
-    S3RuntimeConfig::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
+) -> Result<Option<S3RuntimeConfig>, ProximaError> {
+    S3RuntimeConfig::from_lookup(lookup).map_err(|error| ProximaError::Config(error.to_string()))
 }
 
 /// Read the `PROXIMA_PG_*` tuning block through the storage crate's parser.
@@ -48,8 +22,8 @@ pub(crate) fn s3_from_lookup(
 /// reading the process environment.
 pub(crate) fn pg_tuning_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<PgTuning>, EmbedError> {
-    PgTuning::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
+) -> Result<Option<PgTuning>, ProximaError> {
+    PgTuning::from_lookup(lookup).map_err(|error| ProximaError::Config(error.to_string()))
 }
 
 /// Read the `PROXIMA_PG_*` pool block through the storage crate's parser.
@@ -58,8 +32,8 @@ pub(crate) fn pg_tuning_from_lookup(
 /// therefore never falls back to a second process-environment read.
 pub(crate) fn pg_pool_config_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<PgPoolConfig>, EmbedError> {
-    PgPoolConfig::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
+) -> Result<Option<PgPoolConfig>, ProximaError> {
+    PgPoolConfig::from_lookup(lookup).map_err(|error| ProximaError::Config(error.to_string()))
 }
 
 /// Environment key naming this deployment's `CloudEvents` producer identity.
@@ -92,16 +66,16 @@ pub(crate) const MIN_PUBLISHED_RETENTION: Duration = Duration::from_mins(1);
 ///
 /// # Errors
 ///
-/// [`EmbedError::Config`] for a non-numeric value or a non-zero horizon
+/// [`ProximaError::Config`] for a non-numeric value or a non-zero horizon
 /// under [`MIN_PUBLISHED_RETENTION`].
 pub(crate) fn published_retention_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<Duration>, EmbedError> {
+) -> Result<Option<Duration>, ProximaError> {
     let Some(raw) = lookup(ENV_OUTBOX_PUBLISHED_RETENTION_SECS) else {
         return Ok(None);
     };
     let seconds: u64 = raw.parse().map_err(|_| {
-        EmbedError::Config(format!(
+        ProximaError::Config(format!(
             "{ENV_OUTBOX_PUBLISHED_RETENTION_SECS} must be a whole number of seconds, \
              got {raw:?}"
         ))
@@ -111,7 +85,7 @@ pub(crate) fn published_retention_from_lookup(
     }
     let horizon = Duration::from_secs(seconds);
     if horizon < MIN_PUBLISHED_RETENTION {
-        return Err(EmbedError::Config(format!(
+        return Err(ProximaError::Config(format!(
             "{ENV_OUTBOX_PUBLISHED_RETENTION_SECS} is {seconds}s, under the \
              {}s floor; set 0 to keep published records forever",
             MIN_PUBLISHED_RETENTION.as_secs()
@@ -140,15 +114,15 @@ pub(crate) fn published_retention_from_lookup(
 ///
 /// # Errors
 ///
-/// [`EmbedError::Config`] for a source that is not an absolute URI/URN, a
+/// [`ProximaError::Config`] for a source that is not an absolute URI/URN, a
 /// non-numeric or zero bound.
 pub(crate) fn publication_config_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<PublicationConfig, EmbedError> {
+) -> Result<PublicationConfig, ProximaError> {
     let source = lookup(ENV_PUBLICATION_SOURCE)
         .map(|raw| {
             PublicationSource::new(raw)
-                .map_err(|error| EmbedError::Config(format!("{ENV_PUBLICATION_SOURCE}: {error}")))
+                .map_err(|error| ProximaError::Config(format!("{ENV_PUBLICATION_SOURCE}: {error}")))
         })
         .transpose()?;
     let defaults = PublicationLimits::default();
@@ -168,15 +142,15 @@ pub(crate) fn publication_config_from_lookup(
 fn parse_positive(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &str,
-) -> Result<Option<u64>, EmbedError> {
+) -> Result<Option<u64>, ProximaError> {
     let Some(raw) = lookup(key) else {
         return Ok(None);
     };
     let value: u64 = raw.parse().map_err(|_| {
-        EmbedError::Config(format!("{key} must be a positive integer, got {raw:?}"))
+        ProximaError::Config(format!("{key} must be a positive integer, got {raw:?}"))
     })?;
     if value == 0 {
-        return Err(EmbedError::Config(format!(
+        return Err(ProximaError::Config(format!(
             "{key} must be greater than zero; a zero bound refuses every listenable write"
         )));
     }
@@ -192,20 +166,62 @@ fn parse_positive(
 ///
 /// # Errors
 ///
-/// [`EmbedError::Config`] for any malformed key in the block.
+/// [`ProximaError::Config`] for any malformed key in the block.
 #[cfg(feature = "outbox-nats")]
 pub(crate) fn nats_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<proxima_outbox_nats::NatsPublisherConfig>, EmbedError> {
+) -> Result<Option<proxima_outbox_nats::NatsPublisherConfig>, ProximaError> {
     proxima_outbox_nats::NatsPublisherConfig::from_lookup(lookup)
-        .map_err(|error| EmbedError::Config(error.to_string()))
+        .map_err(|error| ProximaError::Config(error.to_string()))
 }
 
-pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError> {
+/// Read the `PROXIMA_COPY_CLEANER_*` block through the adapter crate's
+/// parser. `Ok(None)` when none of its keys is set; a key set without
+/// `PROXIMA_COPY_CLEANER_URL` is a half-configured section and refused.
+///
+/// # Errors
+///
+/// [`ProximaError::Config`] for a broker-less section or any malformed key.
+#[cfg(feature = "outbox-nats")]
+pub(crate) fn copy_cleaner_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>, ProximaError> {
+    proxima_outbox_nats::JetStreamCopyCleanerConfig::from_lookup(lookup)
+        .map_err(|error| ProximaError::Config(error.to_string()))
+}
+
+/// The broker URLs a build without `outbox-nats` cannot honour.
+#[cfg(not(feature = "outbox-nats"))]
+const UNCOMPILED_BROKER_URLS: [&str; 2] = ["PROXIMA_NATS_URL", "PROXIMA_COPY_CLEANER_URL"];
+
+/// Without `outbox-nats` there is no publisher or cleaner to start: a broker
+/// the operator named is a request this binary cannot honour, refused rather
+/// than ignored (as `PROXIMA_OIDC_ISSUER` without `auth-oidc` is).
+///
+/// # Errors
+///
+/// [`ProximaError::Config`] naming the first broker URL that is set.
+#[cfg(not(feature = "outbox-nats"))]
+pub(crate) fn refuse_uncompiled_broker(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<(), ProximaError> {
+    match UNCOMPILED_BROKER_URLS
+        .iter()
+        .find(|key| lookup(key).is_some())
+    {
+        Some(key) => Err(ProximaError::Config(format!(
+            "{key} is set but this binary was built without the `outbox-nats` cargo \
+             feature; enable it or unset {key}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, ProximaError> {
     match raw.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(EmbedError::Config(format!(
+        _ => Err(ProximaError::Config(format!(
             "{key} must be a boolean, got {raw:?}"
         ))),
     }
@@ -280,21 +296,22 @@ mod tests {
         ] {
             let err = publication_config_from_lookup(&env(&pairs))
                 .expect_err("a malformed publication block must refuse the boot");
-            assert!(matches!(err, EmbedError::Config(_)), "{err} for {pairs:?}");
+            assert!(
+                matches!(err, ProximaError::Config(_)),
+                "{err} for {pairs:?}"
+            );
         }
     }
 
+    #[cfg(not(feature = "outbox-nats"))]
     #[test]
-    fn embed_config_debug_redacts_database_url() {
-        let config = EmbedConfig {
-            database_url: "postgres://user:secret@localhost/proxima".to_string(),
-            platform_database_url: None,
-            s3: None,
-        };
-        let debug = format!("{config:?}");
-
-        assert!(debug.contains("<redacted>"));
-        assert!(!debug.contains("secret"));
-        assert!(!debug.contains("postgres://user"));
+    fn a_broker_url_without_the_outbox_feature_refuses() {
+        assert!(refuse_uncompiled_broker(&env(&[])).is_ok());
+        for key in UNCOMPILED_BROKER_URLS {
+            let err = refuse_uncompiled_broker(&env(&[(key, "nats://127.0.0.1:4222")]))
+                .expect_err("a broker this build cannot reach");
+            assert!(err.to_string().contains(key), "{err}");
+            assert!(err.to_string().contains("outbox-nats"), "{err}");
+        }
     }
 }
