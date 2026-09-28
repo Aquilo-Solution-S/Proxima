@@ -30,6 +30,9 @@ mod paging_work;
 #[path = "rls_guard_pg/trigger_scope.rs"]
 mod trigger_scope;
 
+#[path = "rls_guard_pg/privileged_objects.rs"]
+mod privileged_objects;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(
@@ -651,6 +654,28 @@ async fn information_schema_census_matches_catalog_guard_contract() {
     .await
     .unwrap();
     assert!(uncovered.is_empty(), "unprotected tables: {uncovered:?}");
+    let unsafe_definers: Vec<String> = sqlx::query_scalar(
+        "SELECT n.nspname || '.' || p.proname
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = ANY($1) AND p.prosecdef
+            AND (NOT EXISTS (
+                  SELECT 1 FROM unnest(p.proconfig) config
+                   WHERE config LIKE 'search_path=%' AND config ~ ', pg_temp$'
+                 ) OR EXISTS (
+                  SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+                   WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+                 ) OR (p.prorettype <> 'pg_catalog.trigger'::regtype
+                     AND has_function_privilege($2, p.oid, 'EXECUTE')))",
+    )
+    .bind(&schemas[..])
+    .bind(&runtime_role)
+    .fetch_all(&admin)
+    .await
+    .unwrap();
+    assert!(
+        unsafe_definers.is_empty(),
+        "additive migration left unsafe definers: {unsafe_definers:?}"
+    );
     assert_runtime_rls(&runtime, &schemas).await.unwrap();
     runtime.close().await;
     platform.close().await;

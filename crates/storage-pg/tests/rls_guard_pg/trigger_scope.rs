@@ -204,7 +204,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
           WHERE n.nspname = 'proxima_core' AND p.proname = ANY($1::text[])
             AND (NOT p.prosecdef
-                 OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, proxima_core']
+                 OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, proxima_core, pg_temp']
                  OR has_function_privilege($2, p.oid, 'EXECUTE')
                  OR regexp_count(p.prosrc, 'set_config\(''app\.proxima_scope'', ''platform'', true\)') <> 1
                  OR regexp_count(p.prosrc, '\mRETURN\M')

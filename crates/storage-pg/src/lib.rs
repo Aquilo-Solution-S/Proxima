@@ -2414,7 +2414,7 @@ mod tests {
         assert_eq!(
             versions,
             vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2426,7 +2426,8 @@ mod tests {
              0011_v012_fact_outbox.sql, 0012_v013_publication_origin.sql and \
              0013_v015_agent_note_natural_key_index.sql, 0014_v015_owner_rls.sql, \
              0015_v016_embedding_spaces.sql, 0016_v016_embedding_claim_order.sql, \
-             0017_v016_metadata_write_scope.sql and 0018_v020_owner_rls_installer.sql"
+             0017_v016_metadata_write_scope.sql, 0018_v020_owner_rls_installer.sql and
+             0019_v025_definer_search_path.sql"
         );
     }
 

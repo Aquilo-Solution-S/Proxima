@@ -867,7 +867,9 @@ def run_fixture(path: Path) -> int:
 # recall canary became fixed-fragment builders.
 # 140 -> 141: the code hot-path plan guard EXPLAINs the call-pair query, a
 # compile-time `&'static str` with every value bound. No production site added.
-EXPECTED_DYNAMIC_SQL_SITES = 141
+# 141 -> 166: privileged-object RLS regressions add 25 fixture-only sites;
+# identifiers are generated and quoted, values are bound, clauses are closed.
+EXPECTED_DYNAMIC_SQL_SITES = 166
 
 
 def run_self_test() -> int:

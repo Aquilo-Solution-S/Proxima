@@ -988,6 +988,15 @@ EXECUTE for its owner only: run it as the migration role that owns the
 tables. A later migration that adds a table calls it again with the full
 classification; re-running re-creates the same policies.
 
+| Other SQL objects | Boot contract |
+|---|---|
+| View | `WITH (security_invoker = true)`; platform-owned, no runtime ownership |
+| Materialized view / foreign table | refused; precompute in an owner-scoped sidecar table |
+| `SECURITY DEFINER` routine | platform-owned; trusted pinned `search_path` ending with `pg_temp`; non-trigger `EXECUTE` restricted to platform authority, never `PUBLIC` or runtime |
+
+The boot guards inspect every composed schema and refuse unsafe objects by
+name. Repair belongs in the owning migration lane (see 15 §Owner-RLS rollout).
+
 v0.0.15's hand-written blocks took an FK-parent table's first FK in creation
 order; `proxima_code.execution_plan_v1` (an Abstraction sidecar) was keyed on
 a Fact reference. The code flavor's v0.0.20 migration is the installer call

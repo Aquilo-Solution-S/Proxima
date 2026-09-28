@@ -158,6 +158,50 @@ fn kit_migrator(leave_settings_unclassified: bool) -> Migrator {
     }
 }
 
+fn kit_view_migrator(security_invoker: bool) -> Migrator {
+    let options = if security_invoker {
+        " WITH (security_invoker = true)"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "{};\nCREATE VIEW kittest.cursor_view{options} AS SELECT owner_id, position FROM kittest.sync_cursor",
+        kit_sql(false)
+    );
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            KIT_MIGRATION_VERSION,
+            Cow::Borrowed("kit baseline with a view"),
+            MigrationType::Simple,
+            sqlx::AssertSqlSafe(sql).into_sql_str(),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+mod kit_definer_view {
+    proxima::flavor_bundle! {
+        bundle = KitDefinerViewFlavor,
+        name = "kittest",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_view_migrator(false),
+        app = { title = "Kit fixture with a definer view" },
+    }
+}
+
+mod kit_invoker_view {
+    proxima::flavor_bundle! {
+        bundle = KitInvokerViewFlavor,
+        name = "kittest",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_view_migrator(true),
+        app = { title = "Kit fixture with an invoker view" },
+    }
+}
+
 mod kit {
     proxima::flavor_bundle! {
         bundle = KitFlavor,
@@ -392,4 +436,101 @@ async fn an_unclassified_table_refuses_the_migration() {
         message.contains("owner RLS classification missing for kittest.settings"),
         "the refusal names the table: {message}"
     );
+}
+
+#[tokio::test]
+async fn a_flavor_definer_view_refuses_boot_and_names_the_view() {
+    let db = SplitRoleDb::create("proxima_flavor_definer_view", &[])
+        .await
+        .expect("PG required");
+    let refused = Proxima::<kit_definer_view::KitDefinerViewFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(company_owner(Uuid::now_v7()))
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect_err("an ordinary definer view must refuse split-role boot");
+    let message = refused.to_string();
+    assert!(message.contains("kittest.cursor_view"), "{message}");
+    assert!(message.contains("security_invoker=true"), "{message}");
+}
+
+#[tokio::test]
+async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
+    let db = SplitRoleDb::create("proxima_flavor_invoker_view", &[])
+        .await
+        .expect("PG required");
+    let owner = company_owner(Uuid::now_v7());
+    let other = company_owner(Uuid::now_v7());
+    let built = Proxima::<kit_invoker_view::KitInvokerViewFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(owner)
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect("a security_invoker view passes split-role boot");
+    let admin = sqlx::PgPool::connect(&db.admin_url()).await.unwrap();
+    for (row_owner, position) in [(owner, 1_i64), (other, 2_i64)] {
+        sqlx::query("INSERT INTO kittest.sync_cursor(owner_id, position) VALUES ($1, $2)")
+            .bind(row_owner.stored_owner_id())
+            .bind(position)
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
+    let runtime = sqlx::PgPool::connect(db.runtime_url()).await.unwrap();
+    let authz = scoped_authz(owner);
+    let mut transaction = proxima_storage_pg::begin_owner_transaction(
+        &runtime,
+        authz.owner_scope().expect("authenticated owner scope"),
+    )
+    .await
+    .unwrap();
+    let visible: Vec<(Uuid, i64)> =
+        sqlx::query_as("SELECT owner_id, position FROM kittest.cursor_view")
+            .fetch_all(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(visible, vec![(owner.stored_owner_id(), 1)]);
+    transaction.rollback().await.unwrap();
+    runtime.close().await;
+    admin.close().await;
+    built.shutdown();
+}
+
+#[tokio::test]
+async fn a_preexisting_invoker_view_moves_to_the_split_platform_owner() {
+    let name = proxima::testkit::unique_db_name("proxima_flavor_legacy_view");
+    proxima::testkit::create_db(&name).await.unwrap();
+    let database = proxima::testkit::DbGuard::adopt(name);
+    let admin = sqlx::PgPool::connect(&proxima::testkit::db_url(database.name()))
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE SCHEMA kittest;
+         CREATE TABLE kittest.legacy_table(owner_id uuid);
+         CREATE VIEW kittest.legacy_view WITH (security_invoker = true)
+            AS SELECT owner_id FROM kittest.legacy_table",
+    )
+    .execute(&admin)
+    .await
+    .unwrap();
+    proxima::testkit::split_role_urls_for(database.name(), &["kittest"])
+        .await
+        .expect("the fixture transfers existing views along with their tables");
+    let view_owner: String = sqlx::query_scalar(
+        "SELECT r.rolname FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_roles r ON r.oid = c.relowner
+         WHERE n.nspname = 'kittest' AND c.relname = 'legacy_view'",
+    )
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(view_owner, "proxima_test_platform");
+    admin.close().await;
 }

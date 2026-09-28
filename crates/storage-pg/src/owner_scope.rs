@@ -105,9 +105,9 @@ pub async fn begin_compatible_owner_transaction(
             SELECT 1 FROM pg_catalog.pg_class relation
             JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
             WHERE namespace.nspname = 'proxima_core'
-              AND relation.relkind IN ('r', 'p')
               AND (relation.relname = 'owner_rls_epoch'
-                   OR relation.relrowsecurity OR relation.relforcerowsecurity)
+                   OR (relation.relkind IN ('r', 'p')
+                       AND (relation.relrowsecurity OR relation.relforcerowsecurity)))
         )",
     )
     .fetch_one(&mut *transaction)
