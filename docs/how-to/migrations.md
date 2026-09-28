@@ -39,6 +39,21 @@ repository at once, erase it and ingest again
 ([connect-agent](../getting-started/connect-agent.md)). The column is
 nullable so a cold dump taken before v0.0.24 still hydrates.
 
+## v0.0.23
+
+No core or flavor migration ships in this release. Existing v0.0.22 databases
+remain compatible and require no reset.
+
+## v0.0.22
+
+No core or flavor migration ships in this release. Existing v0.0.21 databases
+remain compatible and require no reset.
+
+## v0.0.21
+
+No core or flavor migration ships in this release. Existing v0.0.20 databases
+remain compatible and require no reset.
+
 ## v0.0.20
 
 | Lane | Migration |
@@ -61,6 +76,21 @@ Replicas booting together serialize every migration transaction on
 `pg_advisory_xact_lock('proxmigr')` (bounded by the 5 s `lock_timeout`);
 before v0.0.20 a replica could re-apply migrations the first had not yet
 committed and fail its boot.
+
+## v0.0.19
+
+No core or flavor migration ships in this release. Existing v0.0.18 databases
+remain compatible and require no reset.
+
+## v0.0.18
+
+No core or flavor migration ships in this release. Existing v0.0.17 databases
+remain compatible and require no reset.
+
+## v0.0.17
+
+No core or flavor migration ships in this release. Existing v0.0.16 databases
+remain compatible and require no reset.
 
 ## v0.0.16
 

@@ -4,8 +4,9 @@
 //! flavor records into its own tracking table
 //! (`public._sqlx_migrations_<flavor>` — in `public`, because destructive
 //! flavor baselines drop the flavor schema and the ledger must survive
-//! them), with a one-time cutover moving a pre-split database's flavor rows
-//! out of the shared table. The facade pins the migration `search_path` to
+//! them). Before each flavor migration run, matching rows from a pre-split
+//! database's shared ledger are copied into its flavor ledger and retained
+//! in the shared table. The facade pins the migration `search_path` to
 //! `public`: core runs first, flavors run in composition order, and
 //! duplicate versions fail before the database is touched.
 //!

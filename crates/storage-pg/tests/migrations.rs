@@ -3,11 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
+use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::{AccessKind, EntityId, GroupId, MemoryId, OwnerRef, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory_oneshot};
 use uuid::Uuid;
 
 async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
@@ -3520,25 +3519,9 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
             );
         }
 
-        let cold = MemoryColdStore::default();
-        for (t, owner_id) in [
-            (transferred, current_group),
-            (known_none, current_group),
-            (malformed, current_group),
-            (malformed_reverse, current_group),
-            (pruned, current_group),
-        ] {
-            let key = cold_object_key(t);
-            forget_memory_oneshot(
-                pg.pool_for_tests(),
-                pg.sidecars(),
-                pg.surfaces(),
-                &cold,
-                &key,
-                t,
-                owner_id,
-            )
-            .await?;
+        let forget_permit = OwnerWritePermit::new_for_tests(group_owner, AccessKind::Fact);
+        for t in [transferred, known_none, malformed, malformed_reverse, pruned] {
+            pg.forget_memory(&forget_permit, MemoryId::new(t)).await?;
         }
         // Manufacture a malformed legacy cooled pair while preserving every
         // other identity seal. The append-only exception is test-local data

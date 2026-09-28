@@ -10,10 +10,9 @@ use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{
     COLD_FORMAT_VERSION, ColdPurgeEntry, ColdPurgePlan, ColdRecord, ColdRejection, MemoryColdStore,
     cold_object_key, commit_forget, decode_record, encode_record, erase_memory,
-    erase_memory_series, erase_memory_series_after_snapshot, forget_memory, forget_memory_oneshot,
-    hydrate_one_in_tx, lock_admissions_for_erase, lock_lifecycle_targets_tx,
-    lock_memory_handles_tx, purge_cold_objects_after_commit, snapshot_hot,
-    snapshot_series_for_erase_tx,
+    erase_memory_series, erase_memory_series_after_snapshot, forget_memory, hydrate_one_in_tx,
+    lock_admissions_for_erase, lock_lifecycle_targets_tx, lock_memory_handles_tx,
+    purge_cold_objects_after_commit, snapshot_hot, snapshot_series_for_erase_tx,
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
@@ -1602,41 +1601,21 @@ async fn concurrent_forget_serializes_before_cold_put() {
         });
 
         let first = {
-            let pool = pg.pool_for_tests().clone();
-            let cold = cold.clone();
-            let key = key.clone();
+            let pg = pg.clone().with_cold(cold.clone());
             tokio::spawn(async move {
-                let sidecars = core_pg_sidecars();
-                forget_memory_oneshot(
-                    &pool,
-                    &sidecars,
-                    &surfaces(),
-                    cold.as_ref(),
-                    &key,
-                    t,
-                    owner.stored_owner_id(),
-                )
-                .await
+                let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+                pg.forget_memory(&permit, proxima_core::MemoryId::new(t))
+                    .await
             })
         };
         cold.first_put_entered.acquire().await?.forget();
 
         let mut second = {
-            let pool = pg.pool_for_tests().clone();
-            let cold = cold.clone();
-            let key = key.clone();
+            let pg = pg.clone().with_cold(cold.clone());
             tokio::spawn(async move {
-                let sidecars = core_pg_sidecars();
-                forget_memory_oneshot(
-                    &pool,
-                    &sidecars,
-                    &surfaces(),
-                    cold.as_ref(),
-                    &key,
-                    t,
-                    owner.stored_owner_id(),
-                )
-                .await
+                let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+                pg.forget_memory(&permit, proxima_core::MemoryId::new(t))
+                    .await
             })
         };
         assert!(
@@ -3733,7 +3712,6 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         let pool = pg.pool_for_tests().clone();
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let owner_id = owner.stored_owner_id();
         let key = cold_object_key(t);
         let cold = Arc::new(BlockingPutCold {
             inner: MemoryColdStore::default(),
@@ -3744,20 +3722,10 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         });
 
         let forget = {
-            let pool = pool.clone();
-            let cold = Arc::clone(&cold);
-            let key = key.clone();
+            let pg = pg.clone().with_cold(cold.clone());
             tokio::spawn(async move {
-                forget_memory_oneshot(
-                    &pool,
-                    &core_pg_sidecars(),
-                    &surfaces(),
-                    cold.as_ref(),
-                    &key,
-                    t,
-                    owner_id,
-                )
-                .await
+                pg.forget_memory(&permit, proxima_core::MemoryId::new(t))
+                    .await
             })
         };
         cold.first_put_entered.acquire().await?.forget();
@@ -4332,20 +4300,11 @@ async fn admission_locks_pins_before_series_head() {
             puts: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
         });
-        let forget_pool = pool.clone();
-        let forget_cold = Arc::clone(&cold);
-        let forget_owner = owner;
+        let forget_pg = pg.clone().with_cold(cold.clone());
         let forget = tokio::spawn(async move {
-            forget_memory_oneshot(
-                &forget_pool,
-                &core_pg_sidecars(),
-                &surfaces(),
-                forget_cold.as_ref(),
-                &cold_object_key(target_t),
-                target_t,
-                forget_owner.stored_owner_id(),
-            )
-            .await
+            forget_pg
+                .forget_memory(&permit, proxima_core::MemoryId::new(target_t))
+                .await
         });
         cold.first_put_entered.acquire().await?.forget();
 
@@ -4438,19 +4397,11 @@ async fn admission_locks_existing_head_without_declared_pins() {
             puts: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
         });
-        let forget_pool = pool.clone();
-        let forget_cold = Arc::clone(&cold);
+        let forget_pg = pg.clone().with_cold(cold.clone());
         let forget = tokio::spawn(async move {
-            forget_memory_oneshot(
-                &forget_pool,
-                &core_pg_sidecars(),
-                &surfaces(),
-                forget_cold.as_ref(),
-                &cold_object_key(prior_t),
-                prior_t,
-                owner.stored_owner_id(),
-            )
-            .await
+            forget_pg
+                .forget_memory(&permit, proxima_core::MemoryId::new(prior_t))
+                .await
         });
         cold.first_put_entered.acquire().await?.forget();
 
@@ -5105,7 +5056,6 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
-        let cold = MemoryColdStore::default();
 
         // Two versions on one handle, each with its own receipt.
         let first = pg
@@ -5149,16 +5099,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 
         // ── `ForgetRule::Keep` on ingest_keys: cooling the NEWEST version
         // leaves its receipt behind. ────────────────────────────────────
-        forget_memory_oneshot(
-            &pool,
-            &core_pg_sidecars(),
-            &surfaces(),
-            &cold,
-            &cold_object_key(t2),
-            t2,
-            owner.stored_owner_id(),
-        )
-        .await?;
+        pg.forget_memory(&permit, second.memory_id).await?;
         assert_eq!(
             receipts(t2).await?,
             1,

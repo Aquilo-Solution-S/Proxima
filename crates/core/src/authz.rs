@@ -475,6 +475,32 @@ impl AuthzContext {
         context
     }
 
+    /// A sealed [`AuthPath::HostBearer`] context for an embedded host that
+    /// explicitly opts into insecure single-owner access.
+    ///
+    /// The boot-held witness gates this credential-free path. Both the roles
+    /// and the sealed scope grant only `owner`; a Group's synthetic subject
+    /// does not grant access to its Personal owner. This context grants no
+    /// System-path authority and must never authenticate a network request.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the exact owner role constructed here cannot be narrowed.
+    #[must_use]
+    pub fn for_insecure_single_owner(authority: &SystemAuthority, owner: Owner) -> Self {
+        let _ = authority;
+        let (subject, role) = match owner {
+            OwnerRef::Personal(subject) => (subject, Role::personal()),
+            OwnerRef::Group(group) => (UserId::new(group.into_inner()), Role::admin()),
+        };
+        let roles = OwnerRoles::scoped_to(subject, owner, role);
+        let mut context = Self::server_resolved(roles.clone(), AuthPath::HostBearer);
+        context.owner_scope = Some(OwnerScope::from_verified_roles(roles, None));
+        context
+            .narrowed_to_owner(owner)
+            .expect("single owner's verified role is self-accessible")
+    }
+
     pub(crate) fn seal_verified_scope(mut self) -> Result<Self, AuthError> {
         let roles = self
             .owner_roles
@@ -1133,6 +1159,31 @@ mod tests {
             !context.can_access_owner(&OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))),
             "no owner beyond the roles it was given"
         );
+    }
+
+    #[test]
+    fn insecure_single_owner_scope_cannot_expand_to_a_synthetic_personal_owner() {
+        let authority = SystemAuthority::new(SystemAuthorityBinding::fresh());
+        let group_id = GroupId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(group_id);
+        let personal = OwnerRef::Personal(UserId::new(group_id.into_inner()));
+        let context = AuthzContext::for_insecure_single_owner(&authority, group);
+
+        assert_eq!(context.auth_path(), AuthPath::HostBearer);
+        assert_eq!(context.readable_owners(AccessKind::Fact), vec![group]);
+        assert_eq!(context.writable_owners(AccessKind::Fact), vec![group]);
+        let scope = context.owner_scope().expect("sealed single-owner scope");
+        assert_eq!(scope.readable_owners(AccessKind::Fact), vec![group]);
+        assert_eq!(scope.writable_owners(AccessKind::Fact), vec![group]);
+        assert!(!context.can_access_owner(&personal));
+        assert!(!scope.may_write(&personal, AccessKind::Fact));
+        assert!(
+            scope
+                .add_group_role(GroupId::new(uuid::Uuid::now_v7()), Role::admin())
+                .is_none()
+        );
+        assert!(context.clone().narrowed_to_owner(personal).is_none());
+        assert!(context.narrowed_to_owner(group).is_some());
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {

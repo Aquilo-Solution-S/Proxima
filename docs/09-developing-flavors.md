@@ -922,8 +922,9 @@ A queued delegated worker persists only `DelegationId`, resolves
 `ctx.service::<DelegatedAuthorityService>()`, and redeems `DelegatedPhase` at
 job claim and at each subsequent phase boundary. It passes `&DelegatedPhase` and the exact
 `OwnerRef` to the explicitly delegated-capable Engine/blob service methods;
-it never reconstructs a raw delegated `AuthzContext`. Ordinary authenticated
-jobs continue to pass `&AuthzContext`. `CitedBlobService::read_url` answers a
+its owner scope is intentionally sealed, so flavor code passes the phase,
+not a raw `OwnerScope` or reconstructed delegated `AuthzContext`. Ordinary
+authenticated jobs continue to pass `&AuthzContext`. `CitedBlobService::read_url` answers a
 presigned URL. `CitedBlobReadService::collect_verified` additionally requires
 a `NonZeroU64` ceiling, and no bytes return until stored length, BLAKE3, and
 SHA-256 all match. Neither outcome exposes bucket/object key. Owner
@@ -935,6 +936,10 @@ runtime, build the context with
 `cfg(test)`, the `testkit` feature, or debug builds). Attach the exact
 test service set with
 `.with_services(FlavorServices::with(CitedBlobService::new(Arc::new(MyFake))))`.
+
+Owner transfer goes through `Engine::transfer_to_owner`: only the engine
+sets destination consent with `authorize_transfer_to`, and storage refuses a
+scoped transfer permit without that consent.
 
 ## Migrations
 

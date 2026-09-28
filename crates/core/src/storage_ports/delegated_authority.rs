@@ -31,7 +31,7 @@ use crate::{
 pub struct DelegationId(Uuid);
 
 impl DelegationId {
-    #[doc(hidden)]
+    /// Restore a persisted delegation handle; redemption checks its authority.
     #[must_use]
     pub const fn from_uuid(inner: Uuid) -> Self {
         Self(inner)

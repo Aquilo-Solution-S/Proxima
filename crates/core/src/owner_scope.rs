@@ -1,8 +1,10 @@
 //! Authenticated, immutable owner scope.
 //!
-//! `OwnerScope` is deliberately opaque.  Production instances are minted by
-//! [`crate::authenticate`] after the host authenticator has accepted the
-//! credentials; callers can only inspect or narrow the resulting witness.
+//! `OwnerScope` is deliberately opaque. Production instances are sealed from
+//! verified roles by [`crate::authenticate`] or the boot-authority-gated
+//! [`crate::AuthzContext::for_system`] and
+//! [`crate::AuthzContext::for_insecure_single_owner`] paths. Callers can only
+//! inspect or narrow the resulting witness.
 
 use std::time::SystemTime;
 

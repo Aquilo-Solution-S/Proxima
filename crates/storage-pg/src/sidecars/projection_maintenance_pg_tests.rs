@@ -15,12 +15,13 @@
 use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::test_fixtures::create_core_db;
-use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory_oneshot};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{OwnerInversePort, OwnerTransferPort, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
+};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
@@ -280,17 +281,7 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
         let t = write_note(pool, owner, None).await?;
         assert!(projection_of(pool, t).await?.is_some());
 
-        let cold = MemoryColdStore::default();
-        forget_memory_oneshot(
-            pool,
-            &core_pg_sidecars(),
-            &transfer_surfaces(),
-            &cold,
-            &cold_object_key(t.into_inner()),
-            t.into_inner(),
-            permit.owner().stored_owner_id(),
-        )
-        .await?;
+        pg.forget_memory(&permit, t).await?;
 
         assert_eq!(
             projection_of(pool, t).await?,
