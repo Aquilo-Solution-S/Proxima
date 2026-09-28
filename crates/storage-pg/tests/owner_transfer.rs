@@ -653,6 +653,129 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
 }
 
 #[tokio::test]
+async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             SELECT $1, model_id, 1024, version, chunk_ordinal,
+                    ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
+                    $2
+               FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id
+               CROSS JOIN generate_series(1, 2) AS version
+               CROSS JOIN generate_series(0, 1) AS chunk_ordinal",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             SELECT $1, model_id, 1024, 2, $2
+               FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+             SELECT $1, model_id, 1024, $2
+               FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+
+        let export =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
+        let bundle = pg
+            .export_owner_bundle(&export, &contract_sidecar_tables())
+            .await?;
+        for table in [
+            "proxima_core.embeddings",
+            "proxima_core.embedding_heads",
+            "proxima_core.embedding_jobs",
+        ] {
+            assert!(
+                !bundle.tables.contains_key(table),
+                "derived chunks and queue state stay excluded from owner export: {table}"
+            );
+        }
+
+        let route = [proxima_core::EmbeddingSpace::new(
+            "kept-model",
+            proxima_core::EmbeddingDim::D1024,
+        )];
+        assert!(
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+                &route,
+            )
+            .await?
+        );
+        let chunks: Vec<(String, i32, i32, Uuid)> = sqlx::query_as(
+            "SELECT model_id, embedding_version, chunk_ordinal, owner_id
+               FROM proxima_core.embeddings WHERE entity_id = $1
+              ORDER BY embedding_version, chunk_ordinal",
+        )
+        .bind(t)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            chunks,
+            [1_i32, 2]
+                .into_iter()
+                .flat_map(|version| {
+                    [0_i32, 1].map(|ordinal| {
+                        (
+                            "kept-model".to_owned(),
+                            version,
+                            ordinal,
+                            dest.stored_owner_id(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "every kept chunk follows the owner; every unrouted chunk is removed"
+        );
+        let head: Vec<(String, i32, Uuid)> = sqlx::query_as(
+            "SELECT model_id, embedding_version, owner_id
+               FROM proxima_core.embedding_heads WHERE entity_id = $1",
+        )
+        .bind(t)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(head, vec![("kept-model".into(), 2, dest.stored_owner_id())]);
+        let jobs: Vec<(String, Uuid)> = sqlx::query_as(
+            "SELECT model_id, owner_id
+               FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(t)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(jobs, vec![("kept-model".into(), dest.stored_owner_id())]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("chunked embedding transfer failed");
+}
+
+#[tokio::test]
 async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -693,10 +816,12 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         // off `proxima_core.embeddings` at cooling time and stamped with the
         // giver as owner.
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
-             VALUES ($1, 'transfer-hydrate-model', 1024,
-                     ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
-                     $2)",
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, dim, chunk_ordinal, vec, owner_id)
+             SELECT $1, 'transfer-hydrate-model', 1024, chunk_ordinal,
+                    ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
+                    $2
+               FROM generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(first.memory_id.into_inner())
         .bind(owner.stored_owner_id())

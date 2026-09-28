@@ -58,7 +58,7 @@ async fn lock_embedding_job_claim_fields(
     Ok(())
 }
 
-/// Append one memory embedding row inside an existing tx.
+/// Append one complete memory embedding version inside an existing tx.
 ///
 /// Crate-private: this is a raw-owner write below the proof gate. External
 /// writers go through `EmbeddingWritePort`, which requires an
@@ -72,7 +72,7 @@ pub(crate) async fn insert_memory_embedding(
     owner: &Owner,
     entity_kind: EntityKind,
     memory_id: MemoryId,
-    vector: &SpaceVector,
+    vectors: &[SpaceVector],
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
     insert_embedding(
         tx,
@@ -81,14 +81,13 @@ pub(crate) async fn insert_memory_embedding(
             kind: entity_kind,
             memory_id,
         },
-        vector,
+        vectors,
     )
     .await
 }
 
 /// Append one embedding version and advance the independent latest head.
-/// A version is one vector: a chunk-rescued over-limit text stores its
-/// first chunk.
+/// Chunks keep text order, and the head advances only after every chunk is stored.
 ///
 /// Crate-private: this is a raw-owner write below the proof gate. External
 /// writers go through `EmbeddingWritePort`, which requires an
@@ -104,10 +103,10 @@ pub(crate) async fn insert_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     entity: EmbeddableEntityRef,
-    vector: &SpaceVector,
+    vectors: &[SpaceVector],
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
     let owner_id = owner.stored_owner_id();
-    let space = vector.space();
+    let space = validate_embedding_vectors(vectors)?;
     let dim = crate::pgvector::Lane::of(space.dim()).width;
     let model_id = space.model_id();
 
@@ -139,21 +138,26 @@ pub(crate) async fn insert_embedding(
     .await
     .map_err(map_err)?;
 
-    let vec_literal = crate::pgvector::literal(vector.values());
-    sqlx::query(
-        "INSERT INTO proxima_core.embeddings
-            (entity_id, model_id, dim, embedding_version, vec, owner_id)
-         VALUES ($1, $2, $3, $4, $5::vector, $6)",
-    )
-    .bind(entity_id)
-    .bind(model_id)
-    .bind(dim)
-    .bind(embedding_version)
-    .bind(vec_literal)
-    .bind(owner_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    for (ordinal, vector) in vectors.iter().enumerate() {
+        let chunk_ordinal = i32::try_from(ordinal).map_err(|_| {
+            StorageError::ConstraintViolation("embedding has too many chunks".into())
+        })?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             VALUES ($1, $2, $3, $4, $5, $6::vector, $7)",
+        )
+        .bind(entity_id)
+        .bind(model_id)
+        .bind(dim)
+        .bind(embedding_version)
+        .bind(chunk_ordinal)
+        .bind(crate::pgvector::literal(vector.values()))
+        .bind(owner_id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
 
     sqlx::query(
         "INSERT INTO proxima_core.embedding_heads
@@ -172,6 +176,34 @@ pub(crate) async fn insert_embedding(
     .map_err(map_err)?;
 
     Ok(EmbeddingWriteOutcome { embedding_version })
+}
+
+/// Validate the whole batch before acquiring a claim or writing any chunk.
+pub(crate) fn validate_embedding_vectors(
+    vectors: &[SpaceVector],
+) -> Result<&EmbeddingSpace, StorageError> {
+    let first = vectors.first().ok_or_else(|| {
+        StorageError::ConstraintViolation("embedding must contain at least one chunk".into())
+    })?;
+    if i32::try_from(vectors.len()).is_err() {
+        return Err(StorageError::ConstraintViolation(
+            "embedding has too many chunks".into(),
+        ));
+    }
+    if vectors.iter().any(|vector| vector.space() != first.space()) {
+        return Err(StorageError::ConstraintViolation(
+            "embedding chunks must use one space".into(),
+        ));
+    }
+    if vectors
+        .iter()
+        .any(|vector| vector.values().iter().any(|value| !value.is_finite()))
+    {
+        return Err(StorageError::ConstraintViolation(
+            "embedding chunks must contain finite values".into(),
+        ));
+    }
+    Ok(first.space())
 }
 
 async fn embedding_entity_is_eligible(

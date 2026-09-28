@@ -435,7 +435,7 @@ pub(crate) mod tests {
             &self,
             _owner: &Owner,
             _entity: crate::EmbeddableEntityRef,
-            _vector: &crate::SpaceVector,
+            _vectors: &[crate::SpaceVector],
             _proof: crate::storage_ports::EmbeddingWriteProof,
         ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
             Ok(crate::EmbeddingWriteOutcome {

@@ -413,6 +413,7 @@ async fn ensure_core_schema_markers_on_connection(
     probe_marker_group(connection, sqlx::query_scalar(ENUM_ORDER_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_JOB_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_SPACE_MARKERS)).await?;
+    probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_CHUNK_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(OWNER_RLS_INSTALLER_MARKERS)).await?;
     Ok(())
 }
@@ -1376,6 +1377,38 @@ const EMBEDDING_SPACE_MARKERS: &str = r"SELECT CASE
            THEN 'missing width-lane index proxima_core.embeddings_hnsw_d2048'
          WHEN to_regclass('proxima_core.embeddings_hnsw_d3072') IS NULL
            THEN 'missing width-lane index proxima_core.embeddings_hnsw_d3072'
+         ELSE NULL
+       END";
+
+/// A complete embedding version stores ordered chunks (migration 0020).
+const EMBEDDING_CHUNK_MARKERS: &str = r"SELECT CASE
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embeddings'
+                     AND column_name = 'chunk_ordinal'
+                     AND data_type = 'integer'
+                     AND is_nullable = 'NO'
+                     AND column_default = '0'
+                )
+           THEN 'embeddings.chunk_ordinal must be integer NOT NULL DEFAULT 0'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM pg_constraint c
+                   WHERE c.conrelid = to_regclass('proxima_core.embeddings')
+                     AND c.conname = 'embeddings_chunk_ordinal_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND pg_get_constraintdef(c.oid, true) = 'CHECK (chunk_ordinal >= 0)'
+                )
+           THEN 'embeddings.chunk_ordinal nonnegative check is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM pg_constraint c
+                   WHERE c.conrelid = to_regclass('proxima_core.embeddings')
+                     AND c.contype = 'p'
+                     AND pg_get_constraintdef(c.oid, true) =
+                         'PRIMARY KEY (entity_id, model_id, dim, embedding_version, chunk_ordinal)'
+                )
+           THEN 'embeddings primary key must include chunk_ordinal'
          ELSE NULL
        END";
 
@@ -2414,7 +2447,7 @@ mod tests {
         assert_eq!(
             versions,
             vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2427,7 +2460,7 @@ mod tests {
              0013_v015_agent_note_natural_key_index.sql, 0014_v015_owner_rls.sql, \
              0015_v016_embedding_spaces.sql, 0016_v016_embedding_claim_order.sql, \
              0017_v016_metadata_write_scope.sql, 0018_v020_owner_rls_installer.sql and
-             0019_v025_definer_search_path.sql"
+             0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql"
         );
     }
 

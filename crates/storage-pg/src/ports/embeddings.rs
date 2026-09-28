@@ -97,20 +97,15 @@ impl EmbeddingWritePort for PgStorage {
         &self,
         owner: &Owner,
         entity: EmbeddableEntityRef,
-        vector: &proxima_core::SpaceVector,
+        vectors: &[proxima_core::SpaceVector],
         proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        let space = verbs::fact_embeddings::validate_embedding_vectors(vectors)?;
         let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(
-            &mut tx,
-            owner,
-            entity,
-            vector.space(),
-            proof,
-        )
-        .await?;
+        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
+            .await?;
         let outcome =
-            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vector).await?;
+            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vectors).await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }

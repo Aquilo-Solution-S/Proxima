@@ -77,15 +77,15 @@
 {"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id010>","job_id":"<id071>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
 {"claim_token":null,"claimed_at":null,"dim":1024,"entity_id":"<id012>","job_id":"<id072>","last_error":null,"model_id":"test-embed","owner_id":"<id039>","status":"pending"}
 ## proxima_core.embeddings (9)
-{"dim":1024,"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
-{"dim":1024,"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id014>","model_id":"test-embed","owner_id":"<id018>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id016>","model_id":"test-embed","owner_id":"<id036>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id063>","model_id":"test-embed","owner_id":"<id018>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id002>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id004>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id006>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id008>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id010>","model_id":"test-embed","owner_id":"<id039>"}
+{"chunk_ordinal":0,"dim":1024,"embedding_version":1,"entity_id":"<id012>","model_id":"test-embed","owner_id":"<id039>"}
 ## proxima_core.flavor_surface (7)
 {"flavor_id":"core","table_name":"proxima_core.agent_derivation_v1"}
 {"flavor_id":"core","table_name":"proxima_core.agent_note_v1"}

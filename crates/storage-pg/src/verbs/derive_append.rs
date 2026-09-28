@@ -249,13 +249,13 @@ async fn settle_derived_embedding(
 ) -> Result<(), StorageError> {
     let deferred = match &draft.embedding {
         DerivedEmbedding::None => None,
-        DerivedEmbedding::Ready { vector } => {
+        DerivedEmbedding::Ready { vectors } => {
             crate::verbs::fact_embeddings::insert_memory_embedding(
                 tx,
                 &draft.owner,
                 draft.kind,
                 memory_id,
-                vector,
+                vectors,
             )
             .await?;
             None

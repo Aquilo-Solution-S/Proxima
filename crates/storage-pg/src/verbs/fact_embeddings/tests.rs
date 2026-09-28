@@ -241,6 +241,297 @@ mod pg_tests {
         .await
     }
 
+    async fn assert_chunk_ordinals(
+        pool: &sqlx::PgPool,
+        memory_id: MemoryId,
+        count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let ordinals: Vec<i32> = sqlx::query_scalar(
+            "SELECT chunk_ordinal FROM proxima_core.embeddings
+              WHERE entity_id = $1 ORDER BY chunk_ordinal",
+        )
+        .bind(memory_id.into_inner())
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(ordinals, (0..i32::try_from(count)?).collect::<Vec<_>>());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn embedding_chunks_publish_atomically_in_text_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(&permit, &fact_draft("chunks"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+            let vectors: Vec<_> = [0.1, 0.2, 0.3]
+                .into_iter()
+                .map(|value| stub_vector(padded_embedding([value, 0.0, 0.0])))
+                .collect();
+            let mut tx = pool.begin().await?;
+            let outcome = insert_memory_embedding(
+                &mut tx,
+                &owner,
+                EntityKind::Fact,
+                memory.memory_id,
+                &vectors,
+            )
+            .await?;
+            assert_eq!(outcome.embedding_version, 1);
+            assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 0);
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Fact,
+                    memory.memory_id.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                None,
+                "neither chunks nor head are visible before commit"
+            );
+            tx.commit().await?;
+            assert_chunk_ordinals(pool, memory.memory_id, vectors.len()).await?;
+            let stored: Vec<Vec<f32>> = sqlx::query_scalar(
+                "SELECT vec::real[] FROM proxima_core.embeddings
+                  WHERE entity_id = $1 ORDER BY chunk_ordinal",
+            )
+            .bind(memory.memory_id.into_inner())
+            .fetch_all(pool)
+            .await?;
+            assert_eq!(
+                stored,
+                vectors
+                    .iter()
+                    .map(|vector| vector.values().to_vec())
+                    .collect::<Vec<_>>()
+            );
+            let coverage = super::super::embedding_coverage(
+                pool,
+                None,
+                &owner,
+                std::slice::from_ref(&*STUB_SPACE),
+                &[],
+            )
+            .await?;
+            assert_eq!(coverage.len(), 1);
+            assert_eq!(
+                (
+                    coverage[0].1.embeddable,
+                    coverage[0].1.embedded,
+                    coverage[0].1.vectors
+                ),
+                (1, 1, 3)
+            );
+            assert_eq!(
+                reconcile_embeddings(pool, missing_only(100), stale_claim_seconds())
+                    .await?
+                    .enqueued,
+                0
+            );
+            let observability =
+                embedding_ann_observability(pool, None, stale_claim_seconds()).await?;
+            assert_eq!(
+                (
+                    observability.embedding_rows,
+                    observability.embedding_head_rows
+                ),
+                (3, 1)
+            );
+            let canary = observability
+                .recall_canary
+                .expect("stored chunks produce a canary");
+            assert_eq!(
+                (canary.exact_count, canary.ann_count, canary.overlap_count),
+                (3, 3, 3)
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn invalid_later_embedding_chunk_preserves_the_complete_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(&permit, &fact_draft("chunks"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+            let valid = stub_vector(padded_embedding([0.1, 0.2, 0.3]));
+            let mut tx = pool.begin().await?;
+            insert_memory_embedding(
+                &mut tx,
+                &owner,
+                EntityKind::Fact,
+                memory.memory_id,
+                std::slice::from_ref(&valid),
+            )
+            .await?;
+            tx.commit().await?;
+            let wrong_space = SpaceVector::new(
+                EmbeddingSpace::new("other-model", EmbeddingDim::D1024),
+                valid.values().to_vec(),
+            )?;
+            let nonfinite = stub_vector(padded_embedding([0.1, f32::NAN, 0.3]));
+            for vectors in [
+                vec![],
+                vec![valid.clone(), wrong_space],
+                vec![valid.clone(), nonfinite],
+            ] {
+                let mut tx = pool.begin().await?;
+                let error = insert_memory_embedding(
+                    &mut tx,
+                    &owner,
+                    EntityKind::Fact,
+                    memory.memory_id,
+                    &vectors,
+                )
+                .await
+                .expect_err("invalid full version must fail");
+                assert!(
+                    matches!(error, StorageError::ConstraintViolation(_)),
+                    "{error}"
+                );
+                tx.commit().await?;
+                assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 1);
+                assert_eq!(
+                    load_embedding_head_version(
+                        pool,
+                        EntityKind::Fact,
+                        memory.memory_id.into_inner(),
+                        "stub-fact-embed"
+                    )
+                    .await?,
+                    Some(1)
+                );
+            }
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn later_chunk_sql_failure_rolls_back_the_version()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(&permit, &fact_draft("chunks"), Some("stub-fact-embed"))
+                .await?;
+            let pool = pg.pool_for_tests();
+            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            assert_eq!(claims.len(), 1);
+            let claim = &claims[0];
+            insert_claimed_fact_embedding(&pg, claim, [0.1, 0.2, 0.3]).await?;
+            sqlx::query(
+                "ALTER TABLE proxima_core.embeddings
+                 ADD CONSTRAINT fail_later_chunk
+                 CHECK (embedding_version = 1 OR chunk_ordinal <> 1)",
+            )
+            .execute(pool)
+            .await?;
+            let entity = EmbeddableEntityRef::Memory {
+                kind: EntityKind::Fact,
+                memory_id: memory.memory_id,
+            };
+            let vectors = vec![stub_vector(padded_embedding([0.4, 0.5, 0.6])); 2];
+            let error = pg
+                .insert_embedding(
+                    &owner,
+                    entity,
+                    &vectors,
+                    EmbeddingWriteProof::for_claim_for_tests(claim),
+                )
+                .await
+                .expect_err("the second chunk must fail after the first was inserted");
+            assert!(error.to_string().contains("fail_later_chunk"), "{error}");
+            assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 1);
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Fact,
+                    memory.memory_id.into_inner(),
+                    "stub-fact-embed"
+                )
+                .await?,
+                Some(1),
+                "a failed version leaves neither partial chunks nor a new head"
+            );
+            sqlx::query("ALTER TABLE proxima_core.embeddings DROP CONSTRAINT fail_later_chunk")
+                .execute(pool)
+                .await?;
+            let retried = pg
+                .insert_embedding(
+                    &owner,
+                    entity,
+                    &vectors,
+                    EmbeddingWriteProof::for_claim_for_tests(claim),
+                )
+                .await?;
+            assert_eq!(retried.embedding_version, 2);
+            assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 3);
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn embedding_space_purge_limits_chunk_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(&permit, &fact_draft("chunks"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+            let vectors = vec![stub_vector(padded_embedding([0.1, 0.2, 0.3])); 3];
+            let mut tx = pool.begin().await?;
+            insert_memory_embedding(
+                &mut tx,
+                &owner,
+                EntityKind::Fact,
+                memory.memory_id,
+                &vectors,
+            )
+            .await?;
+            tx.commit().await?;
+            let purged = super::super::purge_embedding_spaces(pool, None, &owner, &[], 2).await?;
+            assert_eq!(
+                purged.vectors, 2,
+                "the row limit counts chunks, not versions"
+            );
+            assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 1);
+            let purged = super::super::purge_embedding_spaces(pool, None, &owner, &[], 2).await?;
+            assert_eq!(purged.vectors, 1);
+            assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 0);
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
     async fn insert_claimed_fact_embedding(
         pg: &crate::PgStorage,
         claim: &proxima_core::EmbeddingJobClaim,
@@ -252,8 +543,10 @@ mod pg_tests {
                 kind: claim.entity_kind,
                 memory_id: claim.entity_id,
             },
-            &SpaceVector::new(claim.space.clone(), padded_embedding(prefix))
-                .expect("1024-wide test vector"),
+            &[
+                SpaceVector::new(claim.space.clone(), padded_embedding(prefix))
+                    .expect("1024-wide test vector"),
+            ],
             EmbeddingWriteProof::for_claim_for_tests(claim),
         )
         .await
@@ -347,7 +640,7 @@ mod pg_tests {
                 &owner,
                 EntityKind::Fact,
                 outcome.memory_id,
-                &stub_vector(embedding.clone()),
+                &[stub_vector(embedding.clone())],
             )
             .await?;
             tx.commit().await?;
@@ -1155,10 +1448,10 @@ mod pg_tests {
         DerivedMemory::abstraction(
             MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
             owner,
-            text,
+            text.clone(),
             AgentDerivationV1 {
                 title: "long derivation".into(),
-                body: "long derivation".into(),
+                body: text,
                 tags: Vec::new(),
                 idempotency_key: None,
                 source_memory_ids: origins.iter().copied().map(MemoryId::into_inner).collect(),
@@ -1224,7 +1517,7 @@ mod pg_tests {
     /// vector, and rescued into chunks by a later drain — a warning, a
     /// second round trip, and a window of semantic invisibility per unit,
     /// for what is routine in a corpus of long texts. The rescue now runs
-    /// inline: one vector lands with the row and no job is filed.
+    /// inline: every chunk lands with the row and no job is filed.
     #[tokio::test]
     async fn author_derived_embeds_over_limit_text_inline() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1254,11 +1547,6 @@ mod pg_tests {
                 "no job is filed for a text the chunked rescue covered"
             );
             assert_eq!(
-                count_fact_embeddings(pool, outcome.memory_id).await?,
-                1,
-                "storage keeps one vec per version"
-            );
-            assert_eq!(
                 load_embedding_head_version(
                     pool,
                     EntityKind::Abstraction,
@@ -1279,6 +1567,12 @@ mod pg_tests {
                 accepted > 1,
                 "the text came back split into provider-acceptable pieces: {offered:?}"
             );
+            assert_eq!(
+                count_fact_embeddings(pool, outcome.memory_id).await?,
+                i64::try_from(accepted)?,
+                "every successful provider chunk is stored in the inline version"
+            );
+            assert_chunk_ordinals(pool, outcome.memory_id, accepted).await?;
             Ok(())
         }
         .await;
@@ -1295,15 +1589,16 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
+            let cap = MIN_EMBED_INPUT_CAP_CHARS;
             let (engine, authz, origin, offered) =
-                capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
+                capped_authoring_fixture(&pg, &owner, cap).await?;
             let origins = [origin];
             let pool = pg.pool_for_tests();
 
             let outcome = engine
                 .derive_memory(
                     &authz,
-                    derived_request(owner, &origins, "queued unit".into())?
+                    derived_request(owner, &origins, "q".repeat(cap * 3))?
                         .embedding_mode(EmbeddingMode::Deferred),
                 )
                 .await?;
@@ -1323,6 +1618,18 @@ mod pg_tests {
             );
             let drained = engine.drain_embedding_jobs(1).await?;
             assert_eq!((drained.processed, drained.failed), (1, 0));
+            let accepted = offered
+                .lock()
+                .expect("test lock is not poisoned")
+                .iter()
+                .filter(|chars| **chars <= cap)
+                .count();
+            assert!(accepted > 1, "the queued text requires multiple chunks");
+            assert_eq!(
+                count_fact_embeddings(pool, outcome.memory_id).await?,
+                i64::try_from(accepted)?
+            );
+            assert_chunk_ordinals(pool, outcome.memory_id, accepted).await?;
             assert_eq!(
                 load_embedding_head_version(
                     pool,

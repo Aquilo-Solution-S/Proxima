@@ -5,6 +5,9 @@ use std::time::Duration;
 
 mod common;
 
+#[path = "mcp_tools_pg/embedding_chunks.rs"]
+mod embedding_chunks;
+
 use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeEraseRepoTool,

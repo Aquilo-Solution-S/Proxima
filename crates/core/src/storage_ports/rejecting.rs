@@ -303,7 +303,7 @@ impl EmbeddingWritePort for RejectingStorage {
         &self,
         _owner: &Owner,
         _entity: EmbeddableEntityRef,
-        _vector: &crate::SpaceVector,
+        _vectors: &[crate::SpaceVector],
         _proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         Ok(EmbeddingWriteOutcome {

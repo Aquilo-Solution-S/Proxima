@@ -2083,6 +2083,104 @@ async fn embedding_spaces_migration_upgrades_1024_rows_in_place() {
     result.expect("embedding-space upgrade test failed");
 }
 
+/// The chunk migration preserves every legacy vector/head and all ANN indexes.
+#[tokio::test]
+async fn embedding_chunks_migration_preserves_legacy_vectors_and_heads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let pool = pg.pool_for_tests();
+        let mut staged = proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls();
+        staged.migrations = std::borrow::Cow::Owned(
+            staged.iter().filter(|migration| migration.version < 20).cloned().collect(),
+        );
+        staged.run(pool).await?;
+        let owner_id = Uuid::now_v7();
+        let entity_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'legacy-model', 1024, 7, array_fill(0.5::real, ARRAY[1024])::vector, $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'legacy-model', 1024, 7, $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        let before = embedding_table_and_ann_files(pool).await?;
+        apply_current_migrations(&pg).await?;
+        assert_eq!(
+            embedding_table_and_ann_files(pool).await?, before,
+            "table and ANN indexes are preserved in place"
+        );
+        let legacy: (Uuid, i32, i32, Vec<f32>) = sqlx::query_as(
+            "SELECT e.entity_id, e.chunk_ordinal, h.embedding_version, e.vec::real[]
+               FROM proxima_core.embeddings e
+               JOIN proxima_core.embedding_heads h USING (entity_id, model_id, dim, embedding_version)",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(legacy, (entity_id, 0, 7, vec![0.5; 1024]));
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             VALUES ($1, 'legacy-model', 1024, 7, 1, array_fill(0.25::real, ARRAY[1024])::vector, $2)",
+        )
+        .bind(entity_id)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        let ordinals: Vec<i32> = sqlx::query_scalar(
+            "SELECT chunk_ordinal FROM proxima_core.embeddings ORDER BY chunk_ordinal",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            ordinals, vec![0, 1],
+            "the extended key permits multiple chunks in one version"
+        );
+        assert_current_markers(pool).await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.embeddings DROP CONSTRAINT embeddings_chunk_ordinal_chk",
+        )
+        .execute(pool)
+        .await?;
+        let error = assert_current_markers(pool)
+            .await
+            .expect_err("a missing ordinal bound must fail boot");
+        assert!(error.to_string().contains("chunk_ordinal nonnegative check"), "{error}");
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await?;
+    result
+}
+
+async fn embedding_table_and_ann_files(
+    pool: &sqlx::PgPool,
+) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT c.relname::text, pg_relation_filenode(c.oid)::bigint
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'proxima_core'
+            AND (c.relname = 'embeddings' OR c.relname LIKE 'embeddings_hnsw_d%')
+          ORDER BY c.relname",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// `proxima_core.flavor_surface` is the registry as the database sees it,
 /// and `memory.sidecar_tables` is constrained to be a subset of it.
 ///
@@ -3283,7 +3381,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );

@@ -462,11 +462,9 @@ pub enum DerivedEmbedding {
     /// enqueues nothing; a later `reconcile_embeddings` is what covers
     /// these rows.
     None,
-    /// The client embedded the text. Storage writes the vector inline, in
-    /// the same transaction as the row. An over-limit refusal whose
-    /// bisection then covered every piece also lands here: one vec per
-    /// version, so the first piece is what is stored.
-    Ready { vector: crate::SpaceVector },
+    /// The client embedded the text. Storage writes every chunk in text order,
+    /// in the same transaction as the row, then advances the version head.
+    Ready { vectors: Vec<crate::SpaceVector> },
     /// The client could not embed this text at any length, or the chunked
     /// rescue itself failed, while the provider is up — so the input, not
     /// the provider, is what failed. Storage writes no vector and enqueues

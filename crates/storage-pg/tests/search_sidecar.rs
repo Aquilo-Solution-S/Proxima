@@ -3,6 +3,9 @@
 //! returned nothing for, then admit via `memory_head`.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+#[path = "search_sidecar/embedding_chunks.rs"]
+mod embedding_chunks;
+
 use proxima_core::flavor::{
     Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
 };

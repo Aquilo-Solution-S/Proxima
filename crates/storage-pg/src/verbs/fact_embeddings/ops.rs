@@ -279,7 +279,7 @@ async fn current_embedding_ids_by_distance(
     vec: &str,
     k: i64,
     plan: DistancePlan,
-) -> Result<Vec<uuid::Uuid>, StorageError> {
+) -> Result<Vec<(uuid::Uuid, i32, i32)>, StorageError> {
     let mut tx = pool
         .begin()
         .await
@@ -307,10 +307,10 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
     }
-    // One vec per (entity_id, model_id, dim, embedding_version). The head
-    // join already picks the current version; there is nothing to DISTINCT ON.
+    // The canary measures ANN recall over vector rows. Distinguish chunks
+    // so another chunk of the same memory cannot count as an exact match.
     let sql = format!(
-        "SELECT emb.entity_id
+        "SELECT emb.entity_id, emb.embedding_version, emb.chunk_ordinal
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
@@ -320,7 +320,7 @@ async fn current_embedding_ids_by_distance(
           WHERE emb.model_id = $1
             AND emb.owner_id = $2
             AND {predicate}
-          ORDER BY {vec} <=> $3{cast}, emb.entity_id
+          ORDER BY {vec} <=> $3{cast}, emb.entity_id, emb.chunk_ordinal
           LIMIT $4",
         predicate = lane.predicate,
         vec = lane.vec,
@@ -328,7 +328,7 @@ async fn current_embedding_ids_by_distance(
     );
     // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
     // casts, chosen by a closed enum; every value is bound.
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(sql))
+    let rows = sqlx::query_as::<_, (uuid::Uuid, i32, i32)>(sqlx::AssertSqlSafe(sql))
         .bind(model_id)
         .bind(owner_id)
         .bind(vec)

@@ -862,8 +862,8 @@ impl Engine {
     /// An input this client cannot embed does not fail the write. A text
     /// refused whole is rescued by the drain's bisection and lands as
     /// [`DerivedEmbedding::Ready`] in the same transaction as the row —
-    /// so a long unit costs no job and no second round trip. Storage keeps
-    /// one vec per version, so the first piece is what is stored. A text
+    /// so a long unit costs no job and no second round trip. Every piece
+    /// is stored in the same embedding version. A text
     /// rejected at every length lands with no vector and a pending
     /// embedding job enqueued in the same transaction
     /// ([`DerivedEmbedding::Deferred`]), so [`Engine::drain_embedding_jobs`]
@@ -991,8 +991,8 @@ impl Engine {
 /// but only after a liveness probe, because an outage says nothing about
 /// the text. An over-limit text is routine for a corpus of long units, so
 /// it is rescued inline rather than refused now and rescued by a job
-/// later. Storage keeps one vec per version, so a successful rescue lands
-/// as [`DerivedEmbedding::Ready`] with the first piece. Only a text
+/// later. A successful rescue lands as [`DerivedEmbedding::Ready`] with
+/// every piece in text order. Only a text
 /// rejected at every length, or a rescue that fails midway, downgrades
 /// the write to a job.
 ///
@@ -1011,7 +1011,7 @@ pub(in crate::engine) async fn resolve_derived_embedding(
     let err = match client.embed(text).await {
         Ok(vector) => {
             return Ok(DerivedEmbedding::Ready {
-                vector: space_vector(bound, vector)?,
+                vectors: vec![space_vector(bound, vector)?],
             });
         }
         Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => err,
@@ -1024,18 +1024,13 @@ pub(in crate::engine) async fn resolve_derived_embedding(
     let refusal = err.to_string();
     match crate::llm::embed_in_chunks_after_failure(client, text, err).await {
         Ok(Some(vectors)) => {
-            let Some(vector) = vectors.into_iter().next() else {
-                return Err(StorageError::ConstraintViolation(
-                    "embedding version needs at least one chunk".into(),
-                ));
-            };
-            let vector = space_vector(bound, vector)?;
+            let vectors = space_vectors(bound, vectors)?;
             tracing::info!(
                 memory_id = ?memory_id,
                 text_bytes = text.len(),
                 "over-limit derived memory text embedded inline"
             );
-            Ok(DerivedEmbedding::Ready { vector })
+            Ok(DerivedEmbedding::Ready { vectors })
         }
         Ok(None) => {
             tracing::warn!(
@@ -1064,6 +1059,22 @@ pub(in crate::engine) async fn resolve_derived_embedding(
             })
         }
     }
+}
+
+/// Validate every chunk before storage can publish an embedding version.
+pub(in crate::engine) fn space_vectors(
+    bound: &crate::llm::BoundEmbeddingClient,
+    vectors: Vec<Vec<f32>>,
+) -> Result<Vec<crate::SpaceVector>, StorageError> {
+    if vectors.is_empty() {
+        return Err(StorageError::ConstraintViolation(
+            "embedding version needs at least one chunk".into(),
+        ));
+    }
+    vectors
+        .into_iter()
+        .map(|vector| space_vector(bound, vector))
+        .collect()
 }
 
 /// A vector the client returned, in its space. A width other than the one
