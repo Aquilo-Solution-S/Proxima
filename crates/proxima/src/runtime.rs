@@ -14,11 +14,10 @@ use proxima_core::storage_ports::{
     DelegatedAuthorityService,
 };
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
-    EmbeddingRouter, FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig,
-    ToolScope,
+    Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient, EmbeddingRouter,
+    FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig, ToolScope,
 };
-use proxima_core::{EngineHandle, Owner, OwnerRef, Role, UserId};
+use proxima_core::{EngineHandle, Owner};
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
     body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
@@ -626,7 +625,7 @@ impl Runtime {
         self.insecure_single_owner
             .then_some(self.host.owner.as_ref())
             .flatten()
-            .map(|owner| insecure_single_owner_authz(owner, AuthPath::HostBearer))
+            .map(|owner| AuthzContext::for_insecure_single_owner(&self.system_authority, *owner))
     }
 
     /// Cancel every started feature, join it, stop the engine.
@@ -846,23 +845,6 @@ impl std::fmt::Debug for RunningProxima {
             .field("has_server", &self.server.is_some())
             .field("runtime", &self.runtime)
             .finish_non_exhaustive()
-    }
-}
-
-type InsecureAuthz = AuthzContext;
-
-fn insecure_single_owner_authz(owner: &Owner, auth_path: AuthPath) -> InsecureAuthz {
-    match *owner {
-        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, auth_path)
-            .narrowed_to_owner(*owner)
-            .expect("personal owner is self-accessible"),
-        OwnerRef::Group(group) => AuthzContext::for_subject_with_role(
-            UserId::new(group.into_inner()),
-            [(*owner, Role::admin())],
-            auth_path,
-        )
-        .narrowed_to_owner(*owner)
-        .expect("group owner role is self-accessible"),
     }
 }
 
@@ -1267,7 +1249,7 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::{
         AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
-        FlavorRegistryError, Owner,
+        FlavorRegistryError, Owner, Role, UserId,
     };
     use proxima_storage_pg::PgPoolConfig;
     use uuid::Uuid;
@@ -1424,10 +1406,19 @@ mod tests {
     #[async_trait]
     impl Authenticator for StubAuth {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
-            Ok(insecure_single_owner_authz(
-                &self.owner,
-                AuthPath::HostBearer,
-            ))
+            let context = match self.owner {
+                Owner::Personal(subject) => {
+                    AuthzContext::for_subject(subject, AuthPath::HostBearer)
+                }
+                Owner::Group(group) => AuthzContext::for_subject_with_role(
+                    UserId::new(group.into_inner()),
+                    [(self.owner, Role::admin())],
+                    AuthPath::HostBearer,
+                ),
+            };
+            Ok(context
+                .narrowed_to_owner(self.owner)
+                .expect("stub owner is self-accessible"))
         }
     }
 

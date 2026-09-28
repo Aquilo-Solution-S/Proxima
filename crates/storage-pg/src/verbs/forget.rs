@@ -718,7 +718,8 @@ pub async fn snapshot_hot(
 /// compensates the object if the locator write fails.
 ///
 /// The caller must already hold `snapshot.row.handle`'s handle lock and the
-/// grounding lifecycle set — `forget_memory` and `forget_memory_oneshot` take
+/// grounding lifecycle set — `forget_memory` and
+/// `forget_memory_oneshot_in_transaction` take
 /// both before the PUT this commits. Re-taking them here would sort a freshly
 /// queried set while this transaction already holds locks from the first
 /// acquisition, which is exactly the out-of-order extension
@@ -2116,29 +2117,6 @@ pub async fn forget_memory(
             Err(err)
         }
     }
-}
-
-/// One-shot Engine path: `put` with no open transaction.
-pub async fn forget_memory_oneshot(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
-    cold: &dyn ColdObjectStore,
-    object_key: &str,
-    t: Uuid,
-    expected_owner_id: Uuid,
-) -> Result<(), StorageError> {
-    let tx = crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?;
-    forget_memory_oneshot_in_transaction(
-        tx,
-        sidecars,
-        surfaces,
-        cold,
-        object_key,
-        t,
-        expected_owner_id,
-    )
-    .await
 }
 
 pub(crate) async fn forget_memory_oneshot_in_transaction(

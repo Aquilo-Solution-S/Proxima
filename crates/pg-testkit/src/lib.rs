@@ -272,6 +272,8 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
 /// schemas: objects already in `flavor_schemas` move to the platform role
 /// and the runtime role gets the same grants it gets on `proxima_core` and
 /// `proxima_code`.
+/// Existing public tables whose names start with `_sqlx_migrations` also
+/// move to the platform role, with read-only access for the runtime role.
 ///
 /// Only the first call on a database prepares it; a schema the platform
 /// role creates later (the usual case: boot migrates as platform) is
@@ -413,7 +415,7 @@ pub async fn split_role_urls_for(
         sqlx::raw_sql(AssertSqlSafe(global_defaults))
             .execute(&mut target)
             .await?;
-        let ledgers = format!(
+        sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
                  version bigint PRIMARY KEY,
                  description text NOT NULL,
@@ -429,60 +431,52 @@ pub async fn split_role_urls_for(
                  success boolean NOT NULL,
                  checksum bytea NOT NULL,
                  execution_time bigint NOT NULL
-             );
-             ALTER TABLE public._sqlx_migrations OWNER TO {platform};
-             ALTER TABLE public._sqlx_migrations_proxima_code OWNER TO {platform};
-             REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._sqlx_migrations FROM {runtime};
-             REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._sqlx_migrations_proxima_code FROM {runtime};
-             GRANT SELECT ON public._sqlx_migrations, public._sqlx_migrations_proxima_code TO {runtime}",
-            platform = quoted_ident(SPLIT_PLATFORM_ROLE),
-            runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
-        );
-        // SQL-POLICY: fixed-fragment — ledger names and role identifiers are closed fixture values.
-        sqlx::raw_sql(AssertSqlSafe(ledgers))
-            .execute(&mut target)
-            .await?;
+             )",
+        )
+        .execute(&mut target)
+        .await?;
         let transfer = format!(
             "DO $$ DECLARE r record; BEGIN
                FOR r IN SELECT n.nspname FROM pg_namespace n
                   WHERE n.nspname IN ({schema_list}) LOOP
-                 EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{platform}');
+                 EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{SPLIT_PLATFORM_ROLE}');
                END LOOP;
                FOR r IN SELECT n.nspname, c.relname, c.relkind
                    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                   WHERE n.nspname IN ({schema_list})
                     AND c.relkind IN ('r','p','v','S') LOOP
                  IF r.relkind = 'S' THEN
-                   EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                   EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.nspname, r.relname, '{SPLIT_PLATFORM_ROLE}');
                  ELSIF r.relkind = 'v' THEN
-                   EXECUTE format('ALTER VIEW %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                   EXECUTE format('ALTER VIEW %I.%I OWNER TO %I', r.nspname, r.relname, '{SPLIT_PLATFORM_ROLE}');
                  ELSE
-                   EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}');
+                   EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{SPLIT_PLATFORM_ROLE}');
                  END IF;
                END LOOP;
                FOR r IN SELECT n.nspname, t.typname
                    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
                   WHERE n.nspname IN ({schema_list}) AND t.typtype IN ('e','d') LOOP
-                 EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{platform}');
+                 EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.nspname, r.typname, '{SPLIT_PLATFORM_ROLE}');
                END LOOP;
                FOR r IN SELECT n.nspname, p.proname,
                                 pg_get_function_identity_arguments(p.oid) AS args
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                   WHERE n.nspname IN ({schema_list}) LOOP
                  EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
-                                r.nspname, r.proname, r.args, '{platform}');
+                                r.nspname, r.proname, r.args, '{SPLIT_PLATFORM_ROLE}');
                END LOOP;
-               IF to_regclass('public._sqlx_migrations') IS NOT NULL THEN
-                 ALTER TABLE public._sqlx_migrations OWNER TO {platform_ident};
-               END IF;
-               IF to_regclass('public._sqlx_migrations_proxima_code') IS NOT NULL THEN
-                 ALTER TABLE public._sqlx_migrations_proxima_code OWNER TO {platform_ident};
-               END IF;
+               FOR r IN SELECT n.nspname, c.relname
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                    AND starts_with(c.relname, '_sqlx_migrations') LOOP
+                 EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{SPLIT_PLATFORM_ROLE}');
+                 EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %I.%I FROM %I',
+                                r.nspname, r.relname, '{SPLIT_RUNTIME_ROLE}');
+                 EXECUTE format('GRANT SELECT ON %I.%I TO %I', r.nspname, r.relname, '{SPLIT_RUNTIME_ROLE}');
+               END LOOP;
              END $$",
-            platform = SPLIT_PLATFORM_ROLE,
-            platform_ident = quoted_ident(SPLIT_PLATFORM_ROLE),
         );
-        // SQL-POLICY: fixed-fragment — schema names are validated lowercase identifiers quoted as literals; the role is a closed fixture value.
+        // SQL-POLICY: fixed-fragment — validated schema literals and closed role names; catalog identifiers use PostgreSQL format %I.
         sqlx::raw_sql(AssertSqlSafe(transfer))
             .execute(&mut target)
             .await?;

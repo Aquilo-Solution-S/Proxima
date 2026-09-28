@@ -39,6 +39,17 @@ async fn assert_guards_accept(runtime: &PgPool, platform: &PgPool, schema: &str)
 #[tokio::test]
 async fn platform_guard_completes_with_one_connection() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
+    let name = quoted_identifier(&schema);
+    for row_owner in [Uuid::now_v7(), Uuid::now_v7()] {
+        // SQL-POLICY: fixed-fragment — fixture-generated, quoted schema identifier.
+        sqlx::query(AssertSqlSafe(format!(
+            "INSERT INTO {name}.memory(id, owner_id) VALUES ($1, $1)"
+        )))
+        .bind(row_owner)
+        .execute(&admin)
+        .await
+        .unwrap();
+    }
     let options = proxima_pg_testkit::db_url(&database)
         .parse::<sqlx::postgres::PgConnectOptions>()
         .unwrap()
@@ -49,13 +60,32 @@ async fn platform_guard_completes_with_one_connection() {
         .connect_with(options)
         .await
         .unwrap();
-    tokio::time::timeout(
+    let scope = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         PgPlatformScope::new(platform.clone(), &[&schema]),
     )
     .await
-    .expect("platform catalog checks must reuse their single checked-out connection")
+    .expect("platform validation must complete without acquiring a second connection")
     .unwrap();
+    let mut transaction = tokio::time::timeout(std::time::Duration::from_secs(5), scope.begin())
+        .await
+        .expect("platform validation must release the connection")
+        .unwrap();
+    // SQL-POLICY: fixed-fragment — fixture-generated, quoted schema identifier.
+    let count: i64 =
+        sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {name}.memory")))
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    assert_eq!(count, 2, "the validated scope enables the platform policy");
+    transaction.commit().await.unwrap();
+    // SQL-POLICY: fixed-fragment — fixture-generated, quoted schema identifier.
+    let unscoped_count: i64 =
+        sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {name}.memory")))
+            .fetch_one(&platform)
+            .await
+            .unwrap();
+    assert_eq!(unscoped_count, 0, "scope must end with the transaction");
     runtime.close().await;
     platform.close().await;
     cleanup(&database, admin, &owner, &runtime_role).await;

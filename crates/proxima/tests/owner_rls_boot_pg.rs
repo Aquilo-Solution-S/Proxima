@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
 use proxima_core::{
-    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, OwnerRoles,
-    UserId,
+    AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
+    ErrorCode, GroupId, Owner, OwnerRoles, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgPoolConfig;
@@ -406,6 +406,103 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
         .expect("fresh second boot");
     second.shutdown().await;
     cleanup(&database, admin, &runtime, &platform).await;
+}
+
+async fn assert_insecure_single_owner_roundtrip(owner: Owner) {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    let built = Proxima::<CodeApp>::app()
+        .database_url(runtime_url)
+        .platform_database_url(platform_url)
+        .owner(owner)
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect("insecure single-owner boot with enforcing split roles");
+    let authz = built.single_owner_authz().expect("explicitly opted in");
+    assert_eq!(authz.auth_path(), AuthPath::HostBearer);
+    let scope = authz.owner_scope().expect("sealed host owner scope");
+    assert_eq!(scope.readable_owners(AccessKind::Fact), vec![owner]);
+    assert_eq!(scope.writable_owners(AccessKind::Fact), vec![owner]);
+
+    let foreign_subject = UserId::new(uuid::Uuid::now_v7());
+    let foreign_owner = Owner::Personal(foreign_subject);
+    let foreign_authz = proxima_core::authenticate(
+        &SyntheticAuthenticator {
+            subject: foreign_subject,
+        },
+        &Credentials::Bearer("synthetic-token".into()),
+    )
+    .await
+    .expect("foreign owner authentication");
+    let note = AgentNoteV1 {
+        note_id: uuid::Uuid::now_v7(),
+        title: "Insecure host owner RLS".into(),
+        body: "Only the configured owner can read and write".into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+    };
+    let engine = built.host().engine();
+    let foreign = engine
+        .ingest_fact(
+            &foreign_authz,
+            FactWrite::new(foreign_owner, "test/foreign-owner", &note),
+        )
+        .await
+        .expect("seed foreign owner's private fact");
+    let own = engine
+        .ingest_fact(&authz, FactWrite::new(owner, "test/insecure-owner", &note))
+        .await
+        .expect("raw single-owner context writes under owner RLS");
+    let response = engine
+        .query(&authz, &QueryRequest::readable())
+        .await
+        .expect("raw single-owner context reads under owner RLS");
+    assert!(response.memories.iter().any(|row| row.id == own.memory_id));
+    assert!(response.memories.iter().all(|row| row.owner == owner));
+    assert!(
+        response
+            .memories
+            .iter()
+            .all(|row| row.id != foreign.memory_id)
+    );
+    let denied = engine
+        .ingest_fact(
+            &authz,
+            FactWrite::new(foreign_owner, "test/forbidden-owner", &note),
+        )
+        .await
+        .expect_err("single-owner context cannot write the foreign owner");
+    assert_eq!(denied.code, ErrorCode::Forbidden);
+    if let Owner::Group(group) = owner {
+        let synthetic_personal = Owner::Personal(UserId::new(group.into_inner()));
+        let denied = engine
+            .ingest_fact(
+                &authz,
+                FactWrite::new(synthetic_personal, "test/synthetic-owner", &note),
+            )
+            .await
+            .expect_err("group's synthetic subject grants no Personal access");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+    }
+    assert!(authz.narrowed_to_owner(foreign_owner).is_none());
+    built.shutdown().await;
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn insecure_personal_owner_reads_and_writes_under_split_role_rls() {
+    assert_insecure_single_owner_roundtrip(Owner::Personal(UserId::new(uuid::Uuid::now_v7())))
+        .await;
+}
+
+#[tokio::test]
+async fn insecure_group_owner_reads_and_writes_under_split_role_rls() {
+    assert_insecure_single_owner_roundtrip(Owner::Group(GroupId::new(uuid::Uuid::now_v7()))).await;
 }
 
 #[tokio::test]

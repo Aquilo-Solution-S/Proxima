@@ -127,9 +127,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(
-            built.single_owner_authz().expect("single owner"),
-        );
+        let authz = built.single_owner_authz().expect("single owner");
         let engine = built.host().engine();
         let fact = engine
             .ingest_fact(

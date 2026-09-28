@@ -873,7 +873,13 @@ def run_fixture(path: Path) -> int:
 # catalog's foreign keys into `memory(t)` — find referencing rows, re-probe
 # them after the lock, delete them. Table and column names come from
 # `pg_constraint` through `PgIdent`; every value is bound.
-EXPECTED_DYNAMIC_SQL_SITES = 169
+# 169 -> 182: thirteen test-only construction/execution sites. Eight in
+# pg-testkit/tests/split_roles.rs exercise the same permission matrix against
+# four closed, quoted ledger names. Five in rls_guard_pg/privileged_objects.rs
+# insert and query rows in a fixture-generated, quoted schema to prove a
+# one-connection platform scope works and resets after commit. Row values
+# remain binds; every new site carries a fixed-fragment proof.
+EXPECTED_DYNAMIC_SQL_SITES = 182
 
 
 def run_self_test() -> int:
