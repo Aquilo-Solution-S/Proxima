@@ -272,6 +272,10 @@ fn envelope_schema(schema: &SchemaInfo, data: &Value) -> Value {
             "anyOf": [
                 {
                     "type": "string",
+                    "description": format!(
+                        "Host binding and capture enforce a {MAX_EXTENSION_VALUE_BYTES}-byte UTF-8 limit. \
+                         maxLength is only a necessary character bound and does not enforce the byte limit."
+                    ),
                     "minLength": 1,
                     // A byte limit, which bounds the character count.
                     "maxLength": MAX_EXTENSION_VALUE_BYTES,

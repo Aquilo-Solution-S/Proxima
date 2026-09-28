@@ -18,7 +18,8 @@ use proxima_core::flavor::contract::{
     SearchProjectionDecl, TransferRule,
 };
 use proxima_core::publication::{
-    PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, SealedPublication,
+    MAX_EXTENSION_VALUE_BYTES, PublicationDraft, PublicationExtensions, PublicationExtensionsError,
+    PublicationLimits, PublicationPlan, SealedPublication,
 };
 use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublisherId};
 use proxima_core::test_fixtures::{ListenableProbeV1, PROBE_FLAVOR, UnlistenableProbeV1};
@@ -374,8 +375,9 @@ fn the_payload_schema_holds_the_envelope_and_the_registered_data() {
     });
 }
 
-/// The schema admits exactly the extension attributes capture lets a host
-/// bind: the name and value checks run on both sides and must agree.
+/// Extension names, types and ASCII value constraints agree with host binding.
+/// Host binding owns the UTF-8 byte and extension count limits; the Unicode
+/// boundary test covers the schema's character count gap.
 #[test]
 fn extension_attributes_follow_the_binding_rules() {
     let document = document(&registry());
@@ -442,6 +444,76 @@ fn extension_attributes_follow_the_binding_rules() {
     if let Err(error) = schemas.validate(&event, index) {
         panic!("{error:#}\n{event:#}");
     }
+}
+
+#[tokio::test]
+async fn unicode_extension_byte_limit_is_capture_owned_and_the_schema_bounds_characters() {
+    let boundary = "é".repeat(128);
+    assert_eq!(boundary.len(), MAX_EXTENSION_VALUE_BYTES);
+    let extensions = PublicationExtensions::new()
+        .with("workflowid", boundary.clone())
+        .expect("128 Unicode characters fit the 256-byte binding limit");
+    let overlong = "é".repeat(129);
+    assert_eq!(overlong.len(), 258);
+    assert_eq!(
+        PublicationExtensions::new().with("workflowid", overlong.clone()),
+        Err(PublicationExtensionsError::ValueTooLong {
+            name: "workflowid".to_owned(),
+            bytes: 258,
+            max: MAX_EXTENSION_VALUE_BYTES,
+        }),
+        "the host cannot bind a Unicode value over the capture byte limit"
+    );
+
+    let (pg, _db) = fresh_pg("asyncapi_unicode").await;
+    let owner = owner();
+    common::register_owner(pg.pool_for_tests(), &owner).await;
+    common::capture_probe(
+        &pg,
+        owner,
+        common::source(),
+        extensions,
+        None,
+        "unicode-boundary",
+        None,
+    )
+    .await
+    .expect("capture accepts the extension at the UTF-8 byte boundary");
+    let claimed = pg
+        .claim(
+            &PublisherId::new("asyncapi-unicode-test").expect("publisher id"),
+            NonZeroU32::MIN,
+            Duration::from_mins(1),
+        )
+        .await
+        .expect("the captured event is claimed");
+    let [record] = claimed.as_slice() else {
+        panic!("one captured record, got {}", claimed.len());
+    };
+    let envelope: Value = serde_json::from_slice(&record.envelope).expect("the envelope is JSON");
+    assert_eq!(envelope["workflowid"], boundary);
+
+    let document = document(&registry());
+    let message_key = message_key::<ListenableProbeV1>();
+    let string_branch = &document["components"]["messages"][&message_key]["payload"]["additionalProperties"]
+        ["anyOf"][0];
+    let description = string_branch["description"]
+        .as_str()
+        .expect("a description");
+    assert!(description.contains("256-byte UTF-8"));
+    assert!(description.contains("capture"));
+    assert!(description.contains("necessary character bound"));
+    let (schemas, index) = payload_schema(&document, &message_key);
+    schemas
+        .validate(&envelope, index)
+        .expect("the captured boundary event validates against its message");
+
+    let mut hypothetical = envelope;
+    hypothetical["workflowid"] = json!(overlong);
+    schemas
+        .validate(&hypothetical, index)
+        .expect("129 Unicode characters satisfy maxLength while binding rejects their 258 bytes");
+    pg.pool_for_tests().close().await;
 }
 
 /// The JSON value as the one extension type capture could bind it as.
