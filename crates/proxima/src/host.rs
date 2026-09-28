@@ -222,17 +222,6 @@ pub use proxima_mcp_server::{
     HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
     RequestHeaderAllowlist, ResourceServerMetadata,
 };
-/// The retained-copy cleaner's config ([`RuntimeBuilder::copy_cleaner`]) and
-/// the health views [`BuiltProxima::publisher_health`] /
-/// [`BuiltProxima::copy_cleaner_health`] return, with every type their
-/// snapshots carry.
-#[cfg(feature = "outbox-nats")]
-pub use proxima_outbox_nats::{
-    CleanerConfigError, CopyCleanerConnectionState, CopyCleanerFailure, CopyCleanerHealth,
-    CopyCleanerHealthReader, CopyCleanerScanState, CopyCleanerTaskState, InboxPrefix,
-    JetStreamCopyCleanerConfig, PublisherConnectionState, PublisherDrainState, PublisherHealth,
-    PublisherHealthReader, PublisherTaskState,
-};
 /// The shipped NATS `JetStream` publisher and its reference consumer
 /// (docs/18, `crates/outbox-nats`).
 ///
@@ -246,6 +235,17 @@ pub use proxima_outbox_nats::{
     JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, ParsedSubject,
     PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError, asyncapi_document,
     parse_subject, subject_for,
+};
+/// The retained-copy cleaner's config ([`RuntimeBuilder::copy_cleaner`]) and
+/// the health views [`BuiltProxima::publisher_health`] /
+/// [`BuiltProxima::copy_cleaner_health`] return, with every type their
+/// snapshots carry.
+#[cfg(feature = "outbox-nats")]
+pub use proxima_outbox_nats::{
+    CleanerConfigError, CopyCleanerConnectionState, CopyCleanerFailure, CopyCleanerHealth,
+    CopyCleanerHealthReader, CopyCleanerScanState, CopyCleanerTaskState, InboxPrefix,
+    JetStreamCopyCleanerConfig, PublisherConnectionState, PublisherDrainState, PublisherHealth,
+    PublisherHealthReader, PublisherTaskState,
 };
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
