@@ -494,6 +494,10 @@ pub struct CodeEraseRepoOutput {
 
 /// Erase one registered repository and everything derived from it.
 ///
+/// Runs on `UnitOfWork::erase_own_series`, so it needs Admin on the owner,
+/// and the contract declares it `destructive` — without that declaration
+/// the verb refuses a call from this handler.
+///
 /// Supported re-index path: a HEAD snapshot re-derives only files whose
 /// content moved, so a deriver change cannot rewrite already-derived
 /// slices in place. Erase then re-ingest.
@@ -502,7 +506,7 @@ pub struct CodeEraseRepoTool;
 
 impl Tool for CodeEraseRepoTool {
     const NAME: &'static str = "proxima-code_erase_repo";
-    const DESCRIPTION: &'static str = "Erase one registered repository and every Fact, Abstraction, edge, embedding and receipt derived from it. Irreversible; requires the canonical path as confirmation. Also the supported way to re-index a repository from scratch after a Proxima upgrade changes chunking.";
+    const DESCRIPTION: &'static str = "Erase one registered repository and every Fact, Abstraction, edge, embedding and receipt derived from it. Irreversible; requires Admin on the owner and the canonical path as confirmation. Also the supported way to re-index a repository from scratch after a Proxima upgrade changes chunking.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
         Some(super::DESTRUCTIVE_NON_IDEMPOTENT);
 
@@ -537,9 +541,11 @@ impl Tool for CodeEraseRepoTool {
             }
 
             let canonical_path = repo.canonical_path.clone();
-            let receipt = crate::repos::erase_repo(&pool, &ctx.owner(), repo_id)
-                .await
-                .map_err(map_repo_registry)?;
+            let engine = super::engine(&ctx)?;
+            let receipt =
+                crate::repos::erase_repo(&engine, ctx.authz(), &pool, &ctx.owner(), repo_id)
+                    .await
+                    .map_err(map_repo_registry)?;
 
             Ok(CodeEraseRepoOutput {
                 repo_id: receipt.repo_id.to_string(),
@@ -605,20 +611,23 @@ pub(crate) fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         RepoRegistryError::RunAlreadyTerminal { run_id, status } => ToolError::InvalidInput(
             format!("ingestion run is already terminal: {run_id} ({status:?})"),
         ),
-        // Caller-facing and actionable: it names the rows, and the caller
-        // is the one who can retire or transfer them.
-        error @ RepoRegistryError::CrossOwnerReference { .. } => {
-            ToolError::InvalidInput(error.to_string())
-        }
+        // Caller-facing and actionable: each names the rows — another
+        // principal's, or ones no repository erase may take — and the
+        // caller is the one who can retire or transfer them.
+        error @ (RepoRegistryError::CrossOwnerReference { .. }
+        | RepoRegistryError::EraseRefused { .. }) => ToolError::InvalidInput(error.to_string()),
         // Only reachable once the retry budget is spent, since re-discovery
-        // is what answers the ordinary cause (a write that landed in the
-        // discovery window). Surviving that many attempts means either
-        // sustained contention on this repo or a genuine drift between the
-        // finding and deleting statements; neither is the caller's input,
-        // so neither is `InvalidInput`.
+        // is what answers the ordinary cause (a write that landed after the
+        // last page). Surviving that many attempts means either sustained
+        // contention on this repo or a genuine drift between the finder and
+        // the erase verb; neither is the caller's input, so neither is
+        // `InvalidInput`.
         error @ RepoRegistryError::FootprintIncomplete { .. } => {
             ToolError::Other(error.to_string())
         }
+        // Less than Admin, or an undeclared destructive tool: the verb's
+        // own code, so the wire says forbidden rather than invalid input.
+        RepoRegistryError::Protocol(error) => ToolError::Protocol(error),
         RepoRegistryError::Database(error) => map_storage(error),
         RepoRegistryError::Storage(error) => ToolError::Other(error.to_string()),
     }

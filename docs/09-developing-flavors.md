@@ -305,11 +305,14 @@ What that buys, without a line of fencing code in your write paths:
 
 What is still yours:
 
-- **The erase.** Take the fence exclusively with
-  `proxima::flavor::lock_scope_fence_exclusive_tx` **before you read anything
-  you intend to delete**, so the footprint is exact by construction rather
-  than by re-checking afterwards. A generic scope erase does not exist: what
-  "one scope's rows" means is your knowledge.
+- **The erase.** Find the scope's admissions with your own read and erase
+  them through `UnitOfWork::erase_own_series`, a page at a time (§Erasing
+  Your Own Series). Then retire the registry row in a transaction that takes
+  the fence exclusively with `proxima::flavor::lock_scope_fence_exclusive_tx`
+  **before its last read**: a row still filed under the scope is a write that
+  landed after your last page, so refuse, erase it, and retire again. A
+  generic scope erase does not exist: what "one scope's rows" means is your
+  knowledge.
 - **Flavor state rows that are not Memory admissions** (a run row, a cursor).
   The Engine never sees those, so it cannot fence them; take the same fence
   with `proxima::flavor::lock_scope_fence_shared_tx` yourself.
@@ -767,6 +770,35 @@ A participant error after its SQL has succeeded poisons the unit: `commit`
 refuses and drop rolls every participant back. `ProximaHost::clone_pool_for_host`
 remains a different pool and is not this path.
 
+## Erasing Your Own Series
+
+A hard erase of what the flavor admitted — every version, hot and cooled —
+for data a flavor must destroy on request rather than forget. No
+`proxima-storage-pg` import, no fence, no platform transaction.
+
+```rust
+use proxima::flavor::{EraseMode, SeriesSelection};
+
+let mut unit = engine.unit_of_work(&authz).await?;
+let receipt = unit
+    .erase_own_series("acme", owner, SeriesSelection::Ids(ids), EraseMode::Erase)
+    .await?;
+unit.commit().await?;
+```
+
+| Rule | Contract |
+|---|---|
+| unit | first and only operation of its unit; `DryRun` reports and rolls back |
+| scope | one owner; only this flavor's Fact/Abstraction/Perspective schemas; each id expanded to its whole series |
+| references | a row holding a foreign key into an erased `t` is erased with it; a referencing table with no declared memory key refuses |
+| authority | Admin on the owner, or the host's `Engine::system_unit_of_work` |
+| tools | the calling tool's `ToolContract` must say `destructive: true` |
+| bound | 256 series / 1024 versions per call: page `Ids`; loop `AdmittedBefore` while `more_remaining` |
+| errors | `Refused` names every offender and deleted nothing; `Retryable`: run the unit again |
+
+Full contract: [13 §Flavor-scoped erase](13-compliance.md#flavor-scoped-erase).
+`flavors/code/src/repos/erase.rs` pages a repository through it.
+
 ## Deriving Abstractions
 
 ```rust
@@ -1123,6 +1155,7 @@ Tool contract:
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
 | Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. Atomic host-state with Facts: Host API `UnitOfWork::apply_host_state` only. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
+| Destructive | `ToolContract.destructive` equals the tool's resolved MCP `destructiveHint` (freeze refuses a disagreement); only a destructive tool may call `UnitOfWork::erase_own_series` |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.
@@ -1296,5 +1329,6 @@ serialization. Internal identity/storage/query paths must stay typed.
 - Prefix guards pass at registry freeze.
 - Every flavor-owned lifecycle scope is DECLARED — `SCOPE_KIND`/`scope_id` on
   every payload that belongs to it, one `ScopeDecl` in `FlavorContract::scopes`
-  — and its erase takes that fence exclusively before its selection reads.
+  — and its registry-row retirement takes that fence exclusively before its
+  last read.
 - `cargo clippy --workspace --all-targets` clean.

@@ -8,10 +8,10 @@
 
 use super::fixtures::{
     CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_FLAVOR,
-    FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_IDEMPOTENCE_DISAGREES, UNENFORCED_REFUSAL,
-    UNREGISTERED_SCHEMA, UNREGISTERED_TOOL, register_fixture_schema,
-    register_fixture_schema_of_kind, register_fixture_tool, register_uniformity_schemas,
-    registration_without_a_contract,
+    FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_AGREES, TOOL_DESTRUCTIVENESS_DISAGREES,
+    TOOL_IDEMPOTENCE_DISAGREES, UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL,
+    register_fixture_schema, register_fixture_schema_of_kind, register_fixture_tool,
+    register_uniformity_schemas, registration_without_a_contract,
 };
 use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
@@ -565,6 +565,23 @@ fn each_contract_cross_check_rejects_its_own_shape() {
                 )
             },
         ),
+        (
+            "the contract admits an erase the wire never warns about",
+            |registry| {
+                register_fixture_tool(registry, false);
+                registry.contracts.push(&TOOL_DESTRUCTIVENESS_DISAGREES);
+            },
+            |err| {
+                matches!(
+                    err,
+                    FlavorRegistryError::ToolDestructivenessDisagreement {
+                        declared: true,
+                        resolved: false,
+                        ..
+                    }
+                )
+            },
+        ),
     ];
 
     for (shape, break_it, expected) in cases {
@@ -643,5 +660,17 @@ fn the_shapes_the_new_refusals_must_accept_freeze() {
         .push(&HOST_MANAGED_OWNERLESS_EXPORTS);
     if let Err(err) = lifecycle_owned_exports.try_freeze() {
         panic!("host lifecycle can export its ownerless Rows and Allowlist surfaces: {err}");
+    }
+}
+
+/// The accepted twin of the two tool-annotation refusals: a declaration
+/// that copies its registration exactly freezes.
+#[test]
+fn a_tool_declared_as_its_registration_describes_it_freezes() {
+    let mut registry = FlavorRegistry::new();
+    register_fixture_tool(&mut registry, false);
+    registry.contracts.push(&TOOL_AGREES);
+    if let Err(err) = registry.try_freeze() {
+        panic!("freeze refused a tool declaration that agrees with its registration: {err}");
     }
 }

@@ -320,6 +320,20 @@ pub enum FlavorRegistryError {
         declared: bool,
         resolved: bool,
     },
+    /// A tool's contract and its resolved MCP annotations disagree about
+    /// whether it destroys data. The contract's flag admits
+    /// `UnitOfWork::erase_own_series`; the annotation is what a client reads
+    /// before auto-approving. Two answers would let one without the other.
+    #[error(
+        "flavor {flavor_id} declares {name} destructive = {declared}; its resolved \
+         MCP annotations say {resolved}"
+    )]
+    ToolDestructivenessDisagreement {
+        flavor_id: &'static str,
+        name: &'static str,
+        declared: bool,
+        resolved: bool,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     #[error(

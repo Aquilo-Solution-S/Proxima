@@ -258,7 +258,7 @@ writes use the same tool with the matching action key.
    schema nothing registered, a schema registered under a flavor whose
    contract does not declare it, and a contract naming an unregistered MCP
    tool.
-9. A declaration that disagrees with the registration it duplicates. Three,
+9. A declaration that disagrees with the registration it duplicates. Four,
    all of the same shape — the contract says one thing, something else in the
    binary already said another, and until these checks nothing kept the two
    equal:
@@ -271,6 +271,10 @@ writes use the same tool with the matching action key.
    - A `ToolContract::idempotent` that is not what the tool's resolved
      annotations say. Read-only resolves as idempotent: calling a read twice
      is calling it once, and MCP's `readOnlyHint` carries that.
+   - A `ToolContract::destructive` that is not the tool's resolved
+     `destructiveHint` (absent reads as `false`). The declaration is also the
+     erase gate: `UnitOfWork::erase_own_series` refuses a call from a tool it
+     does not mark destructive (see 13 §Flavor-scoped erase).
 10. A surface whose declared rule names no leg the generator can run:
     `UndeletableSurface`, `UnmovableSurface`, `UnforgettableSurface`.
     Each of the three partitions (`EraseLeg`, `TransferLeg`, `ForgetLeg`) has
@@ -434,9 +438,10 @@ it declares one:
   collected the affected `t`s and named two detail tables the constraints
   already cascaded. It is `flavors/code/src/repos/erase.rs` now, next to the
   contract, and a unit test fails when a declared surface is reached by
-  neither the sweep, a cascade, nor a named exemption. The substrate half is
+  neither the finder, a cascade, nor a named exemption. The substrate half is
   gone outright: the flavor hands its admissions to
-  `verbs::forget::erase_memory_series`, which walks the sidecar registry.
+  `UnitOfWork::erase_own_series` (see 13 §Flavor-scoped erase), which walks
+  the sidecar registry.
 - `flavors/code/src/mcp/search_commits.rs` and `search_chunks.rs` render
   their score windows from the flavor's own `bands` declaration, and that
   declaration is built from flavor #0's `BAND_EXACT` / `BAND_RESCUE` /

@@ -87,6 +87,13 @@ pub use proxima_core::verbs::goal_write::{
     GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
     IdempotencyKey, OperatorKind, SystemOrigin,
 };
+/// Flavor-scoped erase ([`UnitOfWork::erase_own_series`]): the selection,
+/// the mode, the receipt, the refusal, and the per-call caps a caller pages
+/// against.
+pub use proxima_core::verbs::own_erase::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
+};
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, SupersessionStatus,
     hybrid_degraded_to_lexical,

@@ -10,7 +10,7 @@ pub mod scope;
 
 pub use erase::erase_repo;
 #[cfg(any(test, debug_assertions))]
-pub use erase::{erase_footprint, reference_closure_sql};
+pub use erase::repo_finder_sql;
 /// The declared lifecycle scope. `CODE_REPO_SCOPE` is what a repo-scoped
 /// payload names and what an integration-test barrier hands to
 /// `proxima::flavor::lock_scope_fence_exclusive_tx` — the same key the

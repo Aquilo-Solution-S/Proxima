@@ -190,9 +190,6 @@ impl FlavorApp for ProximaMcpApp {
             services.try_insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
                 host.clone_pool_for_host(),
                 host.pg_tuning_for_host(),
-                host.pg_sidecars_for_host(),
-                host.host_state_erase_context_for_host(),
-                host.platform_scope_for_host(),
             ))?;
             Ok(services)
         }

@@ -29,6 +29,20 @@ struct PgWriteSession {
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
     cold: Arc<dyn ColdObjectStore>,
     host_state: Option<crate::RegisteredHostStateParticipant>,
+    /// Set only on a session from `begin_series_erase`.
+    series_erase: Option<SeriesEraseState>,
+}
+
+/// What a series-erase session needs beyond an ordinary one: the boot's
+/// erase context, the owner its fences were taken for, and — once the erase
+/// ran — the cold debt `commit` settles.
+struct SeriesEraseState {
+    context: crate::PgHostStateEraseContext,
+    owner: proxima_core::Owner,
+    pool: sqlx::PgPool,
+    platform: Option<crate::PgPlatformScope>,
+    ran: bool,
+    cold_purge: verbs::forget::ColdPurgePlan,
 }
 
 #[async_trait::async_trait]
@@ -70,6 +84,52 @@ impl WriteSessionFactory for PgStorage {
         let tx = self.platform_transaction().await?;
         self.session_from_transaction(tx).await
     }
+
+    async fn begin_series_erase(
+        &self,
+        permit: &OwnerWritePermit,
+    ) -> Result<Box<dyn WriteSession>, StorageError> {
+        if permit.access_kind() != proxima_core::AccessKind::Goal {
+            return Err(StorageError::ConstraintViolation(
+                "a series erase requires an Admin-level owner permit".into(),
+            ));
+        }
+        let context = self.host_state_erase_context()?;
+        // Platform scope: the erase reaches captured publication records by
+        // `t` across original owners, which owner RLS would filter out
+        // silently. The owner still comes from the sealed permit.
+        let mut tx = self.owner_maintenance_transaction(permit).await?;
+        // Bounded waits from the first lock on, as the owner erase does: a
+        // lock this erase cannot get is a 55P03 in five seconds, which the
+        // caller retries, not a five-minute stall behind a writer.
+        sqlx::query("SET LOCAL lock_timeout = '5s'")
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::error::map_err)?;
+        // The exclusive lifecycle fence is the transaction's first lock and
+        // the owner fence its second: an ordinary unit holds the former
+        // shared from entry, and a transfer takes the latter exclusively
+        // before it moves a series, so the footprint below is one ownership
+        // snapshot.
+        crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
+        crate::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, permit.owner()).await?;
+        Ok(Box::new(PgWriteSession {
+            tx,
+            sidecars: self.sidecars.clone(),
+            surfaces: self.surfaces.clone(),
+            scopes: self.scopes.clone(),
+            cold: Arc::clone(&self.cold),
+            host_state: self.host_state.clone(),
+            series_erase: Some(SeriesEraseState {
+                context,
+                owner: *permit.owner(),
+                pool: self.pool.clone(),
+                platform: self.platform_scope.clone(),
+                ran: false,
+                cold_purge: verbs::forget::ColdPurgePlan::default(),
+            }),
+        }))
+    }
 }
 
 impl PgStorage {
@@ -89,6 +149,7 @@ impl PgStorage {
             scopes: self.scopes.clone(),
             cold: Arc::clone(&self.cold),
             host_state: self.host_state.clone(),
+            series_erase: None,
         }))
     }
 }
@@ -402,7 +463,57 @@ impl WriteSession for PgWriteSession {
         .await
     }
 
+    async fn erase_series(
+        &mut self,
+        permit: &OwnerWritePermit,
+        request: &proxima_core::verbs::own_erase::SeriesEraseRequest<'_>,
+    ) -> Result<proxima_core::verbs::own_erase::SeriesEraseOutcome, StorageError> {
+        let Some(state) = self.series_erase.as_mut() else {
+            return Err(StorageError::ConstraintViolation(
+                "a series erase runs only on a session from begin_series_erase".into(),
+            ));
+        };
+        if state.ran || *permit.owner() != state.owner {
+            return Err(StorageError::ConstraintViolation(
+                "a series-erase session erases once, for the owner it was opened for".into(),
+            ));
+        }
+        state.ran = true;
+        let (outcome, cold_purge) = verbs::series_erase::erase_series(
+            &mut self.tx,
+            &self.sidecars,
+            &state.context,
+            permit.owner(),
+            request,
+        )
+        .await?;
+        state.cold_purge = cold_purge;
+        Ok(outcome)
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), StorageError> {
-        self.tx.commit().await.map_err(crate::error::map_err)
+        let session = *self;
+        session.tx.commit().await.map_err(crate::error::map_err)?;
+        // After commit and never before: a rollback after an object delete
+        // would restore the `cooled` locator over destroyed bytes. A failed
+        // purge leaves its `cold_purge_pending` row for the retry lane.
+        if let Some(state) = session.series_erase {
+            let outcome = verbs::forget::purge_cold_objects_after_commit_with_platform(
+                &state.pool,
+                state.platform.as_ref(),
+                session.cold.as_ref(),
+                &state.cold_purge,
+            )
+            .await;
+            if outcome.failed > 0 || outcome.pending {
+                tracing::warn!(
+                    attempted = outcome.attempted,
+                    failed = outcome.failed,
+                    "series erase committed; cold objects remain queued for \
+                     maintain-storage --retry-cold-object-purges"
+                );
+            }
+        }
+        Ok(())
     }
 }

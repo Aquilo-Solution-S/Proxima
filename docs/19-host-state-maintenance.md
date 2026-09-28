@@ -67,19 +67,20 @@ exact-physical-Fact scope; exact physical IDs and original-publication copy
 locators `(OwnerRef, MemoryId)` are separate typed selections. A source erase
 can therefore remove a copy captured by an owner before transfer, while an
 exact Fact erase removes copies of that physical `t` across original owners.
-Only the existing authorized core hard-erase path can issue the latter
-selection. The lifecycle source and publication-origin source are distinct
+Only an authorized core hard erase issues the latter selection: whole-owner,
+source-scope, or the flavor-scoped erase ([13 §Flavor-scoped
+erase](13-compliance.md#flavor-scoped-erase)). The lifecycle source and publication-origin source are distinct
 typed wrappers over the same native Proxima `SourceId` token; the erase adapter
 passes the existing source value through by clone. It does not interpret the
 CloudEvents producer `source` URI as a Fact source. This callback registration
 grants no owner-erasure authority.
 
 Ordinary host write units hold the shared database lifecycle fence from
-transaction entry. Whole-owner, source, and custom physical erases acquire the
+transaction entry. Whole-owner, source, and flavor-scoped erases acquire the
 exclusive fence before owner/source/handle/target locks, then run the callback,
-origin revocation, and core inverse in the same transaction. Production flavor
-stores receive the opaque erase context captured from the actual frozen
-registry; they must not reconstruct a narrower registry of their own.
+origin revocation, and core inverse in the same transaction. The flavor-scoped
+erase runs on the Engine's own storage, whose erase context is captured from
+the actual frozen registry; a flavor never holds one.
 
 Bulk erase sets a transaction-local five-second `lock_timeout` before asking
 for the first exclusive fence. The wait conflict remains retryable at the

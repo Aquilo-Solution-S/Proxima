@@ -209,6 +209,7 @@ pub(super) static UNREGISTERED_TOOL: FlavorContract = contract(
         wire_name: "test_flavor_absent",
         actions: &[],
         idempotent: true,
+        destructive: false,
     }],
     &[],
 );
@@ -225,6 +226,7 @@ pub(super) static TOOL_ACTIONS_DISAGREE: FlavorContract = contract(
         wire_name: "test_flavor_flat",
         actions: &["compose"],
         idempotent: false,
+        destructive: false,
     }],
     &[],
 );
@@ -238,6 +240,34 @@ pub(super) static TOOL_IDEMPOTENCE_DISAGREES: FlavorContract = contract(
         wire_name: "test_flavor_flat",
         actions: &[],
         idempotent: true,
+        destructive: false,
+    }],
+    &[],
+);
+
+/// The declaration admits `erase_own_series`; the registration's annotations
+/// never tell a client the tool destroys anything.
+pub(super) static TOOL_DESTRUCTIVENESS_DISAGREES: FlavorContract = contract(
+    10,
+    &[],
+    &[ToolContract {
+        wire_name: "test_flavor_flat",
+        actions: &[],
+        idempotent: false,
+        destructive: true,
+    }],
+    &[],
+);
+
+/// The same flat tool declared exactly as its registration describes it.
+pub(super) static TOOL_AGREES: FlavorContract = contract(
+    11,
+    &[],
+    &[ToolContract {
+        wire_name: "test_flavor_flat",
+        actions: &[],
+        idempotent: false,
+        destructive: false,
     }],
     &[],
 );

@@ -1,5 +1,5 @@
-//! Production Proxima MCP service assembly carries the full frozen host
-//! lifecycle registry into Code repository erasure.
+//! Code repository erasure runs on the production Engine's erase verb, which
+//! carries the full frozen host lifecycle registry.
 #![cfg(feature = "code")]
 #![allow(clippy::too_many_lines)]
 
@@ -243,7 +243,7 @@ impl PgHostStateParticipant for Participant {
 }
 
 #[tokio::test]
-async fn production_code_store_uses_full_boot_registry_for_atomic_host_erase()
+async fn production_code_erase_uses_full_boot_registry_for_atomic_host_erase()
 -> Result<(), Box<dyn std::error::Error>> {
     let database = unique_db_name("proxima_full_registry_code_erase");
     create_db(&database).await?;
@@ -350,8 +350,10 @@ async fn exercise_full_registry_erase(
     // The host callback deletes its row and then fails. The production Code
     // erase must roll back that callback SQL together with its Fact inverse.
     FAIL_AFTER_DELETE_ONCE.store(true, Ordering::SeqCst);
+    let engine = Arc::clone(built.host().engine());
     let failed =
-        proxima_code::testkit::erase_repo_with_scope(&store, &owner, repo_id, &owner_scope).await;
+        proxima_code::testkit::erase_repo_with_scope(&engine, &authz, &store, &owner, repo_id)
+            .await;
     assert!(
         failed.is_err(),
         "the injected callback failure must abort erase"
@@ -361,7 +363,8 @@ async fn exercise_full_registry_erase(
     assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst), 1);
 
     let erased =
-        proxima_code::testkit::erase_repo_with_scope(&store, &owner, repo_id, &owner_scope).await?;
+        proxima_code::testkit::erase_repo_with_scope(&engine, &authz, &store, &owner, repo_id)
+            .await?;
     assert_eq!(erased.memories_deleted, 1);
     assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -415,6 +418,7 @@ async fn exercise_full_registry_erase(
     drop(source_storage);
     pool.close().await;
     drop(store);
+    drop(engine);
     built.shutdown().await;
     Ok(())
 }

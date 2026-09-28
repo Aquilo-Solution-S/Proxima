@@ -2,7 +2,7 @@
 
 use super::Engine;
 use super::memory_authoring::PreparedDerived;
-use crate::access::Relation;
+use crate::access::{AccessKind, Relation};
 use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
 use crate::error::ProtocolError;
 use crate::storage_ports::{
@@ -12,6 +12,11 @@ use crate::storage_ports::{
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
+};
+use crate::verbs::own_erase::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseOutcome, SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind,
+    SeriesEraseReport, SeriesEraseRequest, SeriesSelection,
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
@@ -203,6 +208,9 @@ pub struct UnitOfWork<'a> {
     written_kinds: Vec<(MemoryId, EntityKind)>,
     /// Resolved destinations, for owner-constrained pending Goal assignments.
     written_owners: Vec<(MemoryId, Owner)>,
+    /// [`Self::erase_own_series`] ran. The unit then accepts only
+    /// [`Self::commit`]: its session is the erase's, not a cognitive one.
+    erased: bool,
 }
 
 enum UnitAuthorization<'a> {
@@ -211,6 +219,9 @@ enum UnitAuthorization<'a> {
         owner: Owner,
         descriptor: HostStateParticipantDescriptor,
     },
+    /// Host-held system authority, for [`UnitOfWork::erase_own_series`]
+    /// only: a retention schedule has no user and no tool.
+    System(&'a SystemAuthority),
 }
 
 /// Uncloneable capability minted for one booted engine's actual, frozen
@@ -370,6 +381,40 @@ impl Engine {
             written: Vec::new(),
             written_kinds: Vec::new(),
             written_owners: Vec::new(),
+            erased: false,
+        })
+    }
+
+    /// Open a unit under the host's system authority.
+    ///
+    /// It admits exactly one verb, [`UnitOfWork::erase_own_series`]: the
+    /// host's retention schedule runs with nobody in the loop, so there is no
+    /// user to hold Admin and no tool to declare itself destructive. The
+    /// flavor-scope rules are the ordinary unit's: one owner, the named
+    /// flavor's own schemas. Every cognitive write on it is refused.
+    ///
+    /// # Errors
+    /// Returns a forbidden error when `authority` belongs to another engine
+    /// boot.
+    pub fn system_unit_of_work<'a>(
+        &'a self,
+        authority: &'a SystemAuthority,
+    ) -> Result<UnitOfWork<'a>, ProtocolError> {
+        if !authority.authorizes(&self.system_authority_binding) {
+            return Err(ProtocolError::forbidden(
+                "system authority belongs to a different engine boot",
+            ));
+        }
+        Ok(UnitOfWork {
+            engine: self,
+            authorization: UnitAuthorization::System(authority),
+            session: None,
+            committed: false,
+            poisoned: false,
+            written: Vec::new(),
+            written_kinds: Vec::new(),
+            written_owners: Vec::new(),
+            erased: false,
         })
     }
 
@@ -440,6 +485,7 @@ impl Engine {
                 written: Vec::new(),
                 written_kinds: Vec::new(),
                 written_owners: Vec::new(),
+                erased: false,
             },
         })
     }
@@ -532,12 +578,20 @@ impl UnitOfWork<'_> {
             UnitAuthorization::HostState { .. } => Err(ProtocolError::forbidden(
                 "host-state unit does not authorize ordinary cognitive writes",
             )),
+            UnitAuthorization::System(_) => Err(ProtocolError::forbidden(
+                "a system unit authorizes only erase_own_series",
+            )),
         }
     }
 
     async fn ensure_session(&mut self) -> Result<&mut Box<dyn WriteSession>, ProtocolError> {
         if self.committed {
             return Err(ProtocolError::internal("unit of work already committed"));
+        }
+        if self.erased {
+            return Err(ProtocolError::internal(
+                "unit of work ran erase_own_series; commit it and open another unit",
+            ));
         }
         if self.poisoned {
             return Err(ProtocolError::internal(
@@ -556,6 +610,11 @@ impl UnitOfWork<'_> {
                         HostStateWriteOrigin::Maintenance,
                     );
                     factory.begin_host_state(&permit).await
+                }
+                UnitAuthorization::System(_) => {
+                    return Err(ProtocolError::forbidden(
+                        "a system unit authorizes only erase_own_series",
+                    ));
                 }
             }
             .map_err(|err| ProtocolError::internal(err.to_string()))?;
@@ -772,6 +831,11 @@ impl UnitOfWork<'_> {
                         principal: authz.principal(),
                     },
                 )
+            }
+            UnitAuthorization::System(_) => {
+                return Err(ProtocolError::forbidden(
+                    "a system unit authorizes only erase_own_series",
+                ));
             }
             UnitAuthorization::HostState {
                 owner: fixed_owner,
@@ -1125,6 +1189,107 @@ impl UnitOfWork<'_> {
             })
     }
 
+    /// Hard-erase whole series of `flavor_id`'s own memory schemas under
+    /// `owner` (docs/13 §Flavor-scoped erase).
+    ///
+    /// Every selected admission is expanded to its whole series, hot and
+    /// cooled, and every series with a row referencing the set through a
+    /// foreign key joins it: a reference to erased data is erased with it.
+    /// The effect per version is the physical erase the owner erase runs —
+    /// sidecars, embeddings, heads, captured publications, the erase witness
+    /// — and a cited blob goes with its last citer. Cold objects are enqueued
+    /// here and destroyed after [`Self::commit`].
+    ///
+    /// Admission, all before the first delete:
+    /// - `flavor_id` names a registered flavor other than core, and every
+    ///   erased series is one of its Fact, Abstraction or Perspective schemas;
+    /// - every version and every referencing row belongs to `owner`;
+    /// - Admin on `owner` ([`Engine::unit_of_work`]) or the host's system
+    ///   authority ([`Engine::system_unit_of_work`]);
+    /// - inside a tool handler, the tool is one `flavor_id` declares
+    ///   `destructive` in its contract;
+    /// - at most [`MAX_ERASE_SERIES_PER_CALL`] series and
+    ///   [`MAX_ERASE_VERSIONS_PER_CALL`] versions: an `Ids` selection over
+    ///   the cap is refused, an `AdmittedBefore` selection stops at it and
+    ///   reports `more_remaining`.
+    ///
+    /// It must be the unit's first and only operation: the erase takes its
+    /// locks before anything else in the transaction. [`EraseMode::DryRun`]
+    /// runs the same path and rolls it back.
+    ///
+    /// # Errors
+    /// [`SeriesEraseError::Refused`] names what put the selection out of
+    /// scope; [`SeriesEraseError::Retryable`] asks for the unit to be run
+    /// again; [`SeriesEraseError::Protocol`] for authorization, declaration
+    /// and storage faults.
+    pub async fn erase_own_series(
+        &mut self,
+        flavor_id: &str,
+        owner: Owner,
+        selection: SeriesSelection,
+        mode: EraseMode,
+    ) -> Result<SeriesEraseReceipt, SeriesEraseError> {
+        if self.committed || self.poisoned || self.erased || self.session.is_some() {
+            return Err(ProtocolError::invalid_argument(
+                "unit_of_work",
+                "erase_own_series must be the first and only operation of its unit",
+            )
+            .into());
+        }
+        let (contract, own_schemas) = self.admit_series_erase(flavor_id, &selection)?;
+        let permit = authorize_series_erase(self.engine, &self.authorization, owner).await?;
+        let request = SeriesEraseRequest {
+            own_schemas: &own_schemas,
+            selection: &selection,
+            max_series: MAX_ERASE_SERIES_PER_CALL,
+            max_versions: MAX_ERASE_VERSIONS_PER_CALL,
+        };
+        // Spent from here on, whatever the outcome: the session below is the
+        // erase's, and nothing else may run on it.
+        self.erased = true;
+        // An empty id list is authorized and answered here. It erases
+        // nothing, so it takes no lock: a caller paging through a scope asks
+        // with an empty page to learn it may erase at all.
+        let report = if matches!(&selection, SeriesSelection::Ids(ids) if ids.is_empty()) {
+            SeriesEraseReport::default()
+        } else {
+            let mut session = self
+                .engine
+                .storage()
+                .write_session
+                .begin_series_erase(&permit)
+                .await
+                .map_err(erase_storage_error)?;
+            let outcome = session
+                .erase_series(&permit, &request)
+                .await
+                .map_err(erase_storage_error)?;
+            let report = match outcome {
+                SeriesEraseOutcome::Erased(report) => report,
+                SeriesEraseOutcome::Refused(refusal) => {
+                    return Err(SeriesEraseError::Refused(refusal));
+                }
+            };
+            if mode == EraseMode::Erase {
+                self.session = Some(session);
+            }
+            report
+        };
+        Ok(SeriesEraseReceipt {
+            flavor_id: contract.flavor_id,
+            owner: *permit.owner(),
+            mode,
+            series_erased: report.series_erased,
+            versions_erased: u64::try_from(report.versions.len()).unwrap_or(u64::MAX),
+            versions: report.versions,
+            referencing_series: report.referencing_series,
+            blobs_removed: report.blobs_removed,
+            cold_objects_pending: report.cold_objects_pending,
+            dangling_pins: report.dangling_pins,
+            more_remaining: report.more_remaining,
+        })
+    }
+
     /// Commit the transaction. Further methods fail.
     ///
     /// # Errors
@@ -1148,6 +1313,156 @@ impl UnitOfWork<'_> {
             .commit()
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
+    }
+}
+
+impl UnitOfWork<'_> {
+    /// The declaration half of [`Self::erase_own_series`]: the named flavor,
+    /// the calling tool, and the selection's own shape. Nothing here reads
+    /// storage.
+    fn admit_series_erase(
+        &self,
+        flavor_id: &str,
+        selection: &SeriesSelection,
+    ) -> Result<(&'static crate::FlavorContract, Vec<String>), SeriesEraseError> {
+        let contract = self
+            .engine
+            .registry()
+            .flavor_contract(flavor_id)
+            .ok_or_else(|| {
+                ProtocolError::invalid_argument(
+                    "flavor",
+                    format!("{flavor_id} is not a registered flavor"),
+                )
+            })?;
+        if contract.ordinal == crate::flavor::contract::CORE_ORDINAL {
+            return Err(ProtocolError::forbidden(
+                "core schemas are erased only by the owner and source-scope erases",
+            )
+            .into());
+        }
+        if let UnitAuthorization::Ordinary(authz) = self.authorization
+            && let Some(tool) = authz.invoking_tool()
+            && !contract
+                .tools
+                .iter()
+                .any(|declared| declared.wire_name == tool && declared.destructive)
+        {
+            return Err(ProtocolError::forbidden(format!(
+                "tool {tool} is not declared destructive by flavor {flavor_id}, \
+                 so it cannot erase"
+            ))
+            .into());
+        }
+        let own_schemas = own_memory_schemas(contract);
+        match selection {
+            SeriesSelection::Ids(ids) if ids.len() > MAX_ERASE_VERSIONS_PER_CALL => {
+                Err(SeriesEraseError::Refused(SeriesEraseRefusal {
+                    kind: SeriesEraseRefusalKind::OverCap,
+                    offending: vec![format!(
+                        "ids={} (max {MAX_ERASE_VERSIONS_PER_CALL})",
+                        ids.len()
+                    )],
+                }))
+            }
+            SeriesSelection::AdmittedBefore { schema, .. }
+                if !own_schemas.iter().any(|own| own == schema.as_str()) =>
+            {
+                Err(SeriesEraseError::Refused(SeriesEraseRefusal {
+                    kind: SeriesEraseRefusalKind::ForeignSchema,
+                    offending: vec![format!("schema={}", schema.as_str())],
+                }))
+            }
+            SeriesSelection::Ids(_) | SeriesSelection::AdmittedBefore { .. } => {
+                Ok((contract, own_schemas))
+            }
+        }
+    }
+}
+
+/// The authority half of [`UnitOfWork::erase_own_series`]: Admin on
+/// `owner`, or the host's system authority.
+///
+/// A free function over the unit's parts, not a method: the future must be
+/// `Send` for a tool handler to await it, and `&UnitOfWork` is not.
+async fn authorize_series_erase(
+    engine: &Engine,
+    authorization: &UnitAuthorization<'_>,
+    owner: Owner,
+) -> Result<crate::storage_ports::OwnerWritePermit, SeriesEraseError> {
+    let permit = match *authorization {
+        UnitAuthorization::Ordinary(authz) => {
+            engine
+                .authorize_owner_write(authz, &owner, AccessKind::Goal)
+                .await?
+        }
+        UnitAuthorization::System(authority) => {
+            let authz = AuthzContext::for_system(authority, system_erase_roles(owner));
+            engine
+                .authorize_owner_write_with_system_authority(
+                    &authz,
+                    &owner,
+                    AccessKind::Goal,
+                    authority,
+                )
+                .await?
+        }
+        UnitAuthorization::HostState { .. } => {
+            return Err(ProtocolError::forbidden(
+                "host-state unit does not authorize erase_own_series",
+            )
+            .into());
+        }
+    };
+    engine.validate_write_permit(&permit)?;
+    Ok(permit)
+}
+
+/// The Fact, Abstraction and Perspective schema ids a flavor declares:
+/// the only series its erase may reach.
+fn own_memory_schemas(contract: &crate::FlavorContract) -> Vec<String> {
+    use crate::verbs::schema::PayloadKind;
+    let mut schemas: Vec<String> = contract
+        .schemas
+        .iter()
+        .filter(|schema| {
+            matches!(
+                schema.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            )
+        })
+        .map(|schema| schema.id.render())
+        .collect();
+    schemas.sort_unstable();
+    schemas.dedup();
+    schemas
+}
+
+/// The roles a system erase context carries: exactly `owner`, at the role
+/// that writes Goals (Admin).
+///
+/// A personal owner is its own subject's personal role; a Group is Admin
+/// granted by the host's system authority, under a subject that is no user.
+fn system_erase_roles(owner: Owner) -> crate::access::OwnerRoles {
+    use crate::access::{OwnerRoles, Role};
+    match owner {
+        Owner::Personal(user) => OwnerRoles::scoped_to(user, owner, Role::personal()),
+        Owner::Group(_) => {
+            OwnerRoles::scoped_to(crate::UserId::new(uuid::Uuid::nil()), owner, Role::admin())
+        }
+    }
+}
+
+/// A transient storage fault is the caller's to retry; everything else is
+/// the unit's failure.
+fn erase_storage_error(err: crate::storage::StorageError) -> SeriesEraseError {
+    match err {
+        crate::storage::StorageError::Retryable(message) => SeriesEraseError::Retryable(message),
+        other => SeriesEraseError::Protocol(super::errors::map_write_storage_error(
+            other,
+            "selection",
+            "erase target not found",
+        )),
     }
 }
 
@@ -1257,6 +1572,16 @@ mod tests {
             Some(DESCRIPTOR)
         }
 
+        async fn begin_series_erase(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+        ) -> Result<Box<dyn WriteSession>, StorageError> {
+            self.begin_calls.fetch_add(1, Ordering::SeqCst);
+            Err(StorageError::Unavailable(
+                "the begin spy must not open a session".to_owned(),
+            ))
+        }
+
         async fn begin(
             &self,
             _scope: Option<&crate::OwnerScope>,
@@ -1320,5 +1645,295 @@ mod tests {
 
         assert!(err.to_string().contains("no state surfaces"));
         assert_eq!(begin_calls.load(Ordering::SeqCst), 0);
+    }
+
+    mod erase_gate {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use futures::future::BoxFuture;
+
+        use super::BeginSpyFactory;
+        use crate::flavor::contract::{FlavorContract, ProjectionDecl, ToolContract};
+        use crate::mcp::{McpAuthorContext, McpToolAnnotations, McpToolCtx};
+        use crate::storage_ports::StoragePorts;
+        use crate::verbs::own_erase::{EraseMode, SeriesEraseError, SeriesSelection};
+        use crate::{
+            AuthPath, AuthzContext, Engine, FlavorServices, Owner, Tool, ToolCtx, ToolError, UserId,
+        };
+
+        const GATE_FLAVOR: &str = "gate_fixture";
+
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct GateArgs {
+            /// Ask with nothing selected.
+            #[serde(default)]
+            empty: bool,
+        }
+
+        #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+        struct GateOutput {}
+
+        /// A non-empty selection: an empty one is answered before storage.
+        fn some_series() -> SeriesSelection {
+            SeriesSelection::Ids(vec![crate::MemoryId::new(uuid::Uuid::now_v7())])
+        }
+
+        /// Both tools call the verb the same way; only their declarations
+        /// differ.
+        fn erase_from(
+            ctx: ToolCtx,
+            args: &GateArgs,
+        ) -> BoxFuture<'static, Result<GateOutput, ToolError>> {
+            let selection = if args.empty {
+                SeriesSelection::Ids(Vec::new())
+            } else {
+                some_series()
+            };
+            Box::pin(async move {
+                let engine = ctx
+                    .engine()
+                    .ok_or_else(|| ToolError::Other("the gate fixture needs an engine".into()))?;
+                let mut unit = engine
+                    .unit_of_work(ctx.authz())
+                    .await
+                    .map_err(ToolError::Protocol)?;
+                unit.erase_own_series(GATE_FLAVOR, ctx.owner(), selection, EraseMode::DryRun)
+                    .await
+                    .map_err(|err: SeriesEraseError| ToolError::Protocol(err.into()))?;
+                Ok(GateOutput {})
+            })
+        }
+
+        struct WipeTool;
+
+        impl Tool for WipeTool {
+            const NAME: &'static str = "gate_fixture_wipe";
+            const DESCRIPTION: &'static str = "A tool that declares it destroys data.";
+            const ANNOTATIONS: Option<McpToolAnnotations> = Some(
+                McpToolAnnotations::new()
+                    .read_only(false)
+                    .destructive(true)
+                    .idempotent(false)
+                    .open_world(false),
+            );
+            type Args = GateArgs;
+            type Output = GateOutput;
+
+            fn call(
+                ctx: ToolCtx,
+                args: GateArgs,
+            ) -> BoxFuture<'static, Result<GateOutput, ToolError>> {
+                erase_from(ctx, &args)
+            }
+        }
+
+        struct TouchTool;
+
+        impl Tool for TouchTool {
+            const NAME: &'static str = "gate_fixture_touch";
+            const DESCRIPTION: &'static str = "A tool that declares it destroys nothing.";
+            const ANNOTATIONS: Option<McpToolAnnotations> = Some(
+                McpToolAnnotations::new()
+                    .read_only(false)
+                    .destructive(false)
+                    .idempotent(false)
+                    .open_world(false),
+            );
+            type Args = GateArgs;
+            type Output = GateOutput;
+
+            fn call(
+                ctx: ToolCtx,
+                args: GateArgs,
+            ) -> BoxFuture<'static, Result<GateOutput, ToolError>> {
+                erase_from(ctx, &args)
+            }
+        }
+
+        static GATE_CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: GATE_FLAVOR,
+            ordinal: 96,
+            schemas: &[],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[
+                ToolContract {
+                    wire_name: "gate_fixture_wipe",
+                    actions: &[],
+                    idempotent: false,
+                    destructive: true,
+                },
+                ToolContract {
+                    wire_name: "gate_fixture_touch",
+                    actions: &[],
+                    idempotent: false,
+                    destructive: false,
+                },
+            ],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "the erase-gate fixture has no search surface",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+
+        fn engine(begin_calls: Arc<AtomicUsize>) -> Arc<Engine> {
+            let factory = Arc::new(BeginSpyFactory { begin_calls });
+            Arc::new(
+                Engine::try_compose(
+                    StoragePorts::rejecting_with_write_session(factory),
+                    |registry| {
+                        registry.try_add_contract(&GATE_CONTRACT)?;
+                        registry.try_add_tool::<WipeTool>(GATE_FLAVOR)?;
+                        registry.try_add_tool::<TouchTool>(GATE_FLAVOR)?;
+                        Ok(())
+                    },
+                )
+                .expect("the erase-gate registry freezes"),
+            )
+        }
+
+        async fn call(engine: &Arc<Engine>, tool: &str) -> Result<serde_json::Value, String> {
+            call_with(engine, tool, serde_json::json!({})).await
+        }
+
+        async fn call_with(
+            engine: &Arc<Engine>,
+            tool: &str,
+            args: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let descriptor = engine
+                .registry()
+                .mcp_tool(tool)
+                .expect("the fixture tool is registered");
+            let ctx = McpToolCtx {
+                owner,
+                authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+                registry: Arc::new(engine.registry().clone()),
+                author: McpAuthorContext {
+                    model_id: "gate/model".into(),
+                    trusted_model_id: None,
+                    client_name: "gate".into(),
+                    client_version: "1".into(),
+                    caller_self_perspective: None,
+                },
+                caller_self_perspective: None,
+                services: FlavorServices::default(),
+                engine: Some(Arc::clone(engine)),
+            };
+            (descriptor.call)(ctx, args)
+                .await
+                .map_err(|err| err.to_string())
+        }
+
+        /// The declaration is the gate: the tool its contract calls
+        /// destructive reaches storage, the one it does not is refused
+        /// before a session is begun, and the handlers are identical.
+        #[tokio::test]
+        async fn only_a_tool_its_contract_declares_destructive_reaches_the_erase() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+
+            let refused = call(&engine, "gate_fixture_touch")
+                .await
+                .expect_err("a tool not declared destructive cannot erase");
+            assert!(
+                refused.contains("not declared destructive"),
+                "the refusal names the missing declaration: {refused}"
+            );
+            assert_eq!(begins.load(Ordering::SeqCst), 0, "refused before storage");
+
+            let reached = call(&engine, "gate_fixture_wipe")
+                .await
+                .expect_err("the spy backend fails the begin");
+            assert!(
+                !reached.contains("not declared destructive"),
+                "a destructive tool passes the gate: {reached}"
+            );
+            assert_eq!(
+                begins.load(Ordering::SeqCst),
+                1,
+                "the erase reached storage"
+            );
+        }
+
+        /// Outside a tool nothing is stamped, so the gate does not apply:
+        /// the flavor's own code and the host reach the same verb.
+        #[tokio::test]
+        async fn a_unit_outside_any_tool_is_not_gated_by_a_tool_declaration() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+            assert_eq!(authz.invoking_tool(), None);
+            let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
+            let _ = unit
+                .erase_own_series(GATE_FLAVOR, owner, some_series(), EraseMode::DryRun)
+                .await;
+            assert_eq!(begins.load(Ordering::SeqCst), 1);
+        }
+
+        /// An empty selection is the cheap way to ask "may I erase here?": it
+        /// passes every gate a real erase passes and opens no session. A
+        /// caller paging a scope relies on the first half, the lock table on
+        /// the second.
+        #[tokio::test]
+        async fn an_empty_selection_is_authorized_without_a_session() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+            let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
+            let receipt = unit
+                .erase_own_series(
+                    GATE_FLAVOR,
+                    owner,
+                    SeriesSelection::Ids(Vec::new()),
+                    EraseMode::Erase,
+                )
+                .await
+                .expect("Admin may ask with nothing selected");
+            assert_eq!(receipt.series_erased, 0);
+            assert!(receipt.versions.is_empty());
+            assert_eq!(begins.load(Ordering::SeqCst), 0, "no session was begun");
+            unit.commit()
+                .await
+                .expect("an erase unit with no session commits");
+
+            let group = Owner::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+            let ingest = AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(group, crate::Role::ingest())],
+                AuthPath::HostBearer,
+            );
+            let mut unit = engine.unit_of_work(&ingest).await.expect("a unit opens");
+            let err = unit
+                .erase_own_series(
+                    GATE_FLAVOR,
+                    group,
+                    SeriesSelection::Ids(Vec::new()),
+                    EraseMode::Erase,
+                )
+                .await
+                .expect_err("an empty selection is still gated on Admin");
+            assert!(
+                matches!(err, SeriesEraseError::Protocol(ref err) if err.code == crate::ErrorCode::Forbidden),
+                "below Admin is forbidden, empty selection or not: {err:?}"
+            );
+
+            let refused = call_with(
+                &engine,
+                "gate_fixture_touch",
+                serde_json::json!({ "empty": true }),
+            )
+            .await
+            .expect_err("and on the tool's declaration");
+            assert!(refused.contains("not declared destructive"), "{refused}");
+            assert_eq!(begins.load(Ordering::SeqCst), 0);
+        }
     }
 }

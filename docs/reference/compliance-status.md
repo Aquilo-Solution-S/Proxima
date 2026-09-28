@@ -10,6 +10,7 @@ mechanism is here, every judgement is the host's.
 | owner-scoped rows | current | access predicates are owner-based, not org-based |
 | append-only memory | current | normal lifecycle is append/supersession, not deletion |
 | owner and source-scope erase | current | complete over every declared surface; the host decides when it is owed |
+| flavor-scoped erase | current | whole series of one flavor's own schemas under one live owner, on Admin or the host's system authority; the host schedules retention through it ([13 §Flavor-scoped erase](../13-compliance.md#flavor-scoped-erase)) |
 | owner export bundle | current | one entry per surface the contracts declare exportable, with derived counts |
 | erase/export receipts | current | returned to the caller; core keeps no history of the operation |
 | retention windows | removed | a retention schedule is a promise about someone's data; core holds none and never did enforce one for a host that had not asked |

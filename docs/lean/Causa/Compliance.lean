@@ -1,11 +1,14 @@
 /-
 Causa — Compliance
 
-Hard delete is abandonment-only, plus the v0.0.8 cold path:
+Hard delete is abandonment, the v0.0.8 cold path, or a flavor-scoped erase:
 
-  wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)
+  wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy) ∨ flavorScoped
 
-Forget cools; erase wipes abandoned owners. An owner-to-owner transfer carries
+Forget cools; erase wipes abandoned owners; a flavor-scoped erase wipes whole
+series of one flavor's own schemas under one live owner, on Admin or the
+host's system authority (renegotiated in writing, docs/13 §Flavor-scoped
+erase). An owner-to-owner transfer carries
 the entity's erase reach with it: after the move it is the DESTINATION owner
 whose abandonment wipes the row. There is no edge cascade — pins live on the
 declaring row.
@@ -53,10 +56,53 @@ theorem content_wipeable_when_unreferenced
 def cold (stubs : Set Cooled) (id : MemoryId) : Prop :=
   ∃ c : Cooled, c ∈ stubs ∧ cooled_t c = id
 
-/-- CO-7 / ST-13 rebase: abandonment OR (cold ∧ unreferenced ∧ policy). -/
+-- ============================================================
+-- Flavor-scoped erase (docs/13 §Flavor-scoped erase)
+-- ============================================================
+
+/-- Who issues a flavor-scoped erase: a user, or the host's system authority
+    (a retention schedule runs with nobody in the loop). -/
+inductive EraseAuthority where
+  | user (u : User)
+  | system
+
+/-- Admin on the owner — the Goal write ceiling, the gate a transfer takes —
+    or the host's system authority. -/
+def EraseAuthority.admits : EraseAuthority → Owner → Prop
+  | .user u, o => may_write u o .goal
+  | .system, _ => True
+
+/-- One flavor-scoped erase: whole series (`handles`), one live owner, and
+    only the named flavor's own schemas. The flavor's vocabulary is a
+    PARAMETER (`ownSchemas`), as in `Causa.Flavor`; a series carries one
+    schema (`seriesSchema`: a new shape is a new handle, Identity). Nothing
+    here requires the owner to be abandoned. -/
+structure FlavorScopedErase (memories : Set Memory) (stubs : Set Cooled) where
+  owner        : Owner
+  ownSchemas   : SchemaRef → Prop
+  seriesSchema : Handle → SchemaRef
+  handles      : Set Handle
+  authority    : EraseAuthority
+  authorized   : authority.admits owner
+  ownSchema    : ∀ h : Handle, h ∈ handles → ownSchemas (seriesSchema h)
+  hotInOwner   : ∀ m : Memory, m ∈ memories → memory_handle m ∈ handles →
+    memory_owner m = owner
+  coldInOwner  : ∀ c : Cooled, c ∈ stubs → cooled_handle c ∈ handles →
+    cooled_owner c = owner
+
+/-- A `t` the erase selects: any version, hot or cooled, of a selected
+    series. -/
+def FlavorScopedErase.selects {memories : Set Memory} {stubs : Set Cooled}
+    (e : FlavorScopedErase memories stubs) (id : MemoryId) : Prop :=
+  (∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_handle m ∈ e.handles) ∨
+    (∃ c : Cooled, c ∈ stubs ∧ cooled_t c = id ∧ cooled_handle c ∈ e.handles)
+
+/-- CO-7 / ST-13: abandonment OR (cold ∧ unreferenced ∧ policy) OR selected by
+    a flavor-scoped erase of that owner. -/
 def wipeable (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
     (id : MemoryId) (policy : Prop) : Prop :=
-  abandoned o ∨ (cold stubs id ∧ unreferenced memories id ∧ policy)
+  abandoned o ∨ (cold stubs id ∧ unreferenced memories id ∧ policy) ∨
+    ∃ e : FlavorScopedErase memories stubs, e.owner = o ∧ e.selects id
 
 theorem wipeable_when_abandoned
     (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
@@ -69,7 +115,68 @@ theorem wipeable_when_cold_unreferenced_policy
     (id : MemoryId) (policy : Prop)
     (hc : cold stubs id) (hu : unreferenced memories id) (hp : policy) :
     wipeable o memories stubs id policy :=
-  Or.inr ⟨hc, hu, hp⟩
+  Or.inr (Or.inl ⟨hc, hu, hp⟩)
+
+theorem wipeable_when_flavor_scoped
+    (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
+    (id : MemoryId) (policy : Prop)
+    (e : FlavorScopedErase memories stubs) (ho : e.owner = o) (hs : e.selects id) :
+    wipeable o memories stubs id policy :=
+  Or.inr (Or.inr ⟨e, ho, hs⟩)
+
+/-- The erase never prunes a series' history: every hot version of a
+    selected series is selected. -/
+theorem flavor_erase_takes_whole_series
+    {memories : Set Memory} {stubs : Set Cooled}
+    (e : FlavorScopedErase memories stubs) (m : Memory)
+    (hm : m ∈ memories) (hh : memory_handle m ∈ e.handles) :
+    e.selects (memory_t m) :=
+  Or.inl ⟨m, hm, rfl, hh⟩
+
+/-- … and every cooled version: a flavor-scoped erase keeps no cold copy. -/
+theorem flavor_erase_takes_cooled_versions
+    {memories : Set Memory} {stubs : Set Cooled}
+    (e : FlavorScopedErase memories stubs) (c : Cooled)
+    (hc : c ∈ stubs) (hh : cooled_handle c ∈ e.handles) :
+    e.selects (cooled_t c) :=
+  Or.inr ⟨c, hc, rfl, hh⟩
+
+/-- One owner: no version of a selected series, hot or cooled, belongs to
+    anyone else. -/
+theorem flavor_erase_stays_in_owner
+    {memories : Set Memory} {stubs : Set Cooled}
+    (e : FlavorScopedErase memories stubs) :
+    (∀ m : Memory, m ∈ memories → memory_handle m ∈ e.handles →
+      memory_owner m = e.owner) ∧
+    (∀ c : Cooled, c ∈ stubs → cooled_handle c ∈ e.handles →
+      cooled_owner c = e.owner) :=
+  ⟨e.hotInOwner, e.coldInOwner⟩
+
+/-- Only the flavor's own vocabulary. -/
+theorem flavor_erase_stays_in_flavor
+    {memories : Set Memory} {stubs : Set Cooled}
+    (e : FlavorScopedErase memories stubs) (h : Handle) (hh : h ∈ e.handles) :
+    e.ownSchemas (e.seriesSchema h) :=
+  e.ownSchema h hh
+
+/-- Below Admin, no user authorizes a flavor-scoped erase: a write ceiling
+    that stops short of Goals stops short of erasing. -/
+theorem below_admin_cannot_authorize_flavor_erase
+    (u : User) (o : Owner) (x : Role) (hx : o u = some x) (hw : x.write ≤ 3) :
+    ¬ (EraseAuthority.user u).admits o := by
+  rintro ⟨y, hy, hwy⟩
+  rw [hx] at hy
+  injection hy with hxy
+  subst hxy
+  simp only [Role.mayWrite, AccessKind.rank] at hwy
+  omega
+
+/-- The Ingest preset in particular: a principal that may add Facts may not
+    erase them. -/
+theorem ingest_cannot_authorize_flavor_erase
+    (u : User) (o : Owner) (hx : o u = some Role.ingest) :
+    ¬ (EraseAuthority.user u).admits o :=
+  below_admin_cannot_authorize_flavor_erase u o Role.ingest hx (by decide)
 
 /-- A pin to a cooled `t` renders Cold, not a missing origin. -/
 def pin_target_cold (stubs : Set Cooled) (id : MemoryId) : Prop :=

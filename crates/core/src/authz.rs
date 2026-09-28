@@ -264,6 +264,11 @@ pub struct AuthzContext {
     /// The owner the HOST names for a request that selects none. Always an
     /// owner `owner_roles` carries; see [`AuthzContext::with_default_owner`].
     default_owner: Option<OwnerRef>,
+    /// The registered tool whose handler this context was handed to. Stamped
+    /// by the registration's call wrapper, never by a caller, and read by
+    /// verbs whose admission depends on the calling tool's declaration
+    /// ([`crate::UnitOfWork::erase_own_series`]).
+    invoking_tool: Option<&'static str>,
 }
 
 /// Opaque authority for one redeemed durable-worker phase.
@@ -615,6 +620,7 @@ impl AuthzContext {
             owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
+            invoking_tool: None,
         }
     }
 
@@ -709,6 +715,21 @@ impl AuthzContext {
         self.role_for_owner(&owner)?;
         self.default_owner = Some(owner);
         Some(self)
+    }
+
+    /// The registered tool whose handler received this context, or `None`
+    /// outside a tool call. Set only by the tool registration's call
+    /// wrapper; no argument, header or host builder reaches it.
+    #[must_use]
+    pub const fn invoking_tool(&self) -> Option<&'static str> {
+        self.invoking_tool
+    }
+
+    /// Stamp the tool whose handler this context is handed to.
+    #[must_use]
+    pub(crate) const fn invoked_by_tool(mut self, name: &'static str) -> Self {
+        self.invoking_tool = Some(name);
+        self
     }
 
     /// Narrow to `owner`. The result is bound to that one owner, so it
@@ -863,6 +884,7 @@ impl AuthzContext {
             owner_scope: None,
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
+            invoking_tool: None,
         }
     }
 }

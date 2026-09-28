@@ -8,10 +8,7 @@ use proxima_storage_pg::query::{
     owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
-use proxima_storage_pg::{
-    PgHostStateEraseContext, PgPlatformScope, PgSidecarRegistryFrozen, PgTuning,
-    begin_compatible_owner_transaction,
-};
+use proxima_storage_pg::{PgTuning, begin_compatible_owner_transaction};
 use sqlx::PgPool;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
@@ -24,21 +21,14 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 /// they need the flavor's private pool and must not sit on the Flavor SDK.
 /// `pool()` stays private (`from_backend_pool_for_host`/`for_tests`).
 ///
-/// It also carries the boot's frozen sidecar registry. `erase_repo` is why:
-/// the flavor deletes its own `proxima_code` rows and then hands the
-/// admissions to a storage verb that walks the registry to reach whatever
-/// else each one stamped. Composing a second registry inside the flavor
-/// would be a second answer to a question the host has already answered.
+/// Erasure is not here: `erase_repo` runs on the Engine's
+/// `UnitOfWork::erase_own_series`, which carries the boot's registry, its
+/// host lifecycle callback and its platform scope itself.
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
     owner_scope: Option<OwnerScope>,
     tuning: PgTuning,
-    sidecars: PgSidecarRegistryFrozen,
-    /// Opaque boot-frozen full surface set plus the validated host lifecycle
-    /// callback. Physical erasure must use the same registry as the engine.
-    erase_context: PgHostStateEraseContext,
-    platform_scope: Option<PgPlatformScope>,
 }
 
 impl std::fmt::Debug for CodeFlavorStore {
@@ -51,20 +41,11 @@ impl CodeFlavorStore {
     #[cfg(feature = "host-api")]
     #[doc(hidden)]
     #[must_use]
-    pub fn from_backend_pool_for_host(
-        pool: PgPool,
-        tuning: PgTuning,
-        sidecars: PgSidecarRegistryFrozen,
-        erase_context: PgHostStateEraseContext,
-        platform_scope: Option<PgPlatformScope>,
-    ) -> Self {
+    pub fn from_backend_pool_for_host(pool: PgPool, tuning: PgTuning) -> Self {
         Self {
             pool,
             owner_scope: None,
             tuning,
-            sidecars,
-            erase_context,
-            platform_scope,
         }
     }
 
@@ -83,10 +64,6 @@ impl CodeFlavorStore {
             pool,
             owner_scope: None,
             tuning,
-            sidecars: test_sidecars(),
-            erase_context: PgHostStateEraseContext::for_surfaces_for_tests(flavor_surfaces())
-                .expect("Code test registry declares no host lifecycle callback"),
-            platform_scope: None,
         }
     }
 
@@ -104,18 +81,6 @@ impl CodeFlavorStore {
 
     pub(crate) fn owner_scope(&self) -> Option<&OwnerScope> {
         self.owner_scope.as_ref()
-    }
-
-    pub(crate) fn platform_scope(&self) -> Option<&PgPlatformScope> {
-        self.platform_scope.as_ref()
-    }
-
-    pub(crate) fn sidecars(&self) -> &PgSidecarRegistryFrozen {
-        &self.sidecars
-    }
-
-    pub(crate) fn erase_context(&self) -> &PgHostStateEraseContext {
-        &self.erase_context
     }
 
     /// Owner-only current file-revision heads of `repo_id` for `file_paths`.
@@ -439,41 +404,6 @@ impl CodeFlavorStore {
         }
         Ok(out)
     }
-}
-
-/// Core plus Code surfaces for the standalone fixture constructors.
-/// Production receives the actual full boot registry in its erase context,
-/// so this partial registry exists only alongside the test/debug callers.
-#[cfg(any(test, debug_assertions))]
-fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    let mut registry = proxima_core::FlavorRegistry::new();
-    crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
-    let registry = registry
-        .try_freeze()
-        .expect("core plus the code flavor freeze");
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
-}
-
-/// The host's boot composition, repeated for a store built without a host.
-///
-/// Deliberately the same four steps the facade's boot runs, in the same
-/// order, so a fixture-built store answers `sidecars()` with the registry a
-/// real deployment would have frozen. Test-only: production goes through
-/// [`CodeFlavorStore::from_backend_pool_for_host`], which is handed the
-/// boot's own registry.
-#[cfg(any(test, debug_assertions))]
-fn test_sidecars() -> PgSidecarRegistryFrozen {
-    let mut registry = proxima_core::FlavorRegistry::new();
-    crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
-    let registry = registry
-        .try_freeze()
-        .expect("core plus the code flavor freeze");
-    let mut sidecars = proxima_storage_pg::PgSidecarRegistry::new();
-    proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
-    crate::register_pg_sidecars(&mut sidecars);
-    sidecars
-        .freeze_against(&registry)
-        .expect("the code flavor's PG sidecars agree with its contract")
 }
 
 /// One acceptance-criteria Fact and its child rows.

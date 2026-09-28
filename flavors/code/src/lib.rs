@@ -58,21 +58,23 @@ pub mod testkit {
         start_run_with_created, sweep_orphaned_runs,
     };
     pub use crate::repos::{
-        erase_footprint, erase_repo, get_repo, list_repos, reference_closure_sql, register_repo,
-        set_repo_scope, set_repo_target_branch, update_cursor,
+        erase_repo, get_repo, list_repos, register_repo, repo_finder_sql, set_repo_scope,
+        set_repo_target_branch, update_cursor,
     };
 
-    /// Run repository erasure with the verified owner witness carried by the
-    /// test store. This keeps direct fixture calls on the same scoped path as
-    /// the production host request.
+    /// Run repository erasure with the verified owner witness `authz`
+    /// carries on the store, as the MCP tool does for a request.
     pub async fn erase_repo_with_scope(
+        engine: &proxima_core::Engine,
+        authz: &proxima_core::AuthzContext,
         store: &CodeFlavorStore,
         owner: &proxima_core::Owner,
         repo_id: uuid::Uuid,
-        scope: &proxima_core::OwnerScope,
     ) -> Result<crate::repos::RepoEraseReceipt, crate::repos::RepoRegistryError> {
         erase_repo(
-            &store.clone().with_owner_scope(Some(scope.clone())),
+            engine,
+            authz,
+            &store.clone().with_owner_scope(authz.owner_scope().cloned()),
             owner,
             repo_id,
         )

@@ -190,10 +190,10 @@ impl FlavorRegistry {
 
     /// A tool's contract entry against the descriptor the registry holds.
     ///
-    /// `actions` and `idempotent` are both second descriptions of facts the
-    /// registry already carries — the dispatcher's `action_arg_specs` and
-    /// the wire's `McpToolAnnotations` — and nothing but this check keeps
-    /// either equal.
+    /// `actions`, `idempotent` and `destructive` are second descriptions of
+    /// facts the registry already carries — the dispatcher's
+    /// `action_arg_specs` and the wire's `McpToolAnnotations` — and nothing
+    /// but this check keeps them equal.
     fn validate_contract_tools(
         &self,
         contract: &crate::flavor::contract::FlavorContract,
@@ -252,6 +252,20 @@ impl FlavorRegistry {
                     flavor_id: contract.flavor_id,
                     name: tool.wire_name,
                     declared: tool.idempotent,
+                    resolved,
+                });
+            }
+            // Silence is "not destructive", the same default MCP gives an
+            // absent `destructiveHint` on a read-only tool; a tool that
+            // declares `destructive: true` must say so on the wire too.
+            let resolved = annotations
+                .and_then(|value| value.destructive)
+                .unwrap_or(false);
+            if resolved != tool.destructive {
+                return Err(FlavorRegistryError::ToolDestructivenessDisagreement {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                    declared: tool.destructive,
                     resolved,
                 });
             }

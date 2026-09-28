@@ -660,8 +660,13 @@ choice. `--dry-run` prints per-owner would-be counts without changing
 anything.
 
 There is no Fact-retention enforcement: a retention window is a promise about
-someone's data, and the host that made the promise schedules its own
-`forget_memory` calls. See [13 §Storage
+someone's data, and the host that made the promise schedules the erase —
+`UnitOfWork::erase_own_series` with `SeriesSelection::AdmittedBefore` on a
+unit from `Engine::system_unit_of_work`, paging while the receipt says
+`more_remaining` ([13 §Flavor-scoped erase](13-compliance.md#flavor-scoped-erase)).
+Not `forget_memory`: forget keeps a cold copy. Retention is measured from
+admission, so a flavor that backfills history must not admit events older
+than the retention window. See [13 §Storage
 maintenance](13-compliance.md#storage-maintenance--maintain-storage-pass),
 including the forward-poller cursor-gap caveat when choosing a prune
 horizon.
