@@ -348,9 +348,14 @@ Reconciliation keeps the same boundary. The global operator pass is
 locator samples for restore work. The store and witness must share one boot
 binding; a token from another `Engine` is rejected before I/O. Flavor tools receive a separate
 `CitedBlobOwnerReconcileService`: it re-authorizes Fact-read for one Owner,
-lists only that Owner's object prefix, and returns a redacted report with no
-bucket or object key. Both passes only report missing objects, unclaimed
-objects, and foreign locators; neither repairs nor deletes.
+checks only that Owner's live upload locators, and returns a redacted report
+with no bucket or object key. A blob's live upload is its newest completed
+upload, ordered by `completed_at DESC NULLS LAST, upload_id DESC`; mounted
+uploads resolve the object minted by `mounted_from_upload_id`. Reads and both
+reconcile scans share this SQL selection. Missing samples list newest losses
+first, up to 100 entries. Every completed upload, including superseded rows,
+still claims its object for global orphan accounting. Both passes only
+report; neither repairs nor deletes.
 
 ## Owner scoping
 

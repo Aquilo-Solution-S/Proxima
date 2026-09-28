@@ -24,6 +24,7 @@ mod dto;
 mod erase;
 mod guards;
 mod keys;
+mod live_upload;
 mod port;
 mod read;
 mod reconcile;

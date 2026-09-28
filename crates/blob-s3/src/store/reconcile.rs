@@ -8,22 +8,57 @@ use proxima_core::storage_ports::{
     CitedBlobOwnerReconcilePort, CitedBlobReconcileOutcome, CitedBlobReconcilePort,
     MAX_RECONCILE_SAMPLE,
 };
-use proxima_core::{AuthzContext, OwnerRef, StorageError};
+use proxima_core::{AuthzContext, OwnerRef, StorageError, UPLOADED_BLOB_SCHEMA_ID};
 use proxima_storage_pg::begin_compatible_owner_transaction;
-use sqlx::Row as _;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
 use super::keys::{CANONICAL_OBJECT_PREFIX, locator_was_minted_here};
+use super::live_upload::with_live_blob_upload;
 use super::port::blob_error_to_storage;
 
 /// Rows read per round trip.
 ///
-/// Page on the indexed `upload_id` primary key. Multiple completed uploads
-/// can share a `blob_id`, so advancing past that non-unique value would skip
-/// locators when a page ends inside their shared group. The comparison below
-/// is set-based and order-free; `blob_id` remains the reported citation id.
+/// Live rows page newest completion first, with upload id as the tie-breaker.
+/// Historical claims page on the upload primary key, independently of blob id.
 const ROW_PAGE: i64 = 1000;
+
+#[derive(Debug, Clone, Copy)]
+struct LiveUploadCursor {
+    completed_at: Option<OffsetDateTime>,
+    upload_id: Uuid,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct LiveUploadRow {
+    cited_object_id: Uuid,
+    bucket: String,
+    object_key: String,
+    upload_id: Uuid,
+    mounted_from_upload_id: Option<Uuid>,
+    completed_at: Option<OffsetDateTime>,
+    byte_len: i64,
+    filename: String,
+}
+
+impl LiveUploadRow {
+    fn cursor(&self) -> LiveUploadCursor {
+        LiveUploadCursor {
+            completed_at: self.completed_at,
+            upload_id: self.upload_id,
+        }
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CompletedClaimRow {
+    bucket: String,
+    object_key: String,
+    upload_id: Uuid,
+    mounted_from_upload_id: Option<Uuid>,
+}
 
 #[async_trait::async_trait]
 impl CitedBlobReconcilePort for CitedBlobStore {
@@ -47,7 +82,7 @@ impl CitedBlobOwnerReconcilePort for CitedBlobStore {
 }
 
 impl CitedBlobStore {
-    /// Reconcile this store's bucket against every row that names it.
+    /// Check live uploads for availability; retain all completed object claims.
     ///
     /// The runtime-held [`SystemAuthority`] is required even when the caller
     /// already holds the concrete store. Database and bucket credentials are
@@ -90,37 +125,19 @@ impl CitedBlobStore {
             ..CitedBlobReconcileOutcome::default()
         };
 
-        // The row side is paged, so the number of rows never bounds memory
-        // even though the object side does. `claimed` is bounded by the
-        // object side too: it only ever holds keys that were listed.
+        // Superseded uploads still claim present bytes. This separate pass
+        // does not check availability or add samples: only the upload ordinary
+        // reads resolve determines whether a citation is missing.
+        // Keys move from `objects` to `claimed`, keeping both sets together
+        // bounded by the original bucket listing.
         let mut claimed: BTreeSet<String> = BTreeSet::new();
-        let mut after = uuid::Uuid::nil();
+        self.claim_completed_objects(&mut objects, &mut claimed)
+            .await?;
+
+        let mut after = None;
         loop {
-            let mut tx = match &self.platform_scope {
-                Some(scope) => scope
-                    .begin()
-                    .await
-                    .map_err(|err| StorageError::Unavailable(err.to_string()))?,
-                None => begin_compatible_owner_transaction(&self.pool, None)
-                    .await
-                    .map_err(|err| StorageError::Unavailable(err.to_string()))?,
-            };
-            let page = sqlx::query(
-                "SELECT blob_id AS cited_object_id, bucket, object_key, upload_id, \
-                        mounted_from_upload_id, \
-                        expected_byte_len AS byte_len, filename \
-                   FROM proxima_core.blob_uploads \
-                  WHERE status = 'completed' \
-                    AND blob_id IS NOT NULL \
-                    AND upload_id > $1 \
-                  ORDER BY upload_id \
-                  LIMIT $2",
-            )
-            .bind(after)
-            .bind(ROW_PAGE)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Unavailable(format!("read cited blob locators: {e}")))?;
+            let mut tx = self.begin_reconcile_transaction().await?;
+            let page = load_live_upload_page(tx.as_mut(), None, after).await?;
             tx.commit()
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
@@ -129,13 +146,7 @@ impl CitedBlobStore {
                 break;
             }
             for row in &page {
-                let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
-                let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
-                let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
-                let mounted_from_upload_id: Option<uuid::Uuid> = row
-                    .try_get("mounted_from_upload_id")
-                    .map_err(|e| map_row(&e))?;
-                after = upload_id;
+                after = Some(row.cursor());
 
                 // Counted apart from the sweep, because the cause and the
                 // repair are both different — see the field's own doc. The
@@ -143,43 +154,39 @@ impl CitedBlobStore {
                 // row is allowed to name is the one derived from its own
                 // `upload_id`, and nothing else in the canonical prefix
                 // counts as this row's object.
-                if bucket != self.config.bucket
-                    || !locator_was_minted_here(&object_key, upload_id, mounted_from_upload_id)
+                if row.bucket != self.config.bucket
+                    || !locator_was_minted_here(
+                        &row.object_key,
+                        row.upload_id,
+                        row.mounted_from_upload_id,
+                    )
                 {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     if outcome.foreign_sample.len() < MAX_RECONCILE_SAMPLE {
                         outcome
                             .foreign_sample
-                            .push(format!("{bucket}/{object_key}"));
+                            .push(format!("{}/{}", row.bucket, row.object_key));
                     }
                     continue;
                 }
 
                 outcome.rows_scanned = outcome.rows_scanned.saturating_add(1);
-                // Removing rather than testing is what leaves the orphans
-                // behind: whatever is still in the set when the rows run
-                // out is an object no row named.
-                //
-                // `claimed` exists because a mount makes the key-to-row
-                // relation many-to-one: the second row naming a mounted
-                // object finds the set already emptied of it, and without
-                // the second chance would be reported as a missing object
-                // -- an alarm raised by the dedupe working correctly.
-                let named = objects.remove(&object_key) || claimed.contains(&object_key);
+                // A mount may share a key with another live or superseded
+                // upload. Presence in either partition proves it was listed.
+                let named = objects.remove(&row.object_key) || claimed.contains(&row.object_key);
                 if named {
                     // Only remember keys proven present. Every row mounting
                     // an absent object is itself a missing citation.
-                    claimed.insert(object_key);
+                    claimed.insert(row.object_key.clone());
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
                 if outcome.missing_sample.len() < MAX_RECONCILE_SAMPLE {
-                    let byte_len: i64 = row.try_get("byte_len").map_err(|e| map_row(&e))?;
                     outcome.missing_sample.push(CitedBlobMissingObject {
-                        cited_object_id: row.try_get("cited_object_id").map_err(|e| map_row(&e))?,
-                        object_key,
-                        byte_len: u64::try_from(byte_len).unwrap_or(0),
-                        filename: row.try_get("filename").map_err(|e| map_row(&e))?,
+                        cited_object_id: row.cited_object_id,
+                        object_key: row.object_key.clone(),
+                        byte_len: u64::try_from(row.byte_len).unwrap_or(0),
+                        filename: row.filename.clone(),
                     });
                 }
             }
@@ -193,7 +200,7 @@ impl CitedBlobStore {
         Ok(outcome)
     }
 
-    /// Reconcile one authorized owner's rows and canonical object prefix.
+    /// Check the live uploads of one authorized owner's cited blobs.
     ///
     /// Authorization is deliberately the first fallible operation. A denied
     /// caller must not turn this report into either a Postgres existence probe
@@ -219,31 +226,13 @@ impl CitedBlobStore {
         // which is where it was always authoritative.
         let mut outcome = CitedBlobOwnerReconcileOutcome::default();
 
-        let mut after = uuid::Uuid::nil();
+        let mut after = None;
         loop {
             let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-            let page = sqlx::query(
-                "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id, \
-                        u.mounted_from_upload_id, \
-                        u.expected_byte_len AS byte_len, u.filename \
-                   FROM proxima_core.blob_uploads u \
-                  WHERE u.owner_id = $1 \
-                    AND u.status = 'completed' \
-                    AND u.blob_id IS NOT NULL \
-                    AND u.upload_id > $2 \
-                  ORDER BY u.upload_id \
-                  LIMIT $3",
-            )
-            .bind(owner.stored_owner_id())
-            .bind(after)
-            .bind(ROW_PAGE)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| {
-                StorageError::Unavailable(format!("read owner cited blob locators: {e}"))
-            })?;
+            let page =
+                load_live_upload_page(tx.as_mut(), Some(owner.stored_owner_id()), after).await?;
             tx.commit()
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
@@ -252,37 +241,33 @@ impl CitedBlobStore {
                 break;
             }
             for row in &page {
-                let cited_object_id = row.try_get("cited_object_id").map_err(|e| map_row(&e))?;
-                let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
-                let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
-                let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
-                let mounted_from_upload_id: Option<uuid::Uuid> = row
-                    .try_get("mounted_from_upload_id")
-                    .map_err(|e| map_row(&e))?;
-                after = upload_id;
+                after = Some(row.cursor());
 
                 // The same provenance rule the read gate applies: a locator
                 // this store did not mint is a foreign locator, not a
                 // missing object.
-                if bucket != self.config.bucket
-                    || !locator_was_minted_here(&object_key, upload_id, mounted_from_upload_id)
+                if row.bucket != self.config.bucket
+                    || !locator_was_minted_here(
+                        &row.object_key,
+                        row.upload_id,
+                        row.mounted_from_upload_id,
+                    )
                 {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     continue;
                 }
 
                 outcome.rows_scanned = outcome.rows_scanned.saturating_add(1);
-                if self.object_exists(&object_key).await? {
+                if self.object_exists(&row.object_key).await? {
                     outcome.objects_scanned = outcome.objects_scanned.saturating_add(1);
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
                 if outcome.missing_sample.len() < MAX_RECONCILE_SAMPLE {
-                    let byte_len: i64 = row.try_get("byte_len").map_err(|e| map_row(&e))?;
                     outcome.missing_sample.push(CitedBlobOwnerMissingObject {
-                        cited_object_id,
-                        byte_len: u64::try_from(byte_len).unwrap_or(0),
-                        filename: row.try_get("filename").map_err(|e| map_row(&e))?,
+                        cited_object_id: row.cited_object_id,
+                        byte_len: u64::try_from(row.byte_len).unwrap_or(0),
+                        filename: row.filename.clone(),
                     });
                 }
             }
@@ -294,6 +279,65 @@ impl CitedBlobStore {
         // Structurally unavailable owner-scoped; see the note above.
         outcome.orphan_objects = 0;
         Ok(outcome)
+    }
+
+    async fn begin_reconcile_transaction(
+        &self,
+    ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+        match &self.platform_scope {
+            Some(scope) => scope.begin().await,
+            None => begin_compatible_owner_transaction(&self.pool, None).await,
+        }
+        .map_err(|err| StorageError::Unavailable(err.to_string()))
+    }
+
+    /// Claim every completed, locally minted locator, including superseded
+    /// uploads. Missing historical keys have no effect on live availability.
+    async fn claim_completed_objects(
+        &self,
+        objects: &mut BTreeSet<String>,
+        claimed: &mut BTreeSet<String>,
+    ) -> Result<(), StorageError> {
+        let mut after: Option<Uuid> = None;
+        loop {
+            let mut tx = self.begin_reconcile_transaction().await?;
+            let page = sqlx::query_as::<_, CompletedClaimRow>(
+                "SELECT bucket, object_key, upload_id, mounted_from_upload_id
+                   FROM proxima_core.blob_uploads
+                  WHERE status = 'completed'
+                    AND ($1::uuid IS NULL OR upload_id > $1)
+                  ORDER BY upload_id
+                  LIMIT $2",
+            )
+            .bind(after)
+            .bind(ROW_PAGE)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| {
+                StorageError::Unavailable(format!("read completed cited blob claims: {err}"))
+            })?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+
+            for row in &page {
+                after = Some(row.upload_id);
+                if row.bucket == self.config.bucket
+                    && locator_was_minted_here(
+                        &row.object_key,
+                        row.upload_id,
+                        row.mounted_from_upload_id,
+                    )
+                    && objects.remove(&row.object_key)
+                {
+                    claimed.insert(row.object_key.clone());
+                }
+            }
+            if page.len() < usize::try_from(ROW_PAGE).unwrap_or(usize::MAX) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Does exactly this key resolve? `head_object` rather than a listing:
@@ -392,8 +436,44 @@ fn next_list_token(
     Ok(Some(next.to_owned()))
 }
 
-fn map_row(err: &sqlx::Error) -> StorageError {
-    StorageError::Unavailable(format!("decode cited blob locator: {err}"))
+/// The keyset follows the descending completion order through equal timestamps
+/// and then through NULL completions. Upload primary keys make every boundary
+/// unique, including when many live rows mount the same object.
+async fn load_live_upload_page(
+    connection: &mut sqlx::PgConnection,
+    owner_id: Option<Uuid>,
+    after: Option<LiveUploadCursor>,
+) -> Result<Vec<LiveUploadRow>, StorageError> {
+    const SQL: &str = with_live_blob_upload!(
+        "SELECT b.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id,
+                u.mounted_from_upload_id, u.completed_at,
+                u.expected_byte_len AS byte_len, u.filename
+           FROM proxima_core.blob b
+           JOIN",
+        "WHERE b.schema_id = $1
+            AND ($2::uuid IS NULL OR b.owner_id = $2)
+            AND (
+                $4::uuid IS NULL
+                OR ($3::timestamptz IS NOT NULL AND (
+                    u.completed_at < $3
+                    OR u.completed_at IS NULL
+                    OR (u.completed_at = $3 AND u.upload_id < $4)
+                ))
+                OR ($3::timestamptz IS NULL
+                    AND u.completed_at IS NULL AND u.upload_id < $4)
+            )
+          ORDER BY u.completed_at DESC NULLS LAST, u.upload_id DESC
+          LIMIT $5"
+    );
+    sqlx::query_as::<_, LiveUploadRow>(SQL)
+        .bind(UPLOADED_BLOB_SCHEMA_ID)
+        .bind(owner_id)
+        .bind(after.and_then(|cursor| cursor.completed_at))
+        .bind(after.map(|cursor| cursor.upload_id))
+        .bind(ROW_PAGE)
+        .fetch_all(connection)
+        .await
+        .map_err(|err| StorageError::Unavailable(format!("read live cited blob locators: {err}")))
 }
 
 #[cfg(test)]
