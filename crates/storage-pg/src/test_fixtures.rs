@@ -21,14 +21,16 @@ pub fn core_template_name() -> String {
     format!("proxima_tmpl_core_{hash:016x}")
 }
 
-/// Owner-RLS activation (0014), narrowed policies (0017), and hardened definer
-/// search paths (0019). The enforced fixtures stage exactly these.
-pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 3] = [14, 17, 19];
+/// Owner-RLS activation (0014), narrowed policies (0017), hardened definer
+/// search paths (0019), and the coarse pin-lock mode (0022). The enforced
+/// fixtures stage exactly these, in order. 0019 and 0022 rewrite 0014's
+/// routines; applied before it, 0014 would undo them.
+pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 4] = [14, 17, 19, 22];
 
 /// Core migration lane used by historical domain fixtures.
 ///
-/// Every core migration except the owner-RLS files (0014, 0017, 0019), which
-/// are tested by the enforced boot fixtures. Keeping them out of this lane
+/// Every core migration except [`OWNER_RLS_MIGRATION_VERSIONS`], which are
+/// tested by the enforced boot fixtures. Keeping them out of this lane
 /// preserves the pre-activation schema for invariant tests; later migrations
 /// still apply. No production path calls this helper.
 #[must_use]

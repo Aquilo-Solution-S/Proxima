@@ -13,6 +13,14 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.28
+
+| Lane | Migration |
+|---|---|
+| Core | `0022_v028_coarse_pin_lock.sql`: `memory_pin_checks` stops taking per-target advisory locks after 256 in a transaction holding SHARE ROW EXCLUSIVE or stronger on `memory`, `cooled` and `goal`; preserves the function's identity, owner, ACL and `search_path` |
+
+No table or row changes. Usage: [15 §Bulk Memory writes](../15-deployment.md#bulk-memory-writes).
+
 ## v0.0.27
 
 | Lane | Migration |

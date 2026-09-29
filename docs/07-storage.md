@@ -348,6 +348,15 @@ hashed into the `t`/handle namespace, distinct scope ids take distinct keys,
 and a vanished registry row is a typed refusal (`ScopeMissing`) on every
 admission path rather than an unscoped write.
 
+`memory_pin_checks` takes the admission's `proxima-forget:<t>` set itself
+(the row's `t` and every pin). A transaction holding SHARE ROW EXCLUSIVE or
+stronger on `memory`, `cooled` and `goal` stops doing so after 256 targets
+(coarse mode, [15 §Bulk Memory writes](15-deployment.md#bulk-memory-writes)):
+every path above writes one of those tables before it removes or claims a
+target, so it waits for the bulk transaction. Forget's grounding backstop
+re-reads its dependers after that write; erase reads no dependers. The
+per-row pin checks are unchanged.
+
 Upload object keys have their own fence, one rank below the lifecycle set. A
 path that is about to decide whether an upload object's bytes may be destroyed
 — owner erase, source-scope erase, upload stage, finish and abort, mount
