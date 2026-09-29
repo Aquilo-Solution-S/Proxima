@@ -40,12 +40,12 @@ async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult
     let semantic = seed_note(pool, owner, "Concept result", "Unrelated vocabulary").await?;
     let both = seed_note(pool, owner, "Exact result", "quartz nebula").await?;
     let zero = seed_note(pool, owner, "Orthogonal result", "Separate vocabulary").await?;
-    seed_embedding(pool, owner, semantic, &embed_literal()).await?;
-    seed_embedding(pool, owner, both, &embed_literal_xy("0.8", "0.6")).await?;
-    seed_embedding(pool, owner, zero, &embed_literal_xy("0", "1")).await?;
+    seed_embedding(pool, owner, semantic, &embed_vector()).await?;
+    seed_embedding(pool, owner, both, &embed_vector_xy(0.8, 0.6)).await?;
+    seed_embedding(pool, owner, zero, &embed_vector_xy(0.0, 1.0)).await?;
     let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let foreign = seed_note(pool, other_owner, "quartz nebula", "quartz nebula").await?;
-    seed_embedding(pool, other_owner, foreign, &embed_literal()).await?;
+    seed_embedding(pool, other_owner, foreign, &embed_vector()).await?;
     let projection = note_projection();
     let mut req = hybrid_request(owner, "quartz nebula");
     let hybrid = pg
@@ -110,13 +110,13 @@ async fn hybrid_min_score_keeps_either_raw_leg_and_drops_both_below_floor() -> T
     let semantic = seed_note(pool, owner, "Semantic winner", "Unrelated vocabulary").await?;
     let both_low = seed_note(pool, owner, "Weak winner", "quartz").await?;
     let lexical_high = seed_note(pool, owner, "Strong phrase", "quartz nebula").await?;
-    seed_embedding(pool, owner, semantic, &embed_literal_xy("0.8", "0.6")).await?;
-    seed_embedding(pool, owner, both_low, &embed_literal_xy("0.4", "0.9165151")).await?;
+    seed_embedding(pool, owner, semantic, &embed_vector_xy(0.8, 0.6)).await?;
+    seed_embedding(pool, owner, both_low, &embed_vector_xy(0.4, 0.916_515_1)).await?;
     seed_embedding(
         pool,
         owner,
         lexical_high,
-        &embed_literal_xy("0.4", "0.9165151"),
+        &embed_vector_xy(0.4, 0.916_515_1),
     )
     .await?;
     let mut req = hybrid_request(owner, "quartz nebula");

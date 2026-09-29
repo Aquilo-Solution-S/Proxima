@@ -140,12 +140,13 @@ pub async fn nearest_code_chunk_candidates_on_connection(
         .execute(&mut *connection)
         .await
         .map_err(map_err)?;
-    let sql = nearest_code_chunk_sql(Lane::of(query.space().dim()));
+    let lane = Lane::of(query.space().dim());
+    let sql = nearest_code_chunk_sql(lane);
     let target = u32::try_from(limit)
         .unwrap_or(u32::MAX)
         .min(SEMANTIC_SCAN_CAP);
     let mut window = target;
-    let query_vector = crate::pgvector::literal(query.values());
+    let query_vector = lane.query_vector(query.values());
     let mut candidates = BTreeSet::new();
     loop {
         // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and

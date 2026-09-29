@@ -25,8 +25,8 @@ use proxima_core::verbs::schema::{
 };
 use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
+use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning};
 use uuid::Uuid;
 
 /// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
@@ -181,19 +181,15 @@ async fn seed_note_lang(
     Ok(t)
 }
 
-fn embed_literal() -> String {
-    embed_literal_xy("1", "0")
+fn embed_vector() -> pgvector::Vector {
+    embed_vector_xy(1.0, 0.0)
 }
 
-fn embed_literal_xy(x: &str, y: &str) -> String {
-    format!(
-        "[{}]",
-        std::iter::once(x)
-            .chain(std::iter::once(y))
-            .chain(std::iter::repeat_n("0", 1022))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn embed_vector_xy(x: f32, y: f32) -> pgvector::Vector {
+    let mut values = vec![0.0; 1024];
+    values[0] = x;
+    values[1] = y;
+    pgvector::Vector::from(values)
 }
 
 async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
@@ -334,12 +330,12 @@ async fn seed_embedding(
     pool: &sqlx::PgPool,
     owner: OwnerRef,
     t: Uuid,
-    vector: &str,
+    vector: &pgvector::Vector,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_id, model_id, dim, embedding_version, vec, owner_id)
-         VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+         VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
     )
     .bind(t)
     .bind(vector)
@@ -888,10 +884,10 @@ async fn semantic_search_respects_until() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+             VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
         .bind(t)
-        .bind(embed_literal())
+        .bind(embed_vector())
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;
@@ -940,6 +936,78 @@ async fn semantic_search_respects_until() {
     result.expect("semantic until filter failed");
 }
 
+/// The semantic scan binds its query vector typed, not as text (#379).
+///
+/// A prepared statement switches to a generic plan after five executions.
+/// There a text bind cast in SQL is not a constant, and `vector_in`
+/// re-parses it for every row the scan scores. So the scan's `$3` must
+/// reach Postgres as a `vector`, and a generic plan must rank what the
+/// custom plan ranked.
+#[tokio::test]
+async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        // One connection: the statements the searches prepare are the ones
+        // `pg_prepared_statements` lists below.
+        let pool_config = PgPoolConfig {
+            max_connections: 1,
+            ..PgPoolConfig::default()
+        };
+        let pg = PgStorage::connect_with_config(&url, pool_config, PgTuning::default()).await?;
+        pg.run_before_owner_rls_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let near = seed_note(pool, owner, "Near", "semantic neighbour body").await?;
+        seed_embedding(pool, owner, near, &embed_vector()).await?;
+        let far = seed_note(pool, owner, "Far", "another neighbour body").await?;
+        seed_embedding(pool, owner, far, &embed_vector_xy(0.6, 0.8)).await?;
+
+        let mut req = search_req(owner, "unused");
+        req.mode = SearchMode::Semantic;
+        req.semantic = Some(test_semantic(embed_vector().to_vec()));
+        let ranked = |page: proxima_core::verbs::query::MemorySearchPage| {
+            page.results
+                .iter()
+                .map(|hit| hit.memory_id.into_inner())
+                .collect::<Vec<_>>()
+        };
+        let custom = ranked(pg.search_memories(None, &req, &[note_projection()]).await?);
+        assert_eq!(custom, vec![near, far]);
+
+        sqlx::query("SET plan_cache_mode = force_generic_plan")
+            .execute(pool)
+            .await?;
+        let generic = ranked(pg.search_memories(None, &req, &[note_projection()]).await?);
+        assert_eq!(
+            generic, custom,
+            "a generic plan ranks what the custom plan ranked"
+        );
+
+        let (parameter_types, generic_plans): (Vec<String>, i64) = sqlx::query_as(
+            "SELECT parameter_types::text[], generic_plans
+               FROM pg_prepared_statements
+              WHERE statement LIKE '%<=> $3::vector(1024)%'
+                AND statement NOT LIKE '%pg_prepared_statements%'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            parameter_types.get(2).map(String::as_str),
+            Some("vector"),
+            "the scan's query vector is bound typed: {parameter_types:?}"
+        );
+        assert!(generic_plans >= 1, "the second search ran a generic plan");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("typed semantic bind checks failed");
+}
+
 /// The tag filter reaches the SEMANTIC arm's candidate scan.
 ///
 /// Two embedded notes under one owner, one tagged. A tagged `Semantic`
@@ -974,10 +1042,10 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             sqlx::query(
                 "INSERT INTO proxima_core.embeddings
                     (entity_id, model_id, dim, embedding_version, vec, owner_id)
-                 VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+                 VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
             )
             .bind(t)
-            .bind(embed_literal())
+            .bind(embed_vector())
             .bind(owner.stored_owner_id())
             .execute(pool)
             .await?;
@@ -1094,7 +1162,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
             &["core"],
         )
         .await?;
-        seed_embedding(pool, owner, core_t, &embed_literal_xy("0.8", "0.6")).await?;
+        seed_embedding(pool, owner, core_t, &embed_vector_xy(0.8, 0.6)).await?;
 
         let mut foreign = Vec::new();
         for index in 0..22 {
@@ -1104,7 +1172,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
                 vec!["foreign"]
             };
             let t = seed_docs_note(pool, owner, core_t, "foreign needle body", &tags).await?;
-            seed_embedding(pool, owner, t, &embed_literal()).await?;
+            seed_embedding(pool, owner, t, &embed_vector()).await?;
             foreign.push(t);
         }
         let docs = docs_projection();

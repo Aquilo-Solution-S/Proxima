@@ -4,7 +4,6 @@
 //! has to pick the shipped index. Not a cost/latency bench.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::EmbeddingDim;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
@@ -12,6 +11,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
+use proxima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -19,8 +19,8 @@ use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tes
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
-    search_admit_sql_for_tests, semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests,
-    substring_sql_for_tests,
+    search_admit_sql_for_tests, semantic_query_vector_for_tests, semantic_search_sql_for_tests,
+    set_hnsw_search_sql_for_tests, substring_sql_for_tests,
 };
 use uuid::Uuid;
 
@@ -58,18 +58,10 @@ fn search_req(owner: OwnerRef) -> MemorySearchRequest {
     }
 }
 
-fn embed_literal() -> String {
-    embed_literal_of(EmbeddingDim::D1024)
-}
-
-fn embed_literal_of(dim: EmbeddingDim) -> String {
-    format!(
-        "[{}]",
-        std::iter::once("1")
-            .chain(std::iter::repeat_n("0", dim.width() - 1))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn unit_values(dim: EmbeddingDim) -> Vec<f32> {
+    let mut values = vec![0.0; dim.width()];
+    values[0] = 1.0;
+    values
 }
 
 async fn seed_note(
@@ -328,10 +320,10 @@ async fn hot_path_plans_use_expected_indexes() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+             VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
         .bind(leaf)
-        .bind(embed_literal())
+        .bind(pgvector::Vector::from(unit_values(EmbeddingDim::D1024)))
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;
@@ -548,7 +540,10 @@ async fn hot_path_plans_use_expected_indexes() {
                 sqlx::query_scalar(sqlx::AssertSqlSafe(semantic_explain))
                     .bind(&owner_ids)
                     .bind("test-embed")
-                    .bind(embed_literal_of(dim))
+                    .bind(semantic_query_vector_for_tests(&SpaceVector::new(
+                        EmbeddingSpace::new("test-embed", dim),
+                        unit_values(dim),
+                    )?))
                     .bind(20_i64)
                     .bind(None::<time::OffsetDateTime>)
                     .bind(None::<time::OffsetDateTime>)

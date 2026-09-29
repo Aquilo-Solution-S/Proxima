@@ -14,6 +14,7 @@ name = "proxima_storage_pg"
 proxima-core = { path = "../core" }
 proxima-pg-testkit = { path = "../pg-testkit", optional = true }
 sqlx = { workspace = true, features = ["json", "rust_decimal"] }
+pgvector = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

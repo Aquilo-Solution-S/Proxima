@@ -301,14 +301,10 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
     }
 }
 
-fn embed_literal() -> String {
-    format!(
-        "[{}]",
-        std::iter::once("1")
-            .chain(std::iter::repeat_n("0", 1023))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn embed_vector() -> pgvector::Vector {
+    let mut values = vec![0.0; 1024];
+    values[0] = 1.0;
+    pgvector::Vector::from(values)
 }
 
 fn owner_kind(owner: OwnerRef) -> &'static str {
@@ -543,12 +539,12 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
-             SELECT $1, 'test-embed', 1024, version, chunk_ordinal, $2::vector, $3
+             SELECT $1, 'test-embed', 1024, version, chunk_ordinal, $2, $3
                FROM generate_series(1, 2) AS version
                CROSS JOIN generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(t)
-        .bind(embed_literal())
+        .bind(embed_vector())
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;

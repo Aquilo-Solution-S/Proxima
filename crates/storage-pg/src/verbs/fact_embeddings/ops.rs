@@ -40,7 +40,7 @@ struct RecallSampleRow {
     owner_id: uuid::Uuid,
     model_id: String,
     dim: i16,
-    vec: String,
+    vec: pgvector::Vector,
 }
 
 #[derive(sqlx::FromRow)]
@@ -201,7 +201,7 @@ async fn embedding_recall_canary(
     k: i64,
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
     let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
-        "SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec::text AS vec
+        "SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
@@ -218,13 +218,14 @@ async fn embedding_recall_canary(
         return Ok(None);
     };
     let lane = crate::pgvector::Lane::from_stored(sample.dim)?;
+    let query = lane.query_vector(sample.vec.as_slice());
 
     let exact_ids = current_embedding_ids_by_distance(
         &mut *pool,
         sample.owner_id,
         &sample.model_id,
         lane,
-        &sample.vec,
+        &query,
         k,
         DistancePlan::Exact,
     )
@@ -234,7 +235,7 @@ async fn embedding_recall_canary(
         sample.owner_id,
         &sample.model_id,
         lane,
-        &sample.vec,
+        &query,
         k,
         DistancePlan::Ann,
     )
@@ -276,7 +277,7 @@ async fn current_embedding_ids_by_distance(
     owner_id: uuid::Uuid,
     model_id: &str,
     lane: crate::pgvector::Lane,
-    vec: &str,
+    vec: &crate::pgvector::QueryVector,
     k: i64,
     plan: DistancePlan,
 ) -> Result<Vec<(uuid::Uuid, i32, i32)>, StorageError> {
