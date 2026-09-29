@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use super::Engine;
-use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{
@@ -308,7 +307,8 @@ impl Engine {
     /// Covers Facts *and* derived memories. Derived rows matter because a
     /// flavor can materialize Abstractions through its own sidecar path with
     /// no embedding client in scope — code-chunk ingest does — leaving them
-    /// semantically invisible until someone ran a global reconcile.
+    /// semantically invisible until someone ran a global reconcile. Only
+    /// the kinds up to the caller's write limit are queued.
     ///
     /// # Errors
     ///
@@ -324,7 +324,7 @@ impl Engine {
         self.operation_authority(authz)?;
         let limit = i64::try_from(limit)
             .map_err(|_| ProtocolError::invalid_argument("limit", "too large"))?;
-        let permit = self.authorize_write(authz, owner, AccessKind::Fact).await?;
+        let permit = self.authorize_write_limit(authz, owner).await?;
         let spaces = self.write_route(owner).await?.write_spaces();
         let mut enqueued = 0_u64;
         for space in &spaces {

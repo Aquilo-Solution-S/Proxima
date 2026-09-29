@@ -429,8 +429,8 @@ without a search gap:
    transfer also queues `next`, and the drain fills it through the `next`
    client. `moving` refuses two clients in the same space.
 2. **Backfill.** `Engine::backfill_missing_embeddings(authz, owner, limit)`
-   queues every memory missing a vector in either space; repeat until it
-   returns 0.
+   queues every memory missing a vector in either space, of the kinds up to
+   the caller's write limit; repeat until it returns 0.
 3. **Watch coverage.** `Engine::embedding_coverage(owner)` lists each space
    with its role (`Current`, `Next`, `Unrouted`) and counts. The move is
    complete when `Next`'s `embedded` equals `embeddable` less

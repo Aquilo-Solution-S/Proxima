@@ -4,6 +4,81 @@
 
 use super::*;
 
+/// Holds the facade's embedding worker for a whole test, so the test's own
+/// drains are the only ones and each drain's count is exact.
+///
+/// A configured router starts the worker in `build()`. It reconciles before
+/// its first drain, and reconcile routes every registered Owner before it
+/// queues anything. [`Self::boot`] registers an Owner before `build()`, so
+/// the worker's first route call always comes from that reconcile; it waits
+/// here until [`Self::release`]. The test's own calls run in `block_on`,
+/// outside any task, and pass straight through.
+#[derive(Debug)]
+struct HeldWorker {
+    inner: Arc<dyn proxima_core::llm::EmbeddingRouter>,
+    held: std::sync::atomic::AtomicBool,
+    parked: tokio::sync::Notify,
+    released: tokio::sync::Notify,
+}
+
+impl HeldWorker {
+    /// Registers `owner`, boots through `start`, and returns once the worker
+    /// is parked.
+    async fn boot<F, Fut>(
+        db_name: &str,
+        owner: Owner,
+        inner: Arc<dyn proxima_core::llm::EmbeddingRouter>,
+        start: F,
+    ) -> Result<(proxima::BuiltProxima, Arc<Self>), Box<dyn std::error::Error>>
+    where
+        F: FnOnce(Arc<dyn proxima_core::llm::EmbeddingRouter>) -> Fut,
+        Fut: std::future::Future<Output = Result<proxima::BuiltProxima, proxima::ProximaError>>,
+    {
+        let admin = sqlx::PgPool::connect(&db_url(db_name)).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)",
+        )
+        .bind(owner.stored_owner_id())
+        .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+        .execute(&admin)
+        .await?;
+        admin.close().await;
+        let held = Arc::new(Self {
+            inner,
+            held: std::sync::atomic::AtomicBool::new(false),
+            parked: tokio::sync::Notify::new(),
+            released: tokio::sync::Notify::new(),
+        });
+        let built = start(held.clone()).await?;
+        tokio::time::timeout(std::time::Duration::from_mins(1), held.parked.notified())
+            .await
+            .map_err(|_| "the embedding worker never reconciled")?;
+        Ok((built, held))
+    }
+
+    /// Lets the worker go; `shutdown()` joins it.
+    fn release(&self) {
+        self.released.notify_one();
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingRouter for HeldWorker {
+    async fn route(
+        &self,
+        owner: &Owner,
+    ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
+        if tokio::task::try_id().is_some()
+            && !self.held.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.parked.notify_one();
+            self.released.notified().await;
+        }
+        self.inner.route(owner).await
+    }
+}
+
 /// A client at a non-default width whose vectors separate two topics, so a
 /// semantic search ranks correctly only by reading its own width lane.
 #[derive(Debug)]
@@ -44,14 +119,23 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = company_owner(Uuid::now_v7());
-            let built = Proxima::<AgentMemoryApp>::app()
-                .database_url(runtime_url.clone())
-                .platform_database_url(platform_url.clone())
-                .owner(owner)
-                .embed_client(Arc::new(LaneEmbedding(dim)))
-                .tool_scope(ToolScope::All)
-                .build()
-                .await?;
+            let (built, held) = HeldWorker::boot(
+                &db_name,
+                owner,
+                Arc::new(proxima_core::llm::SingleClientRouter::bind(Arc::new(
+                    LaneEmbedding(dim),
+                ))?),
+                |router| {
+                    Proxima::<AgentMemoryApp>::app()
+                        .database_url(runtime_url.clone())
+                        .platform_database_url(platform_url.clone())
+                        .owner(owner)
+                        .embedding_router(router)
+                        .tool_scope(ToolScope::All)
+                        .build()
+                },
+            )
+            .await?;
             let tools = built.host().core_mcp_tools();
             let authz = host_authz(&owner, ToolScope::All);
 
@@ -103,6 +187,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                 assert_eq!(found["memories"].as_array().map(Vec::len), Some(2));
             }
 
+            held.release();
             built.shutdown().await;
             Ok(())
         }
@@ -190,16 +275,23 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
                 QueryTask::named("code"),
                 QueryInstruction::new("code: {query}")?,
             );
-        let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone())
-            .platform_database_url(platform_url.clone())
-            .owner(owner)
-            .embedding_router(Arc::new(SingleClientRouter::new(
+        let (built, held) = HeldWorker::boot(
+            &db_name,
+            owner,
+            Arc::new(SingleClientRouter::new(
                 recorder.bound().with_query_instructions(instructions),
-            )))
-            .tool_scope(ToolScope::All)
-            .build()
-            .await?;
+            )),
+            |router| {
+                Proxima::<AgentMemoryApp>::app()
+                    .database_url(runtime_url.clone())
+                    .platform_database_url(platform_url.clone())
+                    .owner(owner)
+                    .embedding_router(router)
+                    .tool_scope(ToolScope::All)
+                    .build()
+            },
+        )
+        .await?;
         let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
@@ -247,6 +339,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
             ["note: needle", "note: needle"]
         );
 
+        held.release();
         built.shutdown().await;
         Ok(())
     }
@@ -266,6 +359,7 @@ struct TwoOwnerFixture {
     shared: Owner,
     shared_space: String,
     router: Arc<proxima_core::test_fixtures::TestEmbeddingRouter>,
+    held: Arc<HeldWorker>,
     admin_pool: sqlx::PgPool,
 }
 
@@ -275,14 +369,16 @@ impl TwoOwnerFixture {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
-        let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url)
-            .platform_database_url(platform_url)
-            .owner(personal)
-            .embedding_router(router.clone())
-            .tool_scope(ToolScope::All)
-            .build()
-            .await?;
+        let (built, held) = HeldWorker::boot(db_name, personal, router.clone(), |router| {
+            Proxima::<AgentMemoryApp>::app()
+                .database_url(runtime_url)
+                .platform_database_url(platform_url)
+                .owner(personal)
+                .embedding_router(router)
+                .tool_scope(ToolScope::All)
+                .build()
+        })
+        .await?;
         let tools = built.host().core_mcp_tools();
         let authz = space_authz(personal, vec![personal, shared], Role::admin());
         let shared_space =
@@ -296,8 +392,14 @@ impl TwoOwnerFixture {
             shared,
             shared_space,
             router,
+            held,
             admin_pool,
         })
+    }
+
+    async fn shutdown(self) {
+        self.held.release();
+        self.built.shutdown().await;
     }
 
     async fn remember(&self, space: &str, body: &str) -> Result<String, CoreMcpError> {
@@ -491,7 +593,7 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
             "no personal text reaches the shared endpoint"
         );
 
-        fixture.built.shutdown().await;
+        fixture.shutdown().await;
         Ok(())
     }
     .await;
@@ -574,7 +676,7 @@ async fn a_route_failure_stays_with_its_owner() {
             .await?;
         assert!(fixture.job_statuses(&unrouted).await?.is_empty());
 
-        fixture.built.shutdown().await;
+        fixture.shutdown().await;
         Ok(())
     }
     .await;
@@ -629,7 +731,7 @@ async fn one_client_across_owners_ranks_by_score() {
             .count();
         assert_eq!(queries, 1, "one shared client embeds the query once");
 
-        fixture.built.shutdown().await;
+        fixture.shutdown().await;
         Ok(())
     }
     .await;
