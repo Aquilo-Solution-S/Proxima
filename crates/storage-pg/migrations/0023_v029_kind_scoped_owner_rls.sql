@@ -11,7 +11,9 @@
 -- in none refuses the migration.
 --   kind column      cooled, memory_head, sketch: the row's own kind
 --   memory row       embedding_heads, embedding_jobs, embeddings (entity_id),
---                    projection (memory_id): that memory's kind
+--                    projection (memory_id): that memory's kind; an
+--                    embedding row of a Goal (a Goal is embeddable) needs
+--                    the Goal list
 --   goal             goal_head, wake_config
 --   announce         Goal, or the kind of the hot or cooled memory at its t
 --   content          the kind of a hot or cooled admission naming it; an
@@ -23,9 +25,10 @@
 --                    metadata and ownerless tables
 --
 -- A limit covers every lower kind, so the lists nest: an owner on the
--- Perspective list may act on every Memory kind and skips the parent lookup.
--- Only rows whose kind a Perspective limit does not settle look it up, and a
--- memory row whose memory is gone reads as no kind at all.
+-- Perspective list may act on every Memory kind and skips the parent lookup
+-- for announce and content, whose rows only a Memory row names; on the
+-- memory-row tables only the Goal list skips it. Every other scope looks the
+-- kind up, and a row whose memory is gone reads as no kind at all.
 --
 -- install_owner_rls: memory_owner_tables now follow the parent memory's kind,
 -- keyed by the table's FK to proxima_core.memory (else its t column), and may
@@ -90,7 +93,7 @@ BEGIN
         FOR table_name IN SELECT jsonb_object_keys(memory_tables) LOOP
             expr := jsonb_set(expr, ARRAY[direction || ':' || table_name], to_jsonb(format(
                 'owner_id = ANY(%s) OR (owner_id = ANY(%s) AND EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = proxima_core.%I.%I AND parent.owner_id = ANY(%s)))',
-                owners[3], owners[1], table_name, memory_tables ->> table_name,
+                owners[4], owners[1], table_name, memory_tables ->> table_name,
                 format(kind_of, 'parent.kind'))), true);
         END LOOP;
         FOREACH table_name IN ARRAY goal_tables LOOP

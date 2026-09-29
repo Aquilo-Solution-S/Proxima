@@ -1299,6 +1299,113 @@ async fn assert_fact_scope_sql(
     Ok(())
 }
 
+/// A Goal is embeddable, so the embedding tables hold Goal rows too: a
+/// Perspective limit reads and deletes a Memory's rows there, not a Goal's.
+#[tokio::test]
+async fn an_embedding_row_of_a_goal_needs_the_goal_limit() -> TestResult {
+    let database = unique_db_name("proxima_kind_rule_goal_vec");
+    create_split_core_db(&database).await?;
+    let result: TestResult = async {
+        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let built = boot(&database, group, Arc::default(), None).await?;
+        let seeded = seed(&built.host().core_mcp_tools(), group).await?;
+        let admin = PgPool::connect(&db_url(&database)).await?;
+        let owner_id = group.stored_owner_id();
+        let goal: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE owner_id = $1 LIMIT 1")
+                .bind(owner_id)
+                .fetch_one(&admin)
+                .await?;
+        let fact = handle_id(&seeded.fact)?;
+        for entity in [fact, goal] {
+            sqlx::query(
+                "INSERT INTO proxima_core.embeddings
+                    (entity_id, model_id, dim, embedding_version, vec, owner_id)
+                 VALUES ($1, 'goal-probe', 1024, 1, $3::real[]::vector, $2)",
+            )
+            .bind(entity)
+            .bind(owner_id)
+            .bind(vec![0.5_f32; 1024])
+            .execute(&admin)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.embedding_heads
+                    (entity_id, model_id, dim, embedding_version, owner_id)
+                 VALUES ($1, 'goal-probe', 1024, 1, $2)",
+            )
+            .bind(entity)
+            .bind(owner_id)
+            .execute(&admin)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id, status, dim)
+                 VALUES ($1, 'goal-probe', $2, 'failed_permanent', 1024)",
+            )
+            .bind(entity)
+            .bind(owner_id)
+            .execute(&admin)
+            .await?;
+        }
+
+        let (runtime_url, _) = split_role_urls(&database).await?;
+        let runtime = PgPool::connect(&runtime_url).await?;
+        let perspective = Role::new(AccessCeiling::Perspective, AccessCeiling::Perspective, false)
+            .expect("role");
+        for (name, role, expected) in [
+            ("new(P,P)", perspective, BTreeSet::from([fact])),
+            ("viewer", Role::viewer(), BTreeSet::from([fact, goal])),
+        ] {
+            let authz = context(group, role);
+            let scope = authz.owner_scope().ok_or("authenticated scope")?;
+            let mut tx = proxima_storage_pg::begin_owner_transaction(&runtime, scope).await?;
+            let visible: BTreeSet<(String, Uuid)> = sqlx::query_as(
+                "SELECT 'embeddings', entity_id FROM proxima_core.embeddings
+                  WHERE model_id = 'goal-probe'
+                 UNION ALL
+                 SELECT 'embedding_heads', entity_id FROM proxima_core.embedding_heads
+                  WHERE model_id = 'goal-probe'
+                 UNION ALL
+                 SELECT 'embedding_jobs', entity_id FROM proxima_core.embedding_jobs
+                  WHERE model_id = 'goal-probe'",
+            )
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect();
+            let expected: BTreeSet<(String, Uuid)> =
+                ["embeddings", "embedding_heads", "embedding_jobs"]
+                    .into_iter()
+                    .flat_map(|table| expected.iter().map(move |t| (table.to_owned(), *t)))
+                    .collect();
+            assert_eq!(visible, expected, "{name} reads");
+            tx.rollback().await?;
+        }
+        let authz = context(group, perspective);
+        let scope = authz.owner_scope().ok_or("authenticated scope")?;
+        let mut tx = proxima_storage_pg::begin_owner_transaction(&runtime, scope).await?;
+        for (entity, expected) in [(goal, 0), (fact, 1)] {
+            let deleted: (i64, i64, i64) = sqlx::query_as(
+                "WITH e AS (DELETE FROM proxima_core.embeddings WHERE entity_id = $1 RETURNING 1),
+                      h AS (DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1 RETURNING 1),
+                      j AS (DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1 RETURNING 1)
+                 SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM h), (SELECT count(*) FROM j)",
+            )
+            .bind(entity)
+            .fetch_one(&mut *tx)
+            .await?;
+            assert_eq!(deleted, (expected, expected, expected), "new(P,P) deletes {entity}");
+        }
+        tx.rollback().await?;
+        runtime.close().await;
+        admin.close().await;
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    drop_db(&database).await?;
+    result
+}
+
 /// A Perspective and an Abstraction with the same payload get one Content row
 /// each, so a scope that reads up to Abstractions reuses no Content it cannot
 /// see: its derivation succeeds.
