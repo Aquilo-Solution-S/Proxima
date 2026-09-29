@@ -5,6 +5,7 @@
 //! erase). The storage body lives in `proxima-storage-pg`.
 
 use crate::error::ProtocolError;
+use crate::verbs::query::SidecarAtom;
 use crate::{MemoryId, Owner, SchemaId};
 
 /// Series one call may erase, the selection's reference closure included.
@@ -21,7 +22,9 @@ pub const MAX_ERASE_VERSIONS_PER_CALL: usize = 1024;
 /// What one [`crate::UnitOfWork::erase_own_series`] call selects.
 ///
 /// Every selected admission is expanded to its WHOLE series, hot and cooled:
-/// the erase never prunes a series' history.
+/// the erase never prunes a series' history. Every variant but `Ids` names
+/// one own schema, selects only `owner`'s series of it, and pages: a call
+/// stops at the cap and sets [`SeriesEraseReceipt::more_remaining`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeriesSelection {
     /// Explicit memory ids, any version of a series. An id of no admission
@@ -36,6 +39,43 @@ pub enum SeriesSelection {
         schema: SchemaId,
         cutoff: time::OffsetDateTime,
     },
+    /// Every series of `schema` with a hot version whose row in the
+    /// schema's sidecar matches every `(column, value)` pair, oldest match
+    /// first, up to the cap. The predicates are `AND`-joined equality over
+    /// the sidecar's own columns — the
+    /// [`crate::storage_ports::SidecarSessionRead`] shape — at least one.
+    /// Any matching version selects its series: the unit is the series, not
+    /// the version. A cooled version's row lives in its cold object only, so
+    /// it matches nothing.
+    SidecarEquals {
+        schema: SchemaId,
+        predicates: Vec<(String, SidecarAtom)>,
+    },
+    /// Every series of `schema` whose NEWEST version's `column` — a
+    /// `timestamptz` column of the schema's sidecar — is older than
+    /// `cutoff`, oldest value first, up to the cap. The clock is the one the
+    /// payload declares, so a backfilled event ages by when it happened; a
+    /// series whose newest version carries a later value keeps every
+    /// version. A newest version that is cooled, or holds `NULL` there, has
+    /// no value to compare and keeps its series.
+    DeclaredBefore {
+        schema: SchemaId,
+        column: String,
+        cutoff: time::OffsetDateTime,
+    },
+}
+
+impl SeriesSelection {
+    /// The own schema the selection names; `None` for `Ids`.
+    #[must_use]
+    pub const fn schema(&self) -> Option<&SchemaId> {
+        match self {
+            Self::Ids(_) => None,
+            Self::AdmittedBefore { schema, .. }
+            | Self::SidecarEquals { schema, .. }
+            | Self::DeclaredBefore { schema, .. } => Some(schema),
+        }
+    }
 }
 
 /// Whether the erase commits or reports.
@@ -69,8 +109,8 @@ pub struct SeriesEraseReceipt {
     /// Memories outside the erase whose `origins[]` or `refs[]` name an
     /// erased `t`. The graph is diminished, not refused.
     pub dangling_pins: u64,
-    /// [`SeriesSelection::AdmittedBefore`] stopped at the cap with matching
-    /// series left: call again.
+    /// A selection other than [`SeriesSelection::Ids`] stopped at the cap
+    /// with matching series left: call again.
     pub more_remaining: bool,
 }
 
@@ -176,6 +216,10 @@ pub struct SeriesEraseRequest<'a> {
     /// must carry one of them.
     pub own_schemas: &'a [String],
     pub selection: &'a SeriesSelection,
+    /// The selection schema's sidecar table, off the flavor contract. Set
+    /// for [`SeriesSelection::SidecarEquals`] and
+    /// [`SeriesSelection::DeclaredBefore`], the selections that read it.
+    pub sidecar_table: Option<&'a str>,
     pub max_series: usize,
     pub max_versions: usize,
 }

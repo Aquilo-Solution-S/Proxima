@@ -96,25 +96,38 @@ selection, mode) -> SeriesEraseReceipt` is that lane. Kernel: Lean
 
 | Property | Contract |
 |---|---|
-| selection | `Ids(memory ids)` — each expanded to its whole series; an id of no admission selects nothing — or `AdmittedBefore { schema, cutoff }` — every series of one own schema whose NEWEST version's UUIDv7 `t` is older than `cutoff`, oldest first |
+| selection | one `SeriesSelection` (table below); every variant but `Ids` names one own schema and selects only `owner`'s series of it |
 | scope | one `Owner`; only Fact, Abstraction and Perspective schemas the named flavor registers; `flavor_id` names a registered flavor other than core |
-| unit | the whole series, hot and cooled; a series with one version newer than the cutoff keeps every version |
+| unit | the whole series, hot and cooled; a series whose newest version is not older than the cutoff keeps every version |
 | references | a row of any table holding a `NO ACTION`/`RESTRICT` foreign key into `memory(t)` that points at the erase set is erased with it, and its series joins the set (fixpoint); a referencing table with no declared memory key refuses the erase |
-| refusal | before any delete, naming each offender: `ForeignSchema` (core or another flavor's schema), `CrossOwner` (a version or referencing row of another owner — a transferred series), `UnerasableReference`, `OverCap` |
+| refusal | before any delete, naming each offender: `ForeignSchema` (core or another flavor's schema), `CrossOwner` (a version or referencing row of another owner — a transferred series), `UnerasableReference`, `OverCap`. A sidecar selection with no predicate, a column its sidecar does not hold, or a `DeclaredBefore` column that is not `timestamptz` is `InvalidArgument`, also before any delete |
 | authority | Admin on `owner` (the Goal write ceiling, the gate transfer takes), or the host's `SystemAuthority` through `Engine::system_unit_of_work`, which admits this verb and nothing else |
 | tools | a call from a tool handler is refused unless the calling action's declared `ToolEffect` is `Destructive` — the dispatched action's own, never the dispatcher's join — and the named flavor's contract names the tool; the same declaration is the MCP `destructiveHint` ([12 §Tool Effect](12-tool-manifest.md#tool-effect)) |
-| bound | `MAX_ERASE_SERIES_PER_CALL` = 256 series, `MAX_ERASE_VERSIONS_PER_CALL` = 1024 versions, reference closure included. `Ids` over the cap is refused; `AdmittedBefore` stops at it and sets `more_remaining`. Re-erasing an erased series is a no-op, so callers page |
+| bound | `MAX_ERASE_SERIES_PER_CALL` = 256 series, `MAX_ERASE_VERSIONS_PER_CALL` = 1024 versions, reference closure included. `Ids` over the cap is refused; every other selection stops at it and sets `more_remaining`. Re-erasing an erased series is a no-op, so callers page |
 | unit shape | the verb is the unit's first and only operation; an empty `Ids` is authorized and answered without a transaction |
 | modes | `Erase` commits with the unit; `DryRun` runs the same path and rolls back — same counts, no change |
 | effect | exactly the exact-Fact hard erase: every version, sidecars, embeddings, heads, content, publication record and origin by `t`, erase witnesses; cited blobs no remaining admission cites; cold objects enqueued and destroyed after commit |
 | receipt | `SeriesEraseReceipt`: versions erased, series erased, of which joined by reference, blobs removed, cold objects pending, `dangling_pins` (memories outside the erase whose `origins[]`/`refs[]` name an erased `t` — the graph is diminished, not refused), `more_remaining` |
 | order | lifecycle fence exclusive → owner fence shared → handle/`t` row locks, `lock_timeout` 5 s; a lock wait, deadlock, or a series that gained a version mid-erase is `Retryable` with nothing deleted |
 
-Retention runs here: the host's schedule calls `AdmittedBefore` under system
-authority. Retention is measured from ADMISSION, which the substrate stamps
-and a payload cannot back- or future-date — so a flavor that backfills
-history must not admit events older than the host's retention window, or a
-backfilled event gets a full new period.
+| `SeriesSelection` | Selects | Clock, order |
+|---|---|---|
+| `Ids(memory ids)` | each id's whole series; an id of no admission selects nothing | — |
+| `AdmittedBefore { schema, cutoff }` | series whose NEWEST version's UUIDv7 `t` is older than `cutoff` | admission; oldest first |
+| `SidecarEquals { schema, predicates }` | series with a hot version whose row in `schema`'s declared sidecar matches every `(column, SidecarAtom)` — `AND`-joined, ≥ 1, the `SidecarSessionRead` shape; any matching version selects its series | oldest match first |
+| `DeclaredBefore { schema, column, cutoff }` | series whose NEWEST version's `column` — a `timestamptz` of `schema`'s declared sidecar — is older than `cutoff`; a cooled or `NULL` newest value keeps the series | the payload's; oldest value first |
+
+A cooled version's sidecar row lives in its cold object, so neither sidecar
+selection reads it; a selected series still goes with its cooled versions.
+
+Retention runs here: the host's schedule calls `AdmittedBefore` or
+`DeclaredBefore` under system authority. `AdmittedBefore` measures from
+ADMISSION, which the substrate stamps and a payload cannot back- or
+future-date — a backfilled event gets a full new period, so under it a
+flavor that backfills history must not admit events older than the host's
+retention window. `DeclaredBefore` measures from a `timestamptz` the
+schema's sidecar declares (when the event happened), so backfilled history
+ages by its own date; the payload supplies that value.
 
 Scope fences are the flavor's, not the verb's. A flavor erasing one of its
 declared scopes finds the scope's admissions itself, erases them page by
@@ -322,8 +335,9 @@ and pruning an unbounded log.
 There is no Fact-retention enforcement. An owner retention window is a
 promise about someone's data, made by whoever made it, and the host that made
 it schedules the erase: `UnitOfWork::erase_own_series` with
-`SeriesSelection::AdmittedBefore`, under system authority, paging while
-`more_remaining` (§Flavor-scoped erase). Not `forget_memory`: forget keeps a
+`SeriesSelection::AdmittedBefore` (admission time) or `DeclaredBefore` (a
+`timestamptz` the schema's sidecar declares), under system authority, paging
+while `more_remaining` (§Flavor-scoped erase). Not `forget_memory`: forget keeps a
 cold copy. The period, the cadence and any hold stay with the host.
 
 ## External side effects

@@ -302,10 +302,12 @@ fn over_cap(footprint: &Footprint, request: &SeriesEraseRequest<'_>) -> Option<V
     })
 }
 
-/// Series of `schema` under `owner_id` whose newest version, over every
-/// version of the series, is older than `bound`, oldest first. The seed is
-/// the newest version's `t`.
-const ADMITTED_BEFORE_SQL: &str = "\
+/// `newest`: the newest version's `t` of every series of schema `$2` with a
+/// version under owner `$1`, hot or cooled, over EVERY version of the
+/// series. The one reading of "newest version" both age selections share.
+macro_rules! newest_versions_cte {
+    () => {
+        "\
 WITH own AS (
     SELECT handle FROM proxima_core.memory
      WHERE owner_id = $1 AND schema_id = $2
@@ -320,10 +322,22 @@ WITH own AS (
 ), newest AS (
     SELECT DISTINCT ON (handle) t FROM versions ORDER BY handle, t DESC
 )
-SELECT t FROM newest
+"
+    };
+}
+
+mod selection;
+
+/// Series of `schema` under `owner_id` whose newest version, over every
+/// version of the series, is older than `bound`, oldest first. The seed is
+/// the newest version's `t`.
+const ADMITTED_BEFORE_SQL: &str = concat!(
+    newest_versions_cte!(),
+    "SELECT t FROM newest
  WHERE t < $3
  ORDER BY t
- LIMIT $4";
+ LIMIT $4"
+);
 
 /// The smallest `UUIDv7` of the millisecond `cutoff` falls in. A `t` below
 /// it was minted in an earlier millisecond; `uuid` compares bytewise and a
@@ -431,54 +445,100 @@ SELECT count(*) FROM proxima_core.memory
  WHERE (origins && $1::uuid[] OR refs && $1::uuid[])
    AND NOT t = ANY($1::uuid[])";
 
+fn over(offending: Vec<String>) -> SeriesEraseRefusal {
+    SeriesEraseRefusal {
+        kind: SeriesEraseRefusalKind::OverCap,
+        offending,
+    }
+}
+
 /// The closed footprint of `request`'s selection, and whether matching
 /// series were left for a later call. `Err` is an over-cap refusal.
 async fn resolve_footprint(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     pairs: &[ReferencePair],
     owner_id: Uuid,
     request: &SeriesEraseRequest<'_>,
 ) -> Result<Result<(Footprint, bool), SeriesEraseRefusal>, StorageError> {
-    let over = |offending| SeriesEraseRefusal {
-        kind: SeriesEraseRefusalKind::OverCap,
-        offending,
-    };
-    match request.selection {
+    // One past the cap, so a full page knows whether more wait.
+    let limit = i64::try_from(request.max_series.saturating_add(1)).unwrap_or(i64::MAX);
+    let seeds: Vec<Uuid> = match request.selection {
         SeriesSelection::Ids(ids) => {
             let seeds: Vec<Uuid> = ids.iter().map(|id| id.into_inner()).collect();
             let footprint = close_footprint(tx, pairs, &seeds).await?;
-            Ok(match over_cap(&footprint, request) {
+            return Ok(match over_cap(&footprint, request) {
                 Some(offending) => Err(over(offending)),
                 None => Ok((footprint, false)),
-            })
+            });
         }
         SeriesSelection::AdmittedBefore { schema, cutoff } => {
-            let limit = i64::try_from(request.max_series.saturating_add(1)).unwrap_or(i64::MAX);
-            let mut seeds: Vec<Uuid> = sqlx::query_scalar(ADMITTED_BEFORE_SQL)
+            sqlx::query_scalar(ADMITTED_BEFORE_SQL)
                 .bind(owner_id)
                 .bind(schema.as_str())
                 .bind(uuid_v7_floor(*cutoff))
                 .bind(limit)
                 .fetch_all(tx.as_mut())
                 .await
-                .map_err(map_err)?;
-            let mut more = seeds.len() > request.max_series;
-            seeds.truncate(request.max_series);
-            // Oldest first, and a prefix: halve until the closure fits, so
-            // a later series is never erased while an older one waits.
-            loop {
-                let footprint = close_footprint(tx, pairs, &seeds).await?;
-                match over_cap(&footprint, request) {
-                    None => return Ok(Ok((footprint, more))),
-                    Some(mut offending) if seeds.len() <= 1 => {
-                        offending.insert(0, format!("t={} alone", seeds[0]));
-                        return Ok(Err(over(offending)));
-                    }
-                    Some(_) => {
-                        seeds.truncate(seeds.len() / 2);
-                        more = true;
-                    }
-                }
+                .map_err(map_err)?
+        }
+        SeriesSelection::SidecarEquals { schema, predicates } => {
+            selection::sidecar_equals_seeds(
+                tx,
+                sidecars,
+                owner_id,
+                schema,
+                request.sidecar_table,
+                predicates,
+                limit,
+            )
+            .await?
+        }
+        SeriesSelection::DeclaredBefore {
+            schema,
+            column,
+            cutoff,
+        } => {
+            selection::declared_before_seeds(
+                tx,
+                sidecars,
+                owner_id,
+                schema,
+                request.sidecar_table,
+                column,
+                *cutoff,
+                limit,
+            )
+            .await?
+        }
+    };
+    page_footprint(tx, pairs, request, seeds).await
+}
+
+/// Close the longest prefix of `seeds` whose footprint fits the cap.
+///
+/// `seeds` is one page past the cap, oldest first. Halve until the closure
+/// fits, so a later series is never erased while an older one waits; a
+/// single seed over the cap is refused.
+async fn page_footprint(
+    tx: &mut Transaction<'_, Postgres>,
+    pairs: &[ReferencePair],
+    request: &SeriesEraseRequest<'_>,
+    mut seeds: Vec<Uuid>,
+) -> Result<Result<(Footprint, bool), SeriesEraseRefusal>, StorageError> {
+    let mut more = seeds.len() > request.max_series;
+    seeds.truncate(request.max_series);
+    loop {
+        let footprint = close_footprint(tx, pairs, &seeds).await?;
+        match over_cap(&footprint, request) {
+            None => return Ok(Ok((footprint, more))),
+            Some(mut offending) if seeds.len() <= 1 => {
+                offending.insert(0, format!("t={} alone", seeds[0]));
+                return Ok(Err(over(offending)));
+            }
+            Some(_) => {
+                seeds.truncate(seeds.len() / 2);
+                more = true;
             }
         }
     }
@@ -500,16 +560,16 @@ pub(crate) async fn erase_series(
 ) -> Result<(SeriesEraseOutcome, ColdPurgePlan), StorageError> {
     let owner_id = owner.stored_owner_id();
     let pairs = reference_pairs(tx, &context.surfaces).await?;
-    let (footprint, more_remaining) = match resolve_footprint(tx, &pairs, owner_id, request).await?
-    {
-        Ok(resolved) => resolved,
-        Err(refusal) => {
-            return Ok((
-                SeriesEraseOutcome::Refused(refusal),
-                ColdPurgePlan::default(),
-            ));
-        }
-    };
+    let (footprint, more_remaining) =
+        match resolve_footprint(tx, sidecars, &pairs, owner_id, request).await? {
+            Ok(resolved) => resolved,
+            Err(refusal) => {
+                return Ok((
+                    SeriesEraseOutcome::Refused(refusal),
+                    ColdPurgePlan::default(),
+                ));
+            }
+        };
     if let Some(refusal) = scope_refusal(&footprint, owner_id, request.own_schemas) {
         return Ok((
             SeriesEraseOutcome::Refused(refusal),

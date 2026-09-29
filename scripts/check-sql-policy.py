@@ -881,7 +881,15 @@ def run_fixture(path: Path) -> int:
 # remain binds; every new site carries a fixed-fragment proof. Four in
 # crates/proxima/tests/kind_rule_pg.rs read and probe every proxima_core table
 # by a name from its closed TABLES census, the row bound as `to_jsonb` text.
-EXPECTED_DYNAMIC_SQL_SITES = 186
+# 186 -> 197: the flavor-scoped erase's two sidecar selections
+# (`verbs/series_erase/selection.rs`). `SidecarEquals` is one QueryBuilder
+# (ten sites: construction and pushes) that splices the registered sidecar,
+# its declared memory key and catalog-resolved predicate columns through
+# `PgIdent`, stamps owner and schema first, and binds every value through
+# `push_atom`. `DeclaredBefore` is one `format!` execution splicing the same
+# sidecar/key and a catalog-resolved `timestamptz` column; its four values
+# are bound.
+EXPECTED_DYNAMIC_SQL_SITES = 197
 
 
 def run_self_test() -> int:

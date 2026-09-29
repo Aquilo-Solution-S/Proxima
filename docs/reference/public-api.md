@@ -343,6 +343,7 @@ that means when deciding where to send a memory.
 | Type | Import | Status |
 |---|---|---|
 | `SeriesSelection`, `EraseMode` | `proxima::flavor::*`, `proxima::host::*` | Flavor SDK / Host API |
+| `SchemaId`, `SidecarAtom` (what the schema-naming selections carry) | same | Flavor SDK / Host API |
 | `SeriesEraseReceipt` | same | Flavor SDK / Host API |
 | `SeriesEraseError`, `SeriesEraseRefusal`, `SeriesEraseRefusalKind` | same | Flavor SDK / Host API |
 | `MAX_ERASE_SERIES_PER_CALL`, `MAX_ERASE_VERSIONS_PER_CALL` | same | Flavor SDK / Host API |

@@ -789,11 +789,12 @@ unit.commit().await?;
 | Rule | Contract |
 |---|---|
 | unit | first and only operation of its unit; `DryRun` reports and rolls back |
-| scope | one owner; only this flavor's Fact/Abstraction/Perspective schemas; each id expanded to its whole series |
+| scope | one owner; only this flavor's Fact/Abstraction/Perspective schemas; each selected admission expanded to its whole series |
+| selection | `Ids`; `AdmittedBefore { schema, cutoff }` (admission time); `SidecarEquals { schema, predicates }` (`AND`-joined equality on your sidecar's columns, any version); `DeclaredBefore { schema, column, cutoff }` (a `timestamptz` column of your sidecar, newest version) |
 | references | a row holding a foreign key into an erased `t` is erased with it; a referencing table with no declared memory key refuses |
 | authority | Admin on the owner, or the host's `Engine::system_unit_of_work` |
 | tools | the calling action's `ToolEffect` is `Destructive`, and the flavor's contract names the tool |
-| bound | 256 series / 1024 versions per call: page `Ids`; loop `AdmittedBefore` while `more_remaining` |
+| bound | 256 series / 1024 versions per call: an `Ids` list over it is refused, so split it; loop any other selection while `more_remaining` |
 | errors | `Refused` names every offender and deleted nothing; `Retryable`: run the unit again |
 
 Full contract: [13 §Flavor-scoped erase](13-compliance.md#flavor-scoped-erase).
