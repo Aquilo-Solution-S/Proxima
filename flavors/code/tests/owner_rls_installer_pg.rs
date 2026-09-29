@@ -294,6 +294,75 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
     assert!(error.to_string().contains("public is not a flavor schema"));
 }
 
+/// Memory-owner tables name their memory by the FK on the leading
+/// primary-key column, else their only memory FK with no competing `t`, else
+/// `t`; any other shape is ambiguous and refused.
+/// (tables, `memory_owner_tables`, refusal or `""`, accepted `(table, fragment)`).
+async fn assert_memory_owner_refusals(conn: &mut PgConnection) {
+    let cases: [ParentCase; 3] = [
+        (
+            "CREATE TABLE probe.two_refs (id bigint PRIMARY KEY,
+                 cited_t uuid REFERENCES proxima_core.memory (t),
+                 about_t uuid REFERENCES proxima_core.memory (t))",
+            "ARRAY['two_refs']",
+            "its memory is ambiguous",
+            &[],
+        ),
+        (
+            "CREATE TABLE probe.t_and_ref (t uuid NOT NULL,
+                 subject_t uuid REFERENCES proxima_core.memory (t))",
+            "ARRAY['t_and_ref']",
+            "its memory is ambiguous",
+            &[],
+        ),
+        (
+            "CREATE TABLE probe.keyed (memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 cited_t uuid REFERENCES proxima_core.memory (t));
+             CREATE TABLE probe.only_ref (id bigint PRIMARY KEY, x uuid REFERENCES proxima_core.memory (t));
+             CREATE TABLE probe.plain (t uuid NOT NULL)",
+            "ARRAY['keyed', 'only_ref', 'plain']",
+            "",
+            &[
+                ("probe.keyed", "parent.t = keyed.memory_id"),
+                ("probe.only_ref", "parent.t = only_ref.x"),
+                ("probe.plain", "parent.t = plain.t"),
+            ],
+        ),
+    ];
+    for (tables, memory_owner, refusal, accepted) in cases {
+        let mut tx = conn.begin().await.expect("probe transaction");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA probe; {tables}"
+        )))
+        .execute(&mut *tx)
+        .await
+        .expect("probe tables");
+        let result = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SELECT proxima_core.install_owner_rls('probe', '{{}}', '{{}}', '{{}}', {memory_owner})"
+        )))
+        .execute(&mut *tx)
+        .await;
+        if refusal.is_empty() {
+            result.expect("one memory names each row");
+            for (table, fragment) in accepted {
+                let key: String = sqlx::query_scalar(
+                    "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy
+                      WHERE polrelid = $1::regclass AND polname = 'proxima_owner_read'",
+                )
+                .bind(table)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("read policy");
+                assert!(key.contains(fragment), "{table} keyed as {fragment}: {key}");
+            }
+        } else {
+            let message = result.expect_err(refusal).to_string();
+            assert!(message.contains(refusal), "{refusal}: {message}");
+        }
+        tx.rollback().await.expect("rollback");
+    }
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -414,6 +483,7 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
 
     assert_refusals(&mut conn).await;
     assert_parent_refusals(&mut conn).await;
+    assert_memory_owner_refusals(&mut conn).await;
 
     conn.close().await.expect("close");
 }

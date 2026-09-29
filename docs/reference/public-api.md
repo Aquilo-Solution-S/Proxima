@@ -145,7 +145,8 @@ input) is `Read { kind }`, `Write { kind }`, `OwnerAdmin`, `Membership`,
 Owner RLS (core 0023, code flavor v029) applies the same rule to every
 owner-keyed row: memory-attached rows by their memory's kind, Goal-attached
 rows as Goal, Fact-only tables as Fact. The migration refuses a
-`proxima_core` table it does not classify.
+`proxima_core` table it does not classify. Derived Content is keyed by kind,
+so Content reuse never crosses a limit.
 
 ## Owner Write Permit Boundary
 

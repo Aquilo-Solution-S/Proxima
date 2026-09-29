@@ -287,25 +287,22 @@ async fn resolve_derived_content_id(
     let owner_id =
         crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &draft.owner).await?;
     if let Some(payloads) = content_payloads {
-        return crate::verbs::content::ensure_content_from_payloads(
+        return super::content::ensure_content_from_payloads(
             tx,
             owner_id,
+            kind,
             draft.schema_id.as_str(),
             payloads,
         )
         .await;
     }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-content-text-v1\0");
-    hasher.update(draft.schema_id.as_str().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(draft.text.as_bytes());
     Ok(Some(
-        super::content::ensure_content(
+        super::content::ensure_text_content(
             tx,
             owner_id,
+            kind,
             draft.schema_id.as_str(),
-            hasher.finalize().as_bytes(),
+            draft.text.as_bytes(),
         )
         .await?,
     ))

@@ -1008,7 +1008,7 @@ SELECT proxima_core.install_owner_rls(
 | `owner_id_tables` | has `owner_id`; Fact-only or owner-level rows | `app.owner` / `app.write_owner` |
 | `fk_parent_tables` | single-column FK to `proxima_core` or the flavor schema: the one on the leading primary-key column, else the table's only one | parent row visible in owner scope / parent memory's kind (`app.write_owner`, `app.write_abstraction`, `app.write_perspective`), `app.write_goal` for a goal parent |
 | `ownerless_tables` | platform-only | `false` / `false` |
-| `memory_owner_tables` | rows of one memory, keyed by the table's single-column FK to `proxima_core.memory`, else its `t`; may carry `owner_id` | that memory's owner on the list for its kind: `app.owner` / `app.read_abstraction` / `app.read_perspective`, `app.write_owner` / `app.write_abstraction` / `app.write_perspective` |
+| `memory_owner_tables` | rows of one memory, keyed by the single-column FK to `proxima_core.memory` on the leading primary-key column, else the only such FK when no other `t` column competes, else `t`; may carry `owner_id` | that memory's owner on the list for its kind: `app.owner` / `app.read_abstraction` / `app.read_perspective`, `app.write_owner` / `app.write_abstraction` / `app.write_perspective` |
 
 Every table also gets `ENABLE`/`FORCE ROW LEVEL SECURITY` and
 `proxima_platform` for its owner role in platform scope. Refused, with
@@ -1019,7 +1019,8 @@ not exist; an `owner_id` table outside `owner_id_tables` and
 `owner_id_tables` entry without `owner_id`; an FK-parent table with no such
 FK, with several and none on its key (ambiguous owner), whose parent chain
 returns to itself (recursive policies), or whose parent is neither
-memory/goal nor carries `t`; a memory-owner table without a uuid key (its memory FK, else `t`). A
+memory/goal nor carries `t`; a memory-owner table without a uuid key (its memory FK, else `t`), or whose
+memory FKs are ambiguous (several, or one beside a `t`, none on the key). A
 census then checks the structural part of the runtime RLS guard (RLS
 flags, three policies, owner-role platform policy). SECURITY INVOKER,
 EXECUTE for its owner only: run it as the migration role that owns the

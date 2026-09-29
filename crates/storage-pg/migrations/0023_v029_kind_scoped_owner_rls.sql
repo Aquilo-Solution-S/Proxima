@@ -129,9 +129,12 @@ $kind_rls$;
 
 -- install_owner_rls, 0018's body with one class changed:
 --   memory_owner_tables  rows of one proxima_core.memory row, keyed by the
---                        table's single-column FK to it, else its uuid t: read
---                        and write follow that memory's kind. May carry an
---                        owner_id (a projection keyed by memory_id).
+--                        table's single-column FK to it on its leading
+--                        primary-key column, else its only FK to it when no
+--                        other t column competes, else its uuid t; any other
+--                        shape is refused as ambiguous. Read and write follow
+--                        that memory's kind. May carry an owner_id (a
+--                        projection keyed by memory_id).
 -- A flavor that listed tables here keeps its old policies until it calls the
 -- installer again.
 CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls(
@@ -162,6 +165,8 @@ DECLARE
     hops integer;
     parent_has_t boolean;
     memory_key text;
+    memory_keys integer;
+    memory_on_key boolean;
     kind_of text;
     read_expr text;
     write_expr text;
@@ -286,14 +291,28 @@ BEGIN
             read_expr := $expr$owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$;
             write_expr := $expr$owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$;
         ELSIF relation.relname = ANY(COALESCE(memory_owner_tables, '{}')) THEN
-            SELECT child_att.attname INTO memory_key
+            -- The memory this row belongs to: the FK on the leading
+            -- primary-key column, else the only FK to memory when no other t
+            -- column competes, else t.
+            SELECT child_att.attname, count(*) OVER (),
+                   COALESCE(con.conkey[1] = pk.conkey[1], false)
+              INTO memory_key, memory_keys, memory_on_key
               FROM pg_constraint AS con
               JOIN pg_attribute AS child_att ON child_att.attrelid = con.conrelid AND child_att.attnum = con.conkey[1]
+              LEFT JOIN pg_constraint AS pk ON pk.conrelid = con.conrelid AND pk.contype = 'p'
              WHERE con.conrelid = relation.oid AND con.contype = 'f'
                AND con.confrelid = 'proxima_core.memory'::regclass
                AND array_length(con.conkey, 1) = 1
-             ORDER BY con.oid
+             ORDER BY COALESCE(con.conkey[1] = pk.conkey[1], false) DESC, con.oid
              LIMIT 1;
+            IF memory_key IS NOT NULL AND NOT memory_on_key
+               AND (memory_keys > 1 OR (memory_key <> 't' AND EXISTS (
+                    SELECT 1 FROM pg_attribute
+                     WHERE attrelid = relation.oid AND attname = 't' AND attnum > 0 AND NOT attisdropped)))
+            THEN
+                RAISE EXCEPTION 'install_owner_rls: %.% has % foreign key(s) to proxima_core.memory, none on its leading primary-key column, beside a t column or each other; its memory is ambiguous',
+                    relation.schema_name, relation.relname, memory_keys;
+            END IF;
             memory_key := COALESCE(memory_key, 't');
             IF NOT EXISTS (
                 SELECT 1 FROM pg_attribute
