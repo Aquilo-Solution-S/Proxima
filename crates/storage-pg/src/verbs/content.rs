@@ -36,6 +36,23 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
     Ok(*hasher.finalize().as_bytes())
 }
 
+/// A derived admission's Content hash: the payload hash keyed by the
+/// admission's kind.
+///
+/// Content is visible only through an admission that names it (0023), so an
+/// Abstraction and a Perspective with the same payload get two rows: a writer
+/// then meets only Content of a kind it reads, and reuse never looks past its
+/// own limit.
+#[must_use]
+pub fn kind_scoped_hash(kind: &str, hash: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"proxima-content-kind-v1\0");
+    hasher.update(kind.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(hash);
+    *hasher.finalize().as_bytes()
+}
+
 /// Insert or reuse `(owner, schema, hash)`.
 ///
 /// Neither `RETURNING` nor a conflict target: each makes the insert read the
@@ -80,27 +97,45 @@ pub async fn ensure_content(
 pub async fn ensure_text_content(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
+    kind: &str,
     schema_id: &str,
     text: &[u8],
 ) -> Result<Uuid, StorageError> {
+    ensure_content(
+        tx,
+        owner_id,
+        schema_id,
+        &kind_scoped_hash(kind, &text_hash(schema_id, text)),
+    )
+    .await
+}
+
+/// The Content hash of a derived admission without a hashed sidecar.
+pub fn text_hash(schema_id: &str, text: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"proxima-content-text-v1\0");
     hasher.update(schema_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(text);
-    ensure_content(tx, owner_id, schema_id, hasher.finalize().as_bytes()).await
+    *hasher.finalize().as_bytes()
 }
 
+/// Content for an admission's typed payloads; a derived kind's hash is
+/// [`kind_scoped_hash`]ed, a Fact's is not.
 pub async fn ensure_content_from_payloads(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
+    kind: &str,
     schema_id: &str,
     payloads: &[SidecarPayload],
 ) -> Result<Option<Uuid>, StorageError> {
     if payloads.is_empty() {
         return Ok(None);
     }
-    let hash = hash_sidecar_payloads(payloads)?;
+    let mut hash = hash_sidecar_payloads(payloads)?;
+    if kind != "fact" {
+        hash = kind_scoped_hash(kind, &hash);
+    }
     Ok(Some(ensure_content(tx, owner_id, schema_id, &hash).await?))
 }
 

@@ -852,8 +852,14 @@ async fn resolve_admission_content_id(
         .as_deref()
         .map_or(draft.payload.as_slice(), str::as_bytes);
     Ok(Some(
-        super::content::ensure_text_content(tx, prepared.owner_id, draft.schema_id.as_str(), text)
-            .await?,
+        super::content::ensure_text_content(
+            tx,
+            prepared.owner_id,
+            kind,
+            draft.schema_id.as_str(),
+            text,
+        )
+        .await?,
     ))
 }
 

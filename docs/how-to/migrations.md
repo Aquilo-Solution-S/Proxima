@@ -21,7 +21,10 @@ several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 | Code flavor | `20260929000020_v029_kind_scoped_owner_rls.sql`: re-runs the installer; `projection` and the two Self sidecars move to `memory_owner_tables` |
 
 No table or row changes; only policy expressions. Existing databases upgrade
-in place. Before this file a Fact-only scope read an owner's Abstraction,
+in place. New derived Content is keyed by its admission's kind (an Abstraction
+and a Perspective with one payload get two rows), so a writer never reuses
+Content it cannot read; existing Content rows keep their hash, and a new
+derivation equal to one made before this release gets its own row. Before this file a Fact-only scope read an owner's Abstraction,
 Perspective and Goal rows in `memory_head`, `sketch`, `cooled`, `announce`,
 `content` and the embedding tables. A flavor that lists `memory_owner_tables`
 keeps its old policies until it calls the installer again

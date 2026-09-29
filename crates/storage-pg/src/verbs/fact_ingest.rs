@@ -608,6 +608,11 @@ where
             crate::verbs::content::ensure_content_from_payloads(
                 tx,
                 owner.stored_owner_id(),
+                if draft.kind.is_empty() {
+                    "fact"
+                } else {
+                    draft.kind.as_str()
+                },
                 draft.schema_id.as_str(),
                 payloads,
             )

@@ -1238,3 +1238,75 @@ async fn assert_fact_scope_sql(
     );
     Ok(())
 }
+
+/// A Perspective and an Abstraction with the same payload get one Content row
+/// each, so a scope that reads up to Abstractions reuses no Content it cannot
+/// see: its derivation succeeds.
+#[tokio::test]
+async fn a_derivation_meets_no_content_above_its_limit() -> TestResult {
+    let database = unique_db_name("proxima_kind_rule_content");
+    create_split_core_db(&database).await?;
+    let result: TestResult = async {
+        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let built = boot(
+            &database,
+            group,
+            Arc::new(TestEmbeddingRouter::default()),
+            None,
+        )
+        .await?;
+        let tools = built.host().core_mcp_tools();
+        let admin = context(group, Role::admin());
+        let fact = remember(&tools, &admin, group, "kindrule twin fact").await?;
+        let base = derive(
+            &tools,
+            &admin,
+            group,
+            (EntityKind::Abstraction, "twin base"),
+            &fact,
+        )
+        .await?;
+        let perspective = derive(
+            &tools,
+            &admin,
+            group,
+            (EntityKind::Perspective, "twin"),
+            &base,
+        )
+        .await?;
+
+        let abstractions = context(
+            group,
+            Role::new(
+                AccessCeiling::Abstraction,
+                AccessCeiling::Abstraction,
+                false,
+            )?,
+        );
+        let abstraction = derive(
+            &tools,
+            &abstractions,
+            group,
+            (EntityKind::Abstraction, "twin"),
+            &base,
+        )
+        .await?;
+
+        let pool = PgPool::connect(&db_url(&database)).await?;
+        let contents: Vec<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT content_id FROM proxima_core.memory WHERE t = ANY($1) ORDER BY kind",
+        )
+        .bind(vec![handle_id(&abstraction)?, handle_id(&perspective)?])
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(contents.len(), 2);
+        assert!(contents.iter().all(Option::is_some), "{contents:?}");
+        assert_ne!(contents[0], contents[1], "one Content row per kind");
+        pool.close().await;
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    drop_db(&database).await?;
+    result
+}
