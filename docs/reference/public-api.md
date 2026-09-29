@@ -134,6 +134,7 @@ may(role, owner, kind, dir)  :=  role on owner exists  ∧  kind ≤ limit(role,
 | derive / interpret | the output kind's write |
 | Goal create / transition / modify / decompose | Goal write |
 | forget / hydrate | the caller's write limit; storage returns `NotFound` for a row above it |
+| embedding backfill | the caller's write limit; queues only kinds up to it |
 | search, get, lineage, neighbours, change history, Query | Fact read to enter; each row by its own kind (owner RLS). An unreadable row is `NotFound` |
 | membership admin, transfer, erase, graph overview | owner admin: `Role::administers()` (write limit Goal); membership and group transfer also `Role::manages()` |
 

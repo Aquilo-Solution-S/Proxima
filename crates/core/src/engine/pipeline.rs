@@ -116,7 +116,7 @@ impl Engine {
     }
 
     /// Write gate for rows whose kind only storage reads (forget,
-    /// hydration): the permit carries the caller's write limit on `owner`,
+    /// hydration, embedding backfill): the permit carries the caller's write limit on `owner`,
     /// and storage answers `NotFound` for a row above it.
     #[allow(
         clippy::unused_async,

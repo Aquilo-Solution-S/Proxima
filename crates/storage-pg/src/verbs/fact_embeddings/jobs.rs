@@ -101,7 +101,16 @@ pub async fn list_facts_missing_embedding<'e>(
     let owner_id = owner.stored_owner_id();
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    missing_embedding_ids(pool, owner_id, space, limit, non_embeddable_schemas, false).await
+    missing_embedding_ids(
+        pool,
+        owner_id,
+        space,
+        limit,
+        non_embeddable_schemas,
+        false,
+        None,
+    )
+    .await
 }
 
 async fn missing_embedding_ids<'e>(
@@ -111,6 +120,7 @@ async fn missing_embedding_ids<'e>(
     limit: i64,
     non_embeddable_schemas: &[String],
     exclude_existing_jobs: bool,
+    kinds: Option<&[&'static str]>,
 ) -> Result<Vec<MemoryId>, StorageError> {
     // Chunks are memory rows. A second arm against code_chunk_v1 is a subset of
     // this anti-join and duplicates t.
@@ -131,6 +141,7 @@ async fn missing_embedding_ids<'e>(
                    AND j.model_id = $2
                    AND j.dim = $6
             ))
+            AND ($7::text[] IS NULL OR m.kind::text = ANY($7))
           ORDER BY m.t ASC
           LIMIT $3",
     )
@@ -140,6 +151,7 @@ async fn missing_embedding_ids<'e>(
     .bind(non_embeddable_schemas)
     .bind(exclude_existing_jobs)
     .bind(crate::pgvector::Lane::of(space.dim()).width)
+    .bind(kinds)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -475,8 +487,10 @@ pub async fn reclaim_stale_embedding_jobs<'e, E: PgExecutor<'e>>(
     Ok(result.rows_affected())
 }
 
-/// Enqueue pending jobs for owner-scoped Facts missing a current
-/// embedding.
+/// Enqueue pending jobs for owner-scoped memories missing a current
+/// embedding, of the kinds up to the permit's write limit: a job row follows
+/// its memory's kind under owner RLS, so a readable row above the limit is
+/// skipped, not refused mid-batch.
 ///
 /// # Errors
 ///
@@ -515,6 +529,7 @@ async fn enqueue_missing_embedding_jobs_on_connection(
     let owner_id = permit.owner().stored_owner_id();
     // Existing jobs are already accounted for, regardless of their status.
     // Exclude them before limiting so they cannot hide later missing work.
+    let kinds = crate::verbs::forget::kinds_within(permit.access_kind());
     let ids = missing_embedding_ids(
         &mut *pool,
         owner_id,
@@ -522,6 +537,7 @@ async fn enqueue_missing_embedding_jobs_on_connection(
         limit,
         non_embeddable_schemas,
         true,
+        Some(&kinds),
     )
     .await?;
     if ids.is_empty() {

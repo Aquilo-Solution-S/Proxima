@@ -3,9 +3,9 @@
 //!
 //! Every preset plus `new(G,A)` and `new(A,A)`, both directions, all four
 //! kinds, on every read surface and write verb, served by the runtime role
-//! under owner RLS. Then direct SQL under a Fact-only scope on every
-//! owner-keyed table. Upload and forget need S3 and run when `PROXIMA_S3_*`
-//! is set.
+//! under owner RLS, and embedding backfill. Then direct SQL under a
+//! Fact-only scope on every owner-keyed table. Upload and forget need S3 and
+//! run when `PROXIMA_S3_*` is set.
 
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
@@ -807,6 +807,65 @@ async fn assert_s3_writes(
     Ok(())
 }
 
+/// Embedding backfill queues exactly the kinds up to the caller's write
+/// limit: a readable row above it is skipped, not refused mid-batch by the
+/// kind-scoped job policy. Each role backfills a space no memory has a
+/// vector in yet; a job the worker drains first leaves a vector head there
+/// (written before the job is deleted), so either one counts.
+async fn assert_backfill(
+    built: &BuiltProxima,
+    admin: &PgPool,
+    router: &TestEmbeddingRouter,
+    group: OwnerRef,
+) -> TestResult {
+    for (index, (name, role)) in roles().into_iter().enumerate() {
+        let model = format!("kindrule-backfill-{index}");
+        router.set_default(BoundEmbeddingClient::bind(Arc::new(
+            ConstantEmbedding::prefixed(model.clone(), &[1.0, 0.0, 0.0]),
+        ))?);
+        let queued = built
+            .host()
+            .engine()
+            .backfill_missing_embeddings(&context(group, role), &group, 1_000)
+            .await;
+        let kinds: Vec<String> = sqlx::query_scalar(
+            "SELECT m.kind::text
+               FROM proxima_core.memory m
+              WHERE m.owner_id = $1
+                AND (EXISTS (SELECT 1 FROM proxima_core.embedding_jobs j
+                              WHERE j.entity_id = m.t AND j.model_id = $2)
+                  OR EXISTS (SELECT 1 FROM proxima_core.embedding_heads h
+                              WHERE h.entity_id = m.t AND h.model_id = $2))",
+        )
+        .bind(group.stored_owner_id())
+        .bind(&model)
+        .fetch_all(admin)
+        .await?;
+        let touched: BTreeSet<&str> = kinds.iter().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = [
+            (EntityKind::Fact, "fact"),
+            (EntityKind::Abstraction, "abstraction"),
+            (EntityKind::Perspective, "perspective"),
+        ]
+        .into_iter()
+        .filter(|(kind, _)| role.may_write(access(*kind)))
+        .map(|(_, stored)| stored)
+        .collect();
+        assert_eq!(touched, expected, "{name} backfill: {queued:?}");
+        match queued {
+            Ok(count) => {
+                assert!(role.may_write(AccessKind::Fact), "{name}");
+                assert_eq!(count, kinds.len(), "{name}");
+            }
+            Err(error) => {
+                assert!(!role.may_write(AccessKind::Fact), "{name}: {error:?}");
+                assert_eq!(error.code, ErrorCode::Forbidden, "{name}: {error:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn boot(
     database: &str,
     owner: Owner,
@@ -861,6 +920,7 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
             }
         }
 
+        assert_backfill(&built, &admin, &router, group).await?;
         assert_fact_scope_sql(&database, &admin, group, &seeded).await?;
         admin.close().await;
         built.shutdown().await;
