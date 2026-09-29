@@ -4,7 +4,8 @@ use proxima_core::flavor::TransferLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::scope::ScopeKind;
 use proxima_core::{
-    EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
+    AccessKind, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError,
+    UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
@@ -762,8 +763,8 @@ pub(crate) async fn list_group_members_page<'e>(
         .collect())
 }
 
-/// Home owner when the row is in `read_owners`. Absent and foreign are
-/// both `None`.
+/// Home owner and kind when the row is in `read_owners`. Absent and foreign
+/// are both `None`.
 ///
 /// # Errors
 ///
@@ -772,7 +773,7 @@ pub(crate) async fn visible_home_owner<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
     read_owners: &[OwnerRef],
-) -> Result<Option<OwnerRef>, StorageError> {
+) -> Result<Option<(OwnerRef, AccessKind)>, StorageError> {
     if read_owners.is_empty() {
         return Ok(None);
     }
@@ -787,15 +788,15 @@ pub(crate) async fn visible_home_owner<'e>(
     // on its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
-    let row: Option<(OwnerRefKind, uuid::Uuid)> = match entity {
+    let row: Option<(OwnerRefKind, uuid::Uuid, String)> = match entity {
         EntityId::Memory(memory_id) => {
             sqlx::query_as(
                 "WITH candidates AS (
-                     SELECT owner_id FROM proxima_core.memory WHERE t = $1
+                     SELECT owner_id, kind FROM proxima_core.memory WHERE t = $1
                      UNION
-                     SELECT owner_id FROM proxima_core.cooled WHERE t = $1
+                     SELECT owner_id, kind FROM proxima_core.cooled WHERE t = $1
                  )
-                 SELECT o.kind::text::proxima_core.owner_kind, c.owner_id
+                 SELECT o.kind::text::proxima_core.owner_kind, c.owner_id, c.kind::text
                    FROM candidates c
                    JOIN proxima_core.owners o ON o.owner_id = c.owner_id
                   WHERE c.owner_id = ANY($2::uuid[])
@@ -812,7 +813,7 @@ pub(crate) async fn visible_home_owner<'e>(
         }
         EntityId::Goal(goal_id) => {
             sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id, 'goal'
                FROM proxima_core.goal g
                JOIN proxima_core.owners o ON o.owner_id = g.owner_id
               WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])",
@@ -825,7 +826,20 @@ pub(crate) async fn visible_home_owner<'e>(
     }
     .map_err(map_err)?;
 
-    Ok(row.map(|(kind, id)| kind.with_uuid(id)))
+    row.map(|(owner_kind, id, kind)| Ok((owner_kind.with_uuid(id), access_kind(&kind)?)))
+        .transpose()
+}
+
+fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
+    match stored {
+        "fact" => Ok(AccessKind::Fact),
+        "abstraction" => Ok(AccessKind::Abstraction),
+        "perspective" => Ok(AccessKind::Perspective),
+        "goal" => Ok(AccessKind::Goal),
+        other => Err(StorageError::Internal(format!(
+            "unknown entity kind {other}"
+        ))),
+    }
 }
 
 /// Transfer one memory **series** to `to_owner`.

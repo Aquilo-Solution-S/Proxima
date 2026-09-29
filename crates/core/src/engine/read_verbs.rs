@@ -1,4 +1,4 @@
-use crate::access::Relation;
+use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::edge::Edge;
 use crate::error::ProtocolError;
@@ -124,7 +124,7 @@ impl Engine {
     /// than [`crate::verbs::query::SearchMode::Hybrid`], or when `after`
     /// disagrees with `order` or exceeds the relevance pagination depth
     /// bound; `Forbidden` when the context cannot access
-    /// `req.search.owner` or lacks [`Relation::Viewer`]; `Internal` when
+    /// `req.search.owner` or reads nothing on it; `Internal` when
     /// storage reads fail.
     pub async fn search(
         &self,
@@ -132,15 +132,15 @@ impl Engine {
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
         validate_search_request(&req.search)?;
-        let read_permit = self
-            .authorize_request(authz, &req.search.owner, Relation::Viewer)
+        let owner = self
+            .authorize_owner_read(authz, &req.search.owner, AccessKind::Fact)
             .await?;
         search_authorized(
             &self.storage.read_verb,
             self.registry.search_projections(),
             &self.memory_schema_specs(),
             authz.owner_scope(),
-            std::slice::from_ref(read_permit.owner()),
+            std::slice::from_ref(&owner),
             req,
         )
         .await
@@ -263,15 +263,14 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `req.owner` or
-    /// lacks [`Relation::Admin`], and `Internal` when storage reads fail.
+    /// is not its admin ([`crate::Role::administers`]), and `Internal` when
+    /// storage reads fail.
     pub async fn get_graph(
         &self,
         authz: &AuthzContext,
         req: &GetGraphReadRequest,
     ) -> Result<GetGraphReadResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_owner_admin(authz, &req.owner).await?;
         get_graph_authorized(&self.storage.read_verb, authz.owner_scope(), permit.owner()).await
     }
 
@@ -322,7 +321,6 @@ impl Engine {
             ));
         }
         let read_owners = self.authorize_read(authz).await?;
-        let access = self.resolve_access(authz).await?;
         let mut found = self
             .storage
             .read_verb
@@ -344,7 +342,9 @@ impl Engine {
                 "wake trigger must be a Fact memory",
             ));
         }
-        let actor_write_owners = access.write_owners_for(Relation::Editor);
+        // Wake actions are Facts (05 §Actions); candidates are Goals.
+        let actor_read_owners = authz.readable_owners(AccessKind::Goal);
+        let actor_write_owners = authz.writable_owners(AccessKind::Fact);
         let candidates = self
             .storage
             .read_verb
@@ -352,7 +352,7 @@ impl Engine {
             .list_goal_wake_candidates(
                 authz.owner_scope(),
                 &GoalWakeCandidateRequest {
-                    actor_read_owners: access.read_owners(),
+                    actor_read_owners: &actor_read_owners,
                     actor_write_owners: &actor_write_owners,
                     trigger_owner: snapshot.owner,
                     trigger_fact_id: req.trigger_fact_id,

@@ -51,10 +51,12 @@ pub async fn migrated_db() -> (String, PgStorage) {
     (db_name, pg)
 }
 
-/// The code lane's owner-RLS files: the v0.0.15 hand-written policies and
-/// the v0.0.20 installer call that replaces them. As in core's lane, the
-/// historical fixtures leave exactly these out and apply every later file.
-const OWNER_RLS_MIGRATION_VERSIONS: [i64; 2] = [20_260_922_000_020, 20_260_924_000_020];
+/// The code lane's owner-RLS files: the v0.0.15 hand-written policies, the
+/// v0.0.20 installer call that replaces them and the v0.0.29 kind-rule call.
+/// As in core's lane, the historical fixtures leave exactly these out and
+/// apply every later file.
+const OWNER_RLS_MIGRATION_VERSIONS: [i64; 3] =
+    [20_260_922_000_020, 20_260_924_000_020, 20_260_929_000_020];
 
 fn pre_owner_rls_code_migrator() -> Migrator {
     let mut migrator = proxima_code::migrator();

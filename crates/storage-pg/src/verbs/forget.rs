@@ -94,6 +94,46 @@ struct HotRow {
     content_id: Option<Uuid>,
 }
 
+/// The rows a lifecycle call may reach: one owner's, of every stored Memory
+/// kind up to the permit's write limit. Forget and hydration run in platform
+/// scope, so this is where the rule narrows their rows.
+#[derive(Debug, Clone)]
+pub(crate) struct Reach {
+    owner_id: Uuid,
+    kinds: Vec<&'static str>,
+}
+
+impl Reach {
+    pub(crate) fn of(permit: &proxima_core::storage_ports::OwnerWritePermit) -> Self {
+        Self {
+            owner_id: permit.owner().stored_owner_id(),
+            kinds: kinds_within(permit.access_kind()),
+        }
+    }
+
+    #[cfg(test)]
+    fn every_kind(owner_id: Uuid) -> Self {
+        Self {
+            owner_id,
+            kinds: kinds_within(proxima_core::AccessKind::Perspective),
+        }
+    }
+}
+
+/// The stored Memory kinds at or below `limit`.
+pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<&'static str> {
+    use proxima_core::AccessKind;
+    [
+        (AccessKind::Fact, "fact"),
+        (AccessKind::Abstraction, "abstraction"),
+        (AccessKind::Perspective, "perspective"),
+    ]
+    .into_iter()
+    .filter(|(kind, _)| kind.rank() <= limit.rank())
+    .map(|(_, name)| name)
+    .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct CooledRow {
     t: Uuid,
@@ -2126,14 +2166,15 @@ pub(crate) async fn forget_memory_oneshot_in_transaction(
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
-    expected_owner_id: Uuid,
+    reach: &Reach,
 ) -> Result<(), StorageError> {
+    let expected_owner_id = reach.owner_id;
     let handle = probe_memory_handle_for_owner(&mut tx, t, expected_owner_id)
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_forget_footprint_tx(&mut tx, t, handle).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, surfaces, t).await?;
-    if rec.row.owner_id != expected_owner_id {
+    if rec.row.owner_id != expected_owner_id || !reach.kinds.contains(&rec.row.kind.as_str()) {
         return Err(StorageError::NotFound);
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
@@ -2234,12 +2275,12 @@ async fn plan_hydration(
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
     t: Uuid,
-    owner_id: Uuid,
+    reach: &Reach,
 ) -> Result<HydrationPlan, StorageError> {
-    if owned_hot_exists(tx, t, owner_id).await? {
+    if owned_hot_exists(tx, t, reach).await? {
         return Ok(HydrationPlan::Hot);
     }
-    let Some(cooled) = owned_cooled_row(tx, t, owner_id).await? else {
+    let Some(cooled) = owned_cooled_row(tx, t, reach).await? else {
         return Ok(HydrationPlan::NotFound);
     };
     // A pre-witness locator has neither a digest nor the split pin arrays,
@@ -2589,16 +2630,17 @@ async fn owned_cooled_row_for_update(
 async fn owned_cooled_row(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
-    owner_id: Uuid,
+    reach: &Reach,
 ) -> Result<Option<CooledRow>, StorageError> {
     sqlx::query_as(
         "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
                 source_id, ingest_key, origins, refs, goal_refs, cold_digest
            FROM proxima_core.cooled
-          WHERE t = $1 AND owner_id = $2",
+          WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)",
     )
     .bind(t)
-    .bind(owner_id)
+    .bind(reach.owner_id)
+    .bind(&reach.kinds)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)
@@ -2607,15 +2649,17 @@ async fn owned_cooled_row(
 async fn owned_hot_exists(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
-    owner_id: Uuid,
+    reach: &Reach,
 ) -> Result<bool, StorageError> {
     sqlx::query_scalar(
         "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+             SELECT 1 FROM proxima_core.memory
+              WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)
          )",
     )
     .bind(t)
-    .bind(owner_id)
+    .bind(reach.owner_id)
+    .bind(&reach.kinds)
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)
@@ -2686,12 +2730,21 @@ pub(crate) async fn hydrate_one_in_tx(
     embeddings: RouteSpaces<'_>,
 ) -> Result<Result<u32, ColdRejection>, StorageError> {
     let mut cache = ColdCatalogCache::default();
-    let prepared =
-        match plan_hydration(tx, &mut cache, sidecars, surfaces, cold, t, owner_id).await? {
-            HydrationPlan::Prepared(prepared) => prepared,
-            HydrationPlan::Rejected(rejection) => return Ok(Err(rejection)),
-            HydrationPlan::Hot | HydrationPlan::NotFound => return Err(StorageError::NotFound),
-        };
+    let prepared = match plan_hydration(
+        tx,
+        &mut cache,
+        sidecars,
+        surfaces,
+        cold,
+        t,
+        &Reach::every_kind(owner_id),
+    )
+    .await?
+    {
+        HydrationPlan::Prepared(prepared) => prepared,
+        HydrationPlan::Rejected(rejection) => return Ok(Err(rejection)),
+        HydrationPlan::Hot | HydrationPlan::NotFound => return Err(StorageError::NotFound),
+    };
     lock_memory_handles_tx(tx, &[prepared.cooled.handle]).await?;
     let targets = std::iter::once(prepared.cooled.t)
         .chain(prepared.origins.iter().copied())
@@ -2735,11 +2788,11 @@ pub(crate) async fn hydrate_memories_oneshot(
     embeddings: RouteSpaces<'_>,
 ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
     validate_hydration_request(memory_ids)?;
-    let owner_id = permit.owner().stored_owner_id();
+    let reach = Reach::of(permit);
 
     in_transaction(tx, |mut tx| async move {
         let outcome = hydrate_planned_set(
-            &mut tx, sidecars, surfaces, cold, owner_id, memory_ids, embeddings,
+            &mut tx, sidecars, surfaces, cold, &reach, memory_ids, embeddings,
         )
         .await;
         (tx, outcome)
@@ -2759,17 +2812,16 @@ async fn hydrate_planned_set(
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
-    owner_id: Uuid,
+    reach: &Reach,
     memory_ids: &[proxima_core::MemoryId],
     embeddings: RouteSpaces<'_>,
 ) -> Result<TxOutcome<MemoryHydrationBatchOutcome>, StorageError> {
+    let owner_id = reach.owner_id;
     // One catalog read per relation for the whole transaction, planner and
     // write half alike, instead of one per item per relation.
     let mut cache = ColdCatalogCache::default();
-    let plans = plan_hydration_set(
-        tx, &mut cache, sidecars, surfaces, cold, owner_id, memory_ids,
-    )
-    .await?;
+    let plans =
+        plan_hydration_set(tx, &mut cache, sidecars, surfaces, cold, reach, memory_ids).await?;
 
     if plans
         .iter()
@@ -2845,7 +2897,7 @@ async fn plan_hydration_set(
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
     cold: &dyn ColdObjectStore,
-    owner_id: Uuid,
+    reach: &Reach,
     memory_ids: &[proxima_core::MemoryId],
 ) -> Result<Vec<HydrationPlan>, StorageError> {
     let mut plans = Vec::with_capacity(memory_ids.len());
@@ -2858,7 +2910,7 @@ async fn plan_hydration_set(
                 surfaces,
                 cold,
                 memory_id.into_inner(),
-                owner_id,
+                reach,
             )
             .await?,
         );

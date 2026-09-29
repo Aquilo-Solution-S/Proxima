@@ -7,8 +7,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, EntityKind, FactPayload,
-    FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, Relation, SchemaId, SchemaVersion,
-    SourceId, UserId, canonical_json_bytes,
+    FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, UserId,
+    canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -170,7 +170,6 @@ async fn authorize_fact_with_citation_rejects_kind_mismatch() {
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Relation::Ingest,
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
@@ -194,7 +193,6 @@ async fn authorize_fact_with_citation_derives_cited_object_content_hash() {
     let authorized = engine()
         .authorize_fact_with_citation(
             &authz,
-            Relation::Ingest,
             draft(&owner),
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
@@ -214,7 +212,6 @@ async fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Relation::Ingest,
             draft(&owner),
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),
@@ -239,7 +236,6 @@ async fn authorize_citation_attachment_accepts_valid_pair() {
     let authorized = engine()
         .authorize_citation_attachment(
             &authz,
-            Relation::Ingest,
             owner,
             CitationAttachmentRequest {
                 memory_id,
@@ -268,7 +264,6 @@ async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
     let err = engine()
         .authorize_citation_attachment(
             &authz,
-            Relation::Ingest,
             owner,
             CitationAttachmentRequest {
                 memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
@@ -293,7 +288,6 @@ async fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
     let err = engine()
         .authorize_fact_with_citation(
             &authz,
-            Relation::Ingest,
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
@@ -336,7 +330,6 @@ async fn an_abstraction_may_cite_and_a_perspective_may_not() {
         engine()
             .authorize_citation_attachment(
                 &authz,
-                Relation::Ingest,
                 owner,
                 CitationAttachmentRequest {
                     memory_id,
@@ -353,7 +346,6 @@ async fn an_abstraction_may_cite_and_a_perspective_may_not() {
         let err = engine()
             .authorize_citation_attachment(
                 &authz,
-                Relation::Ingest,
                 owner,
                 CitationAttachmentRequest {
                     memory_id,

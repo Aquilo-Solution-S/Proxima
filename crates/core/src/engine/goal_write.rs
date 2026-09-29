@@ -1,5 +1,5 @@
 use super::{Engine, pipeline::WritePermit};
-use crate::access::{EntityId, Relation};
+use crate::access::{AccessKind, EntityId};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -97,7 +97,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`] on the owner space;
+    /// lacks Goal write on the owner;
     /// `UnknownSchema` when the typed [`GoalPayload`] schema is not registered
     /// as a Goal; `InvalidArgument` for malformed title/text/evidence/parent
     /// references; or `Internal` for storage failures.
@@ -110,7 +110,7 @@ impl Engine {
         P: GoalPayload,
     {
         let permit = self
-            .authorize_write(authz, &request.owner, Relation::Editor)
+            .authorize_write(authz, &request.owner, AccessKind::Goal)
             .await?;
         let request = self.normalize_goal_request(request)?;
         self.create_goal_payload_authorized(authz, &permit, &request)
@@ -122,7 +122,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`] on the owner space;
+    /// lacks Goal write on the owner;
     /// `UnknownSchema` when the payload schema is not registered as a Goal;
     /// `InvalidArgument` for malformed target/evidence/parent references; or
     /// `Internal` for storage failures.
@@ -132,7 +132,7 @@ impl Engine {
         req: &GoalCreatePayloadWriteRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let req = GoalCreatePayloadWriteRequest {
             payload: self.normalize_payload_write(req.payload.clone())?,
@@ -190,7 +190,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`]; `InvalidArgument`
+    /// lacks Goal write; `InvalidArgument`
     /// or `NotFound` for rejected goal references; or `Internal` for storage
     /// failures.
     pub async fn transition_goal(
@@ -199,7 +199,7 @@ impl Engine {
         req: &GoalTransitionRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = TransitionGoalAtomicRequest {
@@ -247,7 +247,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`]; `InvalidArgument`
+    /// lacks Goal write; `InvalidArgument`
     /// or `NotFound` for rejected references; or `Internal` for storage
     /// failures.
     pub async fn mark_goal_achieved(
@@ -256,7 +256,7 @@ impl Engine {
         req: &GoalMarkAchievedRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let context = self.goal_atomic_context(req.author_self_perspective_id);
         let atomic = AchieveGoalAtomicRequest {
@@ -293,7 +293,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`]; `UnknownSchema`
+    /// lacks Goal write; `UnknownSchema`
     /// when the replacement payload schema is not registered as a Goal;
     /// `InvalidArgument` or `NotFound` for rejected references; or `Internal`
     /// for storage failures.
@@ -303,7 +303,7 @@ impl Engine {
         req: &GoalModifyRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let replacement = self.normalize_payload_write(req.replacement.clone())?;
         let context = self.goal_atomic_context(req.author_self_perspective_id);
@@ -362,7 +362,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks [`Relation::Editor`]; `UnknownSchema`
+    /// lacks Goal write; `UnknownSchema`
     /// when any child payload schema is not registered as a Goal;
     /// `InvalidArgument` or `NotFound` for rejected references; or `Internal`
     /// for storage failures.
@@ -372,7 +372,7 @@ impl Engine {
         req: &GoalDecomposeRequest,
     ) -> Result<DecomposeGoalOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let mut children = Vec::with_capacity(req.children.len());
         for child in &req.children {
@@ -518,7 +518,7 @@ impl Engine {
         if &home_owner != goal_owner {
             return Err(ProtocolError::forbidden("entry not found"));
         }
-        self.authorize_write(authz, &home_owner, Relation::Editor)
+        self.authorize_owner_read(authz, &home_owner, AccessKind::Perspective)
             .await?;
         self.require_perspective_kind(authz, &home_owner, memory_id, "target_perspective")
             .await?;
@@ -544,7 +544,7 @@ impl Engine {
             .await
             .map_err(|err| ProtocolError::internal(format!("home_owner: {err}")))?
             .ok_or_else(|| ProtocolError::forbidden("entry not found"))?;
-        self.authorize_write(authz, &home_owner, Relation::Editor)
+        self.authorize_owner_read(authz, &home_owner, AccessKind::Perspective)
             .await?;
         self.require_perspective_kind(authz, &home_owner, memory_id, "author_self_perspective_id")
             .await?;
@@ -715,7 +715,8 @@ fn map_goal_storage_error(err: StorageError) -> ProtocolError {
 mod tests {
     use super::*;
 
-    use super::super::access_sets::tests::MembershipStorage;
+    use super::super::MembershipStorage;
+    use crate::access::Relation;
     use crate::error::ErrorCode;
     use crate::verbs::goal_write::{
         GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, SystemOrigin,

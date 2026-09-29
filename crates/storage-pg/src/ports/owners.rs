@@ -41,7 +41,7 @@ impl OwnerAccessReadPort for PgStorage {
         owner_scope: Option<&proxima_core::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<Option<OwnerRef>, StorageError> {
+    ) -> Result<Option<(OwnerRef, proxima_core::AccessKind)>, StorageError> {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result =

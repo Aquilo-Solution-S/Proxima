@@ -26,7 +26,6 @@
 
 use super::Engine;
 use super::errors::map_write_storage_error;
-use crate::access::Relation;
 use crate::authz::EngineAuthority;
 use crate::citations::{
     UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID, UploadedBlobPayload,
@@ -284,7 +283,6 @@ impl Engine {
         let authorized = self
             .authorize_fact_with_citation(
                 authority,
-                Relation::Editor,
                 draft,
                 cited_object,
                 whole_blob_mapping(),

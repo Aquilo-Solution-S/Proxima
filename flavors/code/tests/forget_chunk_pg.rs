@@ -124,7 +124,7 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
     let pg = pg.with_cold(cold.clone());
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Abstraction).await?;
         let pool = pg.pool_for_tests();
         // The stamp and the rows it promises land in one transaction: a
         // memory row that names a sidecar table it has no row in is refused
@@ -315,7 +315,7 @@ async fn forged_detail_case(
     let pg = pg.with_cold(cold.clone());
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Abstraction).await?;
         let pool = pg.pool_for_tests();
         // The stamp and the rows it promises land in one transaction: a
         // memory row that names a sidecar table it has no row in is refused
@@ -467,7 +467,7 @@ async fn forget_hydrate_restores_execution_plan_details() {
     let pg = pg.with_cold(cold);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Abstraction).await?;
         let pool = pg.pool_for_tests();
         // The stamp and the row it promises land in one transaction: a memory
         // row that names a sidecar table it has no row in is refused at COMMIT.

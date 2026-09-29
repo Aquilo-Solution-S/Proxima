@@ -26,8 +26,8 @@ use proxima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
     EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FactWrite,
     FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, OwnerRef,
-    PayloadKeyBuilder, PayloadReference, Relation, SchemaId, SchemaVersion, SeriesHandle,
-    SidecarPayload, StorageError, UploadedBlobPayload, UserId,
+    PayloadKeyBuilder, PayloadReference, SchemaId, SchemaVersion, SeriesHandle, SidecarPayload,
+    StorageError, UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -446,7 +446,6 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let authorized = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&pool_payload),
                 &[SidecarPayload::fact(pool_payload.clone())],
             )
@@ -574,7 +573,6 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         let authorized = engine
             .authorize_fact_with_citation(
                 &authz,
-                Relation::Editor,
                 inline_draft,
                 cited_object,
                 mapping,
@@ -608,7 +606,6 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         let authorized = engine
             .authorize_fact_with_citation_by_ref(
                 &authz,
-                Relation::Editor,
                 by_ref_draft,
                 cited_object_id,
                 mapping,
@@ -647,7 +644,6 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&payload).with_refs(vec![fact_b.into_inner()]),
                 &[SidecarPayload::fact(payload)],
             )
@@ -673,12 +669,7 @@ async fn storage_uses_sidecars_bound_during_authorization() {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = engine(&pg, &registry);
         let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Editor,
-                custom_draft(&admitted),
-                &admitted_sidecars,
-            )
+            .authorize_fact_ingest(&authz, custom_draft(&admitted), &admitted_sidecars)
             .await?;
         drop(admitted_sidecars);
         let written = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
@@ -725,7 +716,6 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&wrong_kind),
                 &[SidecarPayload::fact(wrong_kind)],
             )
@@ -741,7 +731,6 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&declared_fact),
                 &[SidecarPayload::fact(declared_fact)],
             )
@@ -757,7 +746,6 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&memory_declared_as_goal),
                 &[SidecarPayload::fact(memory_declared_as_goal)],
             )
@@ -769,7 +757,6 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Editor,
                 custom_draft(&unreadable),
                 &[SidecarPayload::fact(unreadable)],
             )
@@ -808,7 +795,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
         let mut non_fact = direct_draft("non-fact-source", Vec::new());
         non_fact.kind = "abstraction".to_owned();
         let error = engine
-            .authorize_fact_ingest(&authz, Relation::Editor, non_fact, &[])
+            .authorize_fact_ingest(&authz, non_fact, &[])
             .await
             .expect_err("Fact authorization must reject non-Fact source");
         assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
@@ -820,12 +807,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
             entity: EntityRef::Memory(target),
         }];
         let error = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Editor,
-                malformed,
-                &[SidecarPayload::fact(payload)],
-            )
+            .authorize_fact_ingest(&authz, malformed, &[SidecarPayload::fact(payload)])
             .await
             .expect_err("malformed Goal/Memory endpoint must be rejected");
         assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);

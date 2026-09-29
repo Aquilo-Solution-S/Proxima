@@ -398,7 +398,7 @@ impl AuthorizedFactWrite {
         links: AuthorizedNodeLinks,
     ) -> Self {
         Self::new(AuthorizedFactCore::new(
-            WritePermit::for_tests(owner_write, crate::access::Relation::Editor),
+            WritePermit::for_tests(owner_write),
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,

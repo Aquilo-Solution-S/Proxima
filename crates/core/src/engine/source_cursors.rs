@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::{Engine, pipeline::WritePermit};
-use crate::access::Relation;
+use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::{Cursor, Owner};
@@ -14,15 +14,15 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot write the owner with
-    /// `Ingest`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the context cannot write Facts on the owner,
+    /// and `Internal` for storage failures.
     pub async fn load_source_cursor(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<Cursor>, ProtocolError> {
-        let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
+        let permit = self.authorize_write(authz, owner, AccessKind::Fact).await?;
         self.load_source_cursor_authorized(&permit, source).await
     }
 
@@ -47,8 +47,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot write the owner with
-    /// `Ingest`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the context cannot write Facts on the owner,
+    /// and `Internal` for storage failures.
     pub async fn store_source_cursor(
         &self,
         authz: &AuthzContext,
@@ -56,7 +56,7 @@ impl Engine {
         source: &str,
         cursor: &Cursor,
     ) -> Result<(), ProtocolError> {
-        let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
+        let permit = self.authorize_write(authz, owner, AccessKind::Fact).await?;
         self.store_source_cursor_authorized(&permit, source, cursor)
             .await
     }
@@ -82,21 +82,21 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot read the owner with
-    /// `Viewer`, and `Internal` for storage failures.
+    /// Returns `Forbidden` when the context cannot read Facts on the owner,
+    /// and `Internal` for storage failures.
     pub async fn source_cursor_age(
         &self,
         authz: &AuthzContext,
         owner: &Owner,
         source: &str,
     ) -> Result<Option<Duration>, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, owner, Relation::Viewer)
+        let owner = self
+            .authorize_owner_read(authz, owner, AccessKind::Fact)
             .await?;
         self.storage
             .source_cursor
             .source_cursor
-            .source_cursor_age(authz.owner_scope(), permit.owner(), source)
+            .source_cursor_age(authz.owner_scope(), &owner, source)
             .await
             .map_err(|e| ProtocolError::internal(format!("source_cursor_age: {e}")))
     }

@@ -269,6 +269,9 @@ pub struct AuthzContext {
     /// verbs whose admission depends on the calling tool's declaration
     /// ([`crate::UnitOfWork::erase_own_series`]).
     invoking_tool: Option<InvokingTool>,
+    /// The engine binding of the [`SystemAuthority`] [`Self::for_system`]
+    /// was given. A System context without it drives no write gate.
+    system_binding: Option<SystemAuthorityBinding>,
 }
 
 /// The registered tool a context was handed to, and the declared effect of
@@ -464,15 +467,21 @@ impl AuthzContext {
     /// the roles the host resolved for the owners this work may touch; they
     /// are sealed into the [`OwnerScope`] exactly as an authenticator's
     /// would be. The witness is not the only way to a System-path context
-    /// (`authenticate` seals whatever a trusted authenticator returns);
-    /// System-path owner writes check the witness again at permit time.
+    /// (`authenticate` seals whatever a trusted authenticator returns); the
+    /// Engine's write gates accept only a System context built here, with
+    /// that Engine's witness.
     #[must_use]
     pub fn for_system(authority: &SystemAuthority, owner_roles: OwnerRoles) -> Self {
-        // The witness is the gate: holding it is what the call proves.
-        let _ = authority;
         let mut context = Self::server_resolved(owner_roles.clone(), AuthPath::System);
         context.owner_scope = Some(OwnerScope::from_verified_roles(owner_roles, None));
+        context.system_binding = Some(authority.binding());
         context
+    }
+
+    /// Whether [`Self::for_system`] built this context from the witness
+    /// bound to `binding`.
+    pub(crate) fn carries_system_authority(&self, binding: &SystemAuthorityBinding) -> bool {
+        self.system_binding.as_ref() == Some(binding)
     }
 
     /// A sealed [`AuthPath::HostBearer`] context for an embedded host that
@@ -640,7 +649,7 @@ impl AuthzContext {
     pub fn server_resolved(owner_roles: OwnerRoles, auth_path: AuthPath) -> Self {
         let subject = owner_roles.subject();
         let accessible_principals = owner_roles
-            .readable_owners(AccessKind::Goal)
+            .readable_owners(AccessKind::Fact)
             .into_iter()
             .collect();
         Self {
@@ -659,6 +668,7 @@ impl AuthzContext {
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
             invoking_tool: None,
+            system_binding: None,
         }
     }
 
@@ -787,7 +797,7 @@ impl AuthzContext {
             OwnerRef::Personal(_) => return None,
         };
         let accessible_principals = narrowed_roles
-            .readable_owners(AccessKind::Goal)
+            .readable_owners(AccessKind::Fact)
             .into_iter()
             .collect();
         self.owner_roles = Some(narrowed_roles);
@@ -821,7 +831,7 @@ impl AuthzContext {
         }
         let roles = self.owner_roles.take()?.with_group_role(group, role);
         self.identity.accessible_principals = roles
-            .readable_owners(AccessKind::Goal)
+            .readable_owners(AccessKind::Fact)
             .into_iter()
             .collect();
         self.owner_roles = Some(roles);
@@ -845,7 +855,7 @@ impl AuthzContext {
         let mut next = self.clone();
         let roles = next.owner_roles.take()?.with_group_role(group, role);
         next.identity.accessible_principals = roles
-            .readable_owners(AccessKind::Goal)
+            .readable_owners(AccessKind::Fact)
             .into_iter()
             .collect();
         next.owner_roles = Some(roles);
@@ -923,6 +933,7 @@ impl AuthzContext {
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
             invoking_tool: None,
+            system_binding: None,
         }
     }
 }

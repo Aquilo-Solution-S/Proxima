@@ -728,6 +728,57 @@ async fn erase_announce_carries_the_series_handle() {
     result.expect("erase announce handle test failed");
 }
 
+/// Forget and hydrate run in platform scope, so the permit's write limit is
+/// the only kind check: a row above it is `NotFound`, hot or cooled (#387).
+#[tokio::test]
+async fn forget_and_hydrate_stop_at_the_permit_kind() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url)
+            .await?
+            .with_cold(Arc::new(MemoryColdStore::default()));
+        pg.run_before_owner_rls_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let facts = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let abstractions = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        let origin = pg.ingest_fact_atomic(&facts, &draft(None), None).await?;
+        let derived = pg
+            .ingest_fact_atomic(
+                &abstractions,
+                &derived_abstraction(EntityKind::Fact, origin.memory_id.into_inner()),
+                None,
+            )
+            .await?;
+
+        let refused = MemoryAuthoringPort::forget_memory(&pg, &facts, derived.memory_id)
+            .await
+            .expect_err("a Fact limit does not reach an Abstraction");
+        assert!(matches!(refused, StorageError::NotFound), "{refused}");
+        MemoryAuthoringPort::forget_memory(&pg, &abstractions, derived.memory_id).await?;
+
+        let hidden =
+            MemoryAuthoringPort::hydrate_memories(&pg, &facts, &[derived.memory_id], &ROUTE_SPACES)
+                .await?;
+        assert_eq!(hidden.outcomes[0].status, MemoryHydrationStatus::NotFound);
+        let restored = MemoryAuthoringPort::hydrate_memories(
+            &pg,
+            &abstractions,
+            &[derived.memory_id],
+            &ROUTE_SPACES,
+        )
+        .await?;
+        assert_eq!(restored.outcomes[0].status, MemoryHydrationStatus::Hydrated);
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop test database");
+    result.expect("forget and hydrate stop at the permit kind");
+}
+
 #[tokio::test]
 async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -4334,9 +4385,11 @@ async fn admission_locks_pins_before_series_head() {
             deletes: AtomicUsize::new(0),
         });
         let forget_pg = pg.clone().with_cold(cold.clone());
+        // Forgetting the Abstraction takes an Abstraction write limit.
+        let limit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let forget = tokio::spawn(async move {
             forget_pg
-                .forget_memory(&permit, proxima_core::MemoryId::new(target_t))
+                .forget_memory(&limit, proxima_core::MemoryId::new(target_t))
                 .await
         });
         cold.first_put_entered.acquire().await?.forget();

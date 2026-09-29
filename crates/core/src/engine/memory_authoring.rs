@@ -1,6 +1,5 @@
 use super::Engine;
 use crate::MAX_MEMORY_HYDRATION_BATCH;
-use crate::access::Relation;
 use crate::authz::EngineAuthority;
 use crate::edge::{EdgeEndpoint, validate_edge_layering};
 use crate::error::ProtocolError;
@@ -481,9 +480,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on
-    /// the owner, `NotFound` when `t` is absent, and storage errors from
-    /// the forget transaction.
+    /// Returns `Forbidden` when the context may write nothing on the owner,
+    /// `NotFound` when `t` is absent or above the context's write limit, and
+    /// storage errors from the forget transaction.
     pub async fn forget_memory<A>(
         &self,
         authority: &A,
@@ -493,9 +492,7 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let write_permit = self
-            .authorize_write(authority, &owner, Relation::Editor)
-            .await?;
+        let write_permit = self.authorize_write_limit(authority, &owner).await?;
         self.storage()
             .memory_authoring
             .memory_authoring
@@ -508,14 +505,15 @@ impl Engine {
 
     /// Hydrate one owner-owned cooled Memory admission.
     ///
-    /// The operation is owner-authorized with the same editor write gate as
+    /// The operation is owner-authorized with the same write gate as
     /// `forget_memory`; the storage tier receives only the sealed write
-    /// permit. Missing and foreign ids collapse to `NotFound`, while cold
-    /// object and integrity outcomes remain typed in the returned value.
+    /// permit. Missing, foreign and unwritable-kind ids collapse to
+    /// `NotFound`, while cold object and integrity outcomes remain typed in
+    /// the returned value.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
+    /// Returns `Forbidden` when the context may write nothing on the
     /// owner, `InvalidArgument` for storage configuration faults, and
     /// `Internal` for unavailable storage or an exhausted lifecycle retry.
     pub async fn hydrate_memory<A>(
@@ -549,8 +547,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
-    /// owner; `InvalidArgument` for an unbounded or duplicate request; and
+    /// Returns `Forbidden` when the context may write nothing on the owner;
+    /// `InvalidArgument` for an unbounded or duplicate request; and
     /// `Internal` for storage failures or when the host cannot route the
     /// owner's embeddings.
     pub async fn hydrate_memories<A>(
@@ -578,9 +576,7 @@ impl Engine {
                 "duplicate memory ids are not allowed",
             ));
         }
-        let write_permit = self
-            .authorize_write(authority, &owner, Relation::Editor)
-            .await?;
+        let write_permit = self.authorize_write_limit(authority, &owner).await?;
         // Hydrated memories are queued for the spaces the Owner's route names
         // now; a route error refuses the hydrate like any other write.
         let embedding_spaces = self.write_route(&owner).await?.write_spaces();
@@ -609,8 +605,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
-    /// source owner or read access to an edge target; `InvalidArgument` when
+    /// Returns `Forbidden` when the context cannot write the derived kind on
+    /// the source owner or read an edge target; `InvalidArgument` when
     /// referenced memories are absent or edge shape validation fails; and
     /// `Internal` for storage failures.
     pub async fn derive_memory<A>(
@@ -650,10 +646,10 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let write_permit = self
-            .authorize_write(authority, &memory.owner, Relation::Editor)
-            .await?;
         let kind = memory.output_kind()?;
+        let write_permit = self
+            .authorize_write(authority, &memory.owner, kind.into())
+            .await?;
         let (memory_id, supersedes) = match memory.target {
             MemoryTarget::Series(handle) => (MemoryId::new(handle.into_inner()), None),
             // Storage resolves the prior row's handle. This private draft key is
