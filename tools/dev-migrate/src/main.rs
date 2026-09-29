@@ -870,6 +870,18 @@ mod tests {
             proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
                 .run(pg.pool_for_tests())
                 .await?;
+            // 0022 rewrites 0014's pin check, so the fixture lane stages it
+            // with the owner-RLS files. Apply its routine unrecorded: every
+            // schema marker then holds and the epoch is what refuses.
+            let coarse_pin_lock = proxima_storage_pg::core_migrator()
+                .iter()
+                .find(|migration| migration.version == 22)
+                .ok_or("0022 is embedded")?
+                .sql
+                .clone();
+            sqlx::raw_sql(coarse_pin_lock)
+                .execute(pg.pool_for_tests())
+                .await?;
 
             let ledger = || async {
                 sqlx::query_as::<_, (i64, Vec<u8>)>(

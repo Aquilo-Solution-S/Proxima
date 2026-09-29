@@ -1,5 +1,7 @@
 //! The fresh CREATE set of the core migration. Requires local PG.
 
+#[path = "migrations/coarse_pin_lock.rs"]
+mod coarse_pin_lock;
 #[path = "migrations/query_stopwords.rs"]
 mod query_stopwords;
 
@@ -3383,7 +3385,9 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         .await?;
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+            ],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
         );

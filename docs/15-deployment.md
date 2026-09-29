@@ -48,6 +48,42 @@ Two operational notes that repeatedly matter:
   rows fail on UPDATE (see [07](07-storage.md); lexical
   language*).
 
+## Bulk Memory writes
+
+A migration, restore or import that must write many Memories atomically
+runs as one maintenance transaction in coarse pin-lock mode:
+
+```sql
+BEGIN;
+SET LOCAL app.proxima_scope = 'platform';  -- as the platform role, under owner RLS
+LOCK TABLE proxima_core.cooled, proxima_core.memory, proxima_core.goal
+    IN SHARE ROW EXCLUSIVE MODE;
+INSERT INTO proxima_core.memory ...;       -- or COPY; any number of statements
+COMMIT;
+```
+
+| | Default | Coarse mode |
+|---|---|---|
+| Lock-table entries | one advisory lock per distinct pin target, the row's `t` included, held to commit | the three table locks, plus the first 256 target locks |
+| Limit | `max_locks_per_transaction × (max_connections + max_prepared_transactions)` slots, 6,400 on defaults; past it `53200 out of shared memory` | none from pin checks |
+| Per-row checks | pin existence, erased-target witness, cooled identity and restoration seals, grounding | unchanged |
+| Concurrent Memory, cooled and Goal writes, forgets, erases | proceed | wait until the transaction ends |
+
+- Decided once per transaction, when its pin-check target locks pass 256:
+  SHARE ROW EXCLUSIVE, EXCLUSIVE or ACCESS EXCLUSIVE held on all three
+  tables is coarse; anything else keeps per-target locks. Take the lock
+  before the first insert. `current_setting('proxima_core.pin_lock_mode',
+  true)` shows a count until decided, then `coarse` or `fine`.
+- The trigger re-takes the three locks instead of trusting that setting;
+  bound by hand, it acquires them.
+- `LOCK` takes the tables one at a time, in the order forget, erase and Goal
+  writes take them. A hydration or owner erase already between `memory` and
+  `cooled` can deadlock with it: Postgres aborts one after
+  `deadlock_timeout`, usually the `LOCK`, which has written nothing — retry
+  it. An engine write that loses retries on its own (`40P01`).
+- A maintenance window: every engine write waits on the lock. Keep the
+  transaction to the bulk write, and see *VACUUM after bulk ingest* above.
+
 ## Connecting to encrypted PostgreSQL
 
 Verified TLS:
