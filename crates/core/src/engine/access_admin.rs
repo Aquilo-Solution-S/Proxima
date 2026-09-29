@@ -52,7 +52,6 @@ impl Engine {
             &bootstrap_member_authz,
             &group_owner,
             &group_owner,
-            Relation::Admin,
             AuthzOperation::Membership {
                 change: MembershipChange::Add,
                 group,
@@ -82,16 +81,13 @@ impl Engine {
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         let group_owner = OwnerRef::Group(group);
-        let permit = self
-            .authorize_write(authz, &group_owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
         let member_principal = OwnerRef::Personal(member);
         self.veto_and_observe_access_admin(
             authz,
             &group_owner,
             permit.owner(),
-            Relation::Admin,
             AuthzOperation::Membership {
                 change: MembershipChange::Add,
                 group,
@@ -126,9 +122,7 @@ impl Engine {
         member: UserId,
     ) -> Result<(), ProtocolError> {
         let group_owner = OwnerRef::Group(group);
-        let permit = self
-            .authorize_write(authz, &group_owner, Relation::Admin)
-            .await?;
+        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
         let member_principal = OwnerRef::Personal(member);
         let current_relations = self
@@ -146,7 +140,6 @@ impl Engine {
                 authz,
                 &group_owner,
                 permit.owner(),
-                Relation::Admin,
                 AuthzOperation::Membership {
                     change: MembershipChange::Remove,
                     group,
@@ -178,8 +171,7 @@ impl Engine {
         after: Option<(UserId, Relation)>,
     ) -> Result<GroupMemberPage, ProtocolError> {
         let group_owner = OwnerRef::Group(group);
-        self.authorize_write(authz, &group_owner, Relation::Admin)
-            .await?;
+        self.authorize_owner_admin(authz, &group_owner).await?;
         let fetch = i64::from(limit).saturating_add(1);
         let mut members = self
             .storage()
@@ -202,7 +194,7 @@ impl Engine {
     /// DDL backstop for the same rule.
     ///
     /// Authorization is **admin on both sides**:
-    /// * `Relation::Admin` on the entity's CURRENT owner — for a personal
+    /// * Owner admin on the entity's CURRENT owner — for a personal
     ///   owner that is the subject's own `Role::personal()`; for a group
     ///   owner it is a member holding `Role::admin()` (`manage = true`),
     ///   re-checked through `require_group_manage`. This is the side the
@@ -263,19 +255,17 @@ impl Engine {
         // ordinary visibility path: absent and foreign rows collapse to the
         // same public NotFound outcome, while an authorized source remains
         // visible because admin roles include read access.
-        let access = self.resolve_access(authz).await?;
-        let current_owner = self
+        let read = authz.readable_owners(AccessKind::Fact);
+        let (current_owner, _) = self
             .storage()
             .access_admin
             .owner_access_read
-            .visible_home_owner(authz.owner_scope(), entity, access.read_owners())
+            .visible_home_owner(authz.owner_scope(), entity, &read)
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
 
-        let mut permit = self
-            .authorize_write(authz, &current_owner, Relation::Admin)
-            .await?;
+        let mut permit = self.authorize_owner_admin(authz, &current_owner).await?;
         if matches!(current_owner, OwnerRef::Group(_)) {
             require_group_manage(authz, &current_owner)?;
         }
@@ -300,7 +290,6 @@ impl Engine {
             authz,
             &current_owner,
             permit.owner(),
-            Relation::Admin,
             AuthzOperation::EntityTransfer { entity, to_owner },
         )?;
 
@@ -346,7 +335,7 @@ impl Engine {
     /// * The request context already carries a resolved role for
     ///   `to_owner` (an embedded host that never narrowed, or a caller who
     ///   selected the destination). That role is authoritative and is
-    ///   gated exactly as before — `authorize_write(.., Admin)` plus
+    ///   gated exactly as before — `authorize_owner_admin` plus
     ///   [`require_group_manage`], hooks and owner resolution included. A
     ///   role that is present but insufficient is a refusal, never a
     ///   fall-through to storage: a host that deliberately hands out a
@@ -369,8 +358,7 @@ impl Engine {
         to_owner: &OwnerRef,
     ) -> Result<(), ProtocolError> {
         if authz.role_for_owner(to_owner).is_some() {
-            self.authorize_write(authz, to_owner, Relation::Admin)
-                .await?;
+            self.authorize_owner_admin(authz, to_owner).await?;
             return require_group_manage(authz, to_owner);
         }
         self.authorize_transfer_destination_out_of_band(authz, to_owner)
@@ -379,10 +367,9 @@ impl Engine {
 
     /// Re-read the authenticated subject's membership on `to_owner` and
     /// require the same authority the in-context gate requires: a role
-    /// that may write Goals AND carries `manage`. Only `Relation::Admin`
-    /// maps to such a role, so this is `Relation::Admin` on the
-    /// destination group — spelled through [`Relation::role`] so the rule
-    /// tracks the role table rather than restating it.
+    /// that administers the owner AND carries `manage` — read off the stored
+    /// preset through [`Relation::role`], so the rule tracks the role table
+    /// rather than restating it.
     ///
     /// Refused before the lookup for every context that does not name a
     /// subject whose membership may stand in for its own authority:
@@ -423,7 +410,7 @@ impl Engine {
                 return false;
             }
             let role = row.relation.role();
-            role.may_write(AccessKind::Goal) && role.manages()
+            role.administers() && role.manages()
         });
         if consents { Ok(()) } else { Err(refused()) }
     }
@@ -433,14 +420,12 @@ impl Engine {
         authz: &AuthzContext,
         requested: &OwnerRef,
         resolved: &OwnerRef,
-        relation: Relation,
         operation: AuthzOperation,
     ) -> Result<(), ProtocolError> {
         let input = AuthzInput {
             authz,
             requested,
             resolved,
-            relation,
             operation,
         };
         match self.registry.run_authorization_vetoes(&input) {
@@ -459,8 +444,8 @@ impl Engine {
 }
 
 /// Membership-admin and group transfer require the `manage` bit, not merely
-/// `Relation::Admin` write authority. `authorize_write(.., Admin)` is satisfied
-/// by any role that can write Goals (`write >= Goal`), so a custom
+/// owner admin. `authorize_owner_admin` is satisfied by any role that
+/// administers the owner (`write >= Goal`), so a custom
 /// `OwnerAccessPort` could hand out `Role::new(Goal, Goal, false)` — write-Goal
 /// but `manage = false` — and pass the write gate. Consult `may_manage`
 /// explicitly so only roles with `manage = true` (e.g. `Role::admin`) mutate
@@ -491,7 +476,7 @@ fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::super::access_sets::tests::MembershipStorage;
+    use super::super::MembershipStorage;
     use crate::access::{Relation, Role};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,

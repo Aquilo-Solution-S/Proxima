@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::access::{EntityId, Relation};
+use crate::access::{AccessKind, EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::{GroupId, Owner, OwnerRef};
@@ -26,10 +26,17 @@ pub enum MembershipChange {
     Remove,
 }
 
+/// What one gate checks on the resolved owner. Reads and writes follow one
+/// rule: a role may act on `kind` when its limit for that direction is at
+/// least `kind`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzOperation {
-    /// Ordinary relation-gated owner/space/entry access.
-    Relation { relation: Relation },
+    /// Read `kind` on the owner.
+    Read { kind: AccessKind },
+    /// Write `kind` on the owner.
+    Write { kind: AccessKind },
+    /// Owner-level administration ([`crate::Role::administers`]).
+    OwnerAdmin,
     /// Membership mutation audited by group, member, relation, and direction.
     Membership {
         change: MembershipChange,
@@ -51,7 +58,6 @@ pub struct AuthzInput<'a> {
     pub authz: &'a AuthzContext,
     pub requested: &'a Owner,
     pub resolved: &'a Owner,
-    pub relation: Relation,
     pub operation: AuthzOperation,
 }
 

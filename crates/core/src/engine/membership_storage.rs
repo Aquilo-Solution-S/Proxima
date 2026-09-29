@@ -1,57 +1,54 @@
-use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
-use super::change::ChangeEventPort;
-use super::cursors::SourceCursorPort;
-use super::embeddings::{
-    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, EmbeddingWriteProof,
-};
-use super::fact::FactIngestPort;
-use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
-use super::mcp::McpCallReadPort;
-use super::memory::{
-    CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
-};
-use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
-use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
-use super::registry::RegistryProjectionPort;
-use super::write_session::{WriteSession, WriteSessionFactory};
+//! Test storage whose membership, home-owner and kind answers are fixed.
+#![allow(clippy::too_many_lines, clippy::wildcard_imports)]
 
-use crate::access::AccessError;
-use crate::owner_inverse::OwnerEraseTarget;
-use crate::read_models::{
-    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
-    GoalWakeCandidateRequest, MemorySchemaSpec, MemorySnapshot,
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
-use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
-use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 
-use crate::verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome,
-};
-use crate::verbs::goal_write::{
+use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
+
+use crate::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
-    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalReplayOutcome,
+    GoalReplayRequest, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-use crate::{
-    EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, Owner, OwnerRef, Relation,
-    SourceId, UserId,
-};
+use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
+use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
+use crate::*;
 
 #[derive(Debug)]
-pub(super) struct RejectingStorage;
+pub(crate) struct MembershipStorage {
+    pub(crate) member: OwnerRef,
+    pub(crate) group: GroupId,
+    pub(crate) membership_relation: Relation,
+    pub(crate) home_owner: Option<OwnerRef>,
+    pub(crate) entity_readable: bool,
+    pub(crate) memory_kind: Option<EntityKind>,
+    pub(crate) goal_evidence: Option<Vec<MemoryId>>,
+    pub(crate) observed_fact_writes: Arc<AtomicUsize>,
+    pub(crate) observed_modify_evidence: Arc<Mutex<Option<Vec<MemoryId>>>>,
+    pub(crate) observed_goal_authorship: Arc<Mutex<Vec<GoalAuthorship>>>,
+    /// Every entity handed to `visible_home_owner`, in call order. The
+    /// admission path reads a repeated declaration once, so a duplicate
+    /// target must not appear twice here.
+    pub(crate) observed_entity_reads: Arc<Mutex<Vec<EntityId>>>,
+    /// The id batch of each `load_memory_kinds` call, in call order. Kind
+    /// resolution is batched per owner, so N declared targets under one
+    /// owner must produce exactly one entry.
+    pub(crate) observed_kind_loads: Arc<Mutex<Vec<Vec<MemoryId>>>>,
+}
 
 #[async_trait::async_trait]
-impl FactIngestPort for RejectingStorage {
+impl FactIngestPort for MembershipStorage {
     async fn ingest_authorized_fact_atomic(
         &self,
         _authorized: &AuthorizedFactWrite,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
+        self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -60,8 +57,9 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWrite,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
+        self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -70,24 +68,26 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWithCitation,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
+        self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
-        _authorized: &AuthorizedFactWithCitationRef,
+        _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
+        self.observed_fact_writes.fetch_add(1, Ordering::Relaxed);
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl McpCallReadPort for RejectingStorage {
+impl McpCallReadPort for MembershipStorage {
     async fn read_mcp_call_history(
         &self,
         _scope: Option<&crate::OwnerScope>,
@@ -98,15 +98,15 @@ impl McpCallReadPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl MemoryAuthoringPort for RejectingStorage {
+impl MemoryAuthoringPort for MembershipStorage {
     async fn author_derived(
         &self,
         _req: &AuthorDerivedRequest<'_>,
-        _permit: &OwnerWritePermit,
-        _proof: OperatorWriteProof,
+        _permit: &crate::storage_ports::OwnerWritePermit,
+        _proof: crate::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -114,29 +114,44 @@ impl MemoryAuthoringPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
-        _memory_ids: &[crate::MemoryId],
-    ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {
-        Ok(Vec::new())
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<MemoryKindRow>, StorageError> {
+        self.observed_kind_loads
+            .lock()
+            .expect("observed kind loads")
+            .push(memory_ids.to_vec());
+        Ok(self
+            .memory_kind
+            .map(|kind| {
+                memory_ids
+                    .iter()
+                    .map(|memory_id| MemoryKindRow {
+                        memory_id: *memory_id,
+                        kind,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     async fn forget_memory(
         &self,
-        _permit: &OwnerWritePermit,
-        _memory_id: crate::MemoryId,
+        _permit: &crate::storage_ports::OwnerWritePermit,
+        _memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl MemoryReadPort for RejectingStorage {
+impl MemoryReadPort for MembershipStorage {
     async fn load_fact_text(
         &self,
         _scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
-        _memory_id: crate::MemoryId,
+        _memory_id: MemoryId,
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
     }
@@ -145,10 +160,10 @@ impl MemoryReadPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::QueryRequest,
-        _schemas: &[MemorySchemaSpec],
-    ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
-        Ok(crate::verbs::query::QueryResponse {
+        _req: &verbs::query::QueryRequest,
+        _schemas: &[crate::read_models::MemorySchemaSpec],
+    ) -> Result<verbs::query::QueryResponse, StorageError> {
+        Ok(verbs::query::QueryResponse {
             memories: Vec::new(),
             goals: Vec::new(),
             edges: Vec::new(),
@@ -160,10 +175,10 @@ impl MemoryReadPort for RejectingStorage {
     async fn search_memories(
         &self,
         _scope: Option<&crate::OwnerScope>,
-        _req: &crate::verbs::query::MemorySearchRequest,
-        _projections: &[crate::verbs::schema::MemorySearchProjection],
-    ) -> Result<crate::verbs::query::MemorySearchPage, StorageError> {
-        Ok(crate::verbs::query::MemorySearchPage {
+        _req: &verbs::query::MemorySearchRequest,
+        _projections: &[verbs::schema::MemorySearchProjection],
+    ) -> Result<verbs::query::MemorySearchPage, StorageError> {
+        Ok(verbs::query::MemorySearchPage {
             results: Vec::new(),
             has_more: false,
         })
@@ -173,9 +188,9 @@ impl MemoryReadPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::MemoryLineageRequest,
-    ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
-        Ok(crate::verbs::query::MemoryLineageResponse {
+        _req: &verbs::query::MemoryLineageRequest,
+    ) -> Result<verbs::query::MemoryLineageResponse, StorageError> {
+        Ok(verbs::query::MemoryLineageResponse {
             nodes: Vec::new(),
             edges: Vec::new(),
             truncated: false,
@@ -186,10 +201,10 @@ impl MemoryReadPort for RejectingStorage {
     async fn load_memory_graph_payloads(
         &self,
         _scope: Option<&crate::OwnerScope>,
-        _identities: &[crate::MemoryGraphIdentity],
-        _schemas: &[MemorySchemaSpec],
+        _identities: &[MemoryGraphIdentity],
+        _schemas: &[crate::read_models::MemorySchemaSpec],
         _include_body: bool,
-    ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
+    ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -197,7 +212,7 @@ impl MemoryReadPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _memory_ids: &[crate::MemoryId],
+        _memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
         Ok(Vec::new())
     }
@@ -206,7 +221,7 @@ impl MemoryReadPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _memory_ids: &[crate::MemoryId],
+        _memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
     }
@@ -232,7 +247,7 @@ impl MemoryReadPort for RejectingStorage {
     async fn owned_series_handle(
         &self,
         _scope: Option<&crate::OwnerScope>,
-        _owner: crate::Owner,
+        _owner: Owner,
         _schema_id: &crate::SchemaId,
         _sidecar_table: &str,
         _columns: &[(&str, crate::verbs::query::SidecarAtom)],
@@ -242,12 +257,12 @@ impl MemoryReadPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl MemoryInspectPort for RejectingStorage {
+impl MemoryInspectPort for MembershipStorage {
     async fn load_memory_by_id(
         &self,
         _scope: Option<&crate::OwnerScope>,
-        _memory_id: crate::MemoryId,
-        _schemas: &[MemorySchemaSpec],
+        _memory_id: MemoryId,
+        _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
     }
@@ -256,21 +271,21 @@ impl MemoryInspectPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _memory_ids: &[crate::MemoryId],
-        _schemas: &[MemorySchemaSpec],
+        _memory_ids: &[MemoryId],
+        _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
 }
 
 #[async_trait::async_trait]
-impl EmbeddingTextPort for RejectingStorage {
+impl EmbeddingTextPort for MembershipStorage {
     async fn load_embedding_text(
         &self,
         _scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
         _entity_kind: EntityKind,
-        _memory_id: crate::MemoryId,
+        _memory_id: MemoryId,
         _non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
@@ -279,7 +294,7 @@ impl EmbeddingTextPort for RejectingStorage {
     async fn load_embedding_texts(
         &self,
         _scope: Option<&crate::OwnerScope>,
-        items: &[(Owner, EntityKind, crate::MemoryId)],
+        items: &[(Owner, EntityKind, MemoryId)],
         _non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError> {
         Ok(vec![None; items.len()])
@@ -292,41 +307,41 @@ impl EmbeddingTextPort for RejectingStorage {
         _space: &crate::EmbeddingSpace,
         _limit: usize,
         _non_embeddable_schemas: &[String],
-    ) -> Result<Vec<crate::MemoryId>, StorageError> {
+    ) -> Result<Vec<MemoryId>, StorageError> {
         Ok(Vec::new())
     }
 }
 
 #[async_trait::async_trait]
-impl EmbeddingWritePort for RejectingStorage {
+impl EmbeddingWritePort for MembershipStorage {
     async fn insert_embedding(
         &self,
         _owner: &Owner,
-        _entity: EmbeddableEntityRef,
+        _entity: crate::EmbeddableEntityRef,
         _vectors: &[crate::SpaceVector],
-        _proof: EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        Ok(EmbeddingWriteOutcome {
+        _proof: crate::storage_ports::EmbeddingWriteProof,
+    ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
+        Ok(crate::EmbeddingWriteOutcome {
             embedding_version: 0,
         })
     }
 }
 
 #[async_trait::async_trait]
-impl EmbeddingJobPort for RejectingStorage {
+impl EmbeddingJobPort for MembershipStorage {
     async fn claim_pending_embedding_jobs(
         &self,
         _limit: i64,
         _skip_owners: &[crate::Owner],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn complete_embedding_job(&self, _claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -335,7 +350,7 @@ impl EmbeddingJobPort for RejectingStorage {
         _claims: &[EmbeddingJobClaim],
     ) -> Result<u64, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -344,7 +359,7 @@ impl EmbeddingJobPort for RejectingStorage {
         _older_than_seconds: i64,
     ) -> Result<u64, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -354,7 +369,7 @@ impl EmbeddingJobPort for RejectingStorage {
         _error: &str,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -364,7 +379,7 @@ impl EmbeddingJobPort for RejectingStorage {
         _error: &str,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -374,19 +389,19 @@ impl EmbeddingJobPort for RejectingStorage {
         _error: &str,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn enqueue_missing_embedding_jobs(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
         _space: &crate::EmbeddingSpace,
         _limit: i64,
         _non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -400,34 +415,34 @@ impl EmbeddingJobPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl EmbeddingMaintenancePort for RejectingStorage {
+impl crate::EmbeddingMaintenancePort for MembershipStorage {
     async fn embedding_ann_observability(
         &self,
         _policy: crate::EmbeddingRuntimePolicy,
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<super::embeddings::EmbeddingAnnObservability, StorageError> {
+        _proof: crate::OperatorMaintenanceProof,
+    ) -> Result<crate::EmbeddingAnnObservability, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects operational embedding reads".into(),
+            "MembershipStorage rejects operational embedding reads".into(),
         ))
     }
 
     async fn sweep_orphan_embedding_rows(
         &self,
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<super::embeddings::EmbeddingOrphanSweepOutcome, StorageError> {
+        _proof: crate::OperatorMaintenanceProof,
+    ) -> Result<crate::EmbeddingOrphanSweepOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects embedding maintenance".into(),
+            "MembershipStorage rejects embedding maintenance".into(),
         ))
     }
 
     async fn reconcile_embeddings(
         &self,
-        _options: super::embeddings::EmbeddingReconcileOptions<'_>,
+        _options: crate::EmbeddingReconcileOptions<'_>,
         _policy: crate::EmbeddingRuntimePolicy,
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<super::embeddings::EmbeddingReconcileOutcome, StorageError> {
+        _proof: crate::OperatorMaintenanceProof,
+    ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects embedding maintenance".into(),
+            "MembershipStorage rejects embedding maintenance".into(),
         ))
     }
 
@@ -435,10 +450,10 @@ impl EmbeddingMaintenancePort for RejectingStorage {
         &self,
         _after: Option<crate::Owner>,
         _limit: i64,
-        _proof: OperatorMaintenanceProof,
+        _proof: crate::OperatorMaintenanceProof,
     ) -> Result<Vec<crate::Owner>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects embedding maintenance".into(),
+            "MembershipStorage rejects embedding maintenance".into(),
         ))
     }
 
@@ -447,16 +462,10 @@ impl EmbeddingMaintenancePort for RejectingStorage {
         _owner: &crate::Owner,
         _spaces: &[crate::EmbeddingSpace],
         _non_embeddable_schemas: &[String],
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<
-        Vec<(
-            crate::EmbeddingSpace,
-            super::embeddings::EmbeddingSpaceCounts,
-        )>,
-        StorageError,
-    > {
+        _proof: crate::OperatorMaintenanceProof,
+    ) -> Result<Vec<(crate::EmbeddingSpace, crate::EmbeddingSpaceCounts)>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects operational embedding reads".into(),
+            "MembershipStorage rejects embedding maintenance".into(),
         ))
     }
 
@@ -465,84 +474,139 @@ impl EmbeddingMaintenancePort for RejectingStorage {
         _owner: &crate::Owner,
         _keep: &[crate::EmbeddingSpace],
         _limit: i64,
-        _proof: OperatorMaintenanceProof,
-    ) -> Result<super::embeddings::EmbeddingPurgeOutcome, StorageError> {
+        _proof: crate::OperatorMaintenanceProof,
+    ) -> Result<crate::EmbeddingPurgeOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects embedding maintenance".into(),
+            "MembershipStorage rejects embedding maintenance".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl GoalWritePort for RejectingStorage {
+impl GoalWritePort for MembershipStorage {
     async fn resolve_goal_replay(
         &self,
-        _req: GoalReplayRequest<'_, '_>,
-        _permit: &OwnerWritePermit,
+        req: GoalReplayRequest<'_, '_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
+        let replay = |ordinal: u128| GoalWriteOutcome {
+            goal_id: GoalId::new(uuid::Uuid::from_u128(ordinal)),
+            change_event_seq: uuid::Uuid::from_u128(ordinal),
+            lifecycle_memory_id: None,
+            edge_count: 3,
+            idempotent_replay: true,
+        };
+        let single_key = match req {
+            GoalReplayRequest::Create(req) => Some(req.draft.request_id.as_str()),
+            GoalReplayRequest::Transition(req) => Some(req.request_id.as_str()),
+            GoalReplayRequest::Achieve(req) => Some(req.request_id.as_str()),
+            GoalReplayRequest::Modify(req) => Some(req.request_id.as_str()),
+            GoalReplayRequest::Decompose(_) => None,
+        };
+        if single_key.is_some_and(|key| key.starts_with("exact-replay-")) {
+            return Ok(Some(GoalReplayOutcome::Goal(replay(1))));
+        }
+        let GoalReplayRequest::Decompose(req) = req else {
+            return Ok(None);
+        };
+        if req.children.is_empty()
+            || !req
+                .children
+                .iter()
+                .all(|child| child.request_id.as_str().starts_with("exact-replay-"))
+        {
+            return Ok(None);
+        }
+        Ok(Some(GoalReplayOutcome::Decompose(DecomposeGoalOutcome {
+            children: req
+                .children
+                .iter()
+                .enumerate()
+                .map(|(index, _)| DecomposedGoalOutcome {
+                    outcome: replay((index + 1) as u128),
+                })
+                .collect(),
+            idempotent_replay: true,
+        })))
     }
 
     async fn create_goal_atomic(
         &self,
-        _req: &CreateGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        req: &CreateGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
+        self.observed_goal_authorship
+            .lock()
+            .expect("goal authorship recorder lock")
+            .push(req.draft.authorship.clone());
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn transition_goal_atomic(
         &self,
         _req: &TransitionGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn achieve_goal_atomic(
         &self,
         _req: &AchieveGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn modify_goal_atomic(
         &self,
-        _req: &ModifyGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        req: &ModifyGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
+        self.observed_goal_authorship
+            .lock()
+            .expect("goal authorship recorder lock")
+            .push(req.authorship.clone());
+        *self
+            .observed_modify_evidence
+            .lock()
+            .expect("modify evidence recorder lock") = req
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.iter().map(|item| item.memory_id()).collect());
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn decompose_goal_atomic(
         &self,
-        _req: &DecomposeGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        req: &DecomposeGoalAtomicRequest<'_>,
+        _permit: &crate::storage_ports::OwnerWritePermit,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
+        self.observed_goal_authorship
+            .lock()
+            .expect("goal authorship recorder lock")
+            .push(req.authorship.clone());
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl GoalReadPort for RejectingStorage {
+impl GoalReadPort for MembershipStorage {
     async fn list_active_goals(
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _self_perspective_memory_id: crate::MemoryId,
+        _self_perspective_memory_id: MemoryId,
         _limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
         Ok(Vec::new())
@@ -562,13 +626,13 @@ impl GoalReadPort for RejectingStorage {
         _scope: Option<&crate::OwnerScope>,
         _owner: &OwnerRef,
         _goal_id: crate::GoalId,
-    ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
-        Ok(None)
+    ) -> Result<Option<Vec<MemoryId>>, StorageError> {
+        Ok(self.goal_evidence.clone())
     }
 }
 
 #[async_trait::async_trait]
-impl GoalWakeCandidatePort for RejectingStorage {
+impl crate::storage_ports::GoalWakeCandidatePort for MembershipStorage {
     async fn list_goal_wake_candidates(
         &self,
         _scope: Option<&crate::OwnerScope>,
@@ -579,7 +643,7 @@ impl GoalWakeCandidatePort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl ChangeEventPort for RejectingStorage {
+impl ChangeEventPort for MembershipStorage {
     async fn change_history(
         &self,
         _scope: Option<&crate::OwnerScope>,
@@ -604,17 +668,17 @@ impl ChangeEventPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl CitationPort for RejectingStorage {
+impl CitationPort for MembershipStorage {
     async fn facts_citing_object(
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
         _cited_object_id: uuid::Uuid,
-        _schemas: &[MemorySchemaSpec],
-        _after: Option<crate::verbs::query::FactCitationCursor>,
+        _schemas: &[crate::read_models::MemorySchemaSpec],
+        _after: Option<verbs::query::FactCitationCursor>,
         _limit: u32,
-    ) -> Result<crate::verbs::query::FactCitationPage, StorageError> {
-        Ok(crate::verbs::query::FactCitationPage {
+    ) -> Result<verbs::query::FactCitationPage, StorageError> {
+        Ok(verbs::query::FactCitationPage {
             facts: Vec::new(),
             next_cursor: None,
             has_more: false,
@@ -625,29 +689,47 @@ impl CitationPort for RejectingStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerRef],
-        _fact_memory_id: crate::MemoryId,
-    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        _fact_memory_id: MemoryId,
+    ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerAccessReadPort for RejectingStorage {
+impl OwnerAccessReadPort for MembershipStorage {
     async fn resolve_membership(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
-        _member: &OwnerRef,
+        member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError> {
-        Ok(Vec::new())
+        if member == &self.member {
+            Ok(vec![MembershipRow {
+                group: self.group,
+                relation: self.membership_relation,
+            }])
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     async fn visible_home_owner(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
-        _entity: EntityId,
+        entity: EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<Option<(OwnerRef, crate::AccessKind)>, StorageError> {
-        Ok(None)
+    ) -> Result<Option<(OwnerRef, AccessKind)>, StorageError> {
+        self.observed_entity_reads
+            .lock()
+            .expect("observed entity reads")
+            .push(entity);
+        let kind = match entity {
+            EntityId::Goal(_) => AccessKind::Goal,
+            EntityId::Memory(_) => self.memory_kind.map_or(AccessKind::Fact, AccessKind::from),
+        };
+        Ok(self
+            .home_owner
+            .filter(|_| self.entity_readable)
+            .map(|owner| (owner, kind)))
     }
 
     async fn home_owner(
@@ -655,12 +737,12 @@ impl OwnerAccessReadPort for RejectingStorage {
         _owner_scope: Option<&crate::OwnerScope>,
         _entity: EntityId,
     ) -> Result<Option<OwnerRef>, StorageError> {
-        Ok(None)
+        Ok(self.home_owner)
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerMembershipAdminPort for RejectingStorage {
+impl OwnerMembershipAdminPort for MembershipStorage {
     async fn bootstrap_group_admin(
         &self,
         _group_id: GroupId,
@@ -668,90 +750,96 @@ impl OwnerMembershipAdminPort for RejectingStorage {
         _granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn add_group_member(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
         _group_id: GroupId,
         _member_user_id: UserId,
         _relation: Relation,
         _granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn remove_group_member(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
         _group_id: GroupId,
         _member_user_id: UserId,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn list_group_members(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
-        _group_id: GroupId,
+        group_id: GroupId,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-        Ok(Vec::new())
+        if group_id == self.group
+            && let OwnerRef::Personal(member) = self.member
+        {
+            Ok(vec![(member, self.membership_relation)])
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     async fn list_group_members_page(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
-        _group_id: GroupId,
+        group_id: GroupId,
         _after: Option<(UserId, Relation)>,
         _limit: i64,
     ) -> Result<Vec<(UserId, Relation)>, StorageError> {
-        Ok(Vec::new())
+        self.list_group_members(_owner_scope, group_id).await
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerTransferPort for RejectingStorage {
+impl OwnerTransferPort for MembershipStorage {
     async fn transfer_to_owner(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
         _entity: EntityId,
         _to_owner: OwnerRef,
-        _surfaces: &crate::owner_inverse::OwnerSurfaces,
+        _surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl SourceCursorPort for RejectingStorage {
+impl SourceCursorPort for MembershipStorage {
     async fn load_source_cursor(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
         _source: &str,
-    ) -> Result<Option<crate::Cursor>, StorageError> {
+    ) -> Result<Option<Cursor>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects source cursor reads".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn store_source_cursor(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &crate::storage_ports::OwnerWritePermit,
         _source: &str,
-        _cursor: &crate::Cursor,
+        _cursor: &Cursor,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
@@ -762,104 +850,78 @@ impl SourceCursorPort for RejectingStorage {
         _source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects source cursor reads".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerInversePort for RejectingStorage {
+impl OwnerInversePort for MembershipStorage {
     async fn erase_group_owner(
         &self,
-        _auth: &crate::owner_inverse::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
-        _tables: &crate::owner_inverse::OwnerSurfaces,
-    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn erase_personal_owner(
         &self,
-        _auth: &crate::owner_inverse::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
-        _tables: &crate::owner_inverse::OwnerSurfaces,
-    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn erase_group_source_scope(
         &self,
-        _auth: &crate::owner_inverse::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &crate::owner_inverse::OwnerSurfaces,
-    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn erase_personal_source_scope(
         &self,
-        _auth: &crate::owner_inverse::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &crate::owner_inverse::OwnerSurfaces,
-    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
     }
 
     async fn export_owner_bundle(
         &self,
-        _auth: &crate::owner_inverse::ExportAuthorization,
-        _tables: &crate::owner_inverse::OwnerSurfaces,
-    ) -> Result<crate::owner_inverse::OwnerExportBundle, StorageError> {
+        _auth: &proxima_core::owner_inverse::ExportAuthorization,
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects reads".into(),
+            "MembershipStorage rejects reads".into(),
         ))
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerEraseAuthorityPort for RejectingStorage {
-    async fn may_erase_owner(
-        &self,
-        _authz: &crate::AuthzContext,
-        _target: &OwnerEraseTarget,
-    ) -> Result<bool, AccessError> {
-        Err(AccessError::Resolution(
-            "RejectingStorage rejects all auth".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl OwnerDropProofPort for RejectingStorage {
-    async fn verify_personal_owner_dropped(
-        &self,
-        _user_id: UserId,
-        _drop_event_id: &str,
-    ) -> Result<bool, AccessError> {
-        Err(AccessError::Resolution(
-            "RejectingStorage rejects all auth".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl RegistryProjectionPort for RejectingStorage {
+impl RegistryProjectionPort for MembershipStorage {
     async fn load_memory_batch_facts(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
-        _memory_id: crate::MemoryId,
-        _schemas: &[MemorySchemaSpec],
+        _memory_id: MemoryId,
+        _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<Vec<FactRow>, StorageError> {
         Ok(Vec::new())
     }
@@ -868,7 +930,7 @@ impl RegistryProjectionPort for RejectingStorage {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         _owner: &Owner,
-        _schemas: &[MemorySchemaSpec],
+        _schemas: &[crate::read_models::MemorySchemaSpec],
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         Ok(Vec::new())
@@ -876,13 +938,43 @@ impl RegistryProjectionPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl WriteSessionFactory for RejectingStorage {
+impl WriteSessionFactory for MembershipStorage {
     async fn begin(
         &self,
         _scope: Option<&crate::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError> {
         Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
+            "MembershipStorage rejects writes".into(),
         ))
+    }
+}
+
+impl MembershipStorage {
+    #[must_use]
+    pub(crate) fn storage_ports(self) -> StoragePorts {
+        let storage = Arc::new(self);
+        StoragePorts::builder()
+            .fact_ingest(storage.clone())
+            .mcp_call_read(storage.clone())
+            .memory_authoring(storage.clone())
+            .memory_read(storage.clone())
+            .memory_inspect(storage.clone())
+            .embedding_text(storage.clone())
+            .embedding_write(storage.clone())
+            .embedding_job(storage.clone())
+            .embedding_maintenance(storage.clone())
+            .goal_write(storage.clone())
+            .goal_read(storage.clone())
+            .goal_wake_candidate(storage.clone())
+            .change_event(storage.clone())
+            .citation(storage.clone())
+            .owner_access_read(storage.clone())
+            .owner_membership_admin(storage.clone())
+            .owner_transfer(storage.clone())
+            .source_cursor(storage.clone())
+            .owner_erase(storage.clone())
+            .registry_projection(storage.clone())
+            .write_session(storage)
+            .build()
     }
 }

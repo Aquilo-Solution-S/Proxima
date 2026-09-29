@@ -151,7 +151,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     assert!(
         ingest_err
             .to_string()
-            .contains("requires ingest on this owner")
+            .contains("requires Fact write on this owner")
             || ingest_err.to_string().contains("Forbidden")
             || ingest_err.to_string().contains("forbidden")
     );
@@ -205,7 +205,10 @@ async fn persist_mcp_call_rejects_context_without_ingest_grant() {
         .persist_mcp_call(&authz, sample_mcp_input(&owner))
         .await
         .expect_err("ingest grant required");
-    assert!(err.to_string().contains("requires ingest on this owner"));
+    assert!(
+        err.to_string()
+            .contains("requires Fact write on this owner")
+    );
 }
 
 #[tokio::test]
@@ -227,7 +230,7 @@ async fn read_mcp_call_history_rejects_context_without_read_grant() {
         )
         .await
         .expect_err("read grant required");
-    assert!(err.to_string().contains("requires viewer on this owner"));
+    assert!(err.to_string().contains("requires Fact read on this owner"));
 }
 
 #[tokio::test]

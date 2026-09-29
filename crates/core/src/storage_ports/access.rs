@@ -10,12 +10,14 @@ pub trait OwnerAccessReadPort: Send + Sync {
         member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
+    /// Home owner and kind of `entity` when its owner is in `read_owners`.
+    /// Absent and foreign are both `None`.
     async fn visible_home_owner(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<Option<OwnerRef>, StorageError>;
+    ) -> Result<Option<(OwnerRef, crate::AccessKind)>, StorageError>;
 
     async fn home_owner(
         &self,

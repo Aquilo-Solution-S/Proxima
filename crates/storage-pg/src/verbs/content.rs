@@ -37,26 +37,32 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
 }
 
 /// Insert or reuse `(owner, schema, hash)`.
+///
+/// Neither `RETURNING` nor a conflict target: each makes the insert read the
+/// new row, and a Content row is visible only through an admission that
+/// names it (0023), which the new row has not got yet. The fresh
+/// `content_id` cannot conflict, so any conflict is `(owner, schema, hash)`.
 pub async fn ensure_content(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
     schema_id: &str,
     content_hash: &[u8; 32],
 ) -> Result<Uuid, StorageError> {
-    let inserted: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (owner_id, schema_id, content_hash) DO NOTHING
-         RETURNING content_id",
+    let content_id = Uuid::now_v7();
+    let inserted = sqlx::query(
+        "INSERT INTO proxima_core.content (content_id, owner_id, schema_id, content_hash)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING",
     )
+    .bind(content_id)
     .bind(owner_id)
     .bind(schema_id)
     .bind(content_hash.as_slice())
-    .fetch_optional(tx.as_mut())
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if let Some(id) = inserted {
-        return Ok(id);
+    if inserted.rows_affected() == 1 {
+        return Ok(content_id);
     }
     sqlx::query_scalar(
         "SELECT content_id FROM proxima_core.content

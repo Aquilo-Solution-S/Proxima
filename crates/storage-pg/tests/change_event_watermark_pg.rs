@@ -8,8 +8,7 @@ use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, Engine, EntityKind, FactIngestOutcome, FactPayload,
-    FactWriteCommand, FlavorRegistry, OwnerRef, Relation, SidecarPayload, Speaker, UserId,
-    UtteranceV1,
+    FactWriteCommand, FlavorRegistry, OwnerRef, SidecarPayload, Speaker, UserId, UtteranceV1,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -75,7 +74,7 @@ impl Fixture {
         let sidecars = [SidecarPayload::fact(payload)];
         let authorized = self
             .engine
-            .authorize_fact_ingest(authz, Relation::Ingest, draft, &sidecars)
+            .authorize_fact_ingest(authz, draft, &sidecars)
             .await?;
         Ok(self
             .engine

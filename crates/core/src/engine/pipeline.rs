@@ -1,7 +1,6 @@
-use crate::access::{AccessKind, EntityId, Relation};
+use crate::access::{AccessKind, EntityId, Role};
 use crate::authz::{
     AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, EngineAuthority,
-    SystemAuthority,
 };
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -10,38 +9,10 @@ use crate::{Owner, OwnerRef};
 
 use super::Engine;
 
-/// Proof that one `(owner, relation)` authorization passed the pipeline. Carries
-/// the RESOLVED owner so check-site and use-site cannot diverge. Sealed: only
-/// this module's authorization gates can mint it.
-///
-/// Read-scoped, and only that. It used to carry an
-/// `Option<OwnerWritePermit>` as well, which every write-side caller had to
-/// unwrap back out with an `expect` — a proof the caller already held, laundered
-/// through a `None` case nothing could produce. The write half is
-/// [`WritePermit`], carried as itself by whoever was granted it.
-#[derive(Debug)]
-pub struct MemoryPermit {
-    mode: PermitMode,
-    owner: Owner,
-    requested: Owner,
-    relation: Relation,
-}
-
-#[derive(Debug, Clone)]
-pub enum PermitMode {
-    /// Caller operates within the owner-space — the sole surviving permit mode.
-    /// The single-owner read verbs (`change_history` / `read_mcp_call_history`
-    /// via `authorize_request`) mint it; the entry-scoped and public-read modes
-    /// of the retired grant model are gone with their gate, replaced by
-    /// `authorize_entry_read` / source-owned reads.
-    OwnerScoped,
-}
-
-/// Proof that the resolved owner passed a write gate for `relation`. Sealed:
-/// only this module's authorization gates can mint it.
+/// Proof that the resolved owner passed a write gate. Sealed: only this
+/// module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct WritePermit {
-    relation: Relation,
     owner_write: OwnerWritePermit,
 }
 
@@ -56,13 +27,12 @@ impl WritePermit {
     }
 
     #[must_use]
-    pub fn relation(&self) -> Relation {
-        self.relation
-    }
-
-    #[must_use]
     pub const fn owner_write_permit(&self) -> &OwnerWritePermit {
         &self.owner_write
+    }
+
+    pub(in crate::engine) fn into_owner_write(self) -> OwnerWritePermit {
+        self.owner_write
     }
 
     #[must_use]
@@ -75,11 +45,8 @@ impl WritePermit {
     /// [`crate::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests`].
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub fn for_tests(owner_write: OwnerWritePermit, relation: Relation) -> Self {
-        Self {
-            relation,
-            owner_write,
-        }
+    pub fn for_tests(owner_write: OwnerWritePermit) -> Self {
+        Self { owner_write }
     }
 
     #[cfg(test)]
@@ -108,221 +75,213 @@ impl EntryReadPermit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AccessBasis {
-    ActingAsOwner,
-}
-
-impl MemoryPermit {
-    fn owner_scoped(owner: Owner, requested: Owner, relation: Relation) -> Self {
-        Self {
-            mode: PermitMode::OwnerScoped,
-            owner,
-            requested,
-            relation,
-        }
-    }
-
-    #[must_use]
-    pub fn mode(&self) -> &PermitMode {
-        &self.mode
-    }
-
-    #[must_use]
-    pub fn owner(&self) -> &Owner {
-        &self.owner
-    }
-    #[must_use]
-    pub fn requested(&self) -> &Owner {
-        &self.requested
-    }
-    #[must_use]
-    pub fn relation(&self) -> Relation {
-        self.relation
-    }
-}
-
 impl Engine {
-    /// Storage-tier owner-write gate. `System` contexts require the
-    /// boot-time witness; membership-backed and dev-token contexts do not.
+    /// Storage-tier owner-write gate for `kind`. A `System` context must
+    /// come from [`AuthzContext::for_system`] with this engine's
+    /// [`crate::SystemAuthority`].
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot write `owner`, or when `authz`
-    /// uses `System` without a runtime witness.
+    /// Returns `Forbidden` when `authz` cannot write `kind` on `owner`.
+    #[allow(
+        clippy::unused_async,
+        reason = "keeps the owner-write gate on the async Engine authorization seam"
+    )]
     pub async fn authorize_owner_write(
         &self,
         authz: &AuthzContext,
         owner: &OwnerRef,
         kind: AccessKind,
     ) -> Result<OwnerWritePermit, ProtocolError> {
-        let operation = self.operation_authority(authz)?;
-        self.authorize_owner_write_inner(
-            operation.authz(),
-            owner,
-            kind,
-            None,
-            operation.redeemed_phase(),
-        )
-        .await
+        Ok(self
+            .write_permit(authz, owner, AuthzOperation::Write { kind })?
+            .owner_write)
     }
 
-    /// Storage-tier owner-write gate for host-held System authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when `authz` cannot write `owner`.
-    pub async fn authorize_owner_write_with_system_authority(
-        &self,
-        authz: &AuthzContext,
-        owner: &OwnerRef,
-        kind: AccessKind,
-        authority: &SystemAuthority,
-    ) -> Result<OwnerWritePermit, ProtocolError> {
-        if !authority.authorizes(&self.system_authority_binding) {
-            return Err(ProtocolError::forbidden(
-                "SystemAuthority belongs to a different engine instance",
-            ));
-        }
-        self.authorize_owner_write_inner(authz, owner, kind, Some(authority), false)
-            .await
-    }
-
-    /// Targeted write/config gate over the resolved access sets.
+    /// Write gate: the rule for `kind` on `owner`.
+    #[allow(
+        clippy::unused_async,
+        reason = "keeps the write gate on the async Engine authorization seam"
+    )]
     pub(in crate::engine) async fn authorize_write<A>(
         &self,
         authority: &A,
         owner: &OwnerRef,
-        required: Relation,
+        kind: AccessKind,
     ) -> Result<WritePermit, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
-        let kind = access_kind_for_write_relation(required)?;
-        let operation = self.operation_authority(authority)?;
-        let owner_write = self
-            .authorize_owner_write_inner(
-                operation.authz(),
-                owner,
-                kind,
-                None,
-                operation.redeemed_phase(),
-            )
-            .await?;
-        Ok(WritePermit {
-            relation: required,
-            owner_write,
-        })
+        self.write_permit(authority, owner, AuthzOperation::Write { kind })
     }
 
+    /// Write gate for rows whose kind only storage reads (forget,
+    /// hydration): the permit carries the caller's write limit on `owner`,
+    /// and storage answers `NotFound` for a row above it.
     #[allow(
         clippy::unused_async,
-        reason = "keeps the owner-write gate on the async Engine authorization seam"
+        reason = "keeps the write gate on the async Engine authorization seam"
     )]
-    async fn authorize_owner_write_inner(
+    pub(in crate::engine) async fn authorize_write_limit<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         owner: &OwnerRef,
-        kind: AccessKind,
-        system_authority: Option<&SystemAuthority>,
-        redeemed_phase: bool,
-    ) -> Result<OwnerWritePermit, ProtocolError> {
-        let required = write_relation_for_access_kind(kind);
-        if authz.auth_path() == AuthPath::Delegated && !redeemed_phase {
-            return Err(ProtocolError::forbidden(
-                "raw delegated authorization contexts are not Engine authority",
-            ));
-        }
-        if authz.auth_path() == AuthPath::System && system_authority.is_none() {
-            let input = AuthzInput {
-                authz,
-                requested: owner,
-                resolved: owner,
-                relation: required,
-                operation: AuthzOperation::Relation { relation: required },
-            };
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
-            return Err(ProtocolError::forbidden(
-                "System write authority requires a runtime SystemAuthority witness",
-            ));
-        }
+    ) -> Result<WritePermit, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let kind = self
+            .operation_authority(authority)?
+            .authz()
+            .role_for_owner(owner)
+            .and_then(|role| role.write_ceiling().top())
+            .unwrap_or(AccessKind::Fact);
+        self.write_permit(authority, owner, AuthzOperation::Write { kind })
+    }
 
-        if authz.auth_path() == AuthPath::Denied {
-            let input = AuthzInput {
-                authz,
-                requested: owner,
-                resolved: owner,
-                relation: required,
-                operation: AuthzOperation::Relation { relation: required },
-            };
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
-            return Err(ProtocolError::forbidden(
-                "denied context authorizes nothing",
-            ));
-        }
+    /// The owner-admin gate ([`Role::administers`]): membership admin,
+    /// transfer, erase, the graph overview.
+    #[allow(
+        clippy::unused_async,
+        reason = "keeps the owner-admin gate on the async Engine authorization seam"
+    )]
+    pub(in crate::engine) async fn authorize_owner_admin<A>(
+        &self,
+        authority: &A,
+        owner: &OwnerRef,
+    ) -> Result<WritePermit, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        self.write_permit(authority, owner, AuthzOperation::OwnerAdmin)
+    }
 
-        let resolved = match self.registry.resolve_owner(authz, owner) {
-            Ok(owner) => owner,
-            Err(err) => {
-                let input = AuthzInput {
-                    authz,
-                    requested: owner,
-                    resolved: owner,
-                    relation: required,
-                    operation: AuthzOperation::Relation { relation: required },
-                };
-                self.registry
-                    .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
-                return Err(err);
-            }
+    fn write_permit<A>(
+        &self,
+        authority: &A,
+        owner: &OwnerRef,
+        operation: AuthzOperation,
+    ) -> Result<WritePermit, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authority = self.operation_authority(authority)?;
+        let authz = authority.authz();
+        let kind = match operation {
+            AuthzOperation::Write { kind } => kind,
+            _ => AccessKind::Goal,
         };
-
-        let input = AuthzInput {
-            authz,
-            requested: owner,
-            resolved: &resolved,
-            relation: required,
-            operation: AuthzOperation::Relation { relation: required },
-        };
-
-        let access = self.resolve_access_inner(authz, redeemed_phase)?;
-        if !access.can_write(&resolved, required) {
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
-            return Err(ProtocolError::forbidden(required.denied_message()));
-        }
-
-        if let Err(err) = self.registry.run_authorization_vetoes(&input) {
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedVeto);
-            return Err(err);
-        }
-
-        self.registry
-            .run_authorization_observers(&input, AuthzOutcome::Allowed);
-        if redeemed_phase {
+        let resolved = self.gate(authz, owner, operation, authority.redeemed_phase())?;
+        let owner_write = if authority.redeemed_phase() {
             let expires_at = authz.expires_at().ok_or_else(|| {
                 ProtocolError::forbidden("delegated worker phase has no finite expiry")
             })?;
-            Ok(OwnerWritePermit::new_delegated(
+            OwnerWritePermit::new_delegated(
                 resolved,
                 kind,
                 self.delegation_runtime_binding.clone(),
                 expires_at,
                 authz.owner_scope().cloned(),
-            ))
+            )
         } else {
-            Ok(OwnerWritePermit::new(
-                resolved,
-                kind,
-                authz.owner_scope().cloned(),
-            ))
-        }
+            OwnerWritePermit::new(resolved, kind, authz.owner_scope().cloned())
+        };
+        Ok(WritePermit { owner_write })
     }
 
-    /// Read gate returning the resolved owner set visible to this context.
+    /// Read gate for one owner: the rule for `kind`. Returns the resolved
+    /// owner.
+    #[allow(
+        clippy::unused_async,
+        reason = "keeps the read gate on the async Engine authorization seam"
+    )]
+    pub(in crate::engine) async fn authorize_owner_read<A>(
+        &self,
+        authority: &A,
+        owner: &Owner,
+        kind: AccessKind,
+    ) -> Result<Owner, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authority = self.operation_authority(authority)?;
+        self.gate(
+            authority.authz(),
+            owner,
+            AuthzOperation::Read { kind },
+            authority.redeemed_phase(),
+        )
+    }
+
+    /// The one owner gate: resolve `owner`, apply the rule for `operation`,
+    /// run the vetoes, and report the outcome to the observers.
+    fn gate(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerRef,
+        operation: AuthzOperation,
+        redeemed_phase: bool,
+    ) -> Result<OwnerRef, ProtocolError> {
+        if authz.auth_path() == AuthPath::Delegated && !redeemed_phase {
+            return Err(ProtocolError::forbidden(
+                "raw delegated authorization contexts are not Engine authority",
+            ));
+        }
+        let refuse = |resolved: &OwnerRef, outcome, err| {
+            let input = AuthzInput {
+                authz,
+                requested: owner,
+                resolved,
+                operation: operation.clone(),
+            };
+            self.registry.run_authorization_observers(&input, outcome);
+            Err(err)
+        };
+        let writes = !matches!(operation, AuthzOperation::Read { .. });
+        if writes
+            && authz.auth_path() == AuthPath::System
+            && !authz.carries_system_authority(&self.system_authority_binding)
+        {
+            return refuse(
+                owner,
+                AuthzOutcome::DeniedGrant,
+                ProtocolError::forbidden(
+                    "System write authority requires a context from AuthzContext::for_system",
+                ),
+            );
+        }
+        if authz.auth_path() == AuthPath::Denied {
+            return refuse(
+                owner,
+                AuthzOutcome::DeniedResolution,
+                ProtocolError::forbidden("denied context authorizes nothing"),
+            );
+        }
+        let resolved = match self.registry.resolve_owner(authz, owner) {
+            Ok(resolved) => resolved,
+            Err(err) => return refuse(owner, AuthzOutcome::DeniedResolution, err),
+        };
+        if !allows(authz, &resolved, &operation) {
+            return refuse(&resolved, AuthzOutcome::DeniedGrant, denied(&operation));
+        }
+        let input = AuthzInput {
+            authz,
+            requested: owner,
+            resolved: &resolved,
+            operation,
+        };
+        if let Err(err) = self.registry.run_authorization_vetoes(&input) {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedVeto);
+            return Err(err);
+        }
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(resolved)
+    }
+
+    /// Every owner this context may read anything of. Storage returns only
+    /// the rows whose kind each owner's read limit covers.
     #[allow(
         clippy::unused_async,
         reason = "keeps the shared read gate source-compatible with async Engine callers"
@@ -336,19 +295,20 @@ impl Engine {
     {
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
-        let access = self.resolve_access_inner(authz, operation.redeemed_phase())?;
-        let read = access.read_owners().to_vec();
+        let read = if authz.auth_path() == AuthPath::Denied {
+            Vec::new()
+        } else {
+            authz.readable_owners(AccessKind::Fact)
+        };
         let principal = authz.principal();
         let input = AuthzInput {
             authz,
             requested: &principal,
             resolved: &principal,
-            relation: Relation::Viewer,
-            operation: AuthzOperation::Relation {
-                relation: Relation::Viewer,
+            operation: AuthzOperation::Read {
+                kind: AccessKind::Fact,
             },
         };
-
         if read.is_empty() {
             self.registry
                 .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
@@ -356,13 +316,14 @@ impl Engine {
                 "denied context authorizes nothing",
             ));
         }
-
         self.registry
             .run_authorization_observers(&input, AuthzOutcome::Allowed);
         Ok(read)
     }
 
-    /// Single-entry read gate. Existence is not disclosed to non-readers.
+    /// Single-entry read gate. Existence is not disclosed to non-readers: a
+    /// missing entity and one whose kind the caller may not read are both
+    /// [`ENTRY_NOT_FOUND_MESSAGE`].
     pub(in crate::engine) async fn authorize_entry_read<A>(
         &self,
         authority: &A,
@@ -374,163 +335,45 @@ impl Engine {
         let read = self.authorize_read(authority).await?;
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
-        let home = self
+        let owner = self
             .storage()
             .pipeline
             .owner_access_read
             .visible_home_owner(authz.owner_scope(), entity, &read)
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
+            .and_then(|(owner, kind)| authz.may_read(&owner, kind).then_some(owner))
             .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-
-        Ok(EntryReadPermit { owner: home })
+        Ok(EntryReadPermit { owner })
     }
+}
 
-    /// The one Tier-2 owner/space-scoped gate. Async because relation
-    /// resolution reads persisted grants (skipped for Unrestricted).
-    /// `denied` contexts are rejected before any resolution.
-    pub(in crate::engine) async fn authorize_request<A>(
-        &self,
-        authority: &A,
-        requested: &Owner,
-        relation: Relation,
-    ) -> Result<MemoryPermit, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let operation = self.operation_authority(authority)?;
-        let authz = operation.authz();
-        if authz.auth_path() == AuthPath::Denied {
-            let input = AuthzInput {
-                authz,
-                requested,
-                resolved: requested,
-                relation,
-                operation: AuthzOperation::Relation { relation },
-            };
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
-            return Err(ProtocolError::forbidden(
-                "denied context authorizes nothing",
-            ));
-        }
-        let resolved = match self.registry.resolve_owner(authz, requested) {
-            Ok(owner) => owner,
-            Err(err) => {
-                let input = AuthzInput {
-                    authz,
-                    requested,
-                    resolved: requested,
-                    relation,
-                    operation: AuthzOperation::Relation { relation },
-                };
-                self.registry
-                    .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
-                return Err(err);
-            }
-        };
-        let input = AuthzInput {
-            authz,
-            requested,
-            resolved: &resolved,
-            relation,
-            operation: AuthzOperation::Relation { relation },
-        };
-        match self
-            .gate_and_veto(
-                authz,
-                operation.redeemed_phase(),
-                &resolved,
-                relation,
-                &input,
-            )
-            .await
-        {
-            Ok(_basis) => {}
-            Err((err, outcome)) => {
-                self.registry.run_authorization_observers(&input, outcome);
-                return Err(err);
-            }
-        }
-        let permit = MemoryPermit::owner_scoped(resolved, *requested, relation);
-        self.registry
-            .run_authorization_observers(&input, AuthzOutcome::Allowed);
-        Ok(permit)
+fn allows(authz: &AuthzContext, owner: &OwnerRef, operation: &AuthzOperation) -> bool {
+    match *operation {
+        AuthzOperation::Read { kind } => authz.may_read(owner, kind),
+        AuthzOperation::Write { kind } => authz.may_write(owner, kind),
+        AuthzOperation::OwnerAdmin => authz.role_for_owner(owner).is_some_and(Role::administers),
+        AuthzOperation::Membership { .. } | AuthzOperation::EntityTransfer { .. } => false,
     }
+}
 
-    async fn gate_and_veto(
-        &self,
-        authz: &AuthzContext,
-        redeemed_phase: bool,
-        owner: &Owner,
-        relation: Relation,
-        input: &AuthzInput<'_>,
-    ) -> Result<AccessBasis, (ProtocolError, AuthzOutcome)> {
-        let basis = self
-            .resolve_relation(authz, redeemed_phase, owner, relation)
-            .await
-            .map_err(|err| (err, AuthzOutcome::DeniedGrant))?;
-        self.registry
-            .run_authorization_vetoes(input)
-            .map_err(|err| (err, AuthzOutcome::DeniedVeto))?;
-        Ok(basis)
-    }
-
-    /// Relation gate over the server-resolved owner access sets.
-    #[allow(
-        clippy::unused_async,
-        reason = "keeps relation resolution on the async authorization pipeline seam"
-    )]
-    async fn resolve_relation(
-        &self,
-        authz: &AuthzContext,
-        redeemed_phase: bool,
-        owner: &Owner,
-        relation: Relation,
-    ) -> Result<AccessBasis, ProtocolError> {
-        let access = self.resolve_access_inner(authz, redeemed_phase)?;
-        let allowed = if relation == Relation::Viewer {
-            access.can_read(owner)
-        } else {
-            access.can_write(owner, relation)
-        };
-        if allowed {
-            Ok(AccessBasis::ActingAsOwner)
-        } else {
-            Err(ProtocolError::forbidden(relation.denied_message()))
-        }
-    }
+fn denied(operation: &AuthzOperation) -> ProtocolError {
+    ProtocolError::forbidden(match operation {
+        AuthzOperation::Read { kind } => format!("requires {kind:?} read on this owner"),
+        AuthzOperation::Write { kind } => format!("requires {kind:?} write on this owner"),
+        _ => "requires admin on this owner".to_owned(),
+    })
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
     ProtocolError::internal(format!("{context}: {err}"))
 }
 
-fn access_kind_for_write_relation(relation: Relation) -> Result<AccessKind, ProtocolError> {
-    match relation {
-        Relation::Ingest => Ok(AccessKind::Fact),
-        Relation::Editor => Ok(AccessKind::Perspective),
-        Relation::Admin => Ok(AccessKind::Goal),
-        Relation::Viewer => Err(ProtocolError::invalid_argument(
-            "relation",
-            "Viewer is not a write relation",
-        )),
-    }
-}
-
-const fn write_relation_for_access_kind(kind: AccessKind) -> Relation {
-    match kind {
-        AccessKind::Fact => Relation::Ingest,
-        AccessKind::Abstraction | AccessKind::Perspective => Relation::Editor,
-        AccessKind::Goal => Relation::Admin,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::access::{AccessKind, EntityId, Relation};
+    use crate::access::{AccessCeiling, AccessKind, EntityId, Relation, Role};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
         AuthzVeto, OwnerResolver,
@@ -539,8 +382,8 @@ mod tests {
     use crate::error::ProtocolError;
     use crate::{FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef, UserId};
 
-    use super::super::access_sets::tests::MembershipStorage;
-    use super::{AccessBasis, Engine, PermitMode};
+    use super::super::MembershipStorage;
+    use super::Engine;
 
     type ResolvedAuthz = AuthzContext;
 
@@ -673,11 +516,10 @@ mod tests {
                 input.authz.auth_path(),
                 AuthPath::System | AuthPath::HostBearer
             ));
-            assert_eq!(input.relation, Relation::Viewer);
             assert_eq!(
                 input.operation,
-                AuthzOperation::Relation {
-                    relation: Relation::Viewer
+                AuthzOperation::Read {
+                    kind: AccessKind::Fact
                 }
             );
             self.outcomes.lock().expect("recorder lock").push(outcome);
@@ -696,20 +538,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_owner_context_mints_matching_permit() {
+    async fn single_owner_context_reads_its_owner() {
         let engine = engine();
         let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
-        let permit = engine
-            .authorize_request(&authz, &owner, Relation::Viewer)
+        let resolved = engine
+            .authorize_owner_read(&authz, &owner, AccessKind::Goal)
             .await
             .expect("single-owner context should authorize");
 
-        assert_eq!(permit.owner(), &owner);
-        assert_eq!(permit.requested(), &owner);
-        assert_eq!(permit.relation(), Relation::Viewer);
-        assert!(matches!(permit.mode(), PermitMode::OwnerScoped));
+        assert_eq!(resolved, owner);
+    }
+
+    /// The one rule, at the gate: a role may act on a kind when its limit for
+    /// that direction is at least the kind. Reads and writes, every preset.
+    #[tokio::test]
+    async fn every_gate_follows_the_role_limit() {
+        let engine = engine();
+        let roles = [
+            Role::viewer(),
+            Role::ingest(),
+            Role::editor(),
+            Role::admin(),
+            Role::new(AccessCeiling::Goal, AccessCeiling::Abstraction, false).expect("role"),
+            Role::new(
+                AccessCeiling::Abstraction,
+                AccessCeiling::Abstraction,
+                false,
+            )
+            .expect("role"),
+        ];
+        for role in roles {
+            let subject = UserId::new(uuid::Uuid::now_v7());
+            let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+            let authz =
+                AuthzContext::for_subject_with_role(subject, [(group, role)], AuthPath::HostBearer);
+            for kind in AccessKind::ALL {
+                let read = engine.authorize_owner_read(&authz, &group, kind).await;
+                assert_eq!(read.is_ok(), role.may_read(kind), "{role:?} read {kind:?}");
+                let write = engine.authorize_write(&authz, &group, kind).await;
+                assert_eq!(
+                    write.is_ok(),
+                    role.may_write(kind),
+                    "{role:?} write {kind:?}"
+                );
+            }
+            let admin = engine.authorize_owner_admin(&authz, &group).await;
+            assert_eq!(admin.is_ok(), role.administers(), "{role:?} owner admin");
+            let readers = engine
+                .authorize_read(&authz)
+                .await
+                .expect("reads its own owner");
+            assert!(readers.contains(&group), "{role:?} reads the group");
+        }
     }
 
     #[tokio::test]
@@ -720,74 +602,54 @@ mod tests {
         let authz = granted_context(&p);
 
         let permit = engine
-            .authorize_write(&authz, &p, Relation::Editor)
+            .authorize_write(&authz, &p, AccessKind::Goal)
             .await
-            .expect("granted self editor should authorize");
+            .expect("the personal owner writes every kind");
 
         assert_eq!(permit.owner(), &p);
-        assert_eq!(permit.relation(), Relation::Editor);
     }
 
     #[tokio::test]
-    async fn authorize_owner_write_denies_system_without_authority() {
-        let engine = engine();
-        let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-
-        let err = engine
-            .authorize_owner_write(&authz, &owner, AccessKind::Fact)
-            .await
-            .expect_err("plain System auth must not mint storage write permits");
-
-        assert_eq!(err.code, ErrorCode::Forbidden);
-        assert_eq!(
-            err.message,
-            "System write authority requires a runtime SystemAuthority witness"
-        );
-    }
-
-    #[tokio::test]
-    async fn authorize_owner_write_allows_system_with_authority() {
+    async fn a_system_context_writes_only_when_for_system_built_it() {
         let (engine, authority) = engine().into_system_authority();
         let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let OwnerRef::Personal(subject) = owner else {
+            unreachable!("owner() is personal")
+        };
+        let roles = crate::OwnerRoles::for_subject(subject, []).expect("roles");
 
         let permit = engine
-            .authorize_owner_write_with_system_authority(
-                &authz,
+            .authorize_owner_write(
+                &AuthzContext::for_system(&authority, roles.clone()),
                 &owner,
                 AccessKind::Perspective,
-                &authority,
             )
             .await
-            .expect("host-held SystemAuthority should admit System writes");
-
+            .expect("for_system proves the host holds the witness");
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.access_kind(), AccessKind::Perspective);
-    }
 
-    #[tokio::test]
-    async fn authorize_owner_write_rejects_another_engines_system_authority() {
-        let (target_engine, _) = engine().into_system_authority();
-        let (_, foreign_authority) = engine().into_system_authority();
-        let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-
-        let error = target_engine
-            .authorize_owner_write_with_system_authority(
-                &authz,
-                &owner,
-                AccessKind::Perspective,
-                &foreign_authority,
-            )
+        let forged = AuthzContext::server_resolved(roles.clone(), AuthPath::System);
+        let error = engine
+            .authorize_owner_write(&forged, &owner, AccessKind::Fact)
             .await
-            .expect_err("a witness from another Engine must remain powerless");
-
+            .expect_err("a System context not from for_system writes nothing");
         assert_eq!(error.code, ErrorCode::Forbidden);
         assert_eq!(
             error.message,
-            "SystemAuthority belongs to a different engine instance"
+            "System write authority requires a context from AuthzContext::for_system"
         );
+
+        let (_, foreign) = self::engine().into_system_authority();
+        let error = engine
+            .authorize_owner_write(
+                &AuthzContext::for_system(&foreign, roles),
+                &owner,
+                AccessKind::Fact,
+            )
+            .await
+            .expect_err("another Engine's witness stays powerless");
+        assert_eq!(error.code, ErrorCode::Forbidden);
     }
 
     #[tokio::test]
@@ -799,9 +661,9 @@ mod tests {
         let authz = member_context(&p, g1, Relation::Viewer);
 
         let err = engine
-            .authorize_write(&authz, &g1_owner, Relation::Editor)
+            .authorize_write(&authz, &g1_owner, AccessKind::Fact)
             .await
-            .expect_err("viewer membership should not authorize editor writes");
+            .expect_err("a viewer writes nothing");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
@@ -815,12 +677,11 @@ mod tests {
         let authz = member_context(&p, g1, Relation::Editor);
 
         let permit = engine
-            .authorize_write(&authz, &g1_owner, Relation::Editor)
+            .authorize_write(&authz, &g1_owner, AccessKind::Perspective)
             .await
-            .expect("editor membership should authorize editor writes");
+            .expect("an editor writes Perspectives");
 
         assert_eq!(permit.owner(), &g1_owner);
-        assert_eq!(permit.relation(), Relation::Editor);
     }
 
     #[tokio::test]
@@ -833,7 +694,7 @@ mod tests {
         let authz = granted_context(&p);
 
         let err = engine
-            .authorize_write(&authz, &p, Relation::Editor)
+            .authorize_write(&authz, &p, AccessKind::Fact)
             .await
             .expect_err("veto should deny otherwise-allowed write");
 
@@ -849,7 +710,7 @@ mod tests {
         let authz = AuthzContext::denied_for_owner(&p);
 
         let err = engine
-            .authorize_write(&authz, &p, Relation::Editor)
+            .authorize_write(&authz, &p, AccessKind::Fact)
             .await
             .expect_err("denied context should reject write authorization");
 
@@ -947,27 +808,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_relation_reports_acting_as_owner_for_single_owner_context() {
-        let engine = engine();
-        let owner = owner();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-
-        let basis = engine
-            .resolve_relation(&authz, false, &owner, Relation::Viewer)
-            .await
-            .expect("single-owner context should authorize");
-
-        assert_eq!(basis, AccessBasis::ActingAsOwner);
-    }
-
-    #[tokio::test]
     async fn denied_context_returns_forbidden() {
         let engine = engine();
         let owner = owner();
         let authz = AuthzContext::denied_for_owner(&owner);
 
         let err = engine
-            .authorize_request(&authz, &owner, Relation::Viewer)
+            .authorize_owner_read(&authz, &owner, AccessKind::Fact)
             .await
             .expect_err("denied context should reject authorization");
 
@@ -986,7 +833,7 @@ mod tests {
         let authz = AuthzContext::denied_for_owner(&owner);
 
         let err = engine
-            .authorize_request(&authz, &owner, Relation::Viewer)
+            .authorize_owner_read(&authz, &owner, AccessKind::Fact)
             .await
             .expect_err("denied context should reject authorization");
 
@@ -1008,7 +855,7 @@ mod tests {
         let authz = AuthzContext::single_owner(&requested, AuthPath::System);
 
         let err = engine
-            .authorize_request(&authz, &requested, Relation::Viewer)
+            .authorize_owner_read(&authz, &requested, AccessKind::Fact)
             .await
             .expect_err("resolved hidden owner should be denied");
 
@@ -1024,7 +871,7 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
         let err = engine
-            .authorize_request(&authz, &owner, Relation::Viewer)
+            .authorize_owner_read(&authz, &owner, AccessKind::Fact)
             .await
             .expect_err("veto should deny otherwise-allowed request");
 
@@ -1046,11 +893,11 @@ mod tests {
         let denied = granted_context(&owner);
 
         engine
-            .authorize_request(&allowed, &owner, Relation::Viewer)
+            .authorize_owner_read(&allowed, &owner, AccessKind::Fact)
             .await
             .expect("allowed request should pass");
         let err = engine
-            .authorize_request(&denied, &denied_owner, Relation::Viewer)
+            .authorize_owner_read(&denied, &denied_owner, AccessKind::Fact)
             .await
             .expect_err("denied context should reject authorization");
 

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::Engine;
-use crate::access::Relation;
+use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{
@@ -324,7 +324,7 @@ impl Engine {
         self.operation_authority(authz)?;
         let limit = i64::try_from(limit)
             .map_err(|_| ProtocolError::invalid_argument("limit", "too large"))?;
-        let permit = self.authorize_write(authz, owner, Relation::Ingest).await?;
+        let permit = self.authorize_write(authz, owner, AccessKind::Fact).await?;
         let spaces = self.write_route(owner).await?.write_spaces();
         let mut enqueued = 0_u64;
         for space in &spaces {

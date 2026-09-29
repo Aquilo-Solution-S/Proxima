@@ -13,6 +13,20 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.29
+
+| Lane | Migration |
+|---|---|
+| Core | `0023_v029_kind_scoped_owner_rls.sql`: every `proxima_core` owner-keyed table follows the one authorization rule (a scope acts on kind K when its limit for that direction is ≥ K). `cooled`, `memory_head`, `sketch` by their `kind`; embedding tables and `projection` by their memory's kind; `goal_head`, `wake_config` as Goal; `announce`, `content`, `closed_handle` by the entity they name. A table in no class refuses the migration. `install_owner_rls`: `memory_owner_tables` follow the parent memory's kind and may carry `owner_id` |
+| Code flavor | `20260929000020_v029_kind_scoped_owner_rls.sql`: re-runs the installer; `projection` and the two Self sidecars move to `memory_owner_tables` |
+
+No table or row changes; only policy expressions. Existing databases upgrade
+in place. Before this file a Fact-only scope read an owner's Abstraction,
+Perspective and Goal rows in `memory_head`, `sketch`, `cooled`, `announce`,
+`content` and the embedding tables. A flavor that lists `memory_owner_tables`
+keeps its old policies until it calls the installer again
+([09 §Owner RLS](../09-developing-flavors.md#owner-rls)).
+
 ## v0.0.28
 
 | Lane | Migration |

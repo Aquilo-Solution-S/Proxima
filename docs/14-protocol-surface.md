@@ -467,9 +467,10 @@ and product audit timelines live in front of the engine. `core_membership`
 mutates only the explicit group roster when the host exposes that
 controller-scoped tool. `core_transfer` moves a memory's owner to another
 owner — an owner transfer, not an ACL flag or share row; the series leaves
-the prior owner's view entirely. It requires admin on both sides:
-`Relation::Admin` on the entity's current owner (plus group-manage when that
-owner is a group) and `Relation::Admin` plus group-manage on the destination.
+the prior owner's view entirely. It requires owner admin on both sides
+(`Role::administers()`, the Goal write limit): on the entity's current owner
+(plus group-manage when that owner is a group) and, with group-manage, on the
+destination.
 The destination must be a Group — receiving-side consent is group-manage
 authority, which no personal owner can grant, so a personal destination is
 refused with `InvalidArgument`, as is a destination equal to the current

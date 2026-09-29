@@ -30,6 +30,17 @@ impl AccessKind {
     }
 }
 
+impl From<crate::EntityKind> for AccessKind {
+    fn from(kind: crate::EntityKind) -> Self {
+        match kind {
+            crate::EntityKind::Fact => Self::Fact,
+            crate::EntityKind::Abstraction => Self::Abstraction,
+            crate::EntityKind::Perspective => Self::Perspective,
+            crate::EntityKind::Goal => Self::Goal,
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -56,6 +67,18 @@ impl AccessCeiling {
     #[must_use]
     pub const fn allows(self, kind: AccessKind) -> bool {
         kind.rank() <= self.rank()
+    }
+
+    /// The highest kind this limit covers; `None` covers none.
+    #[must_use]
+    pub const fn top(self) -> Option<AccessKind> {
+        match self {
+            Self::None => None,
+            Self::Fact => Some(AccessKind::Fact),
+            Self::Abstraction => Some(AccessKind::Abstraction),
+            Self::Perspective => Some(AccessKind::Perspective),
+            Self::Goal => Some(AccessKind::Goal),
+        }
     }
 }
 
@@ -153,6 +176,14 @@ impl Role {
     #[must_use]
     pub const fn manages(self) -> bool {
         self.manage
+    }
+
+    /// Owner-level administration — membership admin, transfer, erase, the
+    /// graph overview: the full write limit. Membership changes and group
+    /// transfers also need [`Self::manages`].
+    #[must_use]
+    pub const fn administers(self) -> bool {
+        self.may_write(AccessKind::Goal)
     }
 
     #[must_use]
@@ -344,6 +375,8 @@ pub trait OwnerAccessPort: Send + Sync {
     }
 }
 
+/// The stored name of a membership preset. Authorization reads the preset's
+/// [`Role`] ([`Self::role`]), never the name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(
     type_name = "proxima_core.membership_relation",
@@ -357,25 +390,6 @@ pub enum Relation {
 }
 
 impl Relation {
-    #[must_use]
-    pub const fn dominates(self, required: Self) -> bool {
-        use Relation::{Admin, Editor, Ingest, Viewer};
-        matches!(
-            (self, required),
-            (Editor, Editor | Viewer) | (Viewer, Viewer) | (Admin, Admin) | (Ingest, Ingest)
-        )
-    }
-
-    #[must_use]
-    pub const fn denied_message(self) -> &'static str {
-        match self {
-            Self::Admin => "requires admin on this owner",
-            Self::Editor => "requires editor on this owner",
-            Self::Viewer => "requires viewer on this owner",
-            Self::Ingest => "requires ingest on this owner",
-        }
-    }
-
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
@@ -531,17 +545,5 @@ mod tests {
         ) -> Result<OwnerRoles, AccessError> {
             Ok(self.roles.clone())
         }
-    }
-
-    #[test]
-    fn relation_lattice_editor_dominates_viewer_only() {
-        use Relation::*;
-        assert!(Editor.dominates(Viewer));
-        assert!(Editor.dominates(Editor));
-        assert!(!Editor.dominates(Admin));
-        assert!(!Editor.dominates(Ingest));
-        assert!(!Viewer.dominates(Editor));
-        assert!(Admin.dominates(Admin) && !Admin.dominates(Editor));
-        assert!(Ingest.dominates(Ingest) && !Ingest.dominates(Viewer));
     }
 }

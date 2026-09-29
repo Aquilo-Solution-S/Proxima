@@ -878,8 +878,10 @@ def run_fixture(path: Path) -> int:
 # four closed, quoted ledger names. Five in rls_guard_pg/privileged_objects.rs
 # insert and query rows in a fixture-generated, quoted schema to prove a
 # one-connection platform scope works and resets after commit. Row values
-# remain binds; every new site carries a fixed-fragment proof.
-EXPECTED_DYNAMIC_SQL_SITES = 182
+# remain binds; every new site carries a fixed-fragment proof. Four in
+# crates/proxima/tests/kind_rule_pg.rs read and probe every proxima_core table
+# by a name from its closed TABLES census, the row bound as `to_jsonb` text.
+EXPECTED_DYNAMIC_SQL_SITES = 186
 
 
 def run_self_test() -> int:

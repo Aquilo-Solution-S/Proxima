@@ -2,7 +2,7 @@
 
 use super::Engine;
 use super::memory_authoring::PreparedDerived;
-use crate::access::{AccessKind, Relation};
+use crate::access::AccessKind;
 use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
 use crate::error::ProtocolError;
 use crate::mcp::ToolEffect;
@@ -738,7 +738,7 @@ impl UnitOfWork<'_> {
     ) -> Result<Vec<serde_json::Value>, ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz()?, &owner, Relation::Editor)
+            .authorize_write(self.authz()?, &owner, AccessKind::Fact)
             .await?;
         self.ensure_session()
             .await?
@@ -768,7 +768,7 @@ impl UnitOfWork<'_> {
     ) -> Result<Option<MemoryId>, ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz()?, &owner, Relation::Editor)
+            .authorize_write(self.authz()?, &owner, AccessKind::Fact)
             .await?;
         self.ensure_session()
             .await?
@@ -808,7 +808,7 @@ impl UnitOfWork<'_> {
                 let owner = command.owner();
                 let permit = self
                     .engine
-                    .authorize_write(*authz, &owner, Relation::Editor)
+                    .authorize_write(*authz, &owner, AccessKind::Fact)
                     .await?;
                 self.engine
                     .validate_write_permit(permit.owner_write_permit())?;
@@ -909,7 +909,7 @@ impl UnitOfWork<'_> {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         let permit = self
             .engine
-            .authorize_write(self.authz()?, &spec.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &spec.owner, AccessKind::Fact)
             .await?;
         let observed_at = spec
             .observed_at
@@ -1019,7 +1019,7 @@ impl UnitOfWork<'_> {
     {
         let permit = self
             .engine
-            .authorize_write(self.authz()?, &request.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &request.owner, AccessKind::Goal)
             .await?;
         let request = self.engine.normalize_goal_request(request)?;
         self.create_goal_payload_authorized(request, None, &permit)
@@ -1034,7 +1034,7 @@ impl UnitOfWork<'_> {
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
             .engine
-            .authorize_write(self.authz()?, &req.owner, Relation::Editor)
+            .authorize_write(self.authz()?, &req.owner, AccessKind::Goal)
             .await?;
         let req = super::GoalCreatePayloadWriteRequest {
             payload: self.engine.normalize_payload_write(req.payload)?,
@@ -1179,7 +1179,7 @@ impl UnitOfWork<'_> {
     pub async fn forget(&mut self, owner: Owner, memory_id: MemoryId) -> Result<(), ProtocolError> {
         let write_permit = self
             .engine
-            .authorize_write(self.authz()?, &owner, Relation::Editor)
+            .authorize_write_limit(self.authz()?, &owner)
             .await?;
         self.ensure_session()
             .await?
@@ -1396,21 +1396,10 @@ async fn authorize_series_erase(
     owner: Owner,
 ) -> Result<crate::storage_ports::OwnerWritePermit, SeriesEraseError> {
     let permit = match *authorization {
-        UnitAuthorization::Ordinary(authz) => {
-            engine
-                .authorize_owner_write(authz, &owner, AccessKind::Goal)
-                .await?
-        }
+        UnitAuthorization::Ordinary(authz) => engine.authorize_owner_admin(authz, &owner).await?,
         UnitAuthorization::System(authority) => {
             let authz = AuthzContext::for_system(authority, system_erase_roles(owner));
-            engine
-                .authorize_owner_write_with_system_authority(
-                    &authz,
-                    &owner,
-                    AccessKind::Goal,
-                    authority,
-                )
-                .await?
+            engine.authorize_owner_admin(&authz, &owner).await?
         }
         UnitAuthorization::HostState { .. } => {
             return Err(ProtocolError::forbidden(
@@ -1419,6 +1408,7 @@ async fn authorize_series_erase(
             .into());
         }
     };
+    let permit = permit.into_owner_write();
     engine.validate_write_permit(&permit)?;
     Ok(permit)
 }

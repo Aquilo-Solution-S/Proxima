@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::SchemaVersion;
-use crate::access::Relation;
+use crate::access::AccessKind;
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
@@ -71,8 +71,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner or
-    /// lacks [`Relation::Ingest`] on that owner space; `UnknownSchema` when the
+    /// Returns `Forbidden` when the context cannot resolve exactly one owner
+    /// it may write Facts on; `UnknownSchema` when the
     /// Fact schema or provided citation schemas are not registered.
     /// Caller-fixable storage rejections (concurrent citation) surface as
     /// `InvalidArgument`; infrastructure faults as `Internal`.
@@ -87,9 +87,7 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let authorized = self
-            .authorize_fact_ingest(authority, Relation::Ingest, draft, &[])
-            .await?;
+        let authorized = self.authorize_fact_ingest(authority, draft, &[]).await?;
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
             .fact_embedding_spaces(
@@ -115,25 +113,23 @@ impl Engine {
 
     /// Authorize + schema-validate + owner-stamp a Fact write,
     /// returning a witness required by the sidecar-ingest primitive.
-    /// Does NOT write. `relation` is the relation the caller's operation
-    /// requires.
+    /// Does NOT write.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner
-    /// for `relation`; `UnknownSchema` when the Fact schema or provided citation schemas
-    /// are not registered.
+    /// Returns `Forbidden` when the context cannot resolve exactly one owner it
+    /// may write Facts on; `UnknownSchema` when the Fact schema or provided
+    /// citation schemas are not registered.
     pub async fn authorize_fact_ingest<A>(
         &self,
         authority: &A,
-        relation: Relation,
         draft: FactWriteCommand,
         sidecars: &[SidecarPayload],
     ) -> Result<AuthorizedFactWrite, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
-        self.authorize_fact_ingest_visible(authority, relation, draft, sidecars, &[], &[])
+        self.authorize_fact_ingest_visible(authority, draft, sidecars, &[], &[])
             .await
     }
 
@@ -142,7 +138,6 @@ impl Engine {
     pub(in crate::engine) async fn authorize_fact_ingest_visible<A>(
         &self,
         authority: &A,
-        relation: Relation,
         draft: FactWriteCommand,
         sidecars: &[SidecarPayload],
         session_visible: &[MemoryId],
@@ -151,8 +146,10 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let owner = self.single_write_owner_for(authority, relation)?;
-        let permit = self.authorize_write(authority, &owner, relation).await?;
+        let owner = self.single_fact_write_owner(authority)?;
+        let permit = self
+            .authorize_write(authority, &owner, AccessKind::Fact)
+            .await?;
         self.authorize_fact_ingest_permitted_visible(
             authority,
             permit,
@@ -222,16 +219,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot resolve exactly one writable owner,
-    /// lacks `relation`, or the
-    /// citation mapping targets a different cited-object
+    /// Returns `Forbidden` when the context cannot resolve exactly one owner it
+    /// may write Facts on, or the citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
     /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
     /// a registered citation schema has no sidecar inserter.
     pub async fn authorize_fact_with_citation<A>(
         &self,
         authority: &A,
-        relation: Relation,
         mut draft: FactWriteCommand,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
@@ -240,8 +235,10 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let owner = self.single_write_owner_for(authority, relation)?;
-        let permit = self.authorize_write(authority, &owner, relation).await?;
+        let owner = self.single_fact_write_owner(authority)?;
+        let permit = self
+            .authorize_write(authority, &owner, AccessKind::Fact)
+            .await?;
         normalize_fact_source_kind(&mut draft)?;
 
         // Validate the Fact only by schema-existence, matching
@@ -285,7 +282,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one
-    /// writable owner or lacks `relation`; `UnknownSchema` when the Fact
+    /// owner it may write Facts on; `UnknownSchema` when the Fact
     /// or mapping schema is absent for the required kind;
     /// `InvalidArgument` when the mapping payload fails validation; or
     /// `Internal` when the mapping schema declares no cited-object
@@ -293,7 +290,6 @@ impl Engine {
     pub async fn authorize_fact_with_citation_by_ref<A>(
         &self,
         authority: &A,
-        relation: Relation,
         mut draft: FactWriteCommand,
         cited_object_id: uuid::Uuid,
         mapping: InlineCitationMappingDraft,
@@ -302,8 +298,10 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let owner = self.single_write_owner_for(authority, relation)?;
-        let permit = self.authorize_write(authority, &owner, relation).await?;
+        let owner = self.single_fact_write_owner(authority)?;
+        let permit = self
+            .authorize_write(authority, &owner, AccessKind::Fact)
+            .await?;
         normalize_fact_source_kind(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
@@ -546,20 +544,25 @@ impl Engine {
         Ok(out)
     }
 
-    pub(in crate::engine) fn single_write_owner_for<A>(
+    /// The one owner a Fact write resolves to when the command names none.
+    pub(in crate::engine) fn single_fact_write_owner<A>(
         &self,
         authority: &A,
-        relation: Relation,
     ) -> Result<Owner, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
-        let operation = self.operation_authority(authority)?;
-        let access = self.resolve_access_inner(operation.authz(), operation.redeemed_phase())?;
-        let owners = access.write_owners_for(relation);
+        let authz = self.operation_authority(authority)?.authz();
+        let owners = if authz.auth_path() == crate::authz::AuthPath::Denied {
+            Vec::new()
+        } else {
+            authz.writable_owners(AccessKind::Fact)
+        };
         match owners.as_slice() {
             [owner] => Ok(*owner),
-            [] => Err(ProtocolError::forbidden(relation.denied_message())),
+            [] => Err(ProtocolError::forbidden(
+                "requires Fact write on this owner",
+            )),
             _ => Err(ProtocolError::invalid_argument(
                 "owner",
                 "FactWriteCommand is ownerless; authorization must resolve exactly one writable owner",
@@ -699,8 +702,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `requested_owner`,
-    /// lacks `relation`, or the citation mapping targets a different
+    /// Returns `Forbidden` when the context cannot write `memory_kind` on
+    /// `requested_owner`, or the citation mapping targets a different
     /// cited-object schema; `UnknownSchema` when a citation schema is
     /// absent for the required kind; `InvalidArgument` when JSON payload
     /// validation fails or `memory_kind` is not a kind that cites
@@ -709,7 +712,6 @@ impl Engine {
     pub async fn authorize_citation_attachment(
         &self,
         authz: &AuthzContext,
-        relation: Relation,
         requested_owner: OwnerRef,
         request: CitationAttachmentRequest,
     ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
@@ -720,7 +722,9 @@ impl Engine {
             mapping,
         } = request;
         let requested = requested_owner;
-        let permit = self.authorize_write(authz, &requested, relation).await?;
+        let permit = self
+            .authorize_write(authz, &requested, memory_kind.into())
+            .await?;
         let owner = *permit.owner();
         // A citation is legal on a Fact or an Abstraction and on nothing
         // else. The rule is about what a memory kind MEANS — a
@@ -1004,7 +1008,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the log Owner or lacks
-    /// [`Relation::Ingest`] on the owner space;
+    /// Fact write on the owner;
     /// or `Internal` when the atomic write fails.
     pub async fn persist_mcp_call(
         &self,
@@ -1013,7 +1017,7 @@ impl Engine {
     ) -> Result<McpCallLogOutcome, ProtocolError> {
         let owner = authz.scoped_owner(input.owner);
         let permit = self
-            .authorize_write(authz, &owner, Relation::Ingest)
+            .authorize_write(authz, &owner, AccessKind::Fact)
             .await?;
         input.owner = *permit.owner();
         // The gate above is what rejects a foreign log Owner. The Fact path
@@ -1047,7 +1051,7 @@ impl Engine {
 
         let sidecars = [SidecarPayload::fact(payload)];
         let authorized = self
-            .authorize_fact_ingest(&scoped, Relation::Ingest, draft, &sidecars)
+            .authorize_fact_ingest(&scoped, draft, &sidecars)
             .await?;
         let outcome = self.ingest_fact_with_typed_sidecar(&authorized).await?;
         Ok(McpCallLogOutcome {
@@ -1080,12 +1084,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::engine::access_sets::tests::MembershipStorage;
+    use crate::engine::MembershipStorage;
     use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::{
         AuthPath, FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, PayloadReference,
-        ReferenceBinding, SchemaId,
+        ReferenceBinding, Relation, SchemaId,
     };
     use serde::{Deserialize, Serialize};
 
@@ -1230,12 +1234,7 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                referenced_draft(&payload),
-                &sidecars,
-            )
+            .authorize_fact_ingest(&authz, referenced_draft(&payload), &sidecars)
             .await
             .expect("readable typed targets should authorize");
 
@@ -1275,7 +1274,6 @@ mod tests {
         let authorized = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Ingest,
                 referenced_draft(&payload).with_additional_references(vec![
                     EdgeEndpoint::memory(EntityKind::Fact, first),
                     EdgeEndpoint::memory(EntityKind::Fact, second),
@@ -1336,7 +1334,6 @@ mod tests {
         let error = engine
             .authorize_fact_ingest(
                 &authz,
-                Relation::Ingest,
                 referenced_draft(&payload).with_refs(vec![raw.into_inner()]),
                 &sidecars,
             )
@@ -1366,12 +1363,7 @@ mod tests {
         );
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                referenced_draft(&admitted),
-                &admitted_sidecars,
-            )
+            .authorize_fact_ingest(&authz, referenced_draft(&admitted), &admitted_sidecars)
             .await
             .expect("the original declaration should authorize");
 
@@ -1466,7 +1458,6 @@ mod tests {
         let error = engine
             .authorize_fact_ingest_visible(
                 &authz,
-                Relation::Ingest,
                 referenced_draft(&payload),
                 &sidecars,
                 &[target],
@@ -1543,7 +1534,7 @@ mod tests {
         );
 
         let authorized = engine
-            .authorize_fact_ingest(&authz, Relation::Ingest, draft, &[])
+            .authorize_fact_ingest(&authz, draft, &[])
             .await
             .expect("single-owner host context should authorize ingest");
 
@@ -1565,12 +1556,7 @@ mod tests {
         );
 
         let err = engine
-            .authorize_fact_ingest(
-                &AuthzContext::denied_for_owner(&owner),
-                Relation::Editor,
-                draft,
-                &[],
-            )
+            .authorize_fact_ingest(&AuthzContext::denied_for_owner(&owner), draft, &[])
             .await
             .expect_err("denied context must fail");
 
@@ -1593,12 +1579,7 @@ mod tests {
         "abstraction".clone_into(&mut draft.kind);
 
         let error = engine
-            .authorize_fact_ingest(
-                &AuthzContext::denied_for_owner(&owner),
-                Relation::Editor,
-                draft,
-                &[],
-            )
+            .authorize_fact_ingest(&AuthzContext::denied_for_owner(&owner), draft, &[])
             .await
             .expect_err("authorization must fail before validating the supplied kind");
 
@@ -1632,7 +1613,6 @@ mod tests {
         let err = engine
             .authorize_fact_with_citation(
                 &AuthzContext::denied_for_owner(&owner),
-                Relation::Editor,
                 draft,
                 cited_object,
                 mapping,
@@ -1683,12 +1663,7 @@ mod tests {
             .expect("a valid operator label");
 
         let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                listenable_draft(&payload),
-                &sidecars,
-            )
+            .authorize_fact_ingest(&authz, listenable_draft(&payload), &sidecars)
             .await
             .expect("a typed listenable write authorizes");
 
@@ -1727,12 +1702,7 @@ mod tests {
         assert_eq!(authz.trusted_model_id(), None);
 
         let authorized = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                listenable_draft(&payload),
-                &sidecars,
-            )
+            .authorize_fact_ingest(&authz, listenable_draft(&payload), &sidecars)
             .await
             .expect("a typed listenable write authorizes");
 
@@ -1758,7 +1728,7 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let err = engine
-            .authorize_fact_ingest(&authz, Relation::Ingest, listenable_draft(&payload), &[])
+            .authorize_fact_ingest(&authz, listenable_draft(&payload), &[])
             .await
             .expect_err("a listenable schema without its typed payload must refuse");
 
@@ -1785,12 +1755,7 @@ mod tests {
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let err = engine
-            .authorize_fact_ingest(
-                &authz,
-                Relation::Ingest,
-                listenable_draft(&payload),
-                &sidecars,
-            )
+            .authorize_fact_ingest(&authz, listenable_draft(&payload), &sidecars)
             .await
             .expect_err("two payloads of one listenable schema must refuse");
 

@@ -184,11 +184,10 @@ impl MemoryAuthoringPort for PgStorage {
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
-        let owner = permit.owner();
-        let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
         // The same-transaction probe in forget_memory_oneshot_in_transaction
-        // checks this owner before reading or publishing any cold payload.
+        // checks the permit's owner and kinds before reading or publishing
+        // any cold payload.
         let key = cold_object_key(t);
         let storage = self.clone();
         let cold = Arc::clone(&self.cold);
@@ -209,7 +208,7 @@ impl MemoryAuthoringPort for PgStorage {
                     cold.as_ref(),
                     &key,
                     t,
-                    owner_id,
+                    &verbs::forget::Reach::of(permit),
                 )
                 .await
             }

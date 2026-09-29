@@ -189,7 +189,7 @@ impl OwnerAccessReadPort for GoalFake {
         _owner_scope: Option<&crate::OwnerScope>,
         _entity: crate::EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<Option<OwnerRef>, StorageError> {
+    ) -> Result<Option<(OwnerRef, crate::AccessKind)>, StorageError> {
         Ok(None)
     }
 

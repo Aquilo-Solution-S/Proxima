@@ -1208,7 +1208,9 @@ impl proxima::flavor::AuthorizationHook for TierAuthzHook {
         input: &proxima::flavor::AuthzInput<'_>,
     ) -> Result<(), proxima::flavor::AuthzVeto> {
         match &input.operation {
-            proxima::flavor::AuthzOperation::Relation { .. }
+            proxima::flavor::AuthzOperation::Read { .. }
+            | proxima::flavor::AuthzOperation::Write { .. }
+            | proxima::flavor::AuthzOperation::OwnerAdmin
             | proxima::flavor::AuthzOperation::Membership {
                 change: proxima::flavor::MembershipChange::Add,
                 ..
@@ -1258,18 +1260,16 @@ fn flavor_sdk_names_query_and_ingest_types() {
         authz: &authz,
         requested: &owner,
         resolved: &owner,
-        relation: proxima::Relation::Viewer,
-        operation: proxima::flavor::AuthzOperation::Relation {
-            relation: proxima::Relation::Viewer,
+        operation: proxima::flavor::AuthzOperation::Read {
+            kind: proxima::AccessKind::Fact,
         },
     };
-    TierAuthzHook.veto(&input).expect("relation allow");
+    TierAuthzHook.veto(&input).expect("read allow");
     TierAuthzHook.observe(&input, proxima::flavor::AuthzOutcome::Allowed);
     let transfer = proxima::flavor::AuthzInput {
         authz: &authz,
         requested: &owner,
         resolved: &owner,
-        relation: proxima::Relation::Admin,
         operation: proxima::flavor::AuthzOperation::EntityTransfer {
             entity: proxima::flavor::EntityId::Memory(proxima::MemoryId::new(uuid::Uuid::nil())),
             to_owner: owner,

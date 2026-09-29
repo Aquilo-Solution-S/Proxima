@@ -406,8 +406,9 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
         .await?;
 
         let done = AtomicBool::new(false);
+        let limit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let forget = async {
-            let forgot = MemoryAuthoringPort::forget_memory(&pg, &permit, abstraction).await;
+            let forgot = MemoryAuthoringPort::forget_memory(&pg, &limit, abstraction).await;
             done.store(true, Ordering::SeqCst);
             forgot
         };

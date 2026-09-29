@@ -22,7 +22,7 @@ use crate::mcp::{
 };
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::storage_ports::CitedBlobService;
-use crate::{AccessKind, AuthzContext, Owner, Relation};
+use crate::{AccessKind, AuthzContext, Owner};
 
 use super::facts_citing_object::parse_cited_object_id;
 use super::memory_spaces::resolve_space_for_write;
@@ -332,20 +332,18 @@ fn narrowed_space(
     authority: SpaceAuthority,
 ) -> Result<(AuthzContext, Owner), McpToolError> {
     let (space, authz) = resolve_space_for_write(ctx, space)?;
-    let (allowed, required) = match authority {
+    let (allowed, denied) = match authority {
         SpaceAuthority::Write => (
             authz.may_write(&space.owner, AccessKind::Fact),
-            Relation::Editor,
+            "requires Fact write on this owner",
         ),
         SpaceAuthority::Read => (
             authz.may_read(&space.owner, AccessKind::Fact),
-            Relation::Viewer,
+            "requires Fact read on this owner",
         ),
     };
     if !allowed {
-        return Err(McpToolError::Protocol(ProtocolError::forbidden(
-            required.denied_message(),
-        )));
+        return Err(McpToolError::Protocol(ProtocolError::forbidden(denied)));
     }
     Ok((authz, space.owner))
 }
@@ -596,8 +594,9 @@ mod tests {
         let err = CoreUploadTool::call(ctx, prepare_args(Some(&space_key)))
             .await
             .expect_err("viewer cannot prepare an upload in the group space");
-        let remember_denial =
-            McpToolError::Protocol(ProtocolError::forbidden(Relation::Editor.denied_message()));
+        let remember_denial = McpToolError::Protocol(ProtocolError::forbidden(
+            "requires Fact write on this owner",
+        ));
         assert_eq!(err.kind(), remember_denial.kind());
         assert_eq!(err.client_message(), remember_denial.client_message());
         assert!(port.calls.lock().expect("lock").is_empty());

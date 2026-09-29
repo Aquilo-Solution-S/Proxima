@@ -3,7 +3,6 @@
 
 #[allow(dead_code)]
 mod access_admin;
-mod access_sets;
 mod builder;
 mod embeddings;
 mod errors;
@@ -46,7 +45,7 @@ pub use memory_authoring::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, MemoryTarget,
     SeriesHandle,
 };
-pub use pipeline::{MemoryPermit, PermitMode, WritePermit};
+pub use pipeline::WritePermit;
 pub use read_verbs::{
     FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
     GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest,
@@ -58,8 +57,9 @@ pub use unit_of_work::{FactWrite, HostStateMaintenanceAuthority, HostStateUnitOf
 pub use upload::{UploadCompleted, UploadCompletionExpectation};
 
 #[cfg(test)]
-#[doc(hidden)]
-pub(crate) use access_sets::tests::MembershipStorage;
+mod membership_storage;
+#[cfg(test)]
+pub(crate) use membership_storage::MembershipStorage;
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,

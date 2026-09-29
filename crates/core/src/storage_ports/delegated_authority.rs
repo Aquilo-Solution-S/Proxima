@@ -693,7 +693,7 @@ mod tests {
         McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError, Replay, ToolEffect,
     };
     use crate::query::QueryRequest;
-    use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, Relation};
+    use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder};
 
     const TOOL_NAME: &str = "test-delegation_worker";
     const DISPATCHER_TOOL_NAME: &str = "test-delegation_dispatcher";
@@ -968,7 +968,7 @@ mod tests {
             .await
             .expect("redeem");
         engine
-            .authorize_fact_ingest(&phase, Relation::Ingest, fact(), &[])
+            .authorize_fact_ingest(&phase, fact(), &[])
             .await
             .expect("phase may authorize configured Fact write");
 
@@ -1028,7 +1028,7 @@ mod tests {
             .await
             .expect("redeem");
         let mut authorized = engine
-            .authorize_fact_ingest(&phase, Relation::Ingest, fact(), &[])
+            .authorize_fact_ingest(&phase, fact(), &[])
             .await
             .expect("authorize before expiry");
         authorized.expire_delegated_write_for_test();
@@ -1039,7 +1039,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Forbidden);
         phase.expire_for_test();
         let err = engine
-            .authorize_fact_ingest(&phase, Relation::Ingest, fact(), &[])
+            .authorize_fact_ingest(&phase, fact(), &[])
             .await
             .expect_err("phase itself expires at every operation start");
         assert_eq!(err.code, ErrorCode::Forbidden);
@@ -1066,7 +1066,7 @@ mod tests {
             .await
             .expect("redeem");
         let err = target_engine
-            .authorize_fact_ingest(&phase, Relation::Ingest, fact(), &[])
+            .authorize_fact_ingest(&phase, fact(), &[])
             .await
             .expect_err("foreign phase must fail before schema/storage work");
         assert_eq!(err.code, ErrorCode::Forbidden);

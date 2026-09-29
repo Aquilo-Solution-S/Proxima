@@ -1,4 +1,3 @@
-use crate::Relation;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
@@ -101,7 +100,7 @@ impl McpTool for RecordUtteranceTool {
             let engine = ctx.require_engine()?;
             let sidecars = [SidecarPayload::fact(payload.clone())];
             let authorized = engine
-                .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
+                .authorize_fact_ingest(&authz, draft, &sidecars)
                 .await?;
             let outcome = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
 

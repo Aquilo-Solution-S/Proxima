@@ -426,7 +426,9 @@ async fn cooled_assignment_rejects_a_goal_successor_without_a_new_head() {
         .await?;
         tx.commit().await?;
 
-        MemoryAuthoringPort::forget_memory(&pg, &permit, assignment.memory_id).await?;
+        // Forgetting the Perspective takes a Perspective write limit.
+        let forget = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
+        MemoryAuthoringPort::forget_memory(&pg, &forget, assignment.memory_id).await?;
         let before: (i64, i64) = sqlx::query_as(
             "SELECT
                 (SELECT count(*)::bigint FROM proxima_core.goal),

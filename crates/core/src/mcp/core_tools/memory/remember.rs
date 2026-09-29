@@ -5,7 +5,7 @@ use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::{
     FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
-use crate::{Relation, SchemaId, SchemaVersion, canonical_json_bytes};
+use crate::{SchemaId, SchemaVersion, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -157,7 +157,7 @@ impl McpTool for RememberTool {
             } else {
                 let sidecars = [SidecarPayload::fact(payload.clone())];
                 let authorized = engine
-                    .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
+                    .authorize_fact_ingest(&authz, draft, &sidecars)
                     .await?;
                 engine.ingest_fact_with_typed_sidecar(&authorized).await?
             };
@@ -185,14 +185,7 @@ async fn ingest_cited_fact(
             mapping,
         } => {
             let authorized = engine
-                .authorize_fact_with_citation(
-                    authz,
-                    Relation::Editor,
-                    draft,
-                    cited_object,
-                    mapping,
-                    sidecars,
-                )
+                .authorize_fact_with_citation(authz, draft, cited_object, mapping, sidecars)
                 .await?;
             Ok(engine
                 .ingest_fact_with_citation_and_typed_sidecar(&authorized)
@@ -205,7 +198,6 @@ async fn ingest_cited_fact(
             let authorized = engine
                 .authorize_fact_with_citation_by_ref(
                     authz,
-                    Relation::Editor,
                     draft,
                     cited_object_id,
                     mapping,

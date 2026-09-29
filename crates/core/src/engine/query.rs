@@ -1,5 +1,5 @@
-use super::{Engine, MemoryPermit};
-use crate::access::Relation;
+use super::Engine;
+use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::read_models::MemorySchemaSpec;
@@ -125,8 +125,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
-    /// lacks [`Relation::Viewer`], or `Internal` when storage fails.
+    /// Returns `Forbidden` when the context reads nothing, or `Internal`
+    /// when storage fails.
     pub async fn walk_memory_lineage(
         &self,
         authz: &AuthzContext,
@@ -159,24 +159,23 @@ impl Engine {
 
     /// docs/14-protocol-surface.md — bounded MCP-call activity read for ONE
     /// owner the caller selects via `req.owner` and the context can access
-    /// (gated by `authorize_request`; single-owner, not `S_read`-spanning
+    /// (gated by `authorize_owner_read`; single-owner, not `S_read`-spanning
     /// like `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
-    /// lacks [`Relation::Viewer`], `InvalidArgument` when `req.limit == 0`, or
+    /// Returns `Forbidden` when the context cannot read Facts on `req.owner`,
+    /// `InvalidArgument` when `req.limit == 0`, or
     /// `Internal` when the storage read fails.
     pub async fn read_mcp_call_history(
         &self,
         authz: &AuthzContext,
         req: &McpCallHistoryRequest,
     ) -> Result<McpCallHistoryResponse, ProtocolError> {
-        let permit = self
-            .authorize_request(authz, &req.owner, Relation::Viewer)
+        let owner = self
+            .authorize_owner_read(authz, &req.owner, AccessKind::Fact)
             .await?;
-        read_mcp_call_history_authorized(&self.storage.query, authz.owner_scope(), &permit, req)
-            .await
+        read_mcp_call_history_authorized(&self.storage.query, authz.owner_scope(), owner, req).await
     }
 
     /// Current owned series handle whose sidecar matches `columns`.
@@ -186,7 +185,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot view `owner`,
+    /// Returns `Forbidden` when the context reads nothing on `owner`,
     /// `InvalidArgument` when the column list is empty or an identifier
     /// is invalid, and `Internal` on storage failure.
     pub async fn owned_series_handle(
@@ -197,8 +196,7 @@ impl Engine {
         sidecar_table: &str,
         columns: &[(&str, SidecarAtom)],
     ) -> Result<Option<uuid::Uuid>, ProtocolError> {
-        let _permit = self
-            .authorize_request(authz, &owner, Relation::Viewer)
+        self.authorize_owner_read(authz, &owner, AccessKind::Fact)
             .await?;
         self.storage
             .query
@@ -318,14 +316,14 @@ pub(in crate::engine) async fn change_history_authorized(
 pub(in crate::engine) async fn read_mcp_call_history_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    permit: &MemoryPermit,
+    owner: Owner,
     req: &McpCallHistoryRequest,
 ) -> Result<McpCallHistoryResponse, ProtocolError> {
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     let mut effective = req.clone();
-    effective.owner = *permit.owner();
+    effective.owner = owner;
     if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
         effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
     }

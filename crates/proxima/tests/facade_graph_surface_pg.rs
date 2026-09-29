@@ -654,21 +654,18 @@ async fn natural_key_selection_uses_the_authorized_payload() {
         );
         let sidecars = [SidecarPayload::fact(original.clone())];
         let authorized = engine
-            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft.clone(), &sidecars)
+            .authorize_fact_ingest(&authz, draft.clone(), &sidecars)
             .await?;
         let err = engine
             .authorize_fact_ingest(
                 &authz,
-                proxima::Relation::Editor,
                 draft.clone(),
                 &[sidecars[0].clone(), sidecars[0].clone()],
             )
             .await
             .expect_err("ambiguous matching payloads must be rejected at authorization");
         assert!(err.message.contains("exactly one"), "{err}");
-        let missing = engine
-            .authorize_fact_ingest(&authz, proxima::Relation::Editor, draft, &[])
-            .await?;
+        let missing = engine.authorize_fact_ingest(&authz, draft, &[]).await?;
         let err = engine
             .ingest_fact_with_typed_sidecar(&missing)
             .await

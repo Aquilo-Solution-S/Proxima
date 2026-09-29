@@ -109,13 +109,51 @@ there is no id-less owner — so `OwnerRef::columns()` returns
 | `OwnerRef::external_key()` | `proxima::OwnerRef` / `proxima_core::OwnerRef` | format the canonical runtime/API key |
 | `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical `personal:`/`group:` keys; any other prefix or a bare kind is invalid |
 
+## Roles
+
+`Role { read, write, manage }` sets one limit per direction on the ladder
+Fact < Abstraction < Perspective < Goal (`write ≤ read`). One rule for both
+directions (Lean `Causa.Authorization` `may_read` / `may_write`):
+
+```text
+may(role, owner, kind, dir)  :=  role on owner exists  ∧  kind ≤ limit(role, dir)
+```
+
+| Role | read / write limit | R F | R A | R P | R G | W F | W A | W P | W G | Upload |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `Role::viewer()` | G / – | ✓ | ✓ | ✓ | ✓ | · | · | · | · | · |
+| `Role::ingest()` | F / F | ✓ | · | · | · | ✓ | · | · | · | ✓ |
+| `Role::editor()` | G / P | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ |
+| `Role::admin()` | G / G | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `Role::new(Goal, Abstraction, _)` | G / A | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ |
+| `Role::new(Abstraction, Abstraction, _)` | A / A | ✓ | ✓ | · | · | ✓ | ✓ | · | · | ✓ |
+
+| Surface | Kind checked |
+|---|---|
+| Fact ingest, upload completion, source cursors, MCP call log, host state | Fact write |
+| derive / interpret | the output kind's write |
+| Goal create / transition / modify / decompose | Goal write |
+| forget / hydrate | the caller's write limit; storage returns `NotFound` for a row above it |
+| search, get, lineage, neighbours, change history, Query | Fact read to enter; each row by its own kind (owner RLS). An unreadable row is `NotFound` |
+| membership admin, transfer, erase, graph overview | owner admin: `Role::administers()` (write limit Goal); membership and group transfer also `Role::manages()` |
+
+`Relation` is only the stored name of a membership preset; `Relation::role()`
+is what authorization reads. `AuthzOperation` (`flavor::AuthorizationHook`
+input) is `Read { kind }`, `Write { kind }`, `OwnerAdmin`, `Membership`,
+`EntityTransfer`.
+
+Owner RLS (core 0023, code flavor v029) applies the same rule to every
+owner-keyed row: memory-attached rows by their memory's kind, Goal-attached
+rows as Goal, Fact-only tables as Fact. The migration refuses a
+`proxima_core` table it does not classify.
+
 ## Owner Write Permit Boundary
 
 | Item | Contract |
 |---|---|
 | `OwnerWritePermit` | sealed storage-tier proof: `(OwnerRef, AccessKind)`; constructor is not public |
 | minting path | `Engine::authorize_owner_write(authz, owner, kind)` after server-resolved owner access |
-| `AuthPath::System` | cannot mint by public `AuthzContext` shape alone; requires host-held `SystemAuthority` via `Engine::authorize_owner_write_with_system_authority` |
+| `AuthPath::System` | writes only through a context `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` built from this Engine's witness; any other System context is refused |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
 | wire/flavor boundary | MCP tools and flavor `ToolCtx` do not receive `SystemAuthority`; normal membership/HostBearer paths need no witness |
 | typed Fact destination | `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`; the engine authorizes the explicit destination. Keep the full authenticated context so readable foreign references remain available. |
@@ -444,7 +482,7 @@ execution or activity log projector):
 | target-owner ingest | resolve the worker subject to roles; call `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`. The explicit destination is authorized without narrowing the caller's read access. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |
-| projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |
+| projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and needs Fact read; `load_source_cursor` / `store_source_cursor` need Fact write and do not expose cursor bytes to readers. |
 | owner transfer | `transfer_to_owner` is an owner **move**, not an ACL flag or a copy: the series leaves the prior owner's view entirely and lands under the destination. The destination must be a group, and the caller must hold admin on the source (plus group-manage when the source is a group) and admin + group-manage on the destination — that receiving-side manage authority is the destination's consent, which is why a personal destination is refused. Transfer is memory-only: goals do not transfer. |
 | transfer and erase reach | a transferred memory moves *between* erase reaches, it does not leave them. The destination owner can erase it under `OwnerEraseTarget::GroupOwner`; the source owner no longer can. Send tenant evidence only to a group whose operators should own its deletion decision, because after the transfer they do — the source's erasure obligation for those rows lands on the destination. |
 | transfer and audit sidecars | `mcp_call_logged_v1` is **owner-pinned**: it carries `actor_upn` plus its own `owner_id`, stamped at write time with the owner that made the call, and describes who acted rather than what the memory says. A transfer leaves those rows with the source. The destination receives the memory without its call log — the payload hydrate joins the memory's owner to the row's, so `get_memory`/`get_memories`/`query_memories` return nothing for them — while `read_mcp_call_history`, the export bundle, and Art. 17 erase all stay with the source, which keeps both the history and the obligation to delete it. Every other registered sidecar follows the memory. |

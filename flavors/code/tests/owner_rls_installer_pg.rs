@@ -1,18 +1,20 @@
 //! `proxima_core.install_owner_rls` against this flavor's hand-written v0.0.15
-//! owner-RLS block: identical policies on every table but one, where the
-//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference; the v0.0.20
-//! code migration is exactly the installer call; and every classification
-//! that does not name one owner per table is refused.
+//! owner-RLS block: identical policies on every table but three — the
+//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference, and since
+//! core 0023 the two Self sidecars follow their Perspective's kind; the code
+//! migrations are exactly installer calls; and every classification that
+//! does not name one owner per table is refused.
 
 mod common;
 
 use common::{TestDb, apply_current_migrations};
 use sqlx::{Connection, PgConnection};
 
-/// The code migration that replaces the v0.0.15 block with the installer.
-const INSTALLER_MIGRATION: i64 = 20_260_924_000_020;
+/// The code migrations that replace the v0.0.15 block with installer calls:
+/// v0.0.20, and v0.0.29 under the kind rule.
+const INSTALLER_MIGRATIONS: [i64; 2] = [20_260_924_000_020, 20_260_929_000_020];
 
-/// Core and every code migration but the installer: the v0.0.15
+/// Core and every code migration but the installer calls: the v0.0.15
 /// hand-written policies. Later files are kept: the template already holds
 /// them, and a lane that lacked them would read its ledger as diverged.
 async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage) {
@@ -30,7 +32,7 @@ async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage
     let mut v015 = proxima_code::migrator();
     v015.migrations = std::borrow::Cow::Owned(
         v015.iter()
-            .filter(|migration| migration.version != INSTALLER_MIGRATION)
+            .filter(|migration| !INSTALLER_MIGRATIONS.contains(&migration.version))
             .cloned()
             .collect(),
     );
@@ -66,6 +68,15 @@ const FK_PARENT_TABLES: &[&str] = &[
     "work_requested_v1",
 ];
 const MEMORY_OWNER_TABLES: &[&str] = &["commit_summarizer_self_v1", "engineer_self_v1"];
+
+/// v0.0.29: `projection` holds Fact and Abstraction rows, so it follows its
+/// memory's kind.
+const KIND_OWNER_ID_TABLES: &[&str] = &["repo_ingestion_runs", "repos"];
+const KIND_MEMORY_OWNER_TABLES: &[&str] = &[
+    "commit_summarizer_self_v1",
+    "engineer_self_v1",
+    "projection",
+];
 
 const POLICIES: &str = "SELECT c.relname::text, p.polname::text, p.polcmd::text,
         p.polpermissive, p.polroles::text,
@@ -284,6 +295,10 @@ async fn assert_parent_refusals(conn: &mut PgConnection) {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one migration history, three installs"
+)]
 async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
     let db = TestDb::fresh().await;
     migrate_through_v015(&db.name, &db.pg).await;
@@ -331,12 +346,30 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
             .map(|(left, _)| (left.0.as_str(), left.1.as_str()))
             .collect::<Vec<_>>(),
         [
+            ("commit_summarizer_self_v1", "proxima_owner_read"),
+            ("commit_summarizer_self_v1", "proxima_owner_write"),
+            ("engineer_self_v1", "proxima_owner_read"),
+            ("engineer_self_v1", "proxima_owner_write"),
             ("execution_plan_v1", "proxima_owner_read"),
             ("execution_plan_v1", "proxima_owner_write"),
         ],
         "every other policy is the v0.0.15 file's"
     );
-    for (v015, v020) in changed {
+    for (_, current) in changed
+        .iter()
+        .filter(|(v015, _)| v015.0.ends_with("_self_v1"))
+    {
+        let list = if current.1 == "proxima_owner_read" {
+            "app.read_perspective"
+        } else {
+            "app.write_perspective"
+        };
+        assert!(current.5.contains(list), "{}", current.5);
+    }
+    for (v015, v020) in changed
+        .into_iter()
+        .filter(|(v015, _)| v015.0 == "execution_plan_v1")
+    {
         assert!(
             v015.5
                 .contains("execution_plan_v1.goal_activated_memory_id"),
@@ -351,20 +384,162 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
         assert!(!v020.5.contains("goal_activated_memory_id"), "{}", v020.5);
     }
 
+    let mut tx = conn.begin().await.expect("install transaction");
+    install(
+        &mut tx,
+        KIND_OWNER_ID_TABLES,
+        FK_PARENT_TABLES,
+        &[],
+        KIND_MEMORY_OWNER_TABLES,
+    )
+    .await
+    .expect("the kind-rule classification installs");
+    let kind_scoped: Vec<PolicyRow> = sqlx::query_as(POLICIES)
+        .fetch_all(&mut *tx)
+        .await
+        .expect("kind-scoped policies");
+    tx.rollback().await.expect("rollback");
+
     apply_current_migrations(&db.pg)
         .await
-        .expect("the v0.0.20 code migration applies");
+        .expect("the code installer migrations apply");
     let live: Vec<PolicyRow> = sqlx::query_as(POLICIES)
         .fetch_all(&mut conn)
         .await
         .expect("live policies");
     assert_eq!(
-        live, installed,
-        "the v0.0.20 migration is the installer call"
+        live, kind_scoped,
+        "the v0.0.29 migration is the installer call"
     );
 
     assert_refusals(&mut conn).await;
     assert_parent_refusals(&mut conn).await;
 
     conn.close().await.expect("close");
+}
+
+/// Under the v0.0.29 policies a code projection row follows its memory's
+/// kind: a Fact-only scope reads and writes the Fact's row and neither reads
+/// nor writes the Abstraction's; an Abstraction scope reaches both.
+#[tokio::test]
+#[expect(clippy::too_many_lines, reason = "seed, then one probe per scope")]
+async fn projection_rows_follow_their_memory_kind() {
+    use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerRef, Role, UserId};
+
+    let db = TestDb::fresh().await;
+    apply_current_migrations(&db.pg)
+        .await
+        .expect("current migrations");
+    let admin = db.pg.pool_for_tests();
+    let owner = uuid::Uuid::now_v7();
+    let (fact, abstraction) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+    let mut seed = admin.begin().await.expect("seed transaction");
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
+        .bind(owner)
+        .execute(&mut *seed)
+        .await
+        .expect("owner");
+    let content = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.content (content_id, owner_id, schema_id, content_hash)
+         VALUES ($1, $2, 'code/test', decode(repeat('00', 32), 'hex'))",
+    )
+    .bind(content)
+    .bind(owner)
+    .execute(&mut *seed)
+    .await
+    .expect("content");
+    for (t, kind, origins, content_id) in [
+        (fact, "fact", Vec::new(), None),
+        (abstraction, "abstraction", vec![fact], Some(content)),
+    ] {
+        let handle = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, schema_id, kind, owner_id, t)
+             VALUES ($1, 'code/test', $2::proxima_core.memory_kind, $3, $4)",
+        )
+        .bind(handle)
+        .bind(kind)
+        .bind(owner)
+        .bind(t)
+        .execute(&mut *seed)
+        .await
+        .expect("memory head");
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins)
+             VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'code/test', $5, $6)",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(kind)
+        .bind(owner)
+        .bind(content_id)
+        .bind(&origins)
+        .execute(&mut *seed)
+        .await
+        .expect("memory");
+        sqlx::query(
+            "INSERT INTO proxima_code.projection (memory_id, schema_id, owner_id, search_tsv)
+             VALUES ($1, 'code/test', $2, to_tsvector('simple', 'kind rule'))",
+        )
+        .bind(t)
+        .bind(owner)
+        .execute(&mut *seed)
+        .await
+        .expect("projection");
+    }
+    seed.commit().await.expect("seed");
+
+    let (runtime_url, _) = proxima_pg_testkit::split_role_urls(&db.name)
+        .await
+        .expect("split roles");
+    let runtime = sqlx::PgPool::connect(&runtime_url)
+        .await
+        .expect("runtime pool");
+    let group = OwnerRef::Group(GroupId::new(owner));
+    let mut both = vec![fact, abstraction];
+    both.sort();
+    for (role, readable) in [
+        (Role::ingest(), vec![fact]),
+        (
+            Role::new(
+                AccessCeiling::Abstraction,
+                AccessCeiling::Abstraction,
+                false,
+            )
+            .expect("role"),
+            both,
+        ),
+    ] {
+        let authz = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(group, role)],
+                AuthPath::HostBearer,
+            ),
+        );
+        let scope = authz.owner_scope().expect("authenticated scope");
+        let mut tx = proxima_storage_pg::begin_owner_transaction(&runtime, scope)
+            .await
+            .expect("owner scope");
+        let visible: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT memory_id FROM proxima_code.projection ORDER BY memory_id")
+                .fetch_all(&mut *tx)
+                .await
+                .expect("projection read");
+        assert_eq!(visible, readable, "{role:?} reads");
+        let written =
+            sqlx::query("UPDATE proxima_code.projection SET tag = tag WHERE memory_id = ANY($1)")
+                .bind(vec![fact, abstraction])
+                .execute(&mut *tx)
+                .await
+                .expect("projection write");
+        assert_eq!(
+            written.rows_affected(),
+            readable.len() as u64,
+            "{role:?} writes"
+        );
+        tx.rollback().await.expect("rollback");
+    }
+    runtime.close().await;
 }
