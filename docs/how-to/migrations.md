@@ -13,77 +13,62 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
-## v0.0.29
+## v0.0.24
 
-| Lane | Migration |
-|---|---|
-| Core | `0023_v029_kind_scoped_owner_rls.sql`: every `proxima_core` owner-keyed table follows the one authorization rule (a scope acts on kind K when its limit for that direction is ≥ K). `cooled`, `memory_head`, `sketch` by their `kind`; embedding tables and `projection` by their memory's kind; `goal_head`, `wake_config` as Goal; `announce`, `content`, `closed_handle` by the entity they name. A table in no class refuses the migration. `install_owner_rls`: `memory_owner_tables` follow the parent memory's kind and may carry `owner_id` |
-| Code flavor | `20260929000020_v029_kind_scoped_owner_rls.sql`: re-runs the installer; `projection` and the two Self sidecars move to `memory_owner_tables` |
-
-No table or row changes; only policy expressions. Existing databases upgrade
-in place. New derived Content is keyed by its admission's kind (an Abstraction
-and a Perspective with one payload get two rows), so a writer never reuses
-Content it cannot read; existing Content rows keep their hash, and a new
-derivation equal to one made before this release gets its own row. Before this file a Fact-only scope read an owner's Abstraction,
-Perspective and Goal rows in `memory_head`, `sketch`, `cooled`, `announce`,
-`content` and the embedding tables. A flavor that lists `memory_owner_tables`
-keeps its old policies until it calls the installer again
-([09 §Owner RLS](../09-developing-flavors.md#owner-rls)).
-
-## v0.0.28
-
-| Lane | Migration |
-|---|---|
-| Core | `0022_v028_coarse_pin_lock.sql`: `memory_pin_checks` stops taking per-target advisory locks after 256 in a transaction holding SHARE ROW EXCLUSIVE or stronger on `memory`, `cooled` and `goal`; preserves the function's identity, owner, ACL and `search_path` |
-
-No table or row changes. Usage: [15 §Bulk Memory writes](../15-deployment.md#bulk-memory-writes).
-
-## v0.0.27
-
-| Lane | Migration |
-|---|---|
-| Core | `0021_v027_query_stopwords.sql`: replaces `lexical_query_text` with dominant configured-language stopword analysis; preserves the function's identity, owner and privileges |
-
-Existing text vectors and per-row language stamps remain unchanged. Query
-analysis is `STABLE` and runs as the caller; ranked queries prepare it once
-per statement (see 10 §Memory hybrid search).
-
-## v0.0.26
-
-| Lane | Migration |
-|---|---|
-| Core | `0020_v026_embedding_chunks.sql`: adds zero-based `embeddings.chunk_ordinal` to the primary key; existing rows become chunk 0 without re-embedding |
-
-`embedding_heads` still selects a version. New writes store every chunk and
-advance the head in one transaction. Per-dimension HNSW indexes remain over
-chunk rows. Cold archives remain v8: forget stores distinct spaces, drops all
-vectors, and hydration queues one job per space (see 07 §Vector Store).
-
-## v0.0.25
+The first tag after v0.0.23. It rolls up the files labelled `_v024_` …
+`_v029_`: their pull requests merged without bumping `RELEASE_VERSION`, so no
+tag was cut between them, and this release ships several files per lane. The
+labels stay as merged; an applied ledger records them. Existing databases
+upgrade in place, in version order.
 
 | Lane | Migration |
 |---|---|
 | Core | `0019_v025_definer_search_path.sql`: pins `pg_temp` last in the eleven platform-owned integrity routines from `0014`; preserves bodies, owners and privileges |
-| Code flavor | `20260928000020_v025_ingest_run_class_counts.sql`: eight integer columns on `repo_ingestion_runs` (`files_source`, `files_generated`, `files_vendored`, `files_lockfile`, `chunks_source`, `chunks_generated`, `chunks_vendored`, `chunks_lockfile`), each default 0 |
-
-`proxima-code_get_ingest_run` reads them as `files_by_class` and `chunks_by_class`. A run that has not succeeded, and every run written before this file, reads as zeros. No rewrite of `code_chunk_v1`.
-
-## v0.0.24
-
-| Lane | Migration |
-|---|---|
+| Core | `0020_v026_embedding_chunks.sql`: adds zero-based `embeddings.chunk_ordinal` to the primary key; existing rows become chunk 0 without re-embedding |
+| Core | `0021_v027_query_stopwords.sql`: replaces `lexical_query_text` with dominant configured-language stopword analysis; preserves the function's identity, owner and privileges |
+| Core | `0022_v028_coarse_pin_lock.sql`: `memory_pin_checks` stops taking per-target advisory locks after 256 in a transaction holding SHARE ROW EXCLUSIVE or stronger on `memory`, `cooled` and `goal`; preserves the function's identity, owner, ACL and `search_path` |
+| Core | `0023_v029_kind_scoped_owner_rls.sql`: every `proxima_core` owner-keyed table follows the one authorization rule (a scope acts on kind K when its limit for that direction is ≥ K). `cooled`, `memory_head`, `sketch` by their `kind`; embedding tables and `projection` by their memory's kind; `goal_head`, `wake_config` as Goal; `announce`, `content`, `closed_handle` by the entity they name. A table in no class refuses the migration. `install_owner_rls`: `memory_owner_tables` follow the parent memory's kind and may carry `owner_id` |
 | Code flavor | `20260927000020_v024_file_class.sql`: enum `proxima_code.file_class` (`source`, `generated`, `vendored`, `lockfile`) and a nullable `code_chunk_v1.file_class`; `embed_text` is re-added so a lockfile chunk embeds `(lockfile) path:start-end` only |
+| Code flavor | `20260928000020_v025_ingest_run_class_counts.sql`: eight integer columns on `repo_ingestion_runs` (`files_source`, `files_generated`, `files_vendored`, `files_lockfile`, `chunks_source`, `chunks_generated`, `chunks_vendored`, `chunks_lockfile`), each default 0 |
+| Code flavor | `20260929000020_v029_kind_scoped_owner_rls.sql`: re-runs the installer; `projection` and the two Self sidecars move to `memory_owner_tables` |
 
-Existing databases upgrade in place. Re-adding the STORED `embed_text`
-column rewrites `code_chunk_v1` once, under an ACCESS EXCLUSIVE lock — budget
-a full table rewrite. Stored `embed_text` values stay byte for byte on every
-existing chunk, so no vector goes stale.
+**Code chunk class (`_v024_`).** Re-adding the STORED `embed_text` column
+rewrites `code_chunk_v1` once, under an ACCESS EXCLUSIVE lock — budget a full
+table rewrite. Stored `embed_text` values stay byte for byte on every existing
+chunk, so no vector goes stale. Chunks written before this file carry no class
+and read as `source`. A file gets its class the next time its content is
+ingested; to class a whole repository at once, erase it and ingest again
+([connect-agent](../getting-started/connect-agent.md)). The column is nullable
+so a cold dump taken before it still hydrates.
 
-Chunks written before v0.0.24 carry no class and read as `source`. A file
-gets its class the next time its content is ingested; to class a whole
-repository at once, erase it and ingest again
-([connect-agent](../getting-started/connect-agent.md)). The column is
-nullable so a cold dump taken before v0.0.24 still hydrates.
+**Ingest-run class counts (`_v025_`).** `proxima-code_get_ingest_run` reads
+them as `files_by_class` and `chunks_by_class`. A run that has not succeeded,
+and every run written before this file, reads as zeros. No rewrite of
+`code_chunk_v1`.
+
+**Embedding chunks (`_v026_`).** `embedding_heads` still selects a version.
+New writes store every chunk and advance the head in one transaction.
+Per-dimension HNSW indexes remain over chunk rows. Cold archives remain v8:
+forget stores distinct spaces, drops all vectors, and hydration queues one job
+per space (see 07 §Vector Store).
+
+**Query stopwords (`_v027_`).** Existing text vectors and per-row language
+stamps remain unchanged. Query analysis is `STABLE` and runs as the caller;
+ranked queries prepare it once per statement (see 10 §Memory hybrid search).
+
+**Coarse pin lock (`_v028_`).** No table or row changes. Usage: [15 §Bulk
+Memory writes](../15-deployment.md#bulk-memory-writes).
+
+**Kind-scoped owner RLS (`_v029_`).** No table or row changes; only policy
+expressions. New derived Content is keyed by its admission's kind (an
+Abstraction and a Perspective with one payload get two rows), so a writer
+never reuses Content it cannot read; existing Content rows keep their hash,
+and a new derivation equal to one made before this release gets its own row.
+Before this file a Fact-only scope read an owner's Abstraction, Perspective
+and Goal rows in `memory_head`, `sketch`, `cooled`, `announce`, `content` and
+the embedding tables. A flavor that lists `memory_owner_tables` keeps its old
+policies until it calls the installer again
+([09 §Owner RLS](../09-developing-flavors.md#owner-rls)).
 
 ## v0.0.23
 

@@ -2,9 +2,11 @@
 
 ## v0.0.24
 
-Pin all Proxima Rust dependencies to the same `v0.0.24` tag. No database
-change. **Breaking, no shims** (#389): one builder, one host accessor set,
-and every runtime feature starts when its config is present
+Pin all Proxima Rust dependencies to the same `v0.0.24` tag. Boot applies
+additive core and code-flavor migrations; no reset
+([migrations.md §v0.0.24](migrations.md#v0024)). **Breaking, no shims**
+(#389): one builder, one host accessor set, and every runtime feature starts
+when its config is present
 ([10 §Runtime features](../10-configuration.md#runtime-features)).
 
 | Removed / changed | Upgrade |
@@ -19,6 +21,7 @@ and every runtime feature starts when its config is present
 | `RuntimeConfig` struct literals | Gains `copy_cleaner` (`outbox-nats`). `mcp` is `Some` exactly when a bind address is set |
 | `PROXIMA_NATS_*` / `PROXIMA_COPY_CLEANER_*` key without its URL | Now refuses boot, naming the missing URL. `PROXIMA_NATS_URL` / `PROXIMA_COPY_CLEANER_URL` in a build without `outbox-nats` refuses boot |
 | New | `boot_report()` → `BootReport`; one INFO line per feature `feature=<name> state=started\|off reason=<rule>` |
+| Exhaustive `match` on `SeriesSelection` (#405) | New variants `SidecarEquals { schema, predicates }` and `DeclaredBefore { schema, column, cutoff }` ([13 §Flavor-scoped erase](../13-compliance.md#flavor-scoped-erase)); `proxima::host` now exports `SchemaId` and `SidecarAtom` |
 
 ## v0.0.23
 
