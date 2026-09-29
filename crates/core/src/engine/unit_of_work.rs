@@ -1209,10 +1209,13 @@ impl UnitOfWork<'_> {
     ///   authority ([`Engine::system_unit_of_work`]);
     /// - inside a tool handler, the tool is one `flavor_id` declares
     ///   `destructive` in its contract;
+    /// - a selection naming a schema names one of those; `SidecarEquals`
+    ///   and `DeclaredBefore` read that schema's declared sidecar, name only
+    ///   its columns, and `DeclaredBefore`'s is `timestamptz`;
     /// - at most [`MAX_ERASE_SERIES_PER_CALL`] series and
     ///   [`MAX_ERASE_VERSIONS_PER_CALL`] versions: an `Ids` selection over
-    ///   the cap is refused, an `AdmittedBefore` selection stops at it and
-    ///   reports `more_remaining`.
+    ///   the cap is refused, every other selection stops at it and reports
+    ///   `more_remaining`.
     ///
     /// It must be the unit's first and only operation: the erase takes its
     /// locks before anything else in the transaction. [`EraseMode::DryRun`]
@@ -1237,11 +1240,13 @@ impl UnitOfWork<'_> {
             )
             .into());
         }
-        let (contract, own_schemas) = self.admit_series_erase(flavor_id, &selection)?;
+        let (contract, own_schemas, sidecar_table) =
+            self.admit_series_erase(flavor_id, &selection)?;
         let permit = authorize_series_erase(self.engine, &self.authorization, owner).await?;
         let request = SeriesEraseRequest {
             own_schemas: &own_schemas,
             selection: &selection,
+            sidecar_table,
             max_series: MAX_ERASE_SERIES_PER_CALL,
             max_versions: MAX_ERASE_VERSIONS_PER_CALL,
         };
@@ -1320,12 +1325,20 @@ impl UnitOfWork<'_> {
 impl UnitOfWork<'_> {
     /// The declaration half of [`Self::erase_own_series`]: the named flavor,
     /// the calling tool, and the selection's own shape. Nothing here reads
-    /// storage.
+    /// storage. Answers the contract, its own memory schemas, and the
+    /// sidecar table a sidecar selection reads.
     fn admit_series_erase(
         &self,
         flavor_id: &str,
         selection: &SeriesSelection,
-    ) -> Result<(&'static crate::FlavorContract, Vec<String>), SeriesEraseError> {
+    ) -> Result<
+        (
+            &'static crate::FlavorContract,
+            Vec<String>,
+            Option<&'static str>,
+        ),
+        SeriesEraseError,
+    > {
         let contract = self
             .engine
             .registry()
@@ -1360,28 +1373,41 @@ impl UnitOfWork<'_> {
             .into());
         }
         let own_schemas = own_memory_schemas(contract);
-        match selection {
-            SeriesSelection::Ids(ids) if ids.len() > MAX_ERASE_VERSIONS_PER_CALL => {
-                Err(SeriesEraseError::Refused(SeriesEraseRefusal {
-                    kind: SeriesEraseRefusalKind::OverCap,
-                    offending: vec![format!(
-                        "ids={} (max {MAX_ERASE_VERSIONS_PER_CALL})",
-                        ids.len()
-                    )],
-                }))
-            }
-            SeriesSelection::AdmittedBefore { schema, .. }
-                if !own_schemas.iter().any(|own| own == schema.as_str()) =>
-            {
-                Err(SeriesEraseError::Refused(SeriesEraseRefusal {
-                    kind: SeriesEraseRefusalKind::ForeignSchema,
-                    offending: vec![format!("schema={}", schema.as_str())],
-                }))
-            }
-            SeriesSelection::Ids(_) | SeriesSelection::AdmittedBefore { .. } => {
-                Ok((contract, own_schemas))
-            }
+        if let SeriesSelection::Ids(ids) = selection
+            && ids.len() > MAX_ERASE_VERSIONS_PER_CALL
+        {
+            return Err(SeriesEraseError::Refused(SeriesEraseRefusal {
+                kind: SeriesEraseRefusalKind::OverCap,
+                offending: vec![format!(
+                    "ids={} (max {MAX_ERASE_VERSIONS_PER_CALL})",
+                    ids.len()
+                )],
+            }));
         }
+        if let Some(schema) = selection.schema()
+            && !own_schemas.iter().any(|own| own == schema.as_str())
+        {
+            return Err(SeriesEraseError::Refused(SeriesEraseRefusal {
+                kind: SeriesEraseRefusalKind::ForeignSchema,
+                offending: vec![format!("schema={}", schema.as_str())],
+            }));
+        }
+        let sidecar_table = match selection {
+            SeriesSelection::Ids(_) | SeriesSelection::AdmittedBefore { .. } => None,
+            SeriesSelection::SidecarEquals { predicates, .. } if predicates.is_empty() => {
+                return Err(ProtocolError::invalid_argument(
+                    "selection",
+                    "SidecarEquals needs at least one column predicate; \
+                     AdmittedBefore selects a schema's series by age",
+                )
+                .into());
+            }
+            SeriesSelection::SidecarEquals { schema, .. }
+            | SeriesSelection::DeclaredBefore { schema, .. } => {
+                Some(own_sidecar_table(contract, schema)?)
+            }
+        };
+        Ok((contract, own_schemas, sidecar_table))
     }
 }
 
@@ -1431,6 +1457,28 @@ fn own_memory_schemas(contract: &crate::FlavorContract) -> Vec<String> {
     schemas.sort_unstable();
     schemas.dedup();
     schemas
+}
+
+/// The sidecar table `schema` declares in `contract`: the one table a
+/// sidecar selection reads.
+fn own_sidecar_table(
+    contract: &crate::FlavorContract,
+    schema: &crate::SchemaId,
+) -> Result<&'static str, ProtocolError> {
+    contract
+        .schemas
+        .iter()
+        .filter(|declared| declared.id.render() == schema.as_str())
+        .find_map(|declared| declared.sidecar_table)
+        .ok_or_else(|| {
+            ProtocolError::invalid_argument(
+                "selection",
+                format!(
+                    "schema {} declares no sidecar table to select by",
+                    schema.as_str()
+                ),
+            )
+        })
 }
 
 /// The roles a system erase context carries: exactly `owner`, at the role
@@ -1979,6 +2027,47 @@ mod tests {
                 .erase_own_series(GATE_FLAVOR, owner, some_series(), EraseMode::DryRun)
                 .await;
             assert_eq!(begins.load(Ordering::SeqCst), 1);
+        }
+
+        /// A sidecar selection names its schema, and a schema the flavor does
+        /// not declare is refused by name before a session is begun.
+        #[tokio::test]
+        async fn a_sidecar_selection_of_a_foreign_schema_is_refused_before_storage() {
+            let begins = Arc::new(AtomicUsize::new(0));
+            let engine = engine(begins.clone());
+            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+            let schema = || crate::SchemaId::new("another_flavor/thing-v1".to_owned());
+            for selection in [
+                SeriesSelection::SidecarEquals {
+                    schema: schema(),
+                    predicates: vec![(
+                        "kind".to_owned(),
+                        crate::verbs::query::SidecarAtom::Bool(true),
+                    )],
+                },
+                SeriesSelection::DeclaredBefore {
+                    schema: schema(),
+                    column: "happened_at".to_owned(),
+                    cutoff: time::OffsetDateTime::now_utc(),
+                },
+            ] {
+                let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
+                match unit
+                    .erase_own_series(GATE_FLAVOR, owner, selection, EraseMode::DryRun)
+                    .await
+                {
+                    Err(SeriesEraseError::Refused(refusal)) => {
+                        assert_eq!(
+                            refusal.kind,
+                            crate::verbs::own_erase::SeriesEraseRefusalKind::ForeignSchema
+                        );
+                        assert_eq!(refusal.offending, vec!["schema=another_flavor/thing-v1"]);
+                    }
+                    other => panic!("a foreign schema must be refused: {other:?}"),
+                }
+            }
+            assert_eq!(begins.load(Ordering::SeqCst), 0, "refused before storage");
         }
 
         /// An empty selection is the cheap way to ask "may I erase here?": it

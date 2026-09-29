@@ -13,7 +13,7 @@ use std::sync::Arc;
 use common::migrated_db;
 use proxima::flavor::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
-    SeriesEraseRefusalKind, SeriesSelection,
+    SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
 };
 use proxima_code::testkit::{build_engine, register_repo};
 use proxima_code::{CommitV1, RepoScope};
@@ -69,6 +69,17 @@ fn commit(repo_id: Uuid, sha: &str) -> CommitV1 {
         committer_time: now,
         message: format!("commit {sha}"),
     }
+}
+
+fn commit_at(repo_id: Uuid, sha: &str, author_time: time::OffsetDateTime) -> CommitV1 {
+    CommitV1 {
+        author_time,
+        ..commit(repo_id, sha)
+    }
+}
+
+fn commit_schema() -> SchemaId {
+    SchemaId::new(CommitV1::SCHEMA_ID.into())
 }
 
 async fn registered_repo(pool: &sqlx::PgPool, owner: &Owner) -> Uuid {
@@ -151,6 +162,16 @@ fn refusal_kind(result: Result<SeriesEraseReceipt, SeriesEraseError>) -> SeriesE
     match result {
         Err(SeriesEraseError::Refused(refusal)) => refusal.kind,
         other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The message of an `InvalidArgument` protocol error; anything else fails.
+fn invalid_argument(result: Result<SeriesEraseReceipt, SeriesEraseError>) -> String {
+    match result {
+        Err(SeriesEraseError::Protocol(err)) if err.code == ErrorCode::InvalidArgument => {
+            err.message
+        }
+        other => panic!("expected an invalid-argument error, got {other:?}"),
     }
 }
 
@@ -700,6 +721,375 @@ async fn an_erase_is_the_first_and_only_operation_of_its_unit() {
             .expect_err("nothing runs on an erase's session after it");
         erased.commit().await?;
         assert_eq!(footprint(&h.pool, &[fact]).await[0], 0);
+        Ok(())
+    })
+    .await;
+}
+
+/// Sidecar equality selects every series with a hot version whose row
+/// matches — a version, not only the newest, so a series whose history was
+/// filed under the repository goes whole — and every version of it, the
+/// cooled one included. The dry run is the erase, rolled back.
+#[tokio::test]
+async fn sidecar_equals_erases_every_series_with_a_matching_version() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let repo_a = registered_repo(&h.pool, &owner).await;
+        let repo_b = registered_repo(&h.pool, &owner).await;
+        let single = ingest(&h.engine, &authz, owner, &commit(repo_a, "a1"), None).await;
+        let moved_v1 = ingest(&h.engine, &authz, owner, &commit(repo_a, "m1"), None).await;
+        let moved = handle_of(&h.pool, moved_v1).await;
+        let moved_v2 = ingest(&h.engine, &authz, owner, &commit(repo_b, "m2"), Some(moved)).await;
+        let cooled_v1 = ingest(&h.engine, &authz, owner, &commit(repo_a, "c1"), None).await;
+        let cooled = handle_of(&h.pool, cooled_v1).await;
+        let cooled_v2 = ingest(
+            &h.engine,
+            &authz,
+            owner,
+            &commit(repo_a, "c2"),
+            Some(cooled),
+        )
+        .await;
+        h.engine.forget_memory(&authz, owner, cooled_v1).await?;
+        let other = ingest(&h.engine, &authz, owner, &commit(repo_b, "b1"), None).await;
+        let selected = [single, moved_v1, moved_v2, cooled_v1, cooled_v2];
+        let before = footprint(&h.pool, &selected).await;
+        let selection = || SeriesSelection::SidecarEquals {
+            schema: commit_schema(),
+            predicates: vec![("repo_id".to_owned(), SidecarAtom::Uuid(repo_a))],
+        };
+
+        let dry = erase(&h.engine, &authz, owner, selection(), EraseMode::DryRun).await?;
+        assert_eq!(
+            footprint(&h.pool, &selected).await,
+            before,
+            "a dry run changes nothing"
+        );
+        let wet = erase(&h.engine, &authz, owner, selection(), EraseMode::Erase).await?;
+        assert_eq!(
+            SeriesEraseReceipt {
+                mode: EraseMode::Erase,
+                ..dry
+            },
+            wet,
+            "the dry run's receipt is the erase's"
+        );
+        let mut expected = selected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            wet.versions, expected,
+            "each matching series goes whole, the one that left the repository included"
+        );
+        assert_eq!(wet.series_erased, 3);
+        assert_eq!(wet.cold_objects_pending, 1);
+        assert!(!wet.more_remaining);
+        assert_eq!(footprint(&h.pool, &selected).await, [0, 0, 0, 0, 5]);
+        assert_eq!(
+            footprint(&h.pool, &[other]).await,
+            [1, 0, 1, 1, 0],
+            "a series that never matched is untouched"
+        );
+
+        let again = erase(&h.engine, &authz, owner, selection(), EraseMode::Erase).await?;
+        assert_eq!(again.series_erased, 0, "nothing matches any more");
+        Ok(())
+    })
+    .await;
+}
+
+/// The predicates are AND-joined and narrow the owner's series only: a row
+/// of another owner with the same values is never selected.
+#[tokio::test]
+async fn sidecar_equals_joins_its_predicates_inside_the_owner() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let repo = registered_repo(&h.pool, &owner).await;
+        let hit = ingest(&h.engine, &authz, owner, &commit(repo, "shared"), None).await;
+        let other_sha = ingest(&h.engine, &authz, owner, &commit(repo, "other"), None).await;
+        let (stranger, stranger_authz) = personal();
+        let stranger_repo = registered_repo(&h.pool, &stranger).await;
+        let theirs = ingest(
+            &h.engine,
+            &stranger_authz,
+            stranger,
+            &commit(stranger_repo, "shared"),
+            None,
+        )
+        .await;
+
+        let receipt = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::SidecarEquals {
+                schema: commit_schema(),
+                predicates: vec![
+                    ("repo_id".to_owned(), SidecarAtom::Uuid(repo)),
+                    ("sha".to_owned(), SidecarAtom::Text("shared".to_owned())),
+                ],
+            },
+            EraseMode::Erase,
+        )
+        .await?;
+        assert_eq!(receipt.versions, vec![hit]);
+        assert_eq!(footprint(&h.pool, &[other_sha]).await[0], 1);
+
+        let receipt = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::SidecarEquals {
+                schema: commit_schema(),
+                predicates: vec![("sha".to_owned(), SidecarAtom::Text("shared".to_owned()))],
+            },
+            EraseMode::Erase,
+        )
+        .await?;
+        assert_eq!(
+            receipt.series_erased, 0,
+            "another owner's matching row is out of the selection"
+        );
+        assert_eq!(footprint(&h.pool, &[theirs]).await, [1, 0, 1, 1, 0]);
+        Ok(())
+    })
+    .await;
+}
+
+/// The declared clock is the payload's, not admission: a backfilled commit
+/// ages by its `author_time`. The NEWEST version's value decides — a series
+/// whose newest version is recent keeps every version, one whose newest
+/// version is old goes whole — and a newest version that is cooled has no
+/// value to compare.
+#[tokio::test]
+async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let repo = registered_repo(&h.pool, &owner).await;
+        let now = time::OffsetDateTime::now_utc();
+        let old = now - time::Duration::days(30);
+        let cutoff = now - time::Duration::days(1);
+
+        let backfilled = ingest(&h.engine, &authz, owner, &commit_at(repo, "f1", old), None).await;
+        let revived_v1 = ingest(&h.engine, &authz, owner, &commit_at(repo, "r1", old), None).await;
+        let revived = handle_of(&h.pool, revived_v1).await;
+        let revived_v2 = ingest(
+            &h.engine,
+            &authz,
+            owner,
+            &commit_at(repo, "r2", now),
+            Some(revived),
+        )
+        .await;
+        let corrected_v1 =
+            ingest(&h.engine, &authz, owner, &commit_at(repo, "k1", now), None).await;
+        let corrected = handle_of(&h.pool, corrected_v1).await;
+        let corrected_v2 = ingest(
+            &h.engine,
+            &authz,
+            owner,
+            &commit_at(repo, "k2", old),
+            Some(corrected),
+        )
+        .await;
+        let forgotten_v1 =
+            ingest(&h.engine, &authz, owner, &commit_at(repo, "w1", old), None).await;
+        let forgotten = handle_of(&h.pool, forgotten_v1).await;
+        let forgotten_v2 = ingest(
+            &h.engine,
+            &authz,
+            owner,
+            &commit_at(repo, "w2", old),
+            Some(forgotten),
+        )
+        .await;
+        h.engine.forget_memory(&authz, owner, forgotten_v2).await?;
+
+        let by_admission = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::AdmittedBefore {
+                schema: commit_schema(),
+                cutoff,
+            },
+            EraseMode::DryRun,
+        )
+        .await?;
+        assert_eq!(
+            by_admission.series_erased, 0,
+            "every commit was admitted after the cutoff"
+        );
+
+        let receipt = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::DeclaredBefore {
+                schema: commit_schema(),
+                column: "author_time".to_owned(),
+                cutoff,
+            },
+            EraseMode::Erase,
+        )
+        .await?;
+        let mut expected = vec![backfilled, corrected_v1, corrected_v2];
+        expected.sort_unstable();
+        assert_eq!(receipt.versions, expected);
+        assert!(!receipt.more_remaining);
+        assert_eq!(
+            footprint(&h.pool, &[revived_v1, revived_v2]).await,
+            [2, 0, 2, 2, 0],
+            "a series whose newest version is recent keeps its old version too"
+        );
+        assert_eq!(
+            footprint(&h.pool, &[forgotten_v1, forgotten_v2]).await,
+            [1, 1, 1, 2, 0],
+            "a cooled newest version carries no value, so its series stays"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// Both sidecar selections page like `AdmittedBefore`: a call stops at the
+/// cap, says more remain, and takes its oldest first — by the declared
+/// value for `DeclaredBefore`, by admission for `SidecarEquals`.
+#[tokio::test]
+async fn sidecar_selections_page_at_the_cap_oldest_first() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let repo = registered_repo(&h.pool, &owner).await;
+        let base = time::OffsetDateTime::now_utc() - time::Duration::days(30);
+        let mut ids = Vec::new();
+        for n in 0..=MAX_ERASE_SERIES_PER_CALL {
+            // The first admitted carries the newest author time.
+            let offset = i64::try_from(MAX_ERASE_SERIES_PER_CALL - n)?;
+            let payload = commit_at(
+                repo,
+                &format!("p{n}"),
+                base + time::Duration::seconds(offset),
+            );
+            ids.push(ingest(&h.engine, &authz, owner, &payload, None).await);
+        }
+
+        let declared = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::DeclaredBefore {
+                schema: commit_schema(),
+                column: "author_time".to_owned(),
+                cutoff: base + time::Duration::days(1),
+            },
+            EraseMode::DryRun,
+        )
+        .await?;
+        assert_eq!(
+            declared.versions,
+            ids[1..].to_vec(),
+            "the oldest author times first, so the first admission waits"
+        );
+        assert!(declared.more_remaining);
+
+        let selection = || SeriesSelection::SidecarEquals {
+            schema: commit_schema(),
+            predicates: vec![("repo_id".to_owned(), SidecarAtom::Uuid(repo))],
+        };
+        let first = erase(&h.engine, &authz, owner, selection(), EraseMode::Erase).await?;
+        assert_eq!(first.versions, ids[..MAX_ERASE_SERIES_PER_CALL].to_vec());
+        assert!(first.more_remaining);
+        let second = erase(&h.engine, &authz, owner, selection(), EraseMode::Erase).await?;
+        assert_eq!(second.versions, vec![ids[MAX_ERASE_SERIES_PER_CALL]]);
+        assert!(!second.more_remaining);
+        Ok(())
+    })
+    .await;
+}
+
+/// A sidecar selection outside the flavor, or naming a column the sidecar
+/// does not hold — or, for `DeclaredBefore`, one that is not `timestamptz`
+/// — is refused before any delete.
+#[tokio::test]
+async fn a_sidecar_selection_outside_its_declaration_is_refused_before_any_delete() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let repo = registered_repo(&h.pool, &owner).await;
+        let old = time::OffsetDateTime::now_utc() - time::Duration::days(30);
+        let fact = ingest(&h.engine, &authz, owner, &commit_at(repo, "x1", old), None).await;
+        let before = footprint(&h.pool, &[fact]).await;
+        let cutoff = time::OffsetDateTime::now_utc();
+        let foreign = || SchemaId::new("another-flavor/thing-v1".into());
+
+        for selection in [
+            SeriesSelection::SidecarEquals {
+                schema: foreign(),
+                predicates: vec![("repo_id".to_owned(), SidecarAtom::Uuid(repo))],
+            },
+            SeriesSelection::DeclaredBefore {
+                schema: foreign(),
+                column: "author_time".to_owned(),
+                cutoff,
+            },
+        ] {
+            assert_eq!(
+                refusal_kind(erase(&h.engine, &authz, owner, selection, EraseMode::Erase).await),
+                SeriesEraseRefusalKind::ForeignSchema
+            );
+        }
+
+        let empty = invalid_argument(
+            erase(
+                &h.engine,
+                &authz,
+                owner,
+                SeriesSelection::SidecarEquals {
+                    schema: commit_schema(),
+                    predicates: Vec::new(),
+                },
+                EraseMode::Erase,
+            )
+            .await,
+        );
+        assert!(empty.contains("at least one column predicate"), "{empty}");
+
+        let unknown = invalid_argument(
+            erase(
+                &h.engine,
+                &authz,
+                owner,
+                SeriesSelection::SidecarEquals {
+                    schema: commit_schema(),
+                    predicates: vec![("no_such_column".to_owned(), SidecarAtom::Bool(true))],
+                },
+                EraseMode::Erase,
+            )
+            .await,
+        );
+        assert!(unknown.contains("no_such_column"), "{unknown}");
+
+        for column in ["sha", "no_such_column"] {
+            let refused = invalid_argument(
+                erase(
+                    &h.engine,
+                    &authz,
+                    owner,
+                    SeriesSelection::DeclaredBefore {
+                        schema: commit_schema(),
+                        column: column.to_owned(),
+                        cutoff,
+                    },
+                    EraseMode::Erase,
+                )
+                .await,
+            );
+            assert!(refused.contains(column), "{refused}");
+        }
+
+        assert_eq!(
+            footprint(&h.pool, &[fact]).await,
+            before,
+            "no refusal deleted anything"
+        );
         Ok(())
     })
     .await;

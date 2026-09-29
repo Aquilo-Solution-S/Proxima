@@ -158,6 +158,32 @@ fn host_api_can_construct_every_owner_erase_target() {
 }
 
 #[test]
+fn host_api_can_construct_every_series_selection() {
+    // The host schedules retention through `erase_own_series`, so every
+    // `SeriesSelection` variant must be buildable from the host facade:
+    // three of them name a `SchemaId`, one a `SidecarAtom`.
+    let schema = || proxima::SchemaId::new("proxima-tier/thing-v1".to_owned());
+    let cutoff = time::OffsetDateTime::UNIX_EPOCH;
+    let selections: [proxima::SeriesSelection; 4] = [
+        proxima::SeriesSelection::Ids(vec![proxima::MemoryId::new(uuid::Uuid::nil())]),
+        proxima::SeriesSelection::AdmittedBefore {
+            schema: schema(),
+            cutoff,
+        },
+        proxima::SeriesSelection::SidecarEquals {
+            schema: schema(),
+            predicates: vec![("kind".to_owned(), proxima::SidecarAtom::Bool(true))],
+        },
+        proxima::SeriesSelection::DeclaredBefore {
+            schema: schema(),
+            column: "happened_at".to_owned(),
+            cutoff,
+        },
+    ];
+    assert_eq!(selections.len(), 4);
+}
+
+#[test]
 fn host_api_names_the_cold_hydration_result_surface() {
     let memory_id = proxima::MemoryId::new(uuid::Uuid::nil());
     let outcome = proxima::MemoryHydrationOutcome::simple(

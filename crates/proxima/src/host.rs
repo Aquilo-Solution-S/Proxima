@@ -194,7 +194,7 @@ pub use proxima_core::verbs::query::{
     MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode, SearchOrder,
-    SupersessionStatus, TagMatch,
+    SidecarAtom, SupersessionStatus, TagMatch,
 };
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{
@@ -205,8 +205,8 @@ pub use proxima_core::{
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
     FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
     Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
-    Relation, Role, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes, env_value,
-    parse_external_key, provider_safe_tool_name,
+    Relation, Role, SchemaId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
+    env_value, parse_external_key, provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:
 /// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two
