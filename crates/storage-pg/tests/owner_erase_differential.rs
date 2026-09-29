@@ -554,10 +554,10 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                  (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1024, 1, $2::vector, $3)",
+             VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
         .bind(t)
-        .bind(embed_literal())
+        .bind(embed_vector())
         .bind(if t == tn {
             other.stored_owner_id()
         } else {
@@ -678,14 +678,10 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     Ok(Corpus { target, neighbour })
 }
 
-fn embed_literal() -> String {
-    format!(
-        "[{}]",
-        std::iter::once("1")
-            .chain(std::iter::repeat_n("0", 1023))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn embed_vector() -> pgvector::Vector {
+    let mut values = vec![0.0; 1024];
+    values[0] = 1.0;
+    pgvector::Vector::from(values)
 }
 
 /// Relations and columns present on only one side of the pinned comparison.

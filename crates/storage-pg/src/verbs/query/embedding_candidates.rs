@@ -46,7 +46,7 @@ pub(super) async fn best_embedding_scores_on_connection(
     sqlx::query_as(
         "SELECT emb.entity_id AS memory_id,
                 LEAST(1.0, GREATEST(0.0,
-                    MAX(NULLIF(1 - (emb.vec <=> $5::vector), 'NaN'::float8))))::real
+                    MAX(NULLIF(1 - (emb.vec <=> $5), 'NaN'::float8))))::real
                     AS similarity_score
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
@@ -65,7 +65,7 @@ pub(super) async fn best_embedding_scores_on_connection(
     .bind(owner_ids)
     .bind(query.space().model_id())
     .bind(Lane::of(query.space().dim()).width)
-    .bind(crate::pgvector::literal(query.values()))
+    .bind(crate::pgvector::vector(query.values()))
     .fetch_all(&mut *connection)
     .await
     .map_err(map_err)

@@ -1,30 +1,26 @@
 use super::*;
 
-fn vector(x: &str, y: &str) -> String {
-    format!(
-        "[{}]",
-        std::iter::once(x)
-            .chain(std::iter::once(y))
-            .chain(std::iter::repeat_n("0", 1022))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn vector(x: f32, y: f32) -> pgvector::Vector {
+    let mut values = vec![0.0; 1024];
+    values[0] = x;
+    values[1] = y;
+    pgvector::Vector::from(values)
 }
 
 async fn replace_chunk_vectors(
     pool: &PgPool,
     path: &str,
-    vectors: &[String],
+    vectors: &[pgvector::Vector],
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
          SELECT head.entity_id, head.model_id, head.dim, head.embedding_version + 1,
-                (chunk.ordinality - 1)::integer, chunk.vec::vector, head.owner_id
+                (chunk.ordinality - 1)::integer, chunk.vec, head.owner_id
            FROM proxima_core.embedding_heads head
            JOIN proxima_code.code_chunk_v1 c ON c.t = head.entity_id
-           CROSS JOIN unnest($2::text[]) WITH ORDINALITY AS chunk(vec, ordinality)
+           CROSS JOIN unnest($2::vector[]) WITH ORDINALITY AS chunk(vec, ordinality)
           WHERE c.file_path = $1 AND head.model_id = 'test-topic-embed'",
     )
     .bind(path)
@@ -69,14 +65,9 @@ async fn code_semantic_and_hybrid_rank_distinct_memories_by_best_chunk()
     )
     .await?;
     let pool = fixture.pg.pool_for_tests();
-    replace_chunk_vectors(pool, "src/first.rs", &vec![vector("1", "0"); 130]).await?;
-    replace_chunk_vectors(
-        pool,
-        "src/second.rs",
-        &[vector("0", "1"), vector("0.8", "0.6")],
-    )
-    .await?;
-    replace_chunk_vectors(pool, "src/third.rs", &[vector("0.6", "0.8")]).await?;
+    replace_chunk_vectors(pool, "src/first.rs", &vec![vector(1.0, 0.0); 130]).await?;
+    replace_chunk_vectors(pool, "src/second.rs", &[vector(0.0, 1.0), vector(0.8, 0.6)]).await?;
+    replace_chunk_vectors(pool, "src/third.rs", &[vector(0.6, 0.8)]).await?;
     for mode in ["semantic", "hybrid"] {
         let found = run_tool::<CodeSearchChunksTool>(
             embedding_ctx(fixture.pg.clone(), owner, registry.clone(), router.clone()),

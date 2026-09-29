@@ -1139,7 +1139,7 @@ async fn scan_embeddings_on_connection(
         .execute(&mut *connection)
         .await
         .map_err(map_err)?;
-    let query_vector = crate::pgvector::literal(semantic.values());
+    let query_vector = lane.query_vector(semantic.values());
     let mut window = overfetch;
     let mut candidates = BTreeSet::new();
     loop {
@@ -1338,6 +1338,18 @@ pub fn semantic_search_sql_for_tests(
 ) -> Result<String, StorageError> {
     let flavors = core_search_flavors(req, projections);
     semantic_search_sql(&flavors, req, Lane::of(dim))
+}
+
+/// The `$3` bind [`semantic_search_sql_for_tests`]'s scan takes for `query`:
+/// what the served search binds, so a plan pinned against it is the served
+/// plan.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn semantic_query_vector_for_tests(
+    query: &proxima_core::SpaceVector,
+) -> impl for<'q> sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + use<> {
+    Lane::of(query.space().dim()).query_vector(query.values())
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]

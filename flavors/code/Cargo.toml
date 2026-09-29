@@ -45,6 +45,7 @@ proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 proxima = { path = "../../crates/proxima", features = ["testkit"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
 proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }
+pgvector = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
 tokio-stream = { workspace = true }

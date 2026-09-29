@@ -77,6 +77,13 @@ fn hydrate_embeddings() -> crate::verbs::fact_embeddings::RouteSpaces<'static> {
     }
 }
 
+/// The 1024-wide fixture vector `[1, 0, …]`.
+fn unit_vector() -> pgvector::Vector {
+    let mut values = vec![0.0; 1024];
+    values[0] = 1.0;
+    pgvector::Vector::from(values)
+}
+
 /// Read the database-only historical identity witness without exposing it
 /// through a production storage API. The lifecycle tests use this one helper
 /// for both positive exact-kind assertions and negative transition checks.
@@ -755,18 +762,12 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
-             SELECT $1, 'test-embed', 1024, 1, chunk_ordinal, $3::vector, $2
+             SELECT $1, 'test-embed', 1024, 1, chunk_ordinal, $3, $2
                FROM generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
-        .bind(format!(
-            "[{}]",
-            std::iter::once("1")
-                .chain(std::iter::repeat_n("0", 1023))
-                .collect::<Vec<_>>()
-                .join(",")
-        ))
+        .bind(unit_vector())
         .execute(pool)
         .await?;
 
@@ -1766,17 +1767,11 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'late-embed', 1024, 1, $3::vector, $2)",
+             VALUES ($1, 'late-embed', 1024, 1, $3, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
-        .bind(format!(
-            "[{}]",
-            std::iter::once("1")
-                .chain(std::iter::repeat_n("0", 1023))
-                .collect::<Vec<_>>()
-                .join(",")
-        ))
+        .bind(unit_vector())
         .execute(pool)
         .await?;
 
@@ -5945,14 +5940,13 @@ async fn cool_then_hydrate(
     sourced.rendered_text = Some("a line".into());
     let written = pg.ingest_fact_atomic(permit, &sourced, None).await?;
     let t = written.memory_id.into_inner();
-    let zeroes = format!("[{}]", vec!["0"; 1024].join(","));
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_id, model_id, dim, embedding_version, vec, owner_id)
-         VALUES ($1, 'test-model', 1024, 1, $2::vector, $3)",
+         VALUES ($1, 'test-model', 1024, 1, $2, $3)",
     )
     .bind(t)
-    .bind(&zeroes)
+    .bind(pgvector::Vector::from(vec![0.0; 1024]))
     .bind(owner.stored_owner_id())
     .execute(pool)
     .await?;

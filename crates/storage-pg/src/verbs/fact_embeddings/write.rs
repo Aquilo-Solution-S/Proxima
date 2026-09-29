@@ -145,14 +145,14 @@ pub(crate) async fn insert_embedding(
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
-             VALUES ($1, $2, $3, $4, $5, $6::vector, $7)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(entity_id)
         .bind(model_id)
         .bind(dim)
         .bind(embedding_version)
         .bind(chunk_ordinal)
-        .bind(crate::pgvector::literal(vector.values()))
+        .bind(crate::pgvector::vector(vector.values()))
         .bind(owner_id)
         .execute(tx.as_mut())
         .await

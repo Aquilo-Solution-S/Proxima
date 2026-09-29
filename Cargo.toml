@@ -25,6 +25,9 @@ uuid = { version = "1.12.1", features = ["v4", "v5", "v7", "serde"] }
 thiserror = "2.0.18"
 tokio = { version = "1.40.0", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "uuid", "time", "macros", "migrate", "sqlx-toml"] }
+# Binary `vector` / `halfvec` binds (#379): a text bind cast in SQL is not a
+# constant under a generic plan, so the server re-parses it per scored row.
+pgvector = { version = "0.4.2", default-features = false, features = ["sqlx", "halfvec"] }
 url = "2.5.4"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }

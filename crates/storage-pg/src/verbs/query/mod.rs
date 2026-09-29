@@ -56,8 +56,8 @@ pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories_on_connection;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{
-    ranked_projection_sql_for_tests, search_admit_sql_for_tests, semantic_search_sql_for_tests,
-    substring_sql_for_tests,
+    ranked_projection_sql_for_tests, search_admit_sql_for_tests, semantic_query_vector_for_tests,
+    semantic_search_sql_for_tests, substring_sql_for_tests,
 };
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use series_handle::owned_head_handle_sql_for_tests;

@@ -5,15 +5,11 @@ use proxima_storage_pg::test_fixtures::fresh_pg;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn chunk_vector(dim: EmbeddingDim, x: &str, y: &str) -> String {
-    format!(
-        "[{}]",
-        std::iter::once(x)
-            .chain(std::iter::once(y))
-            .chain(std::iter::repeat_n("0", dim.width() - 2))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn chunk_vector(dim: EmbeddingDim, x: f32, y: f32) -> pgvector::Vector {
+    let mut values = vec![0.0; dim.width()];
+    values[0] = x;
+    values[1] = y;
+    pgvector::Vector::from(values)
 }
 
 fn chunk_query(dim: EmbeddingDim) -> SpaceVector {
@@ -27,15 +23,15 @@ async fn seed_chunks(
     owner: OwnerRef,
     t: Uuid,
     dim: EmbeddingDim,
-    vectors: &[String],
+    vectors: &[pgvector::Vector],
 ) -> Result<(), sqlx::Error> {
     let width = i16::try_from(dim.width()).expect("supported dimension fits i16");
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
          SELECT $1, 'test-embed', $2, 1, (chunk.ordinality - 1)::integer,
-                chunk.vec::vector, $4
-           FROM unnest($3::text[]) WITH ORDINALITY AS chunk(vec, ordinality)",
+                chunk.vec, $4
+           FROM unnest($3::vector[]) WITH ORDINALITY AS chunk(vec, ordinality)",
     )
     .bind(t)
     .bind(width)
@@ -84,9 +80,9 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
             target,
             dim,
             &[
-                chunk_vector(dim, "0", "1"),
-                chunk_vector(dim, "0.6", "0.8"),
-                chunk_vector(dim, "0.8", "0.6"),
+                chunk_vector(dim, 0.0, 1.0),
+                chunk_vector(dim, 0.6, 0.8),
+                chunk_vector(dim, 0.8, 0.6),
             ],
         )
         .await?;
@@ -95,10 +91,10 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
             owner,
             other,
             dim,
-            &[chunk_vector(dim, "0.6", "0.8"), chunk_vector(dim, "0", "0")],
+            &[chunk_vector(dim, 0.6, 0.8), chunk_vector(dim, 0.0, 0.0)],
         )
         .await?;
-        seed_chunks(pool, owner, zero, dim, &[chunk_vector(dim, "0", "0")]).await?;
+        seed_chunks(pool, owner, zero, dim, &[chunk_vector(dim, 0.0, 0.0)]).await?;
         for mode in [SearchMode::Semantic, SearchMode::Hybrid] {
             let mut req = search_req(owner, "absent-query-phrase");
             req.mode = mode;
@@ -141,14 +137,14 @@ async fn chunk_clusters_do_not_spend_distinct_memory_limit_or_cursor() -> TestRe
         owner,
         first,
         dim,
-        &vec![chunk_vector(dim, "1", "0"); 130],
+        &vec![chunk_vector(dim, 1.0, 0.0); 130],
     )
     .await?;
     let mut expected = vec![first];
     for (title, x, y) in [
-        ("Second", "0.8", "0.6"),
-        ("Third", "0.6", "0.8"),
-        ("Fourth", "0", "1"),
+        ("Second", 0.8, 0.6),
+        ("Third", 0.6, 0.8),
+        ("Fourth", 0.0, 1.0),
     ] {
         let t = seed_note(pool, owner, title, "Independent memory").await?;
         seed_chunks(pool, owner, t, dim, &[chunk_vector(dim, x, y)]).await?;
@@ -206,11 +202,11 @@ async fn chunk_scan_stops_at_existing_cap_when_one_memory_dominates() -> TestRes
         owner,
         first,
         dim,
-        &vec![chunk_vector(dim, "1", "0"); 1_000],
+        &vec![chunk_vector(dim, 1.0, 0.0); 1_000],
     )
     .await?;
     let beyond = seed_note(pool, owner, "Beyond cap", "More distant memory").await?;
-    seed_chunks(pool, owner, beyond, dim, &[chunk_vector(dim, "0.8", "0.6")]).await?;
+    seed_chunks(pool, owner, beyond, dim, &[chunk_vector(dim, 0.8, 0.6)]).await?;
     let mut req = search_req(owner, "absent-query-phrase");
     req.mode = SearchMode::Semantic;
     req.limit = 2;
