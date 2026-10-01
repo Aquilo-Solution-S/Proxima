@@ -4,7 +4,7 @@
 //! the membership primary key, not the member's whole enumeration. What is
 //! pinned here is that the probe is *byte-identical* to the eager map's
 //! answer for every group shape — a mapped group, an unmapped group, a group
-//! with more than one relation — so a host that serves many parties through
+//! with more than one relation (resolved to their join) — so a host that serves many parties through
 //! one forwarder subject can lean on it without a second authorization
 //! vocabulary. Personal owners are not a shape: the port is typed on
 //! `GroupId`, so they cannot be asked.
@@ -48,7 +48,12 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         let editor_group = GroupId::new(Uuid::now_v7());
         let layered_group = GroupId::new(Uuid::now_v7());
         let unmapped_group = GroupId::new(Uuid::now_v7());
+        let promoted_group = GroupId::new(Uuid::now_v7());
         seed_membership(&pool, editor_group, forwarder, Relation::Editor).await;
+        // Promoted after joining: an Admin row beside the Viewer row. The rows
+        // come back in enum order, Admin first.
+        seed_membership(&pool, promoted_group, forwarder, Relation::Viewer).await;
+        seed_membership(&pool, promoted_group, forwarder, Relation::Admin).await;
         seed_membership(&pool, layered_group, forwarder, Relation::Viewer).await;
         seed_membership(&pool, layered_group, forwarder, Relation::Ingest).await;
         // Someone else's membership in the unmapped group must not leak in.
@@ -57,7 +62,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         let port = PgOwnerAccessResolver::new(pool);
         let eager = port.resolve_roles_for_subject(forwarder).await?;
 
-        for group in [editor_group, layered_group, unmapped_group] {
+        for group in [editor_group, layered_group, promoted_group, unmapped_group] {
             let probed = port.resolve_group_role(forwarder, group).await?;
             assert_eq!(
                 probed,
@@ -69,6 +74,16 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         assert_eq!(
             port.resolve_group_role(forwarder, editor_group).await?,
             Some(Role::editor())
+        );
+        // Several relations in one group resolve to their join, never to the
+        // last (weakest) row.
+        assert_eq!(
+            port.resolve_group_role(forwarder, promoted_group).await?,
+            Some(Role::admin())
+        );
+        assert_eq!(
+            port.resolve_group_role(forwarder, layered_group).await?,
+            Some(Role::viewer().join(Role::ingest()))
         );
         assert_eq!(
             port.resolve_group_role(forwarder, unmapped_group).await?,

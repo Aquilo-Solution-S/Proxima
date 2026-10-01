@@ -1,5 +1,20 @@
 # Migrate the Flavor SDK
 
+## v0.0.25
+
+Pin all Proxima Rust dependencies to the same `v0.0.25` tag. No database
+change. A member who holds several relations in one group now resolves to
+their join, the stronger capability of each, as `Role.join` in
+`docs/lean/Causa/Owner.lean` specifies. Before, the last row the resolver
+yielded won, and the storage resolver yields `admin` first, so the weakest
+relation won (#408).
+
+| Surface | Upgrade |
+|---|---|
+| `OwnerRoles::for_subject` with one Group named more than once | Joins the roles instead of keeping the last. A host resolver that relied on a later entry overriding an earlier one must pass one entry per group |
+| `OwnerRoles::with_group_role` | Unchanged: one whole answer for the group, replacing an earlier entry |
+| `Role::join` | New: the least role at least as powerful as both |
+
 ## v0.0.24
 
 Pin all Proxima Rust dependencies to the same `v0.0.24` tag. Boot applies
