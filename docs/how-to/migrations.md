@@ -13,6 +13,11 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.25
+
+No core or flavor migration ships in this release. Existing v0.0.24 databases
+remain compatible and require no reset.
+
 ## v0.0.24
 
 The first tag after v0.0.23. It rolls up the files labelled `_v024_` …

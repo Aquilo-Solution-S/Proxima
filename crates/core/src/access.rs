@@ -220,6 +220,32 @@ impl Role {
         }
     }
 
+    /// Least role at least as powerful as either input: the stronger read and
+    /// write ceilings, and manage when either manages.
+    ///
+    /// A member who holds two relations in one group holds both, so their role
+    /// for that group is the join (`Role.join` in `docs/lean/Causa/Owner.lean`).
+    /// `write <= read` holds because each input satisfies it and max is
+    /// monotone.
+    #[must_use]
+    pub const fn join(self, other: Self) -> Self {
+        let read = if self.read.rank() >= other.read.rank() {
+            self.read
+        } else {
+            other.read
+        };
+        let write = if self.write.rank() >= other.write.rank() {
+            self.write
+        } else {
+            other.write
+        };
+        Self {
+            read,
+            write,
+            manage: self.manage || other.manage,
+        }
+    }
+
     /// Whether `self` contains every capability in `required`.
     #[must_use]
     pub const fn dominates(self, required: Self) -> bool {
@@ -236,6 +262,10 @@ pub struct OwnerRoles {
 }
 
 impl OwnerRoles {
+    /// A Group named more than once (a member holding several relations in
+    /// one group) resolves to the [`Role::join`] of its roles, whatever order
+    /// the resolver yields them in.
+    ///
     /// # Errors
     ///
     /// Returns [`AccessError::DerivedOwnerOverride`] if the resolver tries to
@@ -249,7 +279,10 @@ impl OwnerRoles {
         for (owner, role) in group_roles {
             match owner {
                 OwnerRef::Group(_) => {
-                    roles.insert(owner, role);
+                    roles
+                        .entry(owner)
+                        .and_modify(|held: &mut Role| *held = held.join(role))
+                        .or_insert(role);
                 }
                 OwnerRef::Personal(_) => {
                     return Err(AccessError::DerivedOwnerOverride);
@@ -261,8 +294,10 @@ impl OwnerRoles {
 
     /// The same map with one more host-resolved Group role — the entry the
     /// resolver answered on demand instead of in the eager enumeration.
-    /// Same fold as [`Self::for_subject`]: the entry is inserted, a later
-    /// answer replaces an earlier one. Typed on [`GroupId`] because Personal
+    /// `role` is the resolver's whole answer for `group` (its relations
+    /// already joined, as [`Self::for_subject`] joins them), so it replaces an
+    /// earlier entry rather than joining it: a later answer after a demotion is
+    /// never widened by the stale one. Typed on [`GroupId`] because Personal
     /// roles are derived by the kernel rules and cannot be resolved, so the
     /// fold has nothing to refuse.
     #[must_use]
@@ -511,8 +546,60 @@ mod tests {
         );
     }
 
-    /// The fold is the same one `for_subject` performs: the entry lands in
-    /// the map and the derived personal entry is untouched.
+    /// `join` mirrors `Role.join` in `docs/lean/Causa/Owner.lean`: the
+    /// stronger ceiling per capability, manage when either manages.
+    #[test]
+    fn join_is_the_stronger_capability_of_each() {
+        let presets = [
+            Role::personal(),
+            Role::viewer(),
+            Role::ingest(),
+            Role::editor(),
+            Role::admin(),
+        ];
+        for x in presets {
+            for y in presets {
+                let joined = x.join(y);
+                assert!(joined.dominates(x) && joined.dominates(y));
+                assert_eq!(joined, y.join(x));
+                assert!(joined.write_ceiling().rank() <= joined.read_ceiling().rank());
+            }
+        }
+        assert_eq!(Role::viewer().join(Role::admin()), Role::admin());
+        assert_eq!(Role::editor().join(Role::viewer()), Role::editor());
+        let both = Role::viewer().join(Role::ingest());
+        assert!(both.may_read(AccessKind::Goal));
+        assert!(both.may_write(AccessKind::Fact));
+        assert!(!both.may_write(AccessKind::Abstraction));
+        assert!(!both.manages());
+    }
+
+    /// A member holding several relations in one group resolves to their
+    /// join, in whichever order the resolver yields them. The storage
+    /// resolver yields them in enum order, `admin` first: before the join, the
+    /// last and weakest row won.
+    #[test]
+    fn several_relations_in_one_group_resolve_to_their_join() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        for rows in [
+            [Role::admin(), Role::viewer()],
+            [Role::viewer(), Role::admin()],
+        ] {
+            let roles = OwnerRoles::for_subject(subject, rows.map(|role| (owner, role))).unwrap();
+            assert_eq!(roles.role_for(&owner), Some(Role::admin()));
+        }
+        let roles =
+            OwnerRoles::for_subject(subject, [(owner, Role::ingest()), (owner, Role::viewer())])
+                .unwrap();
+        assert_eq!(
+            roles.role_for(&owner),
+            Some(Role::viewer().join(Role::ingest()))
+        );
+    }
+
+    /// The entry lands in the map, a later whole answer replaces an earlier
+    /// one, and the derived personal entry is untouched.
     #[test]
     fn a_group_role_folds_into_the_map() {
         let subject = UserId::new(uuid::Uuid::now_v7());
@@ -528,6 +615,12 @@ mod tests {
         assert_eq!(
             roles.role_for(&OwnerRef::Personal(subject)),
             Some(Role::personal())
+        );
+        let demoted = roles.with_group_role(group, Role::viewer());
+        assert_eq!(
+            demoted.role_for(&OwnerRef::Group(group)),
+            Some(Role::viewer()),
+            "a later answer after a demotion is not widened by the stale one"
         );
     }
 
