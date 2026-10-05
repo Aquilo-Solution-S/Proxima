@@ -2,7 +2,7 @@
 # Build the Code-flavor MCP server. cmake + pkg-config are required to
 # build native crypto deps (aws-lc-sys / ring). Pin bookworm so the
 # builder's glibc matches the distroless cc-debian12 runtime.
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+FROM rust:1.99-bookworm@sha256:59037199c44290f2befcdd58dcc540164763fc296950255aaefeef096a1866b0 AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake pkg-config \
     && rm -rf /var/lib/apt/lists/*
