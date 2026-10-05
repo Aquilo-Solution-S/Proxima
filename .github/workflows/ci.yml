@@ -108,7 +108,7 @@ jobs:
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: git-cliff@2.13.1
       - name: release-note configuration
@@ -136,7 +136,7 @@ jobs:
       - name: set up Lean/Lake
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.lean == 'true' }}
         # leanprover/lean-action@v1
-        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596
+        uses: leanprover/lean-action@f061402b660e0c34644504b324e830f2991d4865
         with:
           lake-package-directory: docs/lean
           build: false
@@ -308,7 +308,7 @@ jobs:
             --versioning-configuration Status=Enabled
       - name: install nextest
         # taiki-e/install-action@nextest
-        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
       # One feature set, one build. Every feature-gated target (the REST
       # surface and mounted REST/OIDC e2e, the Fact-outbox host lane and
       # publisher supervision, the durable-intake example) compiles into this
