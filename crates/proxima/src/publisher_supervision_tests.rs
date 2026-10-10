@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -856,4 +856,311 @@ async fn mixed_pass_stays_failed_until_recovery(
     assert_published(&world.platform_pool, small).await;
     cancel.cancel();
     task.join().await.expect("mixed publisher joins");
+}
+
+/// Holds the first `mark_published`: the record whose broker acknowledgement
+/// arrived and whose outbox write has not happened yet, which is the record
+/// in flight. Counts claims so a test can see that none follow a quiesce.
+struct HoldFirstAck {
+    inner: Arc<dyn PublicationOutboxPort>,
+    entered: Notify,
+    release: Notify,
+    held: AtomicBool,
+    claims: AtomicUsize,
+}
+
+impl HoldFirstAck {
+    fn new(inner: Arc<dyn PublicationOutboxPort>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            entered: Notify::new(),
+            release: Notify::new(),
+            held: AtomicBool::new(false),
+            claims: AtomicUsize::new(0),
+        })
+    }
+
+    fn claims(&self) -> usize {
+        self.claims.load(Ordering::Acquire)
+    }
+}
+
+#[async_trait::async_trait]
+impl PublicationOutboxPort for HoldFirstAck {
+    async fn claim(
+        &self,
+        publisher: &PublisherId,
+        limit: NonZeroU32,
+        lease: Duration,
+    ) -> Result<Vec<ClaimedPublication>, StorageError> {
+        self.claims.fetch_add(1, Ordering::AcqRel);
+        self.inner.claim(publisher, limit, lease).await
+    }
+
+    async fn mark_published(
+        &self,
+        id: Uuid,
+        claim: ClaimToken,
+        receipt: &BrokerReceipt,
+    ) -> Result<AckOutcome, StorageError> {
+        if !self.held.swap(true, Ordering::AcqRel) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        self.inner.mark_published(id, claim, receipt).await
+    }
+
+    async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome, StorageError> {
+        self.inner.release(id, claim).await
+    }
+
+    async fn pending_count(&self) -> Result<u64, StorageError> {
+        self.inner.pending_count().await
+    }
+}
+
+/// A supervised publisher over `outbox`, with the facade's control handle.
+struct QuiescePublisher {
+    control: crate::FeatureControl,
+    reader: proxima_outbox_nats::PublisherHealthReader,
+    task: AbortOnDrop,
+    cancel: CancellationToken,
+}
+
+impl QuiescePublisher {
+    fn spawn(
+        outbox: Arc<dyn PublicationOutboxPort>,
+        config: &proxima_outbox_nats::NatsPublisherConfig,
+    ) -> Self {
+        let cancel = CancellationToken::new();
+        let supervised =
+            spawn_publication_publisher_supervised(outbox, config.clone(), None, cancel.clone());
+        let control = crate::FeatureControl::new(
+            crate::Feature::OutboxPublisher,
+            supervised.quiesce_gate().clone(),
+        );
+        let (reader, task) = supervised.into_parts();
+        Self {
+            control,
+            reader,
+            task: AbortOnDrop::new(task),
+            cancel,
+        }
+    }
+
+    async fn shut_down(mut self) {
+        self.cancel.cancel();
+        self.task.join().await.expect("cancelled publisher joins");
+    }
+}
+
+/// A settlement that never comes fails the test instead of hanging it.
+async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .expect("the quiesce settles")
+}
+
+async fn outbox_states(pool: &sqlx::PgPool, ids: &[Uuid]) -> Vec<String> {
+    let mut states = Vec::new();
+    for id in ids {
+        states.push(
+            sqlx::query_scalar(
+                "SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("outbox state query"),
+        );
+    }
+    states
+}
+
+fn count(states: &[String], wanted: &str) -> usize {
+    states.iter().filter(|state| *state == wanted).count()
+}
+
+async fn captures(world: &TestWorld, notes: [&str; 3]) -> [Uuid; 3] {
+    [
+        capture(&world.built, world.owner, notes[0]).await,
+        capture(&world.built, world.owner, notes[1]).await,
+        capture(&world.built, world.owner, notes[2]).await,
+    ]
+}
+
+#[tokio::test]
+async fn publisher_quiesce_settles_the_record_in_flight_and_leaves_later_captures_pending() {
+    let Some(url) = nats_url() else {
+        return;
+    };
+    let world = TestWorld::new(&url).await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let mut config = world.nats.clone();
+        config.poll_interval = Duration::from_millis(20);
+        config.batch = NonZeroU32::new(3).expect("nonzero batch");
+        let batch = captures(&world, ["first", "second", "third"]).await;
+        let held = HoldFirstAck::new(world.built.outbox_for_tests());
+        let publisher = QuiescePublisher::spawn(held.clone(), &config);
+        let control = &publisher.control;
+
+        // The broker acknowledged one record; its outbox write is held.
+        tokio::time::timeout(Duration::from_secs(15), held.entered.notified())
+            .await
+            .expect("a record is in flight");
+        let mut quiesce = Box::pin(control.quiesce());
+        assert!(
+            quiesce.as_mut().now_or_never().is_none(),
+            "the quiesce waits for the record in flight"
+        );
+        assert_eq!(control.status(), crate::FeatureStatus::Quiescing);
+
+        held.release.notify_one();
+        assert_eq!(within(quiesce).await, Ok(()));
+        assert_eq!(control.status(), crate::FeatureStatus::Quiescent);
+
+        // The record in flight was published and recorded; the rest of the
+        // batch went back to pending at once, not left claimed to a lease.
+        let states = outbox_states(&world.platform_pool, &batch).await;
+        assert_eq!(count(&states, "published"), 1, "{states:?}");
+        assert_eq!(count(&states, "pending"), 2, "{states:?}");
+        let health = publisher.reader.snapshot();
+        assert_eq!(
+            health.task,
+            proxima_outbox_nats::PublisherTaskState::Running
+        );
+        assert_eq!(
+            health.connection,
+            proxima_outbox_nats::PublisherConnectionState::Connected,
+            "the task and its broker connection survive a quiesce"
+        );
+
+        // A capture accepted while quiescent stays pending: absence has no
+        // signal, so several poll intervals pass with no claim made.
+        let claims = held.claims();
+        let later = capture(&world.built, world.owner, "later").await;
+        tokio::time::sleep(config.poll_interval * 10).await;
+        assert_eq!(held.claims(), claims, "no claim while quiescent");
+        assert_eq!(
+            outbox_states(&world.platform_pool, &[later]).await,
+            ["pending"]
+        );
+
+        assert_eq!(control.resume(), Ok(()));
+        for id in batch.into_iter().chain([later]) {
+            assert_published(&world.platform_pool, id).await;
+        }
+        publisher.shut_down().await;
+    })
+    .catch_unwind()
+    .await;
+    world.teardown().await;
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[tokio::test]
+async fn publisher_resume_or_shutdown_during_quiescing_resolves_the_pending_quiesce() {
+    let Some(url) = nats_url() else {
+        return;
+    };
+    let world = TestWorld::new(&url).await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let mut config = world.nats.clone();
+        config.poll_interval = Duration::from_millis(20);
+        config.batch = NonZeroU32::new(3).expect("nonzero batch");
+
+        // Resume while Quiescing: the pending quiesce reports Resumed and the
+        // publisher keeps going through its batch instead of parking.
+        let batch = captures(&world, ["a", "b", "c"]).await;
+        let held = HoldFirstAck::new(world.built.outbox_for_tests());
+        let publisher = QuiescePublisher::spawn(held.clone(), &config);
+        tokio::time::timeout(Duration::from_secs(15), held.entered.notified())
+            .await
+            .expect("a record is in flight");
+        let mut quiesce = Box::pin(publisher.control.quiesce());
+        assert!(quiesce.as_mut().now_or_never().is_none());
+        assert_eq!(publisher.control.resume(), Ok(()));
+        assert_eq!(
+            within(quiesce).await,
+            Err(crate::FeatureControlError::Resumed)
+        );
+        assert_eq!(publisher.control.status(), crate::FeatureStatus::Running);
+        held.release.notify_one();
+        for id in batch {
+            assert_published(&world.platform_pool, id).await;
+        }
+        publisher.shut_down().await;
+
+        // Shutdown while Quiescing: the pending quiesce reports Stopped, the
+        // task joins, the record in flight still lands, the rest is handed
+        // back, and every later call reports Stopped.
+        let batch = captures(&world, ["d", "e", "f"]).await;
+        let held = HoldFirstAck::new(world.built.outbox_for_tests());
+        let publisher = QuiescePublisher::spawn(held.clone(), &config);
+        tokio::time::timeout(Duration::from_secs(15), held.entered.notified())
+            .await
+            .expect("a record is in flight");
+        let control = publisher.control.clone();
+        let mut quiesce = Box::pin(control.quiesce());
+        assert!(quiesce.as_mut().now_or_never().is_none());
+        publisher.cancel.cancel();
+        held.release.notify_one();
+        assert_eq!(
+            within(quiesce).await,
+            Err(crate::FeatureControlError::Stopped)
+        );
+        publisher.shut_down().await;
+        assert_eq!(control.status(), crate::FeatureStatus::Stopped);
+        assert_eq!(control.resume(), Err(crate::FeatureControlError::Stopped));
+        assert_eq!(
+            control.quiesce().await,
+            Err(crate::FeatureControlError::Stopped)
+        );
+        let states = outbox_states(&world.platform_pool, &batch).await;
+        assert_eq!(count(&states, "published"), 1, "{states:?}");
+        assert_eq!(count(&states, "pending"), 2, "{states:?}");
+    })
+    .catch_unwind()
+    .await;
+    world.teardown().await;
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[tokio::test]
+async fn an_idle_publisher_quiesces_and_resumes_without_waiting_out_its_poll_interval() {
+    let Some(url) = nats_url() else {
+        return;
+    };
+    let world = TestWorld::new(&url).await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let mut config = world.nats.clone();
+        // The idle sleep outlasts the test: only the gate's wake-ups end it.
+        config.poll_interval = Duration::from_mins(10);
+        let publisher = QuiescePublisher::spawn(world.built.outbox_for_tests(), &config);
+        wait_for_health(
+            &publisher.reader,
+            proxima_outbox_nats::PublisherDrainState::Clean,
+        )
+        .await;
+
+        assert_eq!(within(publisher.control.quiesce()).await, Ok(()));
+        let id = capture(&world.built, world.owner, "while quiescent").await;
+        assert_eq!(
+            outbox_states(&world.platform_pool, &[id]).await,
+            ["pending"]
+        );
+        assert_eq!(publisher.control.resume(), Ok(()));
+        assert_published(&world.platform_pool, id).await;
+        publisher.shut_down().await;
+    })
+    .catch_unwind()
+    .await;
+    world.teardown().await;
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
 }

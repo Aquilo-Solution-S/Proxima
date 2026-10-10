@@ -149,14 +149,14 @@ are specified by `crates/proxima` rustdoc and source:
 One start rule per feature: IF its config is present THEN it starts. No
 enable flags, no spawn calls.
 
-| `feature=` | Starts IF | Env | Code | Health reader |
-|---|---|---|---|---|
-| `mcp` | bind address | `PROXIMA_MCP_BIND` | `mcp_bind(..)` | — |
-| `flavor-workers` | a linked flavor's `FlavorBundle::spawn_workers` returns ≥1 | — | — | — |
-| `embedding-worker` | embedding client or router; startup reconcile, then drain | host-built (`proxima-mcp`: `PROXIMA_EMBED_*`) | `embed_client(..)` / `embedding_router(..)` | — |
-| `outbox-publisher` | broker URL | `PROXIMA_NATS_URL` | `nats(..)` | `publisher_health()` |
-| `published-record-prune` | publisher runs ∧ retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | `published_retention(..)` | — |
-| `copy-cleaner` | cleaner section (broker required) | `PROXIMA_COPY_CLEANER_URL` | `copy_cleaner(..)` | `copy_cleaner_health()` |
+| `feature=` | Starts IF | Env | Code | Health reader | Control |
+|---|---|---|---|---|---|
+| `mcp` | bind address | `PROXIMA_MCP_BIND` | `mcp_bind(..)` | — | — |
+| `flavor-workers` | a linked flavor's `FlavorBundle::spawn_workers` returns ≥1 | — | — | — | — |
+| `embedding-worker` | embedding client or router; startup reconcile, then drain | host-built (`proxima-mcp`: `PROXIMA_EMBED_*`) | `embed_client(..)` / `embedding_router(..)` | — | `feature_control(Feature::EmbeddingWorker)` |
+| `outbox-publisher` | broker URL | `PROXIMA_NATS_URL` | `nats(..)` | `publisher_health()` | `feature_control(Feature::OutboxPublisher)` |
+| `published-record-prune` | publisher runs ∧ retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | `published_retention(..)` | — | — |
+| `copy-cleaner` | cleaner section (broker required) | `PROXIMA_COPY_CLEANER_URL` | `copy_cleaner(..)` | `copy_cleaner_health()` | — |
 
 - Config: one typed section per feature, from env (`from_env` /
   `from_lookup`) or code (`Proxima<A>` builder calls, `RuntimeBuilder` in
@@ -176,10 +176,78 @@ enable flags, no spawn calls.
   either URL in a build without the `outbox-nats` cargo feature.
 - Several processes with the same config are safe: publisher claims are
   leased and fenced (see [18](18-fact-outbox.md)).
+- Quiesce and resume, without stopping the server: the Control column,
+  [below](#quiesce-and-resume).
 
 `BuiltProxima`, `RunningProxima` and `AppContext` reach one host accessor
 set the same way, `.host()` → `ProximaHost` (engine, registry, blobs,
 `*_for_host` handles).
+
+<a id="quiesce-and-resume"></a>
+### Quiesce and resume
+
+Pauses the two claim-based background workers while the server keeps
+serving. `shutdown(self)` is the only other stop and ends serving too.
+
+`feature_control(feature: Feature) -> Option<FeatureControl>` on
+`BuiltProxima` and `RunningProxima`: `Some` for a started `embedding-worker`
+or `outbox-publisher`. `None` for a feature that is off, and for `mcp`,
+`flavor-workers`, `published-record-prune` and `copy-cleaner`: the runtime
+has no gate for them. `FeatureControl` is owned and `Clone`, so a host can move it into a
+signal handler and still call `shutdown(self)` later; it outlives the
+shutdown.
+
+```rust
+impl FeatureControl {
+    pub async fn quiesce(&self) -> Result<(), FeatureControlError>;
+    pub fn resume(&self) -> Result<(), FeatureControlError>;
+    pub fn status(&self) -> FeatureStatus;
+}
+pub enum FeatureStatus { Running, Quiescing, Quiescent, Stopped }
+#[non_exhaustive]
+pub enum FeatureControlError { Stopped, Resumed }
+```
+
+| State | `quiesce()` | `resume()` | runtime shutdown |
+|---|---|---|---|
+| `Running` | gate closes, then `Quiescing`, then `Ok` once the worker has parked | `Ok`, no change | `Stopped` |
+| `Quiescing` | joins the same settlement | back to `Running`; pending `quiesce()` calls return `Resumed` | pending calls return `Stopped` |
+| `Quiescent` | `Ok` at once | back to `Running` | `Stopped` |
+| `Stopped` | `Err(Stopped)` | `Err(Stopped)` | already stopped |
+
+- **An acknowledged pause.** `quiesce()` returns only after the worker task
+  itself has parked, so no claim starts after it returns. Dropping the
+  future does not reopen the gate.
+- **Embedding worker:** the `Engine::drain_embedding_jobs` call in progress
+  returns first, so every claim of that call is completed, failed or
+  released, including when the call ends on a storage error: it first
+  returns the claims it still holds to `pending`. The worker then neither
+  claims nor reclaims stale claims; both belong to the drain call. The
+  startup reconcile is the other queue writer: it enqueues missing jobs and
+  reclaims stale ones, and claims none. It runs before the first gate check,
+  so a quiesce that arrives during it waits for it; `resume()` does not
+  repeat it (boot-time catch-up).
+- **Publisher:** finishes the record in flight and releases the rest of its
+  batch; a publisher still connecting parks without waiting for the broker.
+  Its task, broker connection and health reader stay alive
+  ([18 §Publisher quiesce](18-fact-outbox.md#publisher-quiesce)).
+- Quiesce and resume interrupt the idle sleep: neither waits a poll
+  interval. `resume()` reopens the gate and wakes the worker.
+- **Quiescent is not drained.** Serving continues, so a write accepted while
+  the worker is quiescent still enqueues its embedding job and its outbox
+  record. `status()` says nothing about queue depth; a host that must know
+  the queue is empty reads it (the `core/get_graph` MCP tool reports
+  `pending_embedding_jobs` per owner).
+- **Lease caveat.** Quiescent means this process acts on no claim it holds.
+  A release that failed leaves its lease to expire (publisher:
+  `PROXIMA_NATS_LEASE_SECS`, default 30; embedding jobs: the policy's
+  stale-claim timeout), so it does not mean no row is `claimed`. Claims stay leased and fenced: a late acknowledgement from a
+  quiesced process is refused as stale.
+- **Not gated:** a host that calls `Engine::drain_embedding_jobs` itself
+  (maintenance runs, tests) stays outside the gate. The gate is the
+  runtime's two loops, not the engine's claim path.
+- Serving is unaffected: the listener and `/readyz` read only the pool and
+  the shutdown token, not feature state.
 
 <a id="mcp-endpoint-and-auth"></a>
 ## MCP Endpoint and Authentication

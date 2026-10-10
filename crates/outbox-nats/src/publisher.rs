@@ -15,9 +15,11 @@ use std::time::Duration;
 use async_nats::jetstream;
 use async_nats::jetstream::context::PublishErrorKind;
 use bytes::Bytes;
+use proxima_core::quiesce::Checkpoint;
 use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimedPublication, PublicationOutboxPort, ReleaseOutcome,
 };
+use proxima_core::{GateWorker, QuiesceGate};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{NatsPublisherConfig, subject_for};
@@ -177,6 +179,7 @@ impl PublisherHealthReader {
 
 pub struct SupervisedPublisher {
     health: PublisherHealthReader,
+    gate: QuiesceGate,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -192,6 +195,15 @@ impl SupervisedPublisher {
     #[must_use]
     pub fn health(&self) -> &PublisherHealthReader {
         &self.health
+    }
+
+    /// The pause control of the publisher task: [`QuiesceGate::quiesce`]
+    /// finishes the record in flight, hands the rest of the batch back and
+    /// parks the task with its broker connection kept; [`QuiesceGate::resume`]
+    /// claims again.
+    #[must_use]
+    pub const fn quiesce_gate(&self) -> &QuiesceGate {
+        &self.gate
     }
 
     #[must_use]
@@ -285,9 +297,11 @@ fn log_drain_failure(error: &PublisherError) {
     );
 }
 
-/// Spawn the single publisher loop and expose only a read-only health view.
+/// Spawn the single publisher loop and expose a read-only health view and
+/// the pause control ([`SupervisedPublisher::quiesce_gate`]).
 /// The supplied housekeeping future starts after the first successful broker
-/// connection, matching the publisher's retained-record cleanup lifecycle.
+/// connection, matching the publisher's retained-record cleanup lifecycle;
+/// a quiesce does not pause it, because it claims no queue row.
 pub fn spawn_supervised<F, Fut>(
     config: NatsPublisherConfig,
     outbox: Arc<dyn PublicationOutboxPort>,
@@ -303,16 +317,25 @@ where
         inner: inner.clone(),
     };
     let guard = PublisherTaskGuard { inner };
+    let (gate, mut worker) = QuiesceGate::new();
     let task = tokio::spawn(async move {
         let guard = guard;
         guard.set_task(PublisherTaskState::Running);
         let mut backoff = Duration::from_secs(1);
         let publisher = loop {
-            if cancel.is_cancelled() {
+            // A quiesced publisher holds no claim and opens no connection, so
+            // it parks here without waiting for the broker.
+            if worker.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                 return;
             }
             guard.set_connection(PublisherConnectionState::Pending);
-            match JetStreamPublisher::connect(config.clone(), outbox.clone()).await {
+            let attempt = JetStreamPublisher::connect(config.clone(), outbox.clone());
+            let connected = tokio::select! {
+                // A quiesce or resume ends the attempt; the loop re-reads the gate.
+                () = worker.changed() => continue,
+                connected = attempt => connected,
+            };
+            match connected {
                 Ok(publisher) => {
                     guard.attach(publisher.context.client());
                     break publisher;
@@ -338,6 +361,7 @@ where
                     log_connect_failure(&error, backoff);
                     tokio::select! {
                         () = cancel.cancelled() => return,
+                        () = worker.changed() => continue,
                         () = tokio::time::sleep(backoff) => {}
                     }
                     backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
@@ -345,9 +369,9 @@ where
             }
         };
         let housekeeping = housekeeping(cancel.clone());
-        tokio::join!(publisher.run_observed(cancel, guard), housekeeping);
+        tokio::join!(publisher.run_observed(cancel, guard, worker), housekeeping);
     });
-    SupervisedPublisher { health, task }
+    SupervisedPublisher { health, gate, task }
 }
 
 /// What the publisher does after the broker acknowledged one record and
@@ -476,10 +500,18 @@ impl JetStreamPublisher {
     /// failures. An error is returned only when NO record got through, so
     /// an error means the broker — not one envelope — is the problem.
     pub async fn drain_once(&self) -> Result<DrainReport, PublisherError> {
-        self.drain_batch(&CancellationToken::new()).await
+        let (_, never_closed) = QuiesceGate::new();
+        self.drain_batch(&CancellationToken::new(), &never_closed)
+            .await
     }
 
-    /// [`Self::drain_once`], abandoning the batch when `cancel` fires.
+    /// [`Self::drain_once`], abandoning the batch when `cancel` fires and
+    /// handing back the unattempted rest of it when `gate` is closing.
+    ///
+    /// A quiesce lets the record in flight finish: it is published and
+    /// recorded, or fails, like any other. Only the records not yet started
+    /// are released, so settling costs one publish timeout, not a batch of
+    /// them. Shutdown also abandons the publish in flight.
     ///
     /// Per-record failures are ISOLATED. One envelope the broker will never
     /// accept — over `max_msg_size`, or over the server's `max_payload` —
@@ -489,7 +521,11 @@ impl JetStreamPublisher {
     /// back and the pass continues; the storage port's `attempts ASC`
     /// ordering demotes it behind fresher work on the next claim, so it
     /// costs one slot per pass.
-    async fn drain_batch(&self, cancel: &CancellationToken) -> Result<DrainReport, PublisherError> {
+    async fn drain_batch(
+        &self,
+        cancel: &CancellationToken,
+        gate: &GateWorker,
+    ) -> Result<DrainReport, PublisherError> {
         let claimed = self
             .outbox
             .claim(
@@ -506,13 +542,18 @@ impl JetStreamPublisher {
         let mut first_error: Option<PublisherError> = None;
         let mut pending = claimed.into_iter();
         while let Some(record) = pending.next() {
-            match self.deliver(&record, &mut report, cancel).await {
+            let flow = if gate.is_closing() {
+                Ok(Flow::HandBack)
+            } else {
+                self.deliver(&record, &mut report, cancel).await
+            };
+            match flow {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Abort) => return Ok(report),
-                Ok(Flow::Cancelled) => {
-                    // Shutdown, not failure: hand back everything this pass
-                    // still holds so the next process does not wait out a
-                    // lease for work nobody is doing.
+                Ok(Flow::HandBack) => {
+                    // Shutdown or a quiesce, not failure: hand back everything
+                    // this pass still holds so the next process does not wait
+                    // out a lease for work nobody is doing.
                     self.release(&record, &mut report).await;
                     for rest in pending {
                         self.release(&rest, &mut report).await;
@@ -542,30 +583,35 @@ impl JetStreamPublisher {
     /// on a broker outage would turn a recoverable delivery pause into a
     /// silent permanent one, and capture keeps running either way.
     pub async fn run(self, cancel: CancellationToken) -> DrainSummary {
-        self.run_inner(cancel, None).await
+        let (_, never_closed) = QuiesceGate::new();
+        self.run_inner(cancel, None, never_closed).await
     }
 
     async fn run_observed(
         self,
         cancel: CancellationToken,
         health: PublisherTaskGuard,
+        gate: GateWorker,
     ) -> DrainSummary {
-        self.run_inner(cancel, Some(health)).await
+        self.run_inner(cancel, Some(health), gate).await
     }
 
     async fn run_inner(
         self,
         cancel: CancellationToken,
         health: Option<PublisherTaskGuard>,
+        mut gate: GateWorker,
     ) -> DrainSummary {
         let mut summary = DrainSummary::default();
         let mut backoff = self.config.poll_interval;
         loop {
-            if cancel.is_cancelled() {
+            // Before every claim: a quiesced publisher parks here, holding
+            // nothing, until it is resumed or cancelled.
+            if gate.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                 return summary;
             }
             summary.passes += 1;
-            let idle = match self.drain_batch(&cancel).await {
+            let idle = match self.drain_batch(&cancel, &gate).await {
                 Ok(report) => {
                     if let Some(health) = &health {
                         health.set_drain(if report.failed == 0 {
@@ -610,6 +656,7 @@ impl JetStreamPublisher {
             if idle {
                 tokio::select! {
                     () = cancel.cancelled() => return summary,
+                    () = gate.changed() => {}
                     () = tokio::time::sleep(backoff) => {}
                 }
             }
@@ -628,7 +675,7 @@ impl JetStreamPublisher {
         cancel: &CancellationToken,
     ) -> Result<Flow, PublisherError> {
         if cancel.is_cancelled() {
-            return Ok(Flow::Cancelled);
+            return Ok(Flow::HandBack);
         }
         let subject = subject_for(
             &self.config.subject_prefix,
@@ -656,7 +703,7 @@ impl JetStreamPublisher {
         // that this is what was committed.
         let payload = Bytes::copy_from_slice(&record.envelope);
         let ack = tokio::select! {
-            () = cancel.cancelled() => return Ok(Flow::Cancelled),
+            () = cancel.cancelled() => return Ok(Flow::HandBack),
             ack = self.context.publish_with_headers(subject, headers, payload) => ack,
         };
         let ack = match ack {
@@ -664,7 +711,7 @@ impl JetStreamPublisher {
             Err(error) => return Err(refuse(record, &error)),
         };
         let ack = tokio::select! {
-            () = cancel.cancelled() => return Ok(Flow::Cancelled),
+            () = cancel.cancelled() => return Ok(Flow::HandBack),
             ack = tokio::time::timeout(self.config.publish_timeout, ack) => ack,
         };
         let ack = match ack {
@@ -754,8 +801,8 @@ enum Flow {
     /// Stop the pass, leaving this record and every unattempted claim
     /// leased — the injected "the process died here".
     Abort,
-    /// Stop the pass and hand every claim back — shutdown.
-    Cancelled,
+    /// Stop the pass and hand every claim back — shutdown or a quiesce.
+    HandBack,
 }
 
 /// Classify one publish failure, and say so at `error` level when the
@@ -949,6 +996,60 @@ mod tests {
         assert_eq!(snapshot.task, PublisherTaskState::Stopped);
         assert_eq!(snapshot.connection, PublisherConnectionState::NotObserved);
         assert!(!snapshot.is_ready());
+    }
+
+    /// A broker that accepts the connection and never speaks: the client
+    /// sits in its connect attempt, waiting for the server's INFO.
+    async fn mute_broker() -> (tokio::net::TcpListener, NatsPublisherConfig) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let mut config =
+            NatsPublisherConfig::new(format!("nats://{addr}")).expect("publisher configuration");
+        // The connect attempt outlasts the test: a quiesce that waited for it
+        // would exceed the bound below.
+        config.publish_timeout = Duration::from_secs(30);
+        (listener, config)
+    }
+
+    #[tokio::test]
+    async fn a_publisher_still_connecting_quiesces_without_waiting_for_the_broker() {
+        let (broker, config) = mute_broker().await;
+        let cancel = CancellationToken::new();
+        let supervised =
+            spawn_supervised(config, Arc::new(EmptyOutbox), cancel.clone(), |_| async {});
+        let gate = supervised.quiesce_gate().clone();
+        let (health, task) = supervised.into_parts();
+
+        // The publisher dialed and is blocked in its connect attempt.
+        let (_held, _) = broker.accept().await.expect("the publisher dials");
+        assert_eq!(
+            health.snapshot().connection,
+            PublisherConnectionState::Pending
+        );
+
+        let quiesced = tokio::time::timeout(Duration::from_secs(5), gate.quiesce())
+            .await
+            .expect("quiesce does not wait for the broker");
+        assert_eq!(quiesced, Ok(()));
+        assert_eq!(gate.status(), proxima_core::FeatureStatus::Quiescent);
+        assert_eq!(
+            health.snapshot().task,
+            PublisherTaskState::Running,
+            "the task stays alive across a quiesce"
+        );
+
+        // Resume dials again: the second connection is the signal.
+        assert_eq!(gate.resume(), Ok(()));
+        let (_redialed, _) = broker.accept().await.expect("resume dials again");
+
+        // Shutdown while quiescent: a parked task ends at once on cancel.
+        assert_eq!(gate.quiesce().await, Ok(()));
+        cancel.cancel();
+        task.await.expect("task ends");
+        assert_eq!(gate.status(), proxima_core::FeatureStatus::Stopped);
+        assert_eq!(health.snapshot().task, PublisherTaskState::Stopped);
     }
 
     #[test]

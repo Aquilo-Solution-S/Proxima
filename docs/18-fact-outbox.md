@@ -371,6 +371,37 @@ keep the NATS client alive. This observation does not prove publish permission
 or deployment stream topology; only actual publication and deployment-owned
 topology checks establish those facts.
 
+<a id="publisher-quiesce"></a>
+### Publisher quiesce
+
+`feature_control(Feature::OutboxPublisher)` pauses claiming without stopping
+the task or the server ([10 §Quiesce and resume](10-configuration.md#quiesce-and-resume)).
+
+- `quiesce()` lets the record in flight finish: a record whose `PubAck`
+  arrived is recorded with `mark_published`, not dropped. The unattempted
+  rest of the claimed batch is released to `pending`, as on shutdown, and
+  the task parks before its next claim. Settling costs at most one publish
+  timeout, not a batch of them. Shutdown differs: it abandons the publish in
+  flight (the same bytes republish under the same `id`).
+- A publisher still connecting holds no claim: it drops the attempt and
+  parks without waiting for the broker; `resume()` dials again.
+- The task and the broker client stay alive, and the task stays `Running`.
+  Connection health is not frozen by the pause and stays observable through
+  `PublisherHealthReader`: a publisher quiesced while connecting stays
+  `Pending`, and a parked client can disconnect. Quiescent does not imply
+  `Connected`. `FeatureControl::status()` is what reports the pause.
+- Capture continues. A Fact accepted while the publisher is quiescent still
+  commits its outbox record in its own transaction, and the record stays
+  `pending` until `resume()`: quiescent is not drained. The published-record
+  prune keeps running; it deletes delivered records only.
+- Lease caveat: a release that failed (`PROXIMA_NATS_LEASE_SECS`, default
+  30) leaves its lease to expire, so quiescent does not mean no row is
+  `claimed`. A late acknowledgement from a quiesced process is refused as
+  stale.
+- Kernel: `Causa/Publication.lean` excludes publication liveness and proves
+  only the safety half of at-least-once. A pause changes when records are
+  published, not how a duplicate is identified.
+
 `ReferenceConsumer::into_observed_parts` returns a read-only health reader and
 the consumer's existing fetch/ACK future. The compatibility `run` method uses
 that same loop. Health keeps task, live connection, and latest consume-pass

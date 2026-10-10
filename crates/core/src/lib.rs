@@ -38,6 +38,7 @@ pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
 pub mod publication;
+pub mod quiesce;
 pub mod read_models;
 pub mod scope;
 pub mod storage;
@@ -97,6 +98,7 @@ pub use publication::{
     PublicationExtensions, PublicationExtensionsError, PublicationLimits, PublicationPlan,
     PublicationSource, PublicationSourceError, SealedPublication, data_schema_uri,
 };
+pub use quiesce::{FeatureControlError, FeatureStatus, GateWorker, QuiesceGate};
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
 pub use storage::*;
