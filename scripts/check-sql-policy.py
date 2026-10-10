@@ -889,7 +889,14 @@ def run_fixture(path: Path) -> int:
 # `push_atom`. `DeclaredBefore` is one `format!` execution splicing the same
 # sidecar/key and a catalog-resolved `timestamptz` column; its four values
 # are bound.
-EXPECTED_DYNAMIC_SQL_SITES = 197
+# 197 -> 198: `read_ledger` (`crates/proxima/src/migrations.rs`), the one
+# ledger read the runner's lineage check, the preflight and `pending_migrations`
+# share: `SELECT version, checksum, success FROM {ledger}`. The table is the
+# migrator's compiled-in name (a flavor's `flavor_ledger_table`, or a table its
+# crate declares), the ledger name `SQLx` itself interpolates in its own
+# ledger read; no caller value reaches the statement and no row value is
+# spliced.
+EXPECTED_DYNAMIC_SQL_SITES = 198
 
 
 def run_self_test() -> int:

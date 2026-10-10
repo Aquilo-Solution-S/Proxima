@@ -159,9 +159,24 @@ fn embedded_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
 /// retired versions and post-baseline checksum drift, and for catalog query
 /// failures.
 pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageError> {
+    let mut connection = pool.acquire().await.map_err(internal)?;
+    ensure_core_ledger_compatible_on_connection(&mut connection).await
+}
+
+/// [`ensure_core_ledger_compatible`] on a connection the caller holds, so the
+/// check reads the same snapshot as the caller's other queries: a read-only
+/// migration plan runs it inside its `REPEATABLE READ` transaction. Issues
+/// only `SELECT`s.
+///
+/// # Errors
+///
+/// The errors of [`ensure_core_ledger_compatible`].
+pub async fn ensure_core_ledger_compatible_on_connection(
+    connection: &mut PgConnection,
+) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
-            .fetch_one(pool)
+            .fetch_one(&mut *connection)
             .await
             .map_err(internal)?;
 
@@ -178,7 +193,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
           ORDER BY table_schema, table_name
           LIMIT 20",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .map_err(internal)?;
 
@@ -192,7 +207,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
               ORDER BY version",
         )
         .bind(CORE_MIGRATION_VERSION_CEILING)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(internal)?;
     }

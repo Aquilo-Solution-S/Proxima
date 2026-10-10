@@ -98,6 +98,14 @@ encryption for searched columns: `embeddings.vec`, sidecar text, `tags`.
 Run migrations with a DDL-capable role; run the app with a narrower DML
 role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never attempts DDL.
 
+Before a rolling upgrade's migration step, `proxima::host::pending_migrations`
+lists the ledger, version, description and checksum of every migration the step
+would apply, from one snapshot taken under the migration lock
+([how-to/migrations.md §Migration plan](how-to/migrations.md#migration-plan)).
+It needs only `SELECT` on the ledgers, so the runtime role of the generation
+still serving can ask, and it writes nothing. It is not a compatibility claim:
+the list does not say whether the previous binary tolerates what it names.
+
 Migrations run automatically on first boot when that variable is unset. Check
 [07](07-storage.md) / [how-to/migrations.md](how-to/migrations.md) before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
@@ -163,7 +171,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Crash-reclaim window; range `1..=86400`, strictly greater than request timeout. Must cover the longest honest drain interval between successful claim renewals. Live claims heartbeat every third of the window; claim-token fencing rejects writes after a real reclaim. |
-| `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |
+| `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. `pending_migrations` lists what the migration step would apply. |
 | `PROXIMA_PUBLICATION_SOURCE` | when listenable | `urn:proxima:acme-prod` | Producer identity URI in every published CloudEvent. Required once a listenable Fact type is registered; boot fails otherwise. |
 | `PROXIMA_NATS_URL` | no | `nats://nats:4222` | JetStream server. Unset ⇒ publisher off, capture retained. Needs the `nats` cargo feature. |
 | `PROXIMA_NATS_*` | no | see [10](10-configuration.md#framework-facade-host-app-boot) | Broker URL/auth, source subject prefix, and publisher claim/retry tuning. Stream topology is provisioned separately. |
