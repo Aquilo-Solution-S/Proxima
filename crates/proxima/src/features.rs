@@ -10,7 +10,8 @@ use std::sync::Arc;
 #[cfg(feature = "outbox-nats")]
 use std::time::Duration;
 
-use proxima_core::{Engine, FlavorServices};
+use proxima_core::quiesce::Checkpoint;
+use proxima_core::{Engine, FeatureControlError, FeatureStatus, FlavorServices, QuiesceGate};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -77,6 +78,81 @@ impl Feature {
             Self::PublishedRecordPrune => 4,
             Self::CopyCleaner => 5,
         }
+    }
+}
+
+/// The pause and resume handle of one started claim-based feature.
+///
+/// [`BuiltProxima::feature_control`](crate::BuiltProxima::feature_control) and
+/// [`RunningProxima::feature_control`](crate::RunningProxima::feature_control)
+/// return it for the [`Feature::EmbeddingWorker`] and the
+/// [`Feature::OutboxPublisher`] only. It is owned and cheap to clone, so a host
+/// can move one into a signal handler and still call `shutdown(self)` later.
+///
+/// A host cannot build one; it only receives them from the runtime:
+///
+/// ```compile_fail,E0624
+/// let (gate, _worker) = proxima_core::QuiesceGate::new();
+/// let _ = proxima::FeatureControl::new(proxima::Feature::EmbeddingWorker, gate);
+/// ```
+#[derive(Debug, Clone)]
+pub struct FeatureControl {
+    feature: Feature,
+    gate: QuiesceGate,
+}
+
+impl FeatureControl {
+    pub(crate) const fn new(feature: Feature, gate: QuiesceGate) -> Self {
+        Self { feature, gate }
+    }
+
+    /// The feature this handle controls.
+    #[must_use]
+    pub const fn feature(&self) -> Feature {
+        self.feature
+    }
+
+    /// Stop the feature from claiming, and wait until it holds nothing.
+    ///
+    /// Closes the gate, then resolves once the worker task itself has parked:
+    /// no claim starts after it returns, and the embedding worker's current
+    /// `drain_embedding_jobs` call, or the publisher's record in flight, has
+    /// settled. Concurrent calls resolve together; on a quiescent feature it
+    /// resolves at once. The task, its broker connection and its health
+    /// reader stay alive.
+    ///
+    /// Quiescent is not drained. Serving continues, so writes accepted now
+    /// still enqueue embedding jobs and outbox records, and they wait for
+    /// [`Self::resume`]. A release that failed leaves its lease to expire
+    /// (`PROXIMA_NATS_LEASE_SECS`; the embedding policy's stale-claim
+    /// timeout), so quiescent does not mean no row is `claimed`. A host that calls `Engine::drain_embedding_jobs` itself is
+    /// not gated. Dropping the future does not reopen the gate.
+    ///
+    /// # Errors
+    ///
+    /// [`FeatureControlError::Stopped`] when the feature has stopped, also
+    /// while the call is pending; [`FeatureControlError::Resumed`] when
+    /// [`Self::resume`] reopens the gate while the call is pending.
+    pub async fn quiesce(&self) -> Result<(), FeatureControlError> {
+        self.gate.quiesce().await
+    }
+
+    /// Reopen the gate and wake the worker, which claims again at once. It
+    /// does not repeat the embedding worker's startup reconcile. `Ok` and no
+    /// change on a running feature.
+    ///
+    /// # Errors
+    ///
+    /// [`FeatureControlError::Stopped`] when the feature has stopped.
+    pub fn resume(&self) -> Result<(), FeatureControlError> {
+        self.gate.resume()
+    }
+
+    /// Where the feature is in its pause/resume cycle. Says nothing about
+    /// queue depth.
+    #[must_use]
+    pub fn status(&self) -> FeatureStatus {
+        self.gate.status()
     }
 }
 
@@ -207,9 +283,9 @@ pub(crate) struct PublicationHandles {
 pub(crate) struct Features {
     pub(crate) report: BootReport,
     workers: Vec<FlavorWorker>,
-    embedding: Option<JoinHandle<()>>,
+    embedding: Option<(QuiesceGate, JoinHandle<()>)>,
     #[cfg(feature = "outbox-nats")]
-    publisher: Option<(proxima_outbox_nats::PublisherHealthReader, JoinHandle<()>)>,
+    publisher: StartedPublisher,
     #[cfg(feature = "outbox-nats")]
     cleaner: Option<(proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>)>,
 }
@@ -234,7 +310,7 @@ impl Features {
     /// The running publisher's health; `None` when it is off.
     #[cfg(feature = "outbox-nats")]
     pub(crate) fn publisher_health(&self) -> Option<proxima_outbox_nats::PublisherHealthReader> {
-        self.publisher.as_ref().map(|(reader, _)| reader.clone())
+        self.publisher.as_ref().map(|(reader, _, _)| reader.clone())
     }
 
     /// The running cleaner's health; `None` when it is off.
@@ -245,6 +321,26 @@ impl Features {
         self.cleaner.as_ref().map(|(reader, _)| reader.clone())
     }
 
+    /// The pause control of `feature`; `None` unless it is a started worker
+    /// that claims queue rows through a gate. The match names every feature,
+    /// so a new one must decide whether it claims.
+    pub(crate) fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
+        let gate = match feature {
+            Feature::EmbeddingWorker => self.embedding.as_ref().map(|(gate, _)| gate),
+            #[cfg(feature = "outbox-nats")]
+            Feature::OutboxPublisher => self.publisher.as_ref().map(|(_, gate, _)| gate),
+            #[cfg(not(feature = "outbox-nats"))]
+            Feature::OutboxPublisher => None,
+            // Serving continues by definition; the other three claim no
+            // queue row through the runtime's gate.
+            Feature::Mcp
+            | Feature::FlavorWorkers
+            | Feature::PublishedRecordPrune
+            | Feature::CopyCleaner => None,
+        }?;
+        Some(FeatureControl::new(feature, gate.clone()))
+    }
+
     /// Join every started task. The caller cancelled their token first.
     pub(crate) async fn join(self) {
         for worker in self.workers {
@@ -252,13 +348,13 @@ impl Features {
                 tracing::warn!(worker = worker.name, error = %err, "flavor worker join failed");
             }
         }
-        if let Some(embedding) = self.embedding
+        if let Some((_, embedding)) = self.embedding
             && let Err(err) = embedding.await
         {
             tracing::warn!(error = %err, "embedding worker join failed");
         }
         #[cfg(feature = "outbox-nats")]
-        if let Some((_, publisher)) = self.publisher
+        if let Some((_, _, publisher)) = self.publisher
             && let Err(err) = publisher.await
         {
             tracing::warn!(error = %err, "outbox publisher join failed");
@@ -364,7 +460,11 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
 }
 
 #[cfg(feature = "outbox-nats")]
-type StartedPublisher = Option<(proxima_outbox_nats::PublisherHealthReader, JoinHandle<()>)>;
+type StartedPublisher = Option<(
+    proxima_outbox_nats::PublisherHealthReader,
+    QuiesceGate,
+    JoinHandle<()>,
+)>;
 
 /// The publisher, and the prune that rides on it.
 #[cfg(feature = "outbox-nats")]
@@ -417,8 +517,10 @@ fn start_publisher(
         retention,
         inputs.cancel.child_token(),
     );
+    let gate = supervised.quiesce_gate().clone();
+    let (health, task) = supervised.into_parts();
     (
-        Some(supervised.into_parts()),
+        Some((health, gate, task)),
         FeatureDecision::started(
             Feature::OutboxPublisher,
             "a broker is configured (PROXIMA_NATS_URL / nats)",
@@ -548,9 +650,22 @@ async fn prune_published_records(
 }
 
 /// Startup reconcile, then drain until cancellation. Started only when the
-/// engine has an embedding router.
-fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> JoinHandle<()> {
-    tokio::spawn(async move {
+/// engine has an embedding router. Returns the worker's pause control and
+/// its task.
+///
+/// The gate is checked before every `drain_embedding_jobs` call, which claims
+/// jobs and reclaims stale `processing` ones: a quiesce lets the call in
+/// progress return, then parks. The startup reconcile is the other site that
+/// touches the queue: it enqueues missing jobs and reclaims stale
+/// `processing` ones (storage-pg `reconcile_embeddings`), and claims none.
+/// It runs before the first checkpoint, so a quiesce that arrives during it
+/// waits for it.
+fn spawn_embedding_worker(
+    engine: Arc<Engine>,
+    cancel: CancellationToken,
+) -> (QuiesceGate, JoinHandle<()>) {
+    let (control, mut gate) = QuiesceGate::new();
+    let task = tokio::spawn(async move {
         let policy = engine.embedding_runtime_policy();
         // Boot-time catch-up, not a recurring clock: memories written while
         // no embedding client was configured never got a job (and exhausted
@@ -584,7 +699,7 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
             let mut processed = 0usize;
             let mut failed = 0usize;
             loop {
-                if cancel.is_cancelled() {
+                if gate.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                     return;
                 }
                 match engine.drain_embedding_jobs(policy.batch_size()).await {
@@ -604,10 +719,12 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
             }
             tokio::select! {
                 () = cancel.cancelled() => break,
+                () = gate.changed() => {}
                 () = tokio::time::sleep(policy.worker_interval()) => {}
             }
         }
-    })
+    });
+    (control, task)
 }
 
 #[cfg(all(test, feature = "outbox-nats"))]

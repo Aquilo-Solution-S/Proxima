@@ -265,6 +265,13 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Needed by `BuiltProxima::feature_control`, `RunningProxima::feature_control` and the
+    // `FeatureControl` they return.
+    feature_control {
+        host_only: [FeatureControl, FeatureControlError, FeatureStatus],
+        both_tiers: [],
+    }
+
     // Needed by `pending_migrations`, the read-only plan beside the runner.
     pending_migrations {
         host_only: [PendingMigration, pending_migrations],

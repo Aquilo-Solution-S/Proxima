@@ -14,8 +14,8 @@ use proxima::flavor::{
     NamedMigrator,
 };
 use proxima::{
-    AppInfo, BootReport, Feature, FeatureState, FlavorApp, Proxima, ProximaError, ToolScope,
-    company_owner,
+    AppInfo, BootReport, Feature, FeatureControl, FeatureControlError, FeatureState, FeatureStatus,
+    FlavorApp, Proxima, ProximaError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
@@ -244,6 +244,54 @@ impl Health {
     }
 }
 
+/// Only the two workers that claim queue rows through the runtime's gate have
+/// a control; every other feature, started or off, has none. Each control
+/// quiesces and resumes, the publisher included against a broker nothing
+/// listens on. Returns the handles for the after-shutdown check.
+async fn exercise_controls(
+    control: impl Fn(Feature) -> Option<FeatureControl>,
+) -> Vec<FeatureControl> {
+    let mut controls = Vec::new();
+    for feature in Feature::ALL {
+        let controlled = match feature {
+            Feature::EmbeddingWorker => true,
+            Feature::OutboxPublisher => cfg!(feature = "outbox-nats"),
+            Feature::Mcp
+            | Feature::FlavorWorkers
+            | Feature::PublishedRecordPrune
+            | Feature::CopyCleaner => false,
+        };
+        let handle = control(feature);
+        assert_eq!(handle.is_some(), controlled, "{feature}");
+        controls.extend(handle);
+    }
+    for handle in &controls {
+        let feature = handle.feature();
+        assert_eq!(handle.status(), FeatureStatus::Running, "{feature}");
+        tokio::time::timeout(Duration::from_secs(10), handle.quiesce())
+            .await
+            .unwrap_or_else(|_| panic!("{feature} quiesces without waiting for anything"))
+            .unwrap_or_else(|err| panic!("{feature}: {err}"));
+        assert_eq!(handle.status(), FeatureStatus::Quiescent, "{feature}");
+        assert_eq!(handle.resume(), Ok(()), "{feature}");
+        assert_eq!(handle.status(), FeatureStatus::Running, "{feature}");
+    }
+    controls
+}
+
+/// After shutdown every handle reports the feature stopped.
+fn assert_controls_stopped(controls: &[FeatureControl]) {
+    for handle in controls {
+        assert_eq!(
+            handle.status(),
+            FeatureStatus::Stopped,
+            "{}",
+            handle.feature()
+        );
+        assert_eq!(handle.resume(), Err(FeatureControlError::Stopped));
+    }
+}
+
 /// A broker nothing listens on: the tasks start, retry, and still observe
 /// cancellation.
 #[cfg(feature = "outbox-nats")]
@@ -268,6 +316,12 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     let report = built.boot_report().clone();
     assert_all(&report, FeatureState::Off);
     assert!(built.service().is_none(), "no bind address, no MCP router");
+    for feature in Feature::ALL {
+        assert!(
+            built.feature_control(feature).is_none(),
+            "{feature} is off: nothing to control"
+        );
+    }
     #[cfg(feature = "outbox-nats")]
     {
         assert!(built.publisher_health().is_none());
@@ -359,11 +413,13 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
         "build() starts workers"
     );
     let health = health!(built);
+    let controls = exercise_controls(|feature| built.feature_control(feature)).await;
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())
         .await
         .expect("build() shutdown joins every task");
     assert_eq!(WORKERS_STOPPED.load(Ordering::SeqCst), 1, "worker joined");
     health.assert_stopped();
+    assert_controls_stopped(&controls);
 
     // run(): the same features, MCP now listening.
     let running = app().run().await.expect("configured run");
@@ -382,11 +438,13 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
         "run() starts workers"
     );
     let health = health!(running);
+    let controls = exercise_controls(|feature| running.feature_control(feature)).await;
     tokio::time::timeout(Duration::from_secs(10), running.shutdown())
         .await
         .expect("run() shutdown joins every task");
     assert_eq!(WORKERS_STOPPED.load(Ordering::SeqCst), 2, "worker joined");
     health.assert_stopped();
+    assert_controls_stopped(&controls);
 }
 
 /// The prune rides on the publisher: a retention alone starts nothing.
