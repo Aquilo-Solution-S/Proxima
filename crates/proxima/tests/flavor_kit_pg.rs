@@ -95,6 +95,46 @@ const KIT_MIGRATION_VERSION: i64 = 20_260_924_000_012;
 /// section is the installer call; `leave_settings_unclassified` drops one
 /// table from the classification.
 fn kit_sql(leave_settings_unclassified: bool) -> String {
+    let ownerless = if leave_settings_unclassified {
+        "'{}'"
+    } else {
+        "ARRAY['settings']"
+    };
+    kit_sql_with_owner_rls(&[format!(
+        "SELECT proxima_core.install_owner_rls('kittest', ARRAY['sync_cursor'], ARRAY['note_v1'], {ownerless})"
+    )])
+}
+
+/// How a host that adds its tables one migration at a time installs the
+/// fixture's owner RLS: one `install_owner_rls_table` call per table.
+#[derive(Clone, Copy)]
+struct PerTableCalls {
+    /// Whether `settings` gets its call.
+    settings_called: bool,
+    /// Whether the migration ends with `assert_owner_rls_census`.
+    census: bool,
+}
+
+fn kit_per_table_sql(calls: PerTableCalls) -> String {
+    let mut statements = vec![
+        "SELECT proxima_core.install_owner_rls_table('kittest', 'sync_cursor', 'owner_id')"
+            .to_owned(),
+        "SELECT proxima_core.install_owner_rls_table('kittest', 'note_v1', 'fk_parent')".to_owned(),
+    ];
+    if calls.settings_called {
+        statements.push(
+            "SELECT proxima_core.install_owner_rls_table('kittest', 'settings', 'ownerless')"
+                .to_owned(),
+        );
+    }
+    if calls.census {
+        statements.push("SELECT proxima_core.assert_owner_rls_census('kittest')".to_owned());
+    }
+    kit_sql_with_owner_rls(&statements)
+}
+
+/// [`kit_sql`] with the owner-RLS section spelled out.
+fn kit_sql_with_owner_rls(owner_rls: &[String]) -> String {
     let mut registry = FlavorRegistry::new();
     kit::register(&mut registry).expect("the kit fixture registers");
     let registry = registry.try_freeze().expect("and freezes");
@@ -105,11 +145,6 @@ fn kit_sql(leave_settings_unclassified: bool) -> String {
         .freeze_against(&registry)
         .expect("the fixture's PG registrations match its contract");
 
-    let ownerless = if leave_settings_unclassified {
-        "'{}'"
-    } else {
-        "ARRAY['settings']"
-    };
     let mut statements = vec![
         "CREATE SCHEMA kittest".to_owned(),
         "CREATE TABLE kittest.note_v1 (
@@ -132,9 +167,7 @@ fn kit_sql(leave_settings_unclassified: bool) -> String {
             .into_iter()
             .map(|artifact| artifact.forward),
     );
-    statements.push(format!(
-        "SELECT proxima_core.install_owner_rls('kittest', ARRAY['sync_cursor'], ARRAY['note_v1'], {ownerless})"
-    ));
+    statements.extend(owner_rls.iter().cloned());
     statements.extend(
         sidecars
             .presence_trigger_artifacts("kittest")
@@ -152,6 +185,19 @@ fn kit_migrator(leave_settings_unclassified: bool) -> Migrator {
             Cow::Borrowed("kit baseline"),
             MigrationType::Simple,
             sqlx::AssertSqlSafe(kit_sql(leave_settings_unclassified)).into_sql_str(),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+fn kit_per_table_migrator(calls: PerTableCalls) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            KIT_MIGRATION_VERSION,
+            Cow::Borrowed("kit baseline, one owner-RLS call per table"),
+            MigrationType::Simple,
+            sqlx::AssertSqlSafe(kit_per_table_sql(calls)).into_sql_str(),
             false,
         )]),
         ..Migrator::DEFAULT
@@ -222,6 +268,48 @@ mod kit_gap {
         contract = &super::KIT_CONTRACT,
         migrations = super::kit_migrator(true),
         app = { title = "Kit fixture, one table unclassified" },
+    }
+}
+
+mod kit_per_table {
+    proxima::flavor_bundle! {
+        bundle = KitPerTableFlavor,
+        name = "kittest",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_per_table_migrator(super::PerTableCalls {
+            settings_called: true,
+            census: true,
+        }),
+        app = { title = "Kit fixture, one owner-RLS call per table" },
+    }
+}
+
+mod kit_forgotten_table {
+    proxima::flavor_bundle! {
+        bundle = KitForgottenTableFlavor,
+        name = "kittest",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_per_table_migrator(super::PerTableCalls {
+            settings_called: false,
+            census: false,
+        }),
+        app = { title = "Kit fixture, one table without a call" },
+    }
+}
+
+mod kit_forgotten_table_census {
+    proxima::flavor_bundle! {
+        bundle = KitForgottenTableCensusFlavor,
+        name = "kittest",
+        fact_schemas = [super::KitNoteV1],
+        contract = &super::KIT_CONTRACT,
+        migrations = super::kit_per_table_migrator(super::PerTableCalls {
+            settings_called: false,
+            census: true,
+        }),
+        app = { title = "Kit fixture, one table without a call, census at the end" },
     }
 }
 
@@ -415,6 +503,99 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
             "the runtime role reads {ledger} and cannot change it"
         );
     }
+}
+
+/// A host schema built only from per-table calls, ending with the census,
+/// boots under the same runtime RLS guard and enforces the same policies.
+#[tokio::test]
+async fn per_table_installer_calls_boot_under_the_runtime_rls_guard() {
+    let db = SplitRoleDb::create("proxima_flavor_kit_per_table", &[])
+        .await
+        .expect("PG required");
+    let owner = company_owner(Uuid::now_v7());
+    let built = Proxima::<kit_per_table::KitPerTableFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(owner)
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect("a schema of per-table owner-RLS calls passes the runtime RLS guard");
+
+    let authz = scoped_authz(owner);
+    let note = KitNoteV1 {
+        note_id: Uuid::now_v7(),
+        body: "written under per-table owner RLS".to_owned(),
+    };
+    let engine = built.host().engine();
+    let outcome = engine
+        .ingest_fact(
+            &authz,
+            proxima::FactWrite::new(owner, "kittest/boot", &note),
+        )
+        .await
+        .expect("the FK-parent write policy admits the owner's sidecar row");
+    let response = engine
+        .query(&authz, &QueryRequest::readable())
+        .await
+        .expect("owner query");
+    assert!(
+        response
+            .memories
+            .iter()
+            .any(|memory| memory.id == outcome.memory_id),
+        "the owner reads its own note back"
+    );
+    built.shutdown().await;
+}
+
+/// A table added with no call carries none of the policies, and the runtime
+/// RLS guard refuses the boot by name, whether or not a call was made for
+/// its neighbours.
+#[tokio::test]
+async fn a_table_added_without_a_call_refuses_boot() {
+    let db = SplitRoleDb::create("proxima_flavor_kit_forgotten", &[])
+        .await
+        .expect("PG required");
+    let refused = Proxima::<kit_forgotten_table::KitForgottenTableFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(company_owner(Uuid::now_v7()))
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect_err("a table without the policies must refuse the boot");
+    let message = refused.to_string();
+    assert!(message.contains("kittest.settings"), "{message}");
+    assert!(
+        message.contains("ENABLE and FORCE ROW LEVEL SECURITY"),
+        "{message}"
+    );
+}
+
+/// The census a migration ends with raises at migration time, naming the
+/// table.
+#[tokio::test]
+async fn the_census_refuses_a_migration_that_forgot_a_table() {
+    let db = SplitRoleDb::create("proxima_flavor_kit_census", &[])
+        .await
+        .expect("PG required");
+    let refused = Proxima::<kit_forgotten_table_census::KitForgottenTableCensusFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .owner(company_owner(Uuid::now_v7()))
+        .allow_insecure_single_owner()
+        .tool_scope(ToolScope::All)
+        .build()
+        .await
+        .expect_err("the census must refuse a table without the policies");
+    let message = refused.to_string();
+    assert!(
+        message.contains("table kittest.settings lacks ENABLE/FORCE RLS"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
