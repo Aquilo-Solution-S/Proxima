@@ -38,9 +38,9 @@ use proxima::{
     AccessKind, AppContext, AppInfo, Authz, FlavorApp, Proxima, Role, RunningProxima,
     RuntimeBuilder, ToolScope,
 };
-use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::SplitRoleDb;
 use serde_json::{Value, json};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -233,9 +233,8 @@ impl Idp {
 // --- one database, one issuer, two mapped subjects -------------------------
 
 struct Stack {
-    db_name: String,
-    runtime_url: String,
-    platform_url: String,
+    /// Dropped with the stack: the clone is the stack's to tear down.
+    database: SplitRoleDb,
     idp: Idp,
     forwarder: Uuid,
     member: Uuid,
@@ -243,16 +242,12 @@ struct Stack {
 
 impl Stack {
     async fn new() -> Self {
-        let db_name = unique_db_name("proxima_pack_host");
-        create_split_core_db(&db_name)
+        let database = clone_split_core_db("proxima_pack_host")
             .await
             .expect("PG required for tests");
-        let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
         let idp = Idp::start().await.expect("loopback identity provider");
         Self {
-            db_name,
-            runtime_url,
-            platform_url,
+            database,
             idp,
             forwarder: Uuid::now_v7(),
             member: Uuid::now_v7(),
@@ -263,8 +258,11 @@ impl Stack {
     /// entries.
     fn env(&self, overrides: &[(&str, &str)]) -> HashMap<String, String> {
         let mut env: HashMap<String, String> = [
-            ("DATABASE_URL", self.runtime_url.clone()),
-            ("PROXIMA_PLATFORM_DATABASE_URL", self.platform_url.clone()),
+            ("DATABASE_URL", self.database.runtime_url().to_owned()),
+            (
+                "PROXIMA_PLATFORM_DATABASE_URL",
+                self.database.platform_url().to_owned(),
+            ),
             ("PROXIMA_MCP_BIND", "127.0.0.1:0".to_owned()),
             ("PROXIMA_OIDC_ISSUER", self.idp.issuer.clone()),
             ("PROXIMA_OIDC_JWKS_URI", format!("{}/jwks", self.idp.issuer)),
@@ -301,9 +299,9 @@ impl Stack {
         Ok((running, format!("http://{addr}")))
     }
 
-    async fn cleanup(self) {
+    fn cleanup(self) {
         self.idp.server.abort();
-        let _ = drop_db(&self.db_name).await;
+        // The clone drops with `self`.
     }
 }
 
@@ -497,7 +495,7 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
         Ok(())
     }
     .await;
-    stack.cleanup().await;
+    stack.cleanup();
     result.expect("forwarded call test failed");
 }
 
@@ -533,7 +531,7 @@ async fn a_viewer_forwarder_is_refused_the_write_an_editor_forwarder_gets() {
         Ok(())
     }
     .await;
-    stack.cleanup().await;
+    stack.cleanup();
     result.expect("viewer forwarder test failed");
 }
 
@@ -593,7 +591,7 @@ async fn health_probes_answer_anonymously_across_hosts_only_when_enabled() {
         Ok(())
     }
     .await;
-    stack.cleanup().await;
+    stack.cleanup();
     result.expect("health probe test failed");
 }
 
@@ -628,7 +626,7 @@ async fn a_body_over_the_configured_limit_is_refused_413() {
         Ok(())
     }
     .await;
-    stack.cleanup().await;
+    stack.cleanup();
     result.expect("body limit test failed");
 }
 
@@ -720,6 +718,6 @@ async fn sigterm_drains_the_request_in_flight_and_exits_ok() {
         Ok(())
     }
     .await;
-    stack.cleanup().await;
+    stack.cleanup();
     result.expect("SIGTERM drain test failed");
 }

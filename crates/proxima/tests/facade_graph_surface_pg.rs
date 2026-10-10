@@ -21,8 +21,7 @@ use proxima_core::flavor::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, Role, SearchProjectionColumnKind, UserId};
-use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
 fn authenticated(context: AuthzContext) -> AuthzContext {
@@ -69,9 +68,13 @@ fn sdk_new_series() -> proxima::MemoryTarget {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
-    let db_name = unique_db_name("sdk_derived_identity");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_derived_identity")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
@@ -215,16 +218,19 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("typed derivation identity");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
-    let db_name = unique_db_name("sdk_derived_session");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_derived_session")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
@@ -337,16 +343,19 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("typed derivation session visibility");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs() {
-    let db_name = unique_db_name("sdk_derived_access");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_derived_access")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = company_owner(Uuid::now_v7());
@@ -519,7 +528,6 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("typed derivation access");
 }
 
@@ -527,9 +535,13 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
 #[allow(clippy::too_many_lines)]
 async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
     use proxima::flavor::{FactWrite, SeriesHandle};
-    let db_name = unique_db_name("sdk_fact_series");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_fact_series")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = company_owner(Uuid::now_v7());
@@ -625,15 +637,18 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("typed Fact series");
 }
 
 #[tokio::test]
 async fn natural_key_selection_uses_the_authorized_payload() {
-    let db_name = unique_db_name("sdk_nk_binding");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_nk_binding")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
@@ -696,7 +711,6 @@ async fn natural_key_selection_uses_the_authorized_payload() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("natural-key binding");
 }
 
@@ -1124,11 +1138,14 @@ fn facade_flavor_authoring_symbols_are_reachable() {
 #[tokio::test]
 async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloads()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = unique_db_name("proxima_facade_sidecar_integrity");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_facade_sidecar_integrity")
         .await
         .expect("PG required for tests");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let db_name = split_db.name().to_owned();
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1215,7 +1232,6 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result
 }
 
@@ -1450,9 +1466,13 @@ async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
 #[allow(clippy::too_many_lines)]
 async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
     use proxima::flavor::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
-    let db_name = unique_db_name("sdk_read_scope");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("sdk_read_scope")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owners = [
             company_owner(Uuid::now_v7()),
@@ -1538,6 +1558,5 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("authenticated readable scope");
 }

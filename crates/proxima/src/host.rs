@@ -40,6 +40,11 @@ pub use crate::runtime_config::{
 ///
 /// `BlobError` comes with them because `from_env` returns it.
 pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
+/// The Postgres schemas a frozen registry stores into, sorted. Boot derives
+/// its runtime-grant plan, owner-RLS census and platform scope from this
+/// function, so a host that freezes a registry without booting runs the same
+/// checks or grants on the same set.
+pub use proxima_core::composed_schema_names;
 pub use proxima_core::cursor::Cursor;
 /// The read verb a flavor searches its own corpus with.
 ///

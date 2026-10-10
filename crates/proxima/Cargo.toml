@@ -81,8 +81,52 @@ tracing-subscriber = { workspace = true }
 
 [[test]]
 name = "publication_supervision_pg"
-required-features = ["outbox-nats"]
+required-features = ["outbox-nats", "testkit"]
 
 [[test]]
 name = "flavor_kit_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "host_template_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "mcp_call_log_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "pending_migrations_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "publication_boot_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "unit_of_work_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "kind_rule_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "core_mcp_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "stock_pack_host_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "facade_graph_surface_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "unit_of_work_host_state_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "flavor_workers_pg"
 required-features = ["testkit"]

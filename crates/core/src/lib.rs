@@ -118,7 +118,7 @@ pub use verbs::own_erase::{
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
 
-pub use verbs::schema::{FlavorRegistryFrozen, sidecar_tables};
+pub use verbs::schema::{FlavorRegistryFrozen, composed_schema_names, sidecar_tables};
 
 /// Expands to `&'static str` with the calling crate's name
 /// prefixed. Per docs/08 §Schema namespacing.

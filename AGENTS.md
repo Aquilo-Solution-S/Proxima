@@ -149,6 +149,12 @@ Use the smallest relevant check:
 still works as fallback. PG tests clone a pre-migrated template DB.
 Single-test selection: `cargo nextest run -E 'test(<name>)'`.
 
+PG tests need `PROXIMA_TEST_PG_URL` (the admin URL of a server you own); it
+has no default. Unset, a test panics naming the variable, except the ones that
+call `admin_url_or_skip()`, which skip with a message locally and fail under
+`CI=true`. The testkit's sweep and template GC act on every matching database
+behind that URL.
+
 CI runs one pass, `cargo nextest run --workspace --all-targets --all-features`,
 which includes every feature-gated target (REST surface, mounted REST/OIDC
 e2e, Fact-outbox host lane, publisher supervision, durable-intake example).

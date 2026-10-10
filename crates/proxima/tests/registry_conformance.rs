@@ -232,3 +232,36 @@ fn registry_dump_is_deterministic() {
 
     assert_eq!(first, second);
 }
+
+/// Boot, the owner-RLS census and the MCP tool host all take their schema set
+/// from this one function, so it names exactly what a registry stores into.
+#[test]
+fn composed_schema_names_cover_core_and_every_linked_flavor() {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::CodeFlavor::register(&mut registry).expect("the code flavor registers");
+    register_conformance_flavor(&mut registry).expect("the conformance flavor registers");
+    let frozen = registry.try_freeze().expect("two flavors freeze");
+
+    assert_eq!(
+        proxima::host::composed_schema_names(&frozen),
+        ["proxima_code", "proxima_conformance", "proxima_core"],
+        "core's schema plus one per flavor, sorted and without repeats"
+    );
+    // The facade re-exports the one definition.
+    assert_eq!(
+        proxima::host::composed_schema_names(&frozen),
+        proxima_core::composed_schema_names(&frozen)
+    );
+}
+
+#[test]
+fn composed_schema_names_of_a_core_only_registry_is_core() {
+    let frozen = FlavorRegistry::new()
+        .try_freeze()
+        .expect("a registry with no flavor freezes");
+
+    assert_eq!(
+        proxima::host::composed_schema_names(&frozen),
+        ["proxima_core"]
+    );
+}

@@ -588,12 +588,7 @@ impl TestWorld {
 
 #[tokio::test]
 async fn publisher_supervision_sidecar_fixture_captures_against_real_pg() {
-    if std::env::var_os("PROXIMA_TEST_PG_URL").is_none() {
-        assert!(
-            std::env::var("CI").as_deref() != Ok("true"),
-            "PROXIMA_TEST_PG_URL required under CI=true"
-        );
-        eprintln!("skipping publisher supervision PG fixture: PROXIMA_TEST_PG_URL is unset");
+    if proxima_pg_testkit::admin_url_or_skip().is_none() {
         return;
     }
 
