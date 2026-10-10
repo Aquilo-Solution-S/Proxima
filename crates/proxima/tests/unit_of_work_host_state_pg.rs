@@ -1344,3 +1344,346 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
     .await;
     result.expect("owner-fence serialization");
 }
+
+/// `PgCommandDispatcher` as the host's one participant: routing, the
+/// once-only payload-owner agreement, and the typed refusal of an unregistered
+/// command, all through a real unit of work.
+mod dispatcher {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use proxima::host::{
+        AgreedCommand, HostStateCommand, HostStateHandler, HostStatePayloadOwners,
+        HostStateWritePermit, PgCommandDispatcher, StateSurfaceName,
+    };
+    use proxima_core::{MemoryId, StorageError};
+    use sqlx::{Postgres, Transaction};
+
+    use super::host_state_fixture::{
+        AUXILIARY_TABLE, EXECUTION_TABLE, PARTICIPANT, WIDENED_TABLES,
+    };
+    use super::{
+        Arc, AuxiliaryHostCommand, ErrorCode, HostStateOutcome, Owner, PgHostStateParticipant,
+        PgPool, UserId, Uuid, admin_authz_for, admin_pool, boot_fixture, clone_split_core_db,
+        company_owner, count_memory, db_url, note,
+    };
+
+    const RECORD_TABLES: &[StateSurfaceName] = &[StateSurfaceName::new(AUXILIARY_TABLE)];
+    const COUNT_TABLES: &[StateSurfaceName] = &[StateSurfaceName::new(EXECUTION_TABLE)];
+
+    /// Inserts one auxiliary row; its payload names `also_names` on top of
+    /// the command owner.
+    struct RecordAuxiliary {
+        owner: Owner,
+        invocation_id: MemoryId,
+        also_names: Vec<Owner>,
+    }
+
+    impl HostStateCommand for RecordAuxiliary {
+        const PARTICIPANT_ID: proxima::HostStateParticipantId = PARTICIPANT;
+        const TABLES: &'static [StateSurfaceName] = RECORD_TABLES;
+        type Outcome = u64;
+
+        fn owner(&self) -> Owner {
+            self.owner
+        }
+    }
+
+    impl HostStatePayloadOwners for RecordAuxiliary {
+        fn payload_owners(&self) -> Vec<Owner> {
+            self.also_names.clone()
+        }
+    }
+
+    /// Counts the owner's execution rows. Names no payload owner.
+    struct CountExecutions {
+        owner: Owner,
+    }
+
+    impl HostStateCommand for CountExecutions {
+        const PARTICIPANT_ID: proxima::HostStateParticipantId = PARTICIPANT;
+        const TABLES: &'static [StateSurfaceName] = COUNT_TABLES;
+        type Outcome = i64;
+
+        fn owner(&self) -> Owner {
+            self.owner
+        }
+    }
+
+    impl HostStatePayloadOwners for CountExecutions {
+        fn payload_owners(&self) -> Vec<Owner> {
+            Vec::new()
+        }
+    }
+
+    #[derive(Default)]
+    struct Calls {
+        record: Arc<AtomicUsize>,
+        count: Arc<AtomicUsize>,
+    }
+
+    impl Calls {
+        fn record(&self) -> usize {
+            self.record.load(Ordering::SeqCst)
+        }
+
+        fn count(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    struct RecordHandler(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl HostStateHandler<RecordAuxiliary> for RecordHandler {
+        async fn handle(
+            &self,
+            tx: &mut Transaction<'_, Postgres>,
+            permit: &HostStateWritePermit,
+            command: AgreedCommand<RecordAuxiliary>,
+        ) -> Result<HostStateOutcome<u64>, StorageError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let (kind, owner_id) = permit.owner().columns();
+            let inserted = sqlx::query(
+                "INSERT INTO host_fixture.auxiliary (invocation_id, owner_kind, owner_id)
+                 VALUES ($1, $2, $3) ON CONFLICT (invocation_id) DO NOTHING",
+            )
+            .bind(command.invocation_id.into_inner())
+            .bind(kind)
+            .bind(owner_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Internal(error.to_string()))?
+            .rows_affected();
+            Ok(if inserted == 0 {
+                HostStateOutcome::AlreadyApplied(0)
+            } else {
+                HostStateOutcome::Permitted(inserted)
+            })
+        }
+    }
+
+    struct CountHandler(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl HostStateHandler<CountExecutions> for CountHandler {
+        async fn handle(
+            &self,
+            tx: &mut Transaction<'_, Postgres>,
+            permit: &HostStateWritePermit,
+            _command: AgreedCommand<CountExecutions>,
+        ) -> Result<HostStateOutcome<i64>, StorageError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let (kind, owner_id) = permit.owner().columns();
+            let rows = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM host_fixture.execution
+                 WHERE owner_kind = $1 AND owner_id = $2",
+            )
+            .bind(kind)
+            .bind(owner_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Internal(error.to_string()))?;
+            Ok(HostStateOutcome::Permitted(rows))
+        }
+    }
+
+    fn dispatcher(calls: &Calls) -> Arc<dyn PgHostStateParticipant> {
+        Arc::new(
+            PgCommandDispatcher::new(PARTICIPANT, WIDENED_TABLES)
+                .register::<RecordAuxiliary, _>(RecordHandler(calls.record.clone()))
+                .expect("RecordAuxiliary is this participant's, over declared tables")
+                .register::<CountExecutions, _>(CountHandler(calls.count.clone()))
+                .expect("CountExecutions is this participant's, over declared tables"),
+        )
+    }
+
+    async fn count_auxiliary(pool: &PgPool, invocation_id: MemoryId) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM host_fixture.auxiliary WHERE invocation_id = $1",
+        )
+        .bind(invocation_id.into_inner())
+        .fetch_one(pool)
+        .await
+    }
+
+    #[tokio::test]
+    async fn two_commands_route_each_to_its_handler_and_an_agreeing_payload_commits() {
+        let split_db = clone_split_core_db("proxima_uow_hs_dispatch_route")
+            .await
+            .expect("PG required");
+        let db_name = split_db.name().to_owned();
+        let (url, platform_url) = (
+            split_db.runtime_url().to_owned(),
+            split_db.platform_url().to_owned(),
+        );
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = company_owner(Uuid::now_v7());
+            let calls = Calls::default();
+            let built = boot_fixture(&url, &platform_url, owner, Some(dispatcher(&calls))).await?;
+            let engine = built.host().engine();
+            let authz = admin_authz_for(owner);
+
+            let mut unit = engine.unit_of_work(&authz).await?;
+            let fact = unit
+                .ingest_fact(proxima::FactWrite::new(
+                    owner,
+                    "test/hs-dispatch-agree",
+                    &note("agree"),
+                ))
+                .await?;
+            let record = || RecordAuxiliary {
+                owner,
+                invocation_id: fact.memory_id,
+                also_names: vec![owner],
+            };
+            assert_eq!(
+                unit.apply_host_state(record()).await?,
+                HostStateOutcome::Permitted(1),
+                "the Record handler's typed outcome comes back unchanged"
+            );
+            assert_eq!((calls.record(), calls.count()), (1, 0));
+            assert_eq!(
+                unit.apply_host_state(CountExecutions { owner }).await?,
+                HostStateOutcome::Permitted(0),
+                "the Count handler answers its own command"
+            );
+            assert_eq!((calls.record(), calls.count()), (1, 1));
+            assert_eq!(
+                unit.apply_host_state(record()).await?,
+                HostStateOutcome::AlreadyApplied(0),
+                "the outcome kind survives the dispatcher's reply"
+            );
+            unit.commit().await?;
+
+            let observer = PgPool::connect(&db_url(&db_name)).await?;
+            assert_eq!(count_memory(&observer, fact.memory_id).await?, 1);
+            assert_eq!(count_auxiliary(&observer, fact.memory_id).await?, 1);
+            built.shutdown().await;
+            Ok(())
+        }
+        .await;
+        result.expect("routing and agreeing commit");
+    }
+
+    #[tokio::test]
+    async fn a_payload_owner_that_differs_from_the_permit_is_refused_before_the_handler_runs() {
+        let split_db = clone_split_core_db("proxima_uow_hs_dispatch_owner")
+            .await
+            .expect("PG required");
+        let db_name = split_db.name().to_owned();
+        let (url, platform_url) = (
+            split_db.runtime_url().to_owned(),
+            split_db.platform_url().to_owned(),
+        );
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = company_owner(Uuid::now_v7());
+            let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
+            let calls = Calls::default();
+            let built = boot_fixture(&url, &platform_url, owner, Some(dispatcher(&calls))).await?;
+            let engine = built.host().engine();
+            let observer = admin_pool(&db_name).await?;
+
+            let authz = admin_authz_for(owner);
+            let mut ordinary = engine.unit_of_work(&authz).await?;
+            let fact = ordinary
+                .ingest_fact(proxima::FactWrite::new(
+                    owner,
+                    "test/hs-dispatch-foreign",
+                    &note("foreign"),
+                ))
+                .await?;
+            let error = ordinary
+                .apply_host_state(RecordAuxiliary {
+                    owner,
+                    invocation_id: fact.memory_id,
+                    also_names: vec![owner, foreign],
+                })
+                .await
+                .expect_err("one payload owner is not the permit's owner");
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+            assert_eq!(calls.record(), 0, "the handler never ran");
+            let commit_error = ordinary
+                .commit()
+                .await
+                .expect_err("the refusal poisons the unit as any participant error does");
+            assert_eq!(commit_error.code, ErrorCode::Internal, "{commit_error:?}");
+            assert_eq!(count_memory(&observer, fact.memory_id).await?, 0);
+            assert_eq!(count_auxiliary(&observer, fact.memory_id).await?, 0);
+
+            let authority = built
+                .host_state_maintenance_authority()
+                .expect("registered participant mints host-only authority");
+            let invocation_id = MemoryId::new(Uuid::now_v7());
+            let mut maintenance = engine.host_state_unit_of_work(authority, owner)?;
+            let error = maintenance
+                .apply_host_state(RecordAuxiliary {
+                    owner,
+                    invocation_id,
+                    also_names: vec![foreign],
+                })
+                .await
+                .expect_err("the maintenance permit's owner is the same fixed owner");
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+            assert_eq!(calls.record(), 0, "the handler never ran");
+            drop(maintenance);
+            assert_eq!(count_auxiliary(&observer, invocation_id).await?, 0);
+
+            built.shutdown().await;
+            Ok(())
+        }
+        .await;
+        result.expect("payload owner refusal");
+    }
+
+    #[tokio::test]
+    async fn a_command_without_a_handler_is_a_typed_refusal_naming_the_participant() {
+        let split_db = clone_split_core_db("proxima_uow_hs_dispatch_unregistered")
+            .await
+            .expect("PG required");
+        let db_name = split_db.name().to_owned();
+        let (url, platform_url) = (
+            split_db.runtime_url().to_owned(),
+            split_db.platform_url().to_owned(),
+        );
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = company_owner(Uuid::now_v7());
+            let calls = Calls::default();
+            let built = boot_fixture(&url, &platform_url, owner, Some(dispatcher(&calls))).await?;
+            let engine = built.host().engine();
+            let authz = admin_authz_for(owner);
+
+            let mut unit = engine.unit_of_work(&authz).await?;
+            let fact = unit
+                .ingest_fact(proxima::FactWrite::new(
+                    owner,
+                    "test/hs-dispatch-unregistered",
+                    &note("unregistered"),
+                ))
+                .await?;
+            // Declared participant and declared table, but no handler.
+            let error = unit
+                .apply_host_state(AuxiliaryHostCommand { owner })
+                .await
+                .expect_err("no handler is registered for this command type");
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+            assert!(
+                error.message.contains("host_fixture"),
+                "the refusal names the participant: {error:?}"
+            );
+            assert_eq!((calls.record(), calls.count()), (0, 0), "no handler ran");
+            unit.commit()
+                .await
+                .expect_err("the refusal poisons the unit");
+            assert_eq!(
+                count_memory(&admin_pool(&db_name).await?, fact.memory_id).await?,
+                0
+            );
+
+            built.shutdown().await;
+            Ok(())
+        }
+        .await;
+        result.expect("unregistered command refusal");
+    }
+}
