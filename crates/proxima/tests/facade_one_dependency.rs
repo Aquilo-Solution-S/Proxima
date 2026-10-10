@@ -269,3 +269,151 @@ mod oidc {
         assert!(matches!(empty, Err(OidcBindingSetError::Empty)));
     }
 }
+
+/// An out-of-tree host's `ServerHandler`: it wraps Proxima's native handler
+/// and delegates what the handler's own documentation says to delegate.
+#[derive(Clone, Debug)]
+struct HostHandler {
+    inner: proxima::DynamicHandler,
+}
+
+impl proxima::rmcp::ServerHandler for HostHandler {
+    fn get_info(&self) -> proxima::rmcp::model::ServerConfig {
+        self.inner.get_info()
+    }
+
+    fn supported_protocol_versions(
+        &self,
+    ) -> std::borrow::Cow<'static, [proxima::rmcp::model::ProtocolVersion]> {
+        self.inner.supported_protocol_versions()
+    }
+
+    async fn call_tool(
+        &self,
+        request: proxima::rmcp::model::CallToolRequestParams,
+        context: proxima::rmcp::service::RequestContext<proxima::rmcp::service::RoleServer>,
+    ) -> Result<proxima::rmcp::model::CallToolResponse, proxima::rmcp::model::ErrorData> {
+        self.inner.call_tool(request, context).await
+    }
+}
+
+#[test]
+fn host_tier_implements_the_rmcp_server_handler_around_the_dynamic_handler() {
+    use proxima::rmcp::ServerHandler as _;
+
+    let registry = Arc::new(
+        proxima::flavor::FlavorRegistry::new()
+            .try_freeze()
+            .expect("empty registry freezes"),
+    );
+    let host = proxima::McpToolHost::from_parts(registry, proxima::FlavorServices::default());
+    let wrapped = HostHandler {
+        inner: proxima::DynamicHandler::new(host),
+    };
+    assert_eq!(wrapped.get_info().server_info.name, "proxima");
+    assert_eq!(
+        wrapped.supported_protocol_versions(),
+        wrapped.inner.supported_protocol_versions()
+    );
+}
+
+/// `proxima::rmcp` is the `rmcp` the workspace resolves, not a second copy:
+/// a bound written against the crate by its own name accepts a type that
+/// implements the facade's trait, and the lockfile holds one version.
+#[test]
+fn the_facade_rmcp_is_the_workspace_rmcp() {
+    fn is_workspace_server_handler<T: rmcp::ServerHandler>() {}
+    is_workspace_server_handler::<HostHandler>();
+    is_workspace_server_handler::<proxima::DynamicHandler>();
+
+    let lock = include_str!("../../../Cargo.lock");
+    let versions: Vec<&str> = lock
+        .split("[[package]]")
+        .filter(|package| package.lines().any(|line| line.trim() == "name = \"rmcp\""))
+        .collect();
+    assert_eq!(
+        versions.len(),
+        1,
+        "Cargo.lock must resolve exactly one rmcp; a second copy gives a host two unrelated \
+         `ServerHandler` traits"
+    );
+}
+
+/// The layer stack `McpEdge::router` applies, written with facade names only.
+#[tokio::test]
+async fn host_tier_builds_the_mcp_edge_layer_stack() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::util::ServiceExt as _;
+
+    // The cadence the edge and the runtime config carry is the facade's type.
+    let _: fn(&proxima::McpEdge) -> proxima::RevalidationConfig = proxima::McpEdge::revalidation;
+    let _: fn(&proxima::RuntimeConfig) -> proxima::RevalidationConfig =
+        |config| config.stream_revalidation;
+    let revalidation = proxima::RevalidationConfig::default();
+
+    let metadata = proxima::ResourceServerMetadata {
+        public_url: "https://proxima.example.com".to_owned(),
+        authorization_servers: vec!["https://issuer.example.com".to_owned()],
+    };
+    let hosts = proxima::HostAllowlist::new(["proxima.example.com"]);
+    let origins =
+        proxima::OriginAllowlist::parse(["https://proxima.example.com"]).expect("concrete origin");
+
+    let auth: proxima::McpAuthLayer = proxima::mcp_auth_layer_with_metadata(
+        Arc::new(proxima::McpEdgeAuth::headless()),
+        revalidation,
+        Some(&metadata),
+    );
+    let cors: proxima::CorsLayer = proxima::cors_layer(origins);
+    let host_guard: proxima::HostGuardLayer = proxima::host_guard_layer(hosts);
+    let body_limit: proxima::BodyLimitLayer = proxima::body_limit_layer(16);
+
+    let router = axum::Router::new()
+        .route("/mcp", axum::routing::post(|| async { StatusCode::OK }))
+        .layer(auth)
+        .layer(cors)
+        .layer(host_guard)
+        .layer(body_limit);
+    let send = |host: &'static str, body: &'static str| {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(header::HOST, host)
+            .header(header::CONTENT_LENGTH, body.len())
+            .body(Body::from(body))
+            .expect("request");
+        router.clone().oneshot(request)
+    };
+
+    // Outermost: the body cap answers before anything reads the request.
+    let too_large = send("proxima.example.com", "0123456789abcdefg")
+        .await
+        .expect("infallible");
+    assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Then the Host guard: an authority outside the allowlist.
+    let foreign = send("elsewhere.example.org", "{}")
+        .await
+        .expect("infallible");
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+
+    // Then bearer auth, whose challenge points at the protected-resource
+    // metadata the facade's `ResourceServerMetadata` renders.
+    let unauthenticated = send("proxima.example.com", "{}").await.expect("infallible");
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    let challenge = unauthenticated
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("challenge")
+        .to_str()
+        .expect("ascii");
+    assert!(
+        challenge.contains("https://proxima.example.com"),
+        "{challenge}"
+    );
+
+    // The default-sized variant `layered_router_mcp_only` applies.
+    let _default_cap =
+        axum::Router::<()>::new().layer(axum::middleware::from_fn(proxima::enforce_body_limit));
+}

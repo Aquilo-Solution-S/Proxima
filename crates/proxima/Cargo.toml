@@ -32,6 +32,10 @@ proxima-pg-testkit = { path = "../pg-testkit", optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
+# Re-exported as `proxima::rmcp` so a host implementing `ServerHandler` around
+# `DynamicHandler` builds against the version and feature set Proxima pins.
+# Already linked through `proxima-mcp-server`; declaring it adds no code.
+rmcp = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal", "time"] }

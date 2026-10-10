@@ -32,6 +32,35 @@
 //!   dependencies except backend-owned adapters explicitly outside the stable
 //!   SDK boundary.
 //!
+//! One rule governs both tiers: a type that appears in a public signature of
+//! this facade is nameable through it, in the tier of the signature that
+//! exposes it. A host-tier signature gets its types at the root (`host.rs`
+//! groups them by the signature that needs them); a Flavor SDK signature gets
+//! its types under `proxima::flavor` ([`flavor::HostStateEraseDisposition`], for
+//! [`flavor::EraseRule::HostState`], is the latest). Host-only names stay out of
+//! the SDK. Third-party crates stay the host's own dependencies, with one
+//! exception: [`rmcp`] is re-exported at the version and feature set the
+//! workspace pins, because a host implements its `ServerHandler` around
+//! [`DynamicHandler`].
+//!
+//! The enforcer is `tests/facade_signature_names.rs`: it imports every name the
+//! rule has put on the facade, through `proxima::` or `proxima::flavor::`, so a
+//! dropped re-export fails to compile, and it fails when a host-only name shows
+//! up in the SDK. It is a list: add the type to `host.rs` and to a group there
+//! whenever a public signature names a new type. Nothing finds a signature
+//! whose type is missing from the list. The SDK tier has such gaps, known and
+//! open; `docs/reference/public-api.md` names them.
+//!
+//! The SDK names no storage handle and no owner-scoped transaction:
+//!
+//! ```compile_fail,E0432
+//! use proxima::flavor::PgStorage;
+//! ```
+//!
+//! ```compile_fail,E0432
+//! use proxima::flavor::begin_owner_transaction;
+//! ```
+//!
 //! The host-only capability and its permit cannot be caller-constructed:
 //!
 //! ```compile_fail
