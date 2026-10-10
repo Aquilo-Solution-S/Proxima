@@ -258,6 +258,13 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Host API only: the schemas a frozen registry stores into, which boot's grant plan, RLS
+    // census and platform scope derive from.
+    composed_schema_names {
+        host_only: [composed_schema_names],
+        both_tiers: [],
+    }
+
     // Needed by `pending_migrations`, the read-only plan beside the runner.
     pending_migrations {
         host_only: [PendingMigration, pending_migrations],

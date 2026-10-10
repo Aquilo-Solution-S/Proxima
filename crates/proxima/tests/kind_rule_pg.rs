@@ -32,9 +32,9 @@ use proxima_core::{
     EdgeTargetProjection, EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, Owner,
     OwnerRef, OwnerRoles, Role, StorageError, UploadedBlobPayload, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{db_url, split_role_urls};
 use serde_json::{Value, json};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use sqlx::{Acquire, AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
@@ -887,8 +887,8 @@ async fn boot(
 
 #[tokio::test]
 async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
-    let database = unique_db_name("proxima_kind_rule");
-    create_split_core_db(&database).await?;
+    let split_db = clone_split_core_db("proxima_kind_rule").await?;
+    let database = split_db.name().to_owned();
     let result: TestResult = async {
         let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let router = Arc::new(TestEmbeddingRouter::default());
@@ -927,7 +927,6 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
         Ok(())
     }
     .await;
-    drop_db(&database).await?;
     result
 }
 
@@ -935,8 +934,8 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
 /// any other way is refused before storage.
 #[tokio::test]
 async fn only_a_for_system_context_writes_as_system() -> TestResult {
-    let database = unique_db_name("proxima_kind_rule_system");
-    create_split_core_db(&database).await?;
+    let split_db = clone_split_core_db("proxima_kind_rule_system").await?;
+    let database = split_db.name().to_owned();
     let result: TestResult = async {
         let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = boot(
@@ -974,7 +973,6 @@ async fn only_a_for_system_context_writes_as_system() -> TestResult {
         Ok(())
     }
     .await;
-    drop_db(&database).await?;
     result
 }
 
@@ -1303,8 +1301,8 @@ async fn assert_fact_scope_sql(
 /// Perspective limit reads and deletes a Memory's rows there, not a Goal's.
 #[tokio::test]
 async fn an_embedding_row_of_a_goal_needs_the_goal_limit() -> TestResult {
-    let database = unique_db_name("proxima_kind_rule_goal_vec");
-    create_split_core_db(&database).await?;
+    let split_db = clone_split_core_db("proxima_kind_rule_goal_vec").await?;
+    let database = split_db.name().to_owned();
     let result: TestResult = async {
         let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = boot(&database, group, Arc::default(), None).await?;
@@ -1402,7 +1400,6 @@ async fn an_embedding_row_of_a_goal_needs_the_goal_limit() -> TestResult {
         Ok(())
     }
     .await;
-    drop_db(&database).await?;
     result
 }
 
@@ -1411,8 +1408,8 @@ async fn an_embedding_row_of_a_goal_needs_the_goal_limit() -> TestResult {
 /// see: its derivation succeeds.
 #[tokio::test]
 async fn a_derivation_meets_no_content_above_its_limit() -> TestResult {
-    let database = unique_db_name("proxima_kind_rule_content");
-    create_split_core_db(&database).await?;
+    let split_db = clone_split_core_db("proxima_kind_rule_content").await?;
+    let database = split_db.name().to_owned();
     let result: TestResult = async {
         let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let built = boot(
@@ -1474,6 +1471,5 @@ async fn a_derivation_meets_no_content_above_its_limit() -> TestResult {
         Ok(())
     }
     .await;
-    drop_db(&database).await?;
     result
 }

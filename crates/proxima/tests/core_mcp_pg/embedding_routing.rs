@@ -111,11 +111,14 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
         proxima_core::llm::EmbeddingDim::D768,
         proxima_core::llm::EmbeddingDim::D3072,
     ] {
-        let db_name = unique_db_name("proxima_core_width_lane");
-        create_split_core_db(&db_name)
+        let split_db = clone_split_core_db("proxima_core_width_lane")
             .await
             .expect("PG required for tests");
-        let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+        let db_name = split_db.name().to_owned();
+        let (runtime_url, platform_url) = (
+            split_db.runtime_url().to_owned(),
+            split_db.platform_url().to_owned(),
+        );
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = company_owner(Uuid::now_v7());
@@ -193,7 +196,6 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
         }
         .await;
 
-        let _ = drop_db(&db_name).await;
         result.unwrap_or_else(|err| panic!("width lane {dim} end to end failed: {err}"));
     }
 }
@@ -257,11 +259,14 @@ impl proxima_core::llm::EmbeddingClient for RecordingRouteEmbedding {
 async fn memory_search_embeds_its_query_in_the_default_instruction() {
     use proxima_core::llm::{QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter};
 
-    let db_name = unique_db_name("proxima_core_query_instruction");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_query_instruction")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -345,7 +350,6 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.unwrap_or_else(|err| panic!("query instruction end to end failed: {err}"));
 }
 
@@ -505,10 +509,10 @@ impl TwoOwnerFixture {
 #[allow(clippy::too_many_lines)]
 async fn each_owner_embeds_and_searches_through_its_own_route() {
     use proxima_core::llm::EmbeddingDim;
-    let db_name = unique_db_name("proxima_core_route_owners");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_owners")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
@@ -597,7 +601,6 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("per-owner routing test failed");
 }
 
@@ -608,10 +611,10 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
 #[allow(clippy::too_many_lines)]
 async fn a_route_failure_stays_with_its_owner() {
     use proxima_core::llm::EmbeddingDim;
-    let db_name = unique_db_name("proxima_core_route_refusal");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_refusal")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let personal_client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D768);
@@ -680,7 +683,6 @@ async fn a_route_failure_stays_with_its_owner() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("route refusal isolation test failed");
 }
 
@@ -689,10 +691,10 @@ async fn a_route_failure_stays_with_its_owner() {
 #[tokio::test]
 async fn one_client_across_owners_ranks_by_score() {
     use proxima_core::llm::EmbeddingDim;
-    let db_name = unique_db_name("proxima_core_route_shared");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_shared")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let client = RecordingRouteEmbedding::new("route-a", EmbeddingDim::D1024);
@@ -735,7 +737,6 @@ async fn one_client_across_owners_ranks_by_score() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("shared-client ranking test failed");
 }
 
@@ -801,10 +802,10 @@ fn returned_handles(page: &serde_json::Value) -> Vec<String> {
 async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
     use proxima_core::EmbeddingSpaceRole;
     use proxima_core::llm::{EmbeddingDim, EmbeddingRoute};
-    let db_name = unique_db_name("proxima_core_route_move");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_move")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.host().engine();
@@ -954,7 +955,6 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("model move test failed");
 }
 
@@ -965,10 +965,10 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
 #[tokio::test]
 async fn a_transferred_memory_moves_to_the_destinations_space() {
     use proxima_core::llm::EmbeddingDim;
-    let db_name = unique_db_name("proxima_core_route_transfer");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_transfer")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.host().engine();
@@ -1047,7 +1047,6 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("transfer retarget test failed");
 }
 
@@ -1055,10 +1054,10 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
 #[tokio::test]
 async fn an_unroutable_owner_is_never_purged() {
     use proxima_core::llm::EmbeddingDim;
-    let db_name = unique_db_name("proxima_core_route_purge_refusal");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_route_purge_refusal")
         .await
         .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let fixture = TwoOwnerFixture::boot(&db_name).await?;
         let engine = &fixture.built.host().engine();
@@ -1084,6 +1083,5 @@ async fn an_unroutable_owner_is_never_purged() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("purge refusal test failed");
 }

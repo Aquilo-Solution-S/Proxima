@@ -22,36 +22,16 @@ use proxima_core::mcp::{
     tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
-use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError};
+use proxima_core::{
+    Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError,
+    composed_schema_names,
+};
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
 use crate::host_tools::{McpHostTool, McpHostTools};
 use crate::request_scope::RequestHeaderAllowlist;
 use crate::tool_list::ToolListNotifier;
-
-fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
-    let mut schemas = vec!["proxima_core".to_owned()];
-    for contract in registry.contracts() {
-        for surface in contract.all_surfaces() {
-            if let Some((schema, _)) = surface.table.split_once('.')
-                && !schemas.iter().any(|known| known == schema)
-            {
-                schemas.push(schema.to_owned());
-            }
-        }
-        for schema_contract in contract.schemas {
-            if let Some(table) = schema_contract.sidecar_table
-                && let Some((schema, _)) = table.split_once('.')
-                && !schemas.iter().any(|known| known == schema)
-            {
-                schemas.push(schema.to_owned());
-            }
-        }
-    }
-    schemas.sort();
-    schemas
-}
 
 #[derive(Clone)]
 pub struct McpToolHost {
