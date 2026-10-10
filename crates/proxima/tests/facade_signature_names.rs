@@ -270,6 +270,14 @@ facade_names! {
         host_only: [CascadedDetail, ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdObjectStore, ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, HostStateEraseSelection, HostStateFactCopyLocator, HostStateLifecycleSurface, OwnerSurfaces, OwnerSurfacesError, PruneOwnerOutcome, ScopeSurfaces, StorageMaintenanceLock],
         both_tiers: [],
     }
+
+    // Needed by `McpHostTools::call`, `RequestBehavior::handle`, `Next::run` and
+    // `TerminalDispatch` (`ToolReply` of `ToolContent`), `RequestBehavior::visible`
+    // (`ToolDescriptorView`, `ToolSource`) and `McpHostTools::instructions` (the cap).
+    tool_replies_and_visibility {
+        host_only: [MAX_HOST_INSTRUCTIONS_CHARS],
+        both_tiers: [ToolContent, ToolDescriptorView, ToolReply, ToolSource],
+    }
 }
 
 /// The identifiers a Rust source file uses outside comments.

@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
 use crate::handler::{
-    action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
+    Caller, action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
     resource_scope_allows, tool_allowed_for_auth,
 };
 
@@ -91,8 +91,10 @@ const PROBLEM_STATUSES: &[(u16, &str)] = &[
 
 /// Build the `OpenAPI` document directly from a frozen registry.
 ///
-/// `auth = Some(_)` projects the same caller-scoped tool and resource set as
-/// the served `/v1/openapi.json` route. `auth = None` emits the complete
+/// `auth = Some(_)` projects the caller-scoped tool and resource set of the
+/// served `/v1/openapi.json` route, by palette and owner role. The route also
+/// drops what a request behavior's `visible` hides, which needs the caller's
+/// tool context; this function has none. `auth = None` emits the complete
 /// registry and core-resource surface for offline conformance checks.
 #[must_use]
 pub fn document_from_registry(
@@ -100,16 +102,27 @@ pub fn document_from_registry(
     public_url: Option<&str>,
     auth: Option<&McpAuthContext>,
 ) -> Value {
+    document_for_caller(registry, public_url, Caller::new(auth))
+}
+
+/// [`document_from_registry`] for a caller whose listing request behaviors
+/// may narrow.
+pub(crate) fn document_for_caller(
+    registry: &FlavorRegistryFrozen,
+    public_url: Option<&str>,
+    caller: Caller<'_>,
+) -> Value {
+    let auth = caller.auth();
     let tools: Vec<&McpToolDescriptor> = registry
         .list_mcp_tools()
         .iter()
-        .filter(|descriptor| auth.is_none() || tool_allowed_for_auth(auth, descriptor))
+        .filter(|descriptor| auth.is_none() || tool_allowed_for_auth(caller, descriptor))
         .collect();
     let scope = auth.map(|context| context.authz.tool_scope());
     let resources: Vec<&ResourceContract> = all_core_resources()
         .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource.scope_key))
         .collect();
-    document(&tools, &resources, public_url, auth)
+    document_with(&tools, &resources, public_url, caller)
 }
 
 /// Build the `OpenAPI` 3.2 document for one caller's scope-filtered surface.
@@ -125,11 +138,20 @@ pub fn document(
     public_url: Option<&str>,
     auth: Option<&McpAuthContext>,
 ) -> Value {
+    document_with(tools, resources, public_url, Caller::new(auth))
+}
+
+fn document_with(
+    tools: &[&McpToolDescriptor],
+    resources: &[&ResourceContract],
+    public_url: Option<&str>,
+    caller: Caller<'_>,
+) -> Value {
     // Sorted so two calls with the same surface produce byte-identical
     // documents; serde_json preserves insertion order in this workspace.
     let mut paths: BTreeMap<String, Value> = BTreeMap::new();
     for tool in tools {
-        collect_tool_paths(tool, auth, &mut paths);
+        collect_tool_paths(tool, caller, &mut paths);
     }
     for resource in resources {
         collect_resource_path(resource, &mut paths);
@@ -266,11 +288,11 @@ impl Operation<'_> {
 /// Whole-tool path plus one path per dispatcher action.
 fn collect_tool_paths(
     tool: &McpToolDescriptor,
-    auth: Option<&McpAuthContext>,
+    caller: Caller<'_>,
     paths: &mut BTreeMap<String, Value>,
 ) {
-    let annotations = annotations_for_auth(auth, tool).unwrap_or_default();
-    let projected_schema = project_dispatcher_actions_for_auth(tool, auth);
+    let annotations = annotations_for_auth(caller, tool).unwrap_or_default();
+    let projected_schema = project_dispatcher_actions_for_auth(caller, tool);
     let whole = Operation {
         target: OperationTarget::Tool(tool.name),
         summary: format!("Invoke {}", tool.name),
@@ -287,11 +309,9 @@ fn collect_tool_paths(
     // enumerates; each route's body is that action's derived argument
     // schema. `try_freeze` refuses a registry where the two disagree, so
     // every spec has one.
-    for spec in tool
-        .action_arg_specs
-        .iter()
-        .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, tool, spec.action))
-    {
+    for spec in tool.action_arg_specs.iter().filter(|spec| {
+        caller.auth().is_none() || action_allowed_for_auth(caller, tool, spec.action)
+    }) {
         let action = spec.action;
         let action_schema = tool.action_argument_schema(action).unwrap_or_else(|| {
             panic!(

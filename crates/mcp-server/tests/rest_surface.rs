@@ -231,13 +231,13 @@ impl proxima_core::RequestBehavior for ReplaceOutputBehavior {
         &self,
         call: proxima_core::mcp::ToolCall,
         next: proxima_core::mcp::Next<'_>,
-    ) -> Result<serde_json::Value, proxima_core::mcp::McpToolError> {
+    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
         let output = next.run(call).await?;
         assert!(
-            output.is_object(),
+            matches!(&output, proxima_core::ToolReply::Structured(value) if value.is_object()),
             "the registered tool returns its declared object"
         );
-        Ok(self.0.clone())
+        Ok(proxima_core::ToolReply::Structured(self.0.clone()))
     }
 }
 
@@ -386,6 +386,206 @@ async fn rest_refuses_nonobject_outputs_introduced_by_request_behaviors() {
         assert_eq!(answer.json()["detail"], "internal server error");
         assert!(!String::from_utf8_lossy(&answer.body).contains("private-output"));
     }
+}
+
+/// Hides `core_remember` and the `touch` action of the stub dispatcher from
+/// every listing, and counts what it is asked and what it handles.
+#[derive(Debug)]
+struct HidesWrites {
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    handled: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl proxima_core::RequestBehavior for HidesWrites {
+    async fn handle(
+        &self,
+        call: proxima_core::mcp::ToolCall,
+        next: proxima_core::mcp::Next<'_>,
+    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        self.handled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        next.run(call).await
+    }
+
+    fn visible(
+        &self,
+        _ctx: &proxima_core::mcp::McpToolCtx,
+        tool: &proxima_core::ToolDescriptorView<'_>,
+    ) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tool.name() != protocol_tool::CORE_REMEMBER && tool.action() != Some("touch")
+    }
+}
+
+/// Changes nothing: the default `visible`.
+#[derive(Debug)]
+struct OpinionlessBehavior;
+
+#[async_trait::async_trait]
+impl proxima_core::RequestBehavior for OpinionlessBehavior {
+    async fn handle(
+        &self,
+        call: proxima_core::mcp::ToolCall,
+        next: proxima_core::mcp::Next<'_>,
+    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        next.run(call).await
+    }
+}
+
+fn host_with(behavior: impl proxima_core::RequestBehavior + 'static) -> McpToolHost {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+    registry.add_request_behavior(behavior);
+    McpToolHost::from_parts(
+        Arc::new(registry.freeze_or_panic_for_tests()),
+        FlavorServices::default(),
+    )
+}
+
+fn catalog_ids(answer: &Answer) -> BTreeSet<String> {
+    answer.json()["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+/// A behavior's `visible` narrows every REST projection of the catalog -- the
+/// list, one descriptor, the dispatcher's actions, the `OpenAPI` document, the
+/// how-to -- and `proxima://tools`, which agree with each other; the default
+/// changes none of them. The call path never asks, and the behavior still
+/// handles a call to what it hides.
+#[tokio::test]
+async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let asked = Arc::new(AtomicUsize::new(0));
+    let handled = Arc::new(AtomicUsize::new(0));
+    let hiding = host_with(HidesWrites {
+        asked: Arc::clone(&asked),
+        handled: Arc::clone(&handled),
+    });
+    let plain = host_with(OpinionlessBehavior);
+    let ctx = auth(ToolScope::All);
+
+    // The default hides nothing: same catalog, same document, same how-to.
+    for uri in ["/v1/tools", "/v1/openapi.json", "/v1/how-to"] {
+        let with_default = get(&app(plain.clone()), uri, &ctx).await;
+        let without_behavior = get(&app(flavor_host()), uri, &ctx).await;
+        assert_eq!(with_default.body, without_behavior.body, "{uri}");
+    }
+    let everything = catalog_ids(&get(&app(plain.clone()), "/v1/tools", &ctx).await);
+    assert!(everything.contains(protocol_tool::CORE_REMEMBER));
+    assert!(everything.contains(FLAVOR_DISPATCH));
+
+    let router = app(hiding.clone());
+    let listed = get(&router, "/v1/tools", &ctx).await;
+    assert_eq!(
+        catalog_ids(&listed),
+        everything
+            .iter()
+            .filter(|id| *id != protocol_tool::CORE_REMEMBER)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        "hiding one tool removes exactly that tool"
+    );
+    let dispatcher = listed.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .cloned()
+        .expect("the dispatcher keeps its visible action");
+    assert_eq!(
+        dispatcher["args_schema"]["properties"]["action"]["enum"],
+        serde_json::json!(["look"])
+    );
+
+    let descriptor = get(
+        &router,
+        &format!("/v1/tools/{}", protocol_tool::CORE_REMEMBER),
+        &ctx,
+    )
+    .await;
+    assert_eq!(descriptor.status, StatusCode::NOT_FOUND);
+
+    let openapi = get(&router, "/v1/openapi.json", &ctx).await.json();
+    let paths = openapi["paths"].as_object().expect("paths");
+    assert!(!paths.contains_key(&format!("/v1/tools/{}", protocol_tool::CORE_REMEMBER)));
+    assert!(paths.contains_key(&format!("/v1/tools/{FLAVOR_DISPATCH}/look")));
+    assert!(!paths.contains_key(&format!("/v1/tools/{FLAVOR_DISPATCH}/touch")));
+
+    let how_to = get(&router, "/v1/how-to", &ctx).await;
+    let plain_how_to = get(&app(plain.clone()), "/v1/how-to", &ctx).await;
+    // The capture table row for the tool is guarded by it being advertised.
+    assert!(String::from_utf8_lossy(&plain_how_to.body).contains("`core_remember` → Fact"));
+    assert!(!String::from_utf8_lossy(&how_to.body).contains("`core_remember` → Fact"));
+
+    let substrate: BTreeSet<String> = hiding
+        .read_resource("proxima://tools", author(), Some(ctx.clone()))
+        .await
+        .expect("the catalog resource reads")["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["tool_id"].as_str().expect("tool_id").to_string())
+        .collect();
+    assert_eq!(
+        substrate,
+        catalog_ids(&listed),
+        "REST and proxima://tools agree"
+    );
+
+    // Calls: never asked, and the hidden tool is still handled (and, with no
+    // engine behind it, answers an error of its own rather than a 404).
+    let asked_by_listings = asked.load(Ordering::SeqCst);
+    assert!(asked_by_listings > 0);
+    let handled_before = handled.load(Ordering::SeqCst);
+    let call = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{}", protocol_tool::CORE_REMEMBER),
+        &ctx,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_ne!(call.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        handled.load(Ordering::SeqCst),
+        handled_before + 1,
+        "handle still decides"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        asked_by_listings,
+        "the call path never asks visible"
+    );
+}
+
+/// `visible` returning `true` lists nothing the palette or the owner role
+/// withholds.
+#[tokio::test]
+async fn visible_true_never_lists_outside_the_palette_or_role() {
+    let router = app(host_with(OpinionlessBehavior));
+
+    let palette = auth(ToolScope::Palette(vec![
+        protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
+    ]));
+    let ids = catalog_ids(&get(&router, "/v1/tools", &palette).await);
+    assert_eq!(
+        ids,
+        BTreeSet::from([protocol_tool::CORE_SEARCH_MEMORIES.to_string()])
+    );
+
+    let viewer = viewer_auth(ToolScope::All);
+    let ids = catalog_ids(&get(&router, "/v1/tools", &viewer).await);
+    assert!(ids.contains(protocol_tool::CORE_SEARCH_MEMORIES));
+    assert!(
+        !ids.contains(protocol_tool::CORE_REMEMBER),
+        "a viewer never sees a write: {ids:?}"
+    );
 }
 
 #[tokio::test]

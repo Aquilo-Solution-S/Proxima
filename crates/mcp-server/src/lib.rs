@@ -24,7 +24,7 @@ pub use handler::{
     DynamicHandler, auth_context, author_from_args, mcp_tool_error_to_error_data,
     peer_implementation, strip_call_context_args, tool_invocation_error_to_error_data,
 };
-pub use host_tools::{McpHostTool, McpHostTools};
+pub use host_tools::{MAX_HOST_INSTRUCTIONS_CHARS, McpHostTool, McpHostTools};
 pub use oauth::{
     MCP_PATH, MCP_PROTECTED_RESOURCE_METADATA_PATH, PROTECTED_RESOURCE_METADATA_PATH,
     ProtectedResource, ResourceServerMetadata, SCOPES_SUPPORTED, protected_resource_router,

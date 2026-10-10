@@ -1,5 +1,22 @@
 # Migrate the Flavor SDK
 
+## v0.0.26
+
+Pin all Proxima Rust dependencies to the same `v0.0.26` tag. No database
+change. **Breaking, no shims** (#412): host tools list per request and can
+fail, answer content or a tool failure, and be hidden by request behaviors
+([12 §Tool Replies](../12-tool-manifest.md#tool-replies)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| `McpHostTools::list` | `async fn list(&self, &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError>`. An `Err` fails the `tools/list`, or the `tools/call` that needed the catalog; return `Ok(Vec::new())` to degrade on purpose |
+| `McpHostTools::call` | Returns `Result<ToolReply, McpToolError>`: `ToolReply::Structured(value)` for what returned a `Value`; `Content` for blocks (only from a tool without an `output_schema`); `Failure` for a failure the model should read (`isError: true`) |
+| `RequestBehavior::handle`, `Next::run`, `TerminalDispatch` | Carry `ToolReply` instead of `Value`. A behavior that rewrites JSON matches `ToolReply::Structured` and passes the other variants on |
+| `McpHostTool` struct literal | `#[non_exhaustive]`: `McpHostTool::new(name, description, args_schema, effect)` plus `with_output_schema`, `with_meta`, `with_open_world`. `output_schema` is `Option<Value>` |
+| `McpToolHost::host_tools_for` | `async`, returns `Result<Vec<McpHostTool>, McpToolError>` |
+| Handler wrapper listing host tools | Delete it; `list` is async now, and `McpHostTools::instructions` adds to the server instructions |
+| New | `RequestBehavior::visible(&McpToolCtx, &ToolDescriptorView) -> bool` (default `true`) hides a tool from `tools/list`, the REST catalog and OpenAPI document, `proxima://how-to` and `core/list_substrate_tools`; the call is still refused in `handle`. Listing surfaces now build the request's tool context, so a bad request-services bag fails them as it fails a call |
+
 ## v0.0.25
 
 Pin all Proxima Rust dependencies to the same `v0.0.25` tag. No database

@@ -18,7 +18,6 @@ pub mod context;
 pub mod error;
 pub mod openapi;
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::Router;
@@ -28,11 +27,14 @@ use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use proxima_core::flavor::ResourceContract;
-use proxima_core::mcp::{McpToolDescriptor, McpToolOrigin, all_core_resources, tool_name_matches};
+use proxima_core::mcp::{
+    McpToolCtx, McpToolDescriptor, McpToolOrigin, all_core_resources, tool_name_matches,
+};
 
 use crate::handler::{
-    action_allowed_for_auth, advertised_resource_scope_keys, annotations_for_auth,
-    project_dispatcher_actions_for_auth, resource_scope_allows, tool_allowed_for_auth,
+    Caller, action_allowed_for_auth, advertised_resource_scope_keys, advertised_tool_ids,
+    annotations_for_auth, project_dispatcher_actions_for_auth, resource_scope_allows,
+    tool_allowed_for_auth,
 };
 use crate::rest::context::{RestAuth, author_from_headers, reject_reserved_arguments};
 use crate::rest::error::{Problem, problem_for};
@@ -87,16 +89,28 @@ pub fn router(host: McpToolHost, public_url: Option<String>) -> Router {
 // ---------------------------------------------------------------- catalog
 
 /// Scope-filtered manifest. Same filter `tools/list` applies — literally
-/// the same function — so the two surfaces cannot drift by omission.
+/// the same function — so the two surfaces cannot drift by omission. Host
+/// tools are not on this surface.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
-async fn list_tools(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Response {
+async fn list_tools(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
+    RestAuth(auth): RestAuth,
+) -> Response {
+    let instance = format!("{PREFIX}/tools");
+    let ctx = match listing_ctx(&state, &auth, (&headers, &extensions), &instance) {
+        Ok(ctx) => ctx,
+        Err(problem) => return problem.into_response(),
+    };
+    let caller = Caller::listing(Some(&auth), Some(&ctx));
     let tools: Vec<serde_json::Value> = state
         .host
         .registry()
         .list_mcp_tools()
         .iter()
-        .filter(|descriptor| tool_allowed_for_auth(Some(&auth), descriptor))
-        .map(|descriptor| tool_json(descriptor, Some(&auth)))
+        .filter(|descriptor| tool_allowed_for_auth(caller, descriptor))
+        .map(|descriptor| tool_json(descriptor, caller))
         .collect();
     json_ok(&serde_json::json!({ "tools": tools }))
 }
@@ -106,12 +120,31 @@ async fn list_tools(State(state): State<RestState>, RestAuth(auth): RestAuth) ->
 /// that is not in it is absent rather than refused. Invocation is where
 /// denial is `403` (see [`dispatch`]), because there the caller has asserted
 /// the tool exists and is owed the reason.
-fn tool_descriptor(state: &RestState, auth: &crate::McpAuthContext, tool: &str) -> Response {
-    match find_descriptor(state, tool).filter(|d| tool_allowed_for_auth(Some(auth), d)) {
-        Some(descriptor) => json_ok(&tool_json(descriptor, Some(auth))),
+fn tool_descriptor(state: &RestState, caller: Caller<'_>, tool: &str) -> Response {
+    match find_descriptor(state, tool).filter(|d| tool_allowed_for_auth(caller, d)) {
+        Some(descriptor) => json_ok(&tool_json(descriptor, caller)),
         None => Problem::not_found(format!("tool {tool} not found"), &tool_instance(tool))
             .into_response(),
     }
+}
+
+/// The tool context request behaviors judge a catalog with: the caller's
+/// own, built as [`read_resource`] builds its.
+fn listing_ctx(
+    state: &RestState,
+    auth: &crate::McpAuthContext,
+    (headers, extensions): (&axum::http::HeaderMap, &axum::http::Extensions),
+    instance: &str,
+) -> Result<McpToolCtx, Problem> {
+    let author = author_from_headers(headers, auth, instance)?;
+    let request = state
+        .host
+        .request_services(headers, extensions)
+        .map_err(|err| problem_for(&err.into(), instance))?;
+    state
+        .host
+        .ctx_for_request(author, auth, request)
+        .map_err(|err| problem_for(&err.into(), instance))
 }
 
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
@@ -129,8 +162,25 @@ async fn list_resources(RestAuth(auth): RestAuth) -> Response {
 /// surface, so it gets its own route and `/v1/resources/how-to` stays a
 /// `404`.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
-async fn how_to(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Response {
-    let advertised_tools = advertised_tool_ids(&state, &auth);
+async fn how_to(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
+    RestAuth(auth): RestAuth,
+) -> Response {
+    let ctx = match listing_ctx(
+        &state,
+        &auth,
+        (&headers, &extensions),
+        &format!("{PREFIX}/how-to"),
+    ) {
+        Ok(ctx) => ctx,
+        Err(problem) => return problem.into_response(),
+    };
+    let advertised_tools = advertised_tool_ids(
+        state.host.registry(),
+        Caller::listing(Some(&auth), Some(&ctx)),
+    );
     let advertised_resources = advertised_resource_scope_keys(Some(auth.authz.tool_scope()));
     let body = selfdoc::how_to_markdown(&advertised_tools, &advertised_resources);
     let mut response = body.into_response();
@@ -141,11 +191,25 @@ async fn how_to(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Res
 /// The document reflects this caller's `ToolScope`, exactly as `tools/list`
 /// does, which is why it is token-specific and never shared-cacheable.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
-async fn openapi(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Response {
-    json_ok(&openapi::document_from_registry(
+async fn openapi(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
+    RestAuth(auth): RestAuth,
+) -> Response {
+    let ctx = match listing_ctx(
+        &state,
+        &auth,
+        (&headers, &extensions),
+        &format!("{PREFIX}/openapi.json"),
+    ) {
+        Ok(ctx) => ctx,
+        Err(problem) => return problem.into_response(),
+    };
+    json_ok(&openapi::document_for_caller(
         state.host.registry(),
         state.public_url.as_deref(),
-        Some(&auth),
+        Caller::listing(Some(&auth), Some(&ctx)),
     ))
 }
 
@@ -174,7 +238,11 @@ async fn tool_route(
         return Problem::not_found(format!("tool {tool} not found"), &instance).into_response();
     };
     if method == Method::GET {
-        return tool_descriptor(&state, &auth, &tool);
+        let ctx = match listing_ctx(&state, &auth, (&headers, &extensions), &instance) {
+            Ok(ctx) => ctx,
+            Err(problem) => return problem.into_response(),
+        };
+        return tool_descriptor(&state, Caller::listing(Some(&auth), Some(&ctx)), &tool);
     }
     // Both dispatcher vocabularies name their action inside the body, so
     // both defer the method gate until the body is parsed.
@@ -189,7 +257,7 @@ async fn tool_route(
                 .chain(descriptor.argv_action_specs.iter().map(|spec| spec.action))
                 .any(|action| {
                     descriptor.action_is_read_only(action)
-                        && action_allowed_for_auth(Some(&auth), descriptor, action)
+                        && action_allowed_for_auth(Caller::new(Some(&auth)), descriptor, action)
                 })
         } else {
             descriptor.is_read_only()
@@ -456,21 +524,7 @@ fn inject_action(
     Ok(args)
 }
 
-fn advertised_tool_ids(state: &RestState, auth: &crate::McpAuthContext) -> BTreeSet<&'static str> {
-    state
-        .host
-        .registry()
-        .list_mcp_tools()
-        .iter()
-        .filter(|descriptor| tool_allowed_for_auth(Some(auth), descriptor))
-        .map(|descriptor| descriptor.name)
-        .collect()
-}
-
-fn tool_json(
-    descriptor: &McpToolDescriptor,
-    auth: Option<&crate::McpAuthContext>,
-) -> serde_json::Value {
+fn tool_json(descriptor: &McpToolDescriptor, caller: Caller<'_>) -> serde_json::Value {
     serde_json::json!({
         "id": descriptor.name,
         "description": descriptor.description,
@@ -478,11 +532,11 @@ fn tool_json(
             McpToolOrigin::Substrate => serde_json::json!("substrate"),
             McpToolOrigin::Flavor(flavor) => serde_json::json!({ "flavor": flavor }),
         },
-        "annotations": annotations_for_auth(auth, descriptor),
+        "annotations": annotations_for_auth(caller, descriptor),
         // Narrowed per action by the same projection `tools/list` applies, so
         // a palette that permits one leaf of a dispatcher advertises one leaf
         // on both surfaces.
-        "args_schema": project_dispatcher_actions_for_auth(descriptor, auth),
+        "args_schema": project_dispatcher_actions_for_auth(caller, descriptor),
     })
 }
 

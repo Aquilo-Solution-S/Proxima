@@ -15,6 +15,7 @@ use proxima_core::flavor::{FlavorContract, ProjectionDecl, ToolContract};
 use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpToolAudience, McpToolCtx, McpToolError, McpToolOrigin,
     Next, Replay, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall, ToolEffect,
+    ToolReply,
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
@@ -165,13 +166,15 @@ fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpTool
     }
 }
 
-async fn run_gate(
-    ctx: McpToolCtx,
-    args: serde_json::Value,
-) -> Result<serde_json::Value, McpToolError> {
+async fn run_gate(ctx: McpToolCtx, args: serde_json::Value) -> Result<ToolReply, McpToolError> {
     let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
-    let terminal: TerminalDispatch<'_> =
-        Box::new(|_call| Box::pin(async { Ok(serde_json::json!({ "reached": true })) }));
+    let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+        Box::pin(async {
+            Ok(ToolReply::Structured(
+                serde_json::json!({ "reached": true }),
+            ))
+        })
+    });
     Next::new(&behaviors, terminal)
         .run(ToolCall {
             name: DISPATCH.to_string(),
@@ -187,7 +190,7 @@ async fn through_the_gate(
     registry: &Arc<FlavorRegistryFrozen>,
     scope: ToolScope,
     args: serde_json::Value,
-) -> Result<serde_json::Value, McpToolError> {
+) -> Result<ToolReply, McpToolError> {
     run_gate(ctx(registry, scope), args).await
 }
 

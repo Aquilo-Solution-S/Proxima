@@ -49,13 +49,13 @@ impl Subscriber for CapturedLogs {
 }
 
 fn host_tool(output_schema: Value) -> McpHostTool {
-    McpHostTool {
-        name: "host_shapes".into(),
-        description: "Output contract fixture".into(),
-        args_schema: json!({"type": "object"}),
-        output_schema,
-        effect: proxima_core::ToolEffect::ReadOnly,
-    }
+    McpHostTool::new(
+        "host_shapes",
+        "Output contract fixture",
+        json!({"type": "object"}),
+        proxima_core::ToolEffect::ReadOnly,
+    )
+    .with_output_schema(output_schema)
 }
 
 #[test]
@@ -139,4 +139,21 @@ fn nonobject_tool_output_is_redacted_and_logs_only_the_tool_name() {
     let (structured, text) = structured_tool_output("host_shapes", object.clone()).unwrap();
     assert_eq!(structured, object);
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), object);
+}
+
+#[test]
+fn host_instructions_over_the_cap_are_omitted_with_a_warning() {
+    let over = "x".repeat(crate::MAX_HOST_INSTRUCTIONS_CHARS + 1);
+    let logs = CapturedLogs::default();
+    let composed = tracing::subscriber::with_default(logs.clone(), || {
+        crate::selfdoc::compose_instructions("Proxima text.", Some(&over))
+    });
+    assert_eq!(composed.as_deref(), Some("Proxima text."));
+    let events = logs.0.lock().unwrap();
+    assert!(
+        events.iter().any(|event| event.contains("WARN")
+            && event.contains("host instructions over the length cap; not served")),
+        "{events:?}"
+    );
+    assert!(events.iter().all(|event| !event.contains(&over)));
 }

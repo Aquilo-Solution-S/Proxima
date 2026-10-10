@@ -18,10 +18,12 @@ use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RecallTool, RememberTool,
-    SearchMemoriesTool, ThinkTool,
+    CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RecallTool, RecordUtteranceTool,
+    RememberTool, SearchMemoriesTool, ThinkTool,
 };
 use proxima_core::protocol::resource as protocol_resource;
+
+use crate::host_tools::MAX_HOST_INSTRUCTIONS_CHARS;
 
 /// Canonical URI of the on-demand How-To resource.
 pub const HOW_TO_URI: &str = "proxima://how-to";
@@ -42,6 +44,7 @@ pub const HOW_TO_MIME: &str = "text/markdown";
 // registered tool names (the `memory` keep set in `apps/proxima-mcp` pins them too).
 const CODE_SEARCH_CHUNKS: &str = "proxima-code_search_chunks";
 const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
+const CODE_OPEN_FILE_REVISION: &str = "proxima-code_open_file_revision";
 /// The advertised surface, distilled to the booleans the generators key off.
 /// Computed once from the resolved tool-id and resource scope-key sets so
 /// `build_instructions` and `how_to_markdown` agree on what is exposed. The
@@ -51,6 +54,7 @@ const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
 #[derive(Clone, Copy)]
 struct Surface {
     remember: bool,
+    record_utterance: bool,
     derive: bool,
     interpret: bool,
     recall: bool,
@@ -61,6 +65,8 @@ struct Surface {
     lineage: bool,
     goals: bool,
     code: bool,
+    code_search: bool,
+    code_open: bool,
 }
 
 impl Surface {
@@ -72,6 +78,7 @@ impl Surface {
         let has_resource = |id: &str| advertised_resources.contains(id);
         Self {
             remember: has_tool(RememberTool::NAME),
+            record_utterance: has_tool(RecordUtteranceTool::NAME),
             derive: has_tool(DeriveTool::NAME),
             interpret: has_tool(InterpretTool::NAME),
             recall: has_tool(RecallTool::NAME),
@@ -82,6 +89,45 @@ impl Surface {
             lineage: has_resource(protocol_resource::MEMORY_LINEAGE),
             goals: has_tool(CoreGoalTool::NAME),
             code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
+            code_search: has_tool(CODE_SEARCH_CHUNKS),
+            code_open: has_tool(CODE_OPEN_FILE_REVISION),
+        }
+    }
+}
+
+/// The memory-spaces guidance about where a `space` key goes. It names only
+/// the write and search tools the caller sees, so a tool a behavior hides is
+/// never recommended; with none left, only the hydrate step remains.
+fn space_key_guidance(s: Surface) -> String {
+    let accepting: Vec<&str> = [
+        (s.remember, RememberTool::NAME),
+        (s.record_utterance, RecordUtteranceTool::NAME),
+        (s.search, SearchMemoriesTool::NAME),
+        (s.derive, DeriveTool::NAME),
+        (s.interpret, InterpretTool::NAME),
+    ]
+    .into_iter()
+    .filter_map(|(advertised, name)| advertised.then_some(name))
+    .collect();
+    let hydrate = "hydrate a memory by reading `proxima://memory/{id}`";
+    if accepting.is_empty() {
+        return "Hydrate a memory by reading `proxima://memory/{id}`.".to_owned();
+    }
+    format!(
+        "Use a returned `space` key in {}; {hydrate}.",
+        backticked_and_list(&accepting)
+    )
+}
+
+/// `` `a` ``, `` `a` and `b` ``, or `` `a`, `b`, and `c` ``.
+fn backticked_and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => format!("`{only}`"),
+        [first, second] => format!("`{first}` and `{second}`"),
+        [init @ .., last] => {
+            let init: Vec<String> = init.iter().map(|name| format!("`{name}`")).collect();
+            format!("{}, and `{last}`", init.join(", "))
         }
     }
 }
@@ -136,7 +182,11 @@ pub fn build_instructions(
 
     if s.remember || s.derive {
         if s.memory_spaces {
-            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. A cross-space derivation or interpretation may ground in readable handles outside the selected write space. ");
+            out.push_str(
+                "In multi-space hosts, call `core_memory_spaces` before durable memory writes. ",
+            );
+            out.push_str(&space_key_guidance(s));
+            out.push_str(" Omitted `space` preserves the current bound owner. A cross-space derivation or interpretation may ground in readable handles outside the selected write space. ");
         }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
@@ -179,6 +229,36 @@ pub fn build_instructions(
     );
 
     out
+}
+
+/// The `instructions` served to one caller: the `generated` text, then the
+/// host's own contribution after a blank line, or the host's alone when
+/// nothing is generated. `None` when there is neither.
+///
+/// A contribution longer than [`MAX_HOST_INSTRUCTIONS_CHARS`] is omitted with
+/// a warning, as an invalid host tool is: it is host text, and an unbounded
+/// one would push Proxima's own guidance out of the client's context.
+#[must_use]
+pub(crate) fn compose_instructions(generated: &str, host: Option<&str>) -> Option<String> {
+    let host = host.filter(|text| !text.trim().is_empty());
+    let host = host.filter(|text| {
+        let chars = text.chars().count();
+        let fits = chars <= MAX_HOST_INSTRUCTIONS_CHARS;
+        if !fits {
+            tracing::warn!(
+                chars,
+                max = MAX_HOST_INSTRUCTIONS_CHARS,
+                "host instructions over the length cap; not served"
+            );
+        }
+        fits
+    });
+    match (generated.is_empty(), host) {
+        (true, None) => None,
+        (true, Some(host)) => Some(host.to_owned()),
+        (false, None) => Some(generated.to_owned()),
+        (false, Some(host)) => Some(format!("{generated}\n\n{host}")),
+    }
 }
 
 fn push_retrieval_instructions(out: &mut String, s: Surface) {
@@ -248,7 +328,9 @@ pub fn how_to_markdown(
 
     push_law(&mut out, s);
     if s.memory_spaces {
-        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.\n\n");
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. ");
+        out.push_str(&space_key_guidance(s));
+        out.push_str(" Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.\n\n");
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
@@ -357,10 +439,19 @@ fn push_capture_table(out: &mut String, s: Surface) {
         }
         out.push_str(" |\n");
     }
-    if s.code {
-        out.push_str(
-            "| Search / open indexed source code | `proxima-code_search_chunks`, \
-             `proxima-code_open_file_revision` |\n",
+    let code_tools: Vec<&str> = [
+        (s.code_search, CODE_SEARCH_CHUNKS),
+        (s.code_open, CODE_OPEN_FILE_REVISION),
+    ]
+    .into_iter()
+    .filter_map(|(advertised, name)| advertised.then_some(name))
+    .collect();
+    if !code_tools.is_empty() {
+        let names: Vec<String> = code_tools.iter().map(|name| format!("`{name}`")).collect();
+        let _ = writeln!(
+            out,
+            "| Search / open indexed source code | {} |",
+            names.join(", ")
         );
     }
     out.push_str(
@@ -523,6 +614,189 @@ mod tests {
 
     fn memory_minus_goals_resource_set() -> BTreeSet<&'static str> {
         full_resource_set()
+    }
+
+    /// Every tool id the generated texts can name.
+    const NAMEABLE_TOOLS: [&str; 12] = [
+        "core_remember",
+        "core_record_utterance",
+        "core_derive",
+        "core_interpret",
+        "core_search_memories",
+        "core_recall",
+        "core_think",
+        "core_goal",
+        "core_memory_spaces",
+        "proxima-code_search_chunks",
+        "proxima-code_register_repo",
+        "proxima-code_open_file_revision",
+    ];
+
+    /// The whole surface, every nameable tool advertised.
+    fn whole_surface() -> BTreeSet<&'static str> {
+        NAMEABLE_TOOLS.into_iter().collect()
+    }
+
+    /// A tool that is not advertised is named by neither text, whichever one
+    /// it is: no sentence, table row or example recommends what the caller
+    /// cannot call. (A literal tool name outside a gate fails here.)
+    #[test]
+    fn a_tool_that_is_not_advertised_is_named_nowhere() {
+        let resources = full_resource_set();
+        for hidden in NAMEABLE_TOOLS {
+            let mut tools = whole_surface();
+            tools.remove(hidden);
+            let instructions = build_instructions(&tools, &resources);
+            let how_to = how_to_markdown(&tools, &resources);
+            assert!(!instructions.is_empty(), "{hidden}");
+            for (what, text) in [("instructions", &instructions), ("how-to", &how_to)] {
+                assert!(
+                    !text.contains(hidden),
+                    "{what} names {hidden} without it being advertised"
+                );
+            }
+        }
+    }
+
+    const SPACES_CLAUSE_FULL: &str = "Use a returned `space` key in `core_remember`, \
+        `core_record_utterance`, `core_search_memories`, `core_derive`, and \
+        `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`.";
+
+    /// With the whole surface the memory-spaces clause is the one the docs
+    /// quote (docs/15 §MCP, docs/agent/quickstart.md), word for word.
+    #[test]
+    fn the_whole_surface_keeps_the_memory_spaces_clause_and_the_code_row() {
+        let tools = whole_surface();
+        let resources = full_resource_set();
+        let instructions = build_instructions(&tools, &resources);
+        let how_to = how_to_markdown(&tools, &resources);
+        assert!(
+            instructions.contains(&format!(
+                "In multi-space hosts, call `core_memory_spaces` before durable memory writes. \
+                 {SPACES_CLAUSE_FULL} Omitted `space` preserves the current bound owner. "
+            )),
+            "{instructions}"
+        );
+        assert!(
+            how_to.contains(&format!(
+                "## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before \
+                 durable memory writes. {SPACES_CLAUSE_FULL} Omitted `space` preserves the \
+                 current bound owner. Space keys are selectors only;"
+            )),
+            "{how_to}"
+        );
+        assert!(how_to.contains(
+            "| Search / open indexed source code | `proxima-code_search_chunks`, \
+             `proxima-code_open_file_revision` |\n"
+        ));
+    }
+
+    /// The `space` clause lists the advertised tools that take a `space`
+    /// (`and` between two, a serial comma from three), and with none left is
+    /// only the hydrate step.
+    #[test]
+    fn the_memory_spaces_clause_lists_what_is_advertised() {
+        let resources = full_resource_set();
+        for (tools, clause) in [
+            (
+                vec!["core_memory_spaces", "core_search_memories"],
+                "Use a returned `space` key in `core_search_memories`; hydrate",
+            ),
+            (
+                vec!["core_memory_spaces", "core_derive", "core_interpret"],
+                "Use a returned `space` key in `core_derive` and `core_interpret`; hydrate",
+            ),
+            (
+                vec![
+                    "core_memory_spaces",
+                    "core_remember",
+                    "core_derive",
+                    "core_search_memories",
+                ],
+                "Use a returned `space` key in `core_remember`, `core_search_memories`, and \
+                 `core_derive`; hydrate",
+            ),
+            (
+                vec!["core_memory_spaces", "core_recall", "core_think"],
+                "durable memory writes. Hydrate a memory by reading `proxima://memory/{id}`. \
+                 Omitted",
+            ),
+        ] {
+            let tools: BTreeSet<&str> = tools.into_iter().collect();
+            let how_to = how_to_markdown(&tools, &resources);
+            assert!(how_to.contains(clause), "{clause}\n{how_to}");
+        }
+    }
+
+    /// The code row names the code tools that are advertised, and no row
+    /// appears when neither is (registering a repo alone documents nothing
+    /// to search).
+    #[test]
+    fn the_code_row_names_only_advertised_code_tools() {
+        let resources = full_resource_set();
+        let row = |tools: &[&'static str]| {
+            let tools: BTreeSet<&str> = tools.iter().copied().collect();
+            how_to_markdown(&tools, &resources)
+                .lines()
+                .find(|line| line.starts_with("| Search / open indexed source code"))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            row(&["proxima-code_search_chunks"]).as_deref(),
+            Some("| Search / open indexed source code | `proxima-code_search_chunks` |")
+        );
+        assert_eq!(
+            row(&["proxima-code_open_file_revision"]).as_deref(),
+            Some("| Search / open indexed source code | `proxima-code_open_file_revision` |")
+        );
+        assert_eq!(row(&["proxima-code_register_repo"]), None);
+    }
+
+    #[test]
+    fn host_instructions_follow_the_generated_text() {
+        assert_eq!(
+            compose_instructions("Proxima text.", Some("Host text.")).as_deref(),
+            Some("Proxima text.\n\nHost text.")
+        );
+        assert_eq!(
+            compose_instructions("Proxima text.", None).as_deref(),
+            Some("Proxima text.")
+        );
+    }
+
+    #[test]
+    fn host_instructions_stand_alone_when_nothing_is_generated() {
+        assert_eq!(
+            compose_instructions("", Some("Host text.")).as_deref(),
+            Some("Host text.")
+        );
+        assert_eq!(compose_instructions("", None), None);
+    }
+
+    #[test]
+    fn blank_host_instructions_add_nothing() {
+        assert_eq!(compose_instructions("", Some(" \n")), None);
+        assert_eq!(
+            compose_instructions("Proxima text.", Some("")).as_deref(),
+            Some("Proxima text.")
+        );
+    }
+
+    /// The cap counts characters, not bytes, and omits the whole
+    /// contribution rather than cutting it.
+    #[test]
+    fn host_instructions_over_the_cap_are_omitted() {
+        let fits = "é".repeat(MAX_HOST_INSTRUCTIONS_CHARS);
+        assert_eq!(
+            compose_instructions("", Some(&fits)).as_deref(),
+            Some(fits.as_str())
+        );
+        let over = "é".repeat(MAX_HOST_INSTRUCTIONS_CHARS + 1);
+        assert_eq!(compose_instructions("", Some(&over)), None);
+        assert_eq!(
+            compose_instructions("Proxima text.", Some(&over)).as_deref(),
+            Some("Proxima text.")
+        );
     }
 
     #[test]
