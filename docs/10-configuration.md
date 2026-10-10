@@ -203,11 +203,27 @@ A host with no network path to its issuer pins the keys instead:
 (`{"keys":[{"kty":"RSA","kid":..,"n":..,"e":..,"alg":"RS256","use":"sig"}]}`).
 When it is set nothing is fetched — no discovery, no JWKS request — and
 `PROXIMA_OIDC_ISSUER`, still required and still URL-validated, is only matched
-against the token's `iss`. Every key must be a named RSA public key (`alg`, if
-present, RS256/RS384/RS512; `use`, if present, `sig`); an empty set, a key
-without `kid`, a non-RSA key, private key material, or malformed JSON fails
-boot. It is mutually exclusive with `PROXIMA_OIDC_JWKS_URI`, the discovery
-override. Rotating a pinned key is a config change and a restart.
+against the token's `iss`. Every key must be a named public key of one of three
+types: `kty: RSA` (`n`, `e`), `kty: EC` with `crv: P-256` (`x`, `y`), or
+`kty: OKP` with `crv: Ed25519` (`x`). Each coordinate is exactly 32 bytes of
+base64url. `alg`, if present, must belong to the `kty` (RS256/RS384/RS512 for
+RSA, ES256 for EC, EdDSA for OKP); `use`, if present, `sig`. An empty set, a
+key without `kid`, any other `kty` or curve, a missing member, a coordinate of
+another length, a member of the wrong JSON type, an `alg` that contradicts the
+`kty`, private key material, or malformed JSON fails boot. It is mutually exclusive with
+`PROXIMA_OIDC_JWKS_URI`, the discovery override. Rotating a pinned key is a
+config change and a restart.
+
+The signature algorithm follows the key, never the token header: the resolver
+fixes the key's family from the JWK's `kty`, and the token's `alg` must be one
+of that family's algorithms — RS256/RS384/RS512 for RSA, ES256 for P-256 EC,
+EdDSA for Ed25519. Any other `alg` (`none` and `HS*` included) is refused
+whatever the key. No JWK `alg` widens the set; it is only checked for
+consistency with the `kty`, and only for pinned entries and fetched EC and OKP
+entries — a fetched RSA entry's `alg` is not checked. A JWKS served over HTTP
+is read tolerantly: an EC or OKP entry with any of the faults above, and any
+entry with a member of the wrong JSON type, is skipped like any unsupported
+entry, and the other keys of the set still resolve.
 
 The runtime resolves roles through one `OwnerAccessPort`: the host's
 (`.owner_access(..)`), else the Postgres resolver over the runtime pool. The
@@ -277,6 +293,8 @@ Host-side MCP surface (v0.0.21):
 | Compose own router | `BuiltProxima::mcp_edge()` → `McpEdge` | resolved tool host, bearer auth, Origin/Host allowlists, revalidation, resource metadata, transport; `McpEdge::router(app)` = `/mcp` (+ `/v1`) behind bearer auth, `app` without it, all behind body cap + Host guard + CORS. `layered_router_mcp_only` puts bearer auth on `/mcp` only for a hand-built service (no resource-metadata routes; the default body cap) |
 | Custom transport | `auth_context`, `peer_implementation`, `author_from_args`, `strip_call_context_args`, `reject_nul_in_args`, `tool_invocation_error_to_error_data`, `mcp_tool_error_to_error_data`, `McpToolHost::dispatch_through_behaviors` | the handler's own helpers, public. A host wrapping `DynamicHandler` in its own `ServerHandler` delegates `supported_protocol_versions`, `discover`, `accepted_subscription_filter` and `listen` too (v0.0.22), or rmcp's defaults serve every revision rmcp knows and drop per-caller instructions and tool-list subscriptions |
 | Tell clients a tool list changed | `CoreMcpTools::with_tool_list_notifier(ToolListNotifier)` (v0.0.22) | advertises `tools.listChanged`; registers each `initialize` session and each `2026-07-28` `subscriptions/listen` stream asking for `toolsListChanged` under its owner; `ToolListNotifier::notify(&owner)` sends `notifications/tools/list_changed` to that owner's listeners only and returns how many it reached. Per process: a host with several replicas notifies on each |
+| Pin the client (`azp`) per binding | `AuthorizedPartyPolicy::new(ids)` → `.with_authorized_party_policy(policy)` on `OidcTokenValidator`, `OidcBinding` or `OidcAuthenticator` | Set in code (no `PROXIMA_OIDC_*` variable, `OidcAuthConfig` gains no field): the policy belongs to one `(issuer, audience)` route, so two bindings on one issuer each enforce their own set. After the signature, `iss`, `aud`, `exp` and `nbf` pass, and before `C` is read: a non-string `azp` → `InvalidClaim("azp")`; several distinct `aud` values and no `azp` → `MissingAuthorizedParty`; an `azp` outside the set (exact, case-sensitive) → `UnauthorizedParty { azp }`; a single-audience token without `azp` passes (OIDC Core makes it optional there). It can only refuse a token the validator accepted: it grants nothing and maps no identity. The constructor refuses an empty or blank set (`AuthorizedPartyPolicyError`). Without the call no policy applies |
+| Bindings of several issuers | `OidcBindingSet::new([OidcBinding, ..])` | A token's unverified `iss` only skips bindings configured for another issuer, so their key resolvers never look up keys or fetch a JWKS for it; a token naming no binding's issuer is refused before any lookup. The bindings left validate in full, exactly one must accept, and a payload or `iss` that cannot be read as a string tries every binding. The unverified `iss` selects work and never grants identity |
 | Own OIDC claims | `OidcTokenValidator::validate_with::<C>` → `ValidatedOidcToken<C>`; `OidcRoleShape::Host(Arc<dyn OidcRoleShaper>)` | `C` reads the verified payload; refusals keep their `OidcRejection` reason (→ `InvalidCredentials` at the boundary); a binding's shaper sees every verified claim and may only narrow: another subject, auth path or trusted model id, or a right the resolved roles lack, refuses the token; the tool scope is intersected and the expiry clamped to the token's |
 | Work with no bearer | `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` | sealed `AuthPath::System` context from the runtime's witness instead of a stub authenticator and empty bearer; System-path owner writes check the same witness at permit time |
 

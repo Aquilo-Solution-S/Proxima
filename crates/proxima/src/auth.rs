@@ -66,12 +66,15 @@ pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 /// A host reading its own claims uses [`OidcTokenValidator::validate_with`]
 /// (typed [`OidcRejection`] reasons) or an [`OidcRoleShape::Host`]
 /// [`OidcRoleShaper`] on a binding; neither needs a JWT library of its own.
+/// A host that pins which clients (`azp`) may call a binding attaches an
+/// [`AuthorizedPartyPolicy`] to it.
 pub use proxima_auth_oidc::{
-    DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
-    MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig, OidcAuthenticator, OidcBinding, OidcBindingRoute,
-    OidcBindingSet, OidcBindingSetError, OidcClaimMap, OidcConfigError, OidcRejection,
-    OidcRoleShape, OidcRoleShaper, OidcSubjectMap, OidcSubjectMapError, OidcTokenValidator,
-    StaticJwksResolver, SubjectBinding, ValidatedOidcClaims, ValidatedOidcToken,
+    AuthorizedPartyPolicy, AuthorizedPartyPolicyError, DEFAULT_HTTP_REQUEST_TIMEOUT,
+    HttpJwksResolver, KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig,
+    OidcAuthenticator, OidcBinding, OidcBindingRoute, OidcBindingSet, OidcBindingSetError,
+    OidcClaimMap, OidcConfigError, OidcRejection, OidcRoleShape, OidcRoleShaper, OidcSubjectMap,
+    OidcSubjectMapError, OidcTokenValidator, StaticJwksResolver, SubjectBinding,
+    ValidatedOidcClaims, ValidatedOidcToken,
 };
 pub use proxima_core::{AccessError, OwnerRoles};
 
