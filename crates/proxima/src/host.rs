@@ -12,8 +12,9 @@ pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
-    LedgerConflict, MigrationError, MigrationRunReport, NamedMigrator, flavor_ledger_table,
-    is_flavor_ledger_id, preflight_without_migrations, run_core_and_flavor_migrations,
+    LedgerConflict, MigrationError, MigrationRunReport, NamedMigrator, PendingMigration,
+    flavor_ledger_table, is_flavor_ledger_id, pending_migrations, preflight_without_migrations,
+    run_core_and_flavor_migrations,
 };
 pub use crate::owner_access::ForwarderPolicy;
 pub use crate::proxima_host::ProximaHost;

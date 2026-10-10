@@ -258,6 +258,12 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Needed by `pending_migrations`, the read-only plan beside the runner.
+    pending_migrations {
+        host_only: [PendingMigration, pending_migrations],
+        both_tiers: [],
+    }
+
     // Needed by host API only on purpose: it runs under the caller's `OwnerScope`, never on
     // `proxima_core.*`.
     begin_owner_transaction {

@@ -295,6 +295,31 @@ squashed in part into a newer version, whose kept first migration looks like
 an upgrade. Only a publish-time check that each release's lane extends the
 previous one's sees that.
 
+## Migration plan
+
+`proxima::host::pending_migrations(pool, sources)` returns what a migration run
+on the same database would apply, and applies nothing. `sources` is what
+`flavors` is to `run_core_and_flavor_migrations`; core is always first.
+
+| | |
+|---|---|
+| Result | `Vec<PendingMigration { ledger, version, description, checksum }>`: core, then each source in the given order, inside a ledger in the order the run walks the migrator (ascending by version for `sqlx::migrate!`; a migrator built by hand keeps the order it was given, for the plan as for the run); down migrations excluded. `ledger` is the schema-qualified table (`public._sqlx_migrations` for core), spelled as `flavor_ledger_table` spells it |
+| Rules | the runner's, from its helpers. Duplicate versions and shared flavor ledgers refuse before any query, a table is matched by the name Postgres resolves, not by its spelling (`_sqlx_migrations_host`, `public."_sqlx_migrations_host"` and `PUBLIC._SQLX_Migrations_Host` are one ledger; `"Host"` and `"host"` are two), and a spelling outside Postgres' identifier rules is compared as written. A flavor on its own ledger counts that ledger (absent = empty) plus the rows of core's ledger that the run's ledger preparation would copy for its versions: it copies and creates nothing, so a flavor whose rows sit only on core's ledger has nothing pending. A flavor on core's ledger is read there |
+| Errors | what the run returns for the same database: `Ledger` (`Replaced`, `Diverged`); `Core` or `Flavor` carrying `Dirty` (a `success = false` row) or `VersionMismatch` (a changed checksum); `CorePreflight` (an unknown or amended core row). No new variant. The answer is the whole list or an error |
+| Snapshot | takes the migration lock under the run's 5 s `lock_timeout`, then reads every ledger in one `REPEATABLE READ, READ ONLY` transaction, core's checks included. A plan waits for a run mid-source and reports the state after its commit. A snapshot, not a reservation: a run checks everything again under the lock. The connection is closed, not pooled, when the caller drops the plan while it waits |
+| Rights | `SELECT` on the ledgers, which ledger preparation leaves to the runtime role: the previous release's runtime role can ask. No DDL, no write. The ownership of the migrating role, which a run checks, is not |
+
+The plan reads ledgers, not the catalog: a ledger row without its objects is
+invisible to it (`ensure_core_schema_current` probes those).
+
+**Not a compatibility claim.** The plan says what would apply, not whether the
+previous release's binary tolerates it, and nothing in a migration file can:
+v0.0.15's schema changes are additive, yet older binaries cannot resume after
+activation (§v0.0.15); v0.0.16 changed the cold-archive record format, which no
+migration records (§v0.0.16). A coordinated cutover overrides any reading of
+the files, so Proxima ships no per-migration "safe for the previous binary"
+marker.
+
 ## Reset
 
 `dev-migrate --reset` (local hosts, `PROXIMA_RESET_CONFIRM`) drops every
