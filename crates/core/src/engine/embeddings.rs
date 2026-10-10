@@ -381,7 +381,11 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns storage errors from claiming or final job-state writes.
+    /// Returns storage errors from claiming or final job-state writes. A
+    /// storage error after a batch is claimed first returns that batch's
+    /// unsettled claims to `pending` (best effort; the stale-claim timeout
+    /// is the backstop), so a call that returns leaves none of its claims
+    /// `processing`.
     /// Per-job embedding failures are recorded on their job rows and
     /// counted in the returned outcome; each job receives at most one
     /// attempt per invocation.
@@ -414,13 +418,64 @@ impl Engine {
                 claims.clone(),
                 policy.claim_heartbeat_interval(),
             );
-            let batch = self.texted_claims(claims, &mut outcome).await?;
-            for (owner, owner_batch) in group_claims(batch, |(claim, _)| claim.owner) {
-                self.drain_owner_batch(owner, owner_batch, policy, &mut outcome)
-                    .await?;
+            if let Err(err) = self
+                .drain_claimed(claims.clone(), policy, &mut outcome)
+                .await
+            {
+                self.release_unsettled(&claims, &err).await;
+                return Err(err);
             }
         }
         Ok(outcome)
+    }
+
+    /// Settle one claimed batch: pair it with its texts, then embed it Owner
+    /// by Owner. The one place a storage error leaves claims behind; the
+    /// caller releases whatever this left `processing`.
+    async fn drain_claimed(
+        &self,
+        claims: Vec<EmbeddingJobClaim>,
+        policy: crate::EmbeddingRuntimePolicy,
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<(), StorageError> {
+        let batch = self.texted_claims(claims, outcome).await?;
+        for (owner, owner_batch) in group_claims(batch, |(claim, _)| claim.owner) {
+            self.drain_owner_batch(owner, owner_batch, policy, outcome)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// After a storage error, return the batch's claims that are still
+    /// `processing` to `pending`, so a caller that waits for the drain call
+    /// to return (a quiesce) never outlives a claim.
+    ///
+    /// One fenced release per claim: a claim this batch already completed or
+    /// failed answers `Conflict` and stays as it is. A release that fails for
+    /// any other reason is logged and ends the sweep; `cause` is still what
+    /// the caller returns, and the stale-claim timeout reclaims the rest.
+    async fn release_unsettled(&self, claims: &[EmbeddingJobClaim], cause: &StorageError) {
+        let reason = format!("embedding drain aborted: {cause}");
+        for claim in claims {
+            match self
+                .storage
+                .ingest
+                .embedding_job
+                .release_embedding_jobs(std::slice::from_ref(claim), &reason)
+                .await
+            {
+                Ok(()) | Err(StorageError::Conflict(_)) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        %cause,
+                        "could not release the claims of an aborted embedding drain; \
+                         the stale-claim timeout reclaims them"
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     /// Pair each claim with its memory's embeddable text, completing the

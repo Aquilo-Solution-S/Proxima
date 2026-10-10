@@ -44,6 +44,9 @@ fn host_api_imports_from_root() {
     assert_send_sync::<proxima::OwnerEraseRequest>();
     assert_send_sync::<proxima::OwnerEraseTarget>();
     assert_send_sync::<proxima::CancellationToken>();
+    assert_send_sync::<proxima::FeatureControl>();
+    assert_send_sync::<proxima::FeatureStatus>();
+    assert_send_sync::<proxima::FeatureControlError>();
     assert_send_sync::<proxima::RuntimeBuilder>();
     assert_send_sync::<proxima::RuntimeConfig>();
     assert_send_sync::<proxima::HostAllowlist>();
