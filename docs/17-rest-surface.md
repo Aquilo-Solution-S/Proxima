@@ -442,7 +442,8 @@ envelope.
 - **R5.** Status mapping is exhaustive over error variants; a new
   variant fails compilation until mapped.
 - **R6.** REST advertises exactly the caller's scope-filtered surface —
-  the same filter `tools/list` applies, including per-action narrowing.
+  the same filter `tools/list` applies, including per-action narrowing and
+  every request behavior's `RequestBehavior::visible`.
 - **R7.** No route writes an edge. Inherited from the kernel via the
   dispatch path; REST introduces no write path of its own.
 

@@ -22,7 +22,7 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 |---|---|---|---|
 | Core tools | core | internal `try_add_mcp_tool<T>("core")` adapter | `McpToolCtx` |
 | Flavor tools | flavor crate | `try_add_tool<T>(prefix)` | `ToolCtx` |
-| Host tools | host binary | `RuntimeBuilder::host_tools(Arc<dyn McpHostTools>)`, listed per caller | `ToolCall` through the registry's request behaviors |
+| Host tools | host binary | `RuntimeBuilder::host_tools(Arc<dyn McpHostTools>)`, listed per caller | `ToolCall` → `ToolReply` through the registry's request behaviors |
 
 `try_add_tool` delegates to `try_add_mcp_tool`: the blanket
 `impl<T: Tool> McpTool for T` adapts the context and forwards `EFFECT`
@@ -37,9 +37,13 @@ Stored ids:
 | Core MCP projection | provider-safe registered names, currently `core_*` (for example `core_remember`, `core_goal`) |
 | Flavor MCP projection | provider-safe `<flavor>_<name>` |
 
-Host tools are not registered: they are listed per caller at request time,
-flat, gated by their name and declared `effect`, and never shadow a
-registry tool ([10 §MCP Endpoint and Authentication](10-configuration.md#mcp-endpoint-and-authentication)).
+Host tools are not registered: they are listed per caller at request time
+(`McpHostTools::list`, async and fallible), flat, gated by their name and
+declared `effect`, and never shadow a registry tool
+([10 §MCP Endpoint and Authentication](10-configuration.md#mcp-endpoint-and-authentication)).
+A request reads the catalog at most once, and a failed read fails the request
+with the error's JSON-RPC mapping: Proxima never degrades it to an empty
+list.
 A palette's keys come from `McpToolDescriptor::palette_keys()` — the bare
 name of a flat tool, `tool:action` for every action of either dispatcher
 vocabulary — and `owner_only_keys()` is its owner-audience subset.
@@ -134,7 +138,7 @@ carries no destructive or idempotent claim. Everything else is derived:
 |---|---|
 | owner-role gate, `tools/list` visibility | `ReadOnly` → `may_read`; else `may_write` |
 | REST method | `ReadOnly` → `QUERY` + `POST`; else `POST` ([17 §Methods](17-rest-surface.md#methods-post-for-writes-query-for-reads)) |
-| MCP / REST / `proxima://tools` hints | `McpToolAnnotations::registered(effect)`: `readOnlyHint`; `destructiveHint`, `idempotentHint` for a write only; `openWorldHint: false`. Host tools: `McpToolAnnotations::host(effect)`, no `openWorldHint` |
+| MCP / REST / `proxima://tools` hints | `McpToolAnnotations::registered(effect)`: `readOnlyHint`; `destructiveHint`, `idempotentHint` for a write only; `openWorldHint: false`. Host tools: `McpToolAnnotations::host(effect)`, plus `openWorldHint` when `McpHostTool::open_world` is set; the other three hints have no override |
 | `UnitOfWork::erase_own_series` | admits a tool call only when the dispatched action's effect is `Destructive` ([13 §Flavor-scoped erase](13-compliance.md#flavor-scoped-erase)) |
 
 A dispatcher's tool-level effect is `ToolEffect::join` over its actions:
@@ -200,9 +204,11 @@ and object-root output normalization described below.
   argument-side pass. MCP requires an object output root: object-only
   `anyOf` / `oneOf` unions gain `type: "object"` without changing their
   branches. Non-object outputs and recursion fail registration; use an
-  empty struct instead of `()`. Host schemas use the same rule; invalid
-  host tools are omitted with a warning. The handler refuses non-object
-  `structuredContent` as an internal error.
+  empty struct instead of `()`. A host tool's `output_schema` is optional
+  and follows the same rule; an invalid one is omitted with a warning. The
+  handler refuses non-object `structuredContent`, and a `ToolReply::Content`
+  from a tool that declares an output schema, as an internal error (logged,
+  returned redacted).
 - MCP `outputSchema` is `mcp_wire_output_schema(output_schema)`: validation
   keywords only — no `description`, `title`, `examples`, `default`. Model
   APIs carry a tool's name, description and input schema, never its output
@@ -341,8 +347,51 @@ MCP dispatch contract:
 | Owner | selected at session initialize, bound server-side, checked against the freshly authenticated `OwnerRoles` on every request |
 | Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
-| Output | serialized typed output, mirrored into MCP `structuredContent` and validatable against the tool's `outputSchema` |
+| Output | a `ToolReply` (below); a registry tool's serialized typed output is `Structured`, mirrored into MCP `structuredContent` and validatable against the tool's `outputSchema` |
 | Ids | prefixed ids (`F:`/`A:`/`P:`/`G:` form) — the only wire reference grammar. There is no `E:`: an edge has no id to name. |
+
+### Tool Replies
+
+`TerminalDispatch`, `Next::run` and `RequestBehavior::handle` carry
+`Result<ToolReply, McpToolError>` (`proxima_core::mcp`):
+
+| `ToolReply` | Wire | Built by |
+|---|---|---|
+| `Structured(Value)` | JSON object → `structuredContent` + its text rendering | every registry tool; a host tool |
+| `Content(Vec<ToolContent>)` | content blocks, no `structuredContent` | a host tool that declares no `output_schema` |
+| `Failure(Vec<ToolContent>)` | content blocks, `isError: true`, a JSON-RPC result; not redacted | a host terminal only |
+
+`ToolContent` is `Text`, `Image`, `Audio`, `ResourceLink`, `TextResource`,
+`BlobResource`. `McpToolError` never becomes a `Failure` (no `From`): the scope
+gate's refusal, auth failure, an unknown tool, invalid input and a host's
+`Err` stay JSON-RPC errors. A behavior that post-processes JSON matches
+`Structured` and passes the others on; `read_resource`, REST and the core
+tool surface carry JSON only and refuse any other reply. A recorded
+`Failure` is stored `ok = false`, error `tool failure`, no content.
+
+### Tool Visibility
+
+`RequestBehavior::visible(&self, &McpToolCtx, &ToolDescriptorView<'_>) -> bool`
+(default `true`) lets a behavior hide a tool the gate would refuse. It is
+ANDed with the palette and owner role; it can narrow what a caller sees,
+never widen it. A dispatcher is listed when one of its actions is visible
+(`ToolDescriptorView::action` names the action under test).
+
+| Surface | Registry tools | Host tools |
+|---|---|---|
+| `tools/list` | yes | yes |
+| REST `GET /v1/tools`, per-caller OpenAPI, `proxima://how-to` and the instructions' tool set | yes | no |
+| `core/list_substrate_tools`, `proxima://tools` | yes | no |
+| `tools/call`, REST call routes | not consulted: `handle` enforces | not consulted |
+
+The generated `instructions` and `proxima://how-to` name only the tools that
+listing leaves, in every sentence and table row, the memory-spaces guidance
+included.
+
+`McpHostTools::instructions(&McpAuthContext) -> Option<String>` adds text to
+the `instructions` `initialize` and `server/discover` return: after the
+generated text, alone when that is empty, omitted with a warning beyond
+`MAX_HOST_INSTRUCTIONS_CHARS` (4096 characters).
 
 ## Persistence
 

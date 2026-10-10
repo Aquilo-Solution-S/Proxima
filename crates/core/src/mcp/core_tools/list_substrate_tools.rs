@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::AccessKind;
 use crate::mcp::{
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin,
-    core_action_meta,
+    ToolDescriptorView, core_action_meta,
 };
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -122,9 +122,12 @@ pub(super) fn substrate_tool_actions(
         .collect()
 }
 
+/// Palette, owner role, then every request behavior's `visible`, which only
+/// narrows.
 fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> bool {
     scope_permits_action(ctx.authz.tool_scope(), tool.name, action)
         && owner_role_permits(ctx, tool.action_is_read_only(action))
+        && ctx.behaviors_show(&ToolDescriptorView::registry(tool, Some(action)))
 }
 
 /// A dispatcher is visible when at least one of its actions is, whichever
@@ -151,6 +154,7 @@ fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
             .any(|spec| action_visible(ctx, tool, spec.action))
     } else {
         owner_role_permits(ctx, tool.is_read_only())
+            && ctx.behaviors_show(&ToolDescriptorView::registry(tool, None))
     }
 }
 

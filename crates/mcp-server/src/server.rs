@@ -17,8 +17,9 @@ use proxima_core::mcp::core_tools::{
     },
 };
 use proxima_core::mcp::{
-    McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolError, McpToolErrorKind, Next,
-    TerminalDispatch, ToolCall, resolve_operator_label, tool_name_matches,
+    McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolDescriptor, McpToolError,
+    McpToolErrorKind, Next, TerminalDispatch, ToolCall, ToolReply, resolve_operator_label,
+    tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError};
@@ -158,25 +159,39 @@ impl McpToolHost {
         self.engine.as_ref()
     }
 
-    /// The host tools `auth` may be shown, before palette and owner-role
-    /// filtering: [`McpHostTools::list`] minus every name that is not
+    /// The host tools `auth` may be shown, before palette, owner-role and
+    /// behavior filtering: [`McpHostTools::list`] minus every name that is not
     /// 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters of `[A-Za-z0-9_.-]`
     /// (so its wire name is itself, and it can be neither a `tool:action`
     /// leaf nor a `resource:` key), that a registry tool serves under its
-    /// canonical or wire name, or that the list already named.
-    #[must_use]
-    pub fn host_tools_for(&self, auth: &McpAuthContext) -> Vec<McpHostTool> {
+    /// canonical or wire name, or that the list already named. One call
+    /// reads the source once: a request that needs the catalog holds it.
+    ///
+    /// # Errors
+    ///
+    /// The source's [`McpToolError`], unchanged; no host source means an
+    /// empty catalog, a failing one never does.
+    pub async fn host_tools_for(
+        &self,
+        auth: &McpAuthContext,
+    ) -> Result<Vec<McpHostTool>, McpToolError> {
         let Some(source) = &self.host_tools else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut served: Vec<McpHostTool> = Vec::new();
-        for tool in source.list(auth) {
+        for tool in source.list(auth).await? {
             match host_tool_name_refusal(&self.registry, &tool.name, &served) {
                 Some(reason) => tracing::warn!(tool = %tool.name, reason, "host tool not served"),
                 None => served.push(tool),
             }
         }
-        served
+        Ok(served)
+    }
+
+    /// The host's contribution to the `instructions` served to `auth`
+    /// ([`McpHostTools::instructions`]); `None` without a host source.
+    pub(crate) async fn host_instructions(&self, auth: &McpAuthContext) -> Option<String> {
+        self.host_tools.as_ref()?.instructions(auth).await
     }
 
     /// Copy the allowlisted inbound headers of each served call into its
@@ -314,7 +329,7 @@ impl McpToolHost {
     /// # Errors
     ///
     /// Returns `ToolNotFound`, the called tool error, or an internal error
-    /// when the final output after request behaviors is not a JSON object.
+    /// when the final reply after request behaviors is not a JSON object.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -340,64 +355,109 @@ impl McpToolHost {
         auth: Option<McpAuthContext>,
         request: FlavorServices,
     ) -> Result<serde_json::Value, ToolInvocationError> {
+        let reply = self
+            .call_tool_reply_in_request(name, args, author, auth, request)
+            .await?;
+        Ok(json_reply(name, reply)?)
+    }
+
+    /// [`Self::call_tool_in_request`] with the tool's whole [`ToolReply`]: a
+    /// host tool may answer content blocks or a content-bearing failure,
+    /// which a JSON-only surface cannot carry.
+    ///
+    /// Resolves `name` once: a registry tool without listing the host
+    /// source, any other name with one [`Self::host_tools_for`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call_tool_in_request`], and the host source's list error
+    /// for a name the registry does not serve. A [`ToolReply::Structured`]
+    /// that is not an object, or a [`ToolReply::Content`] from a tool that
+    /// declared an output schema, is an internal error.
+    pub async fn call_tool_reply_in_request(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        author: McpAuthorContext,
+        auth: Option<McpAuthContext>,
+        request: FlavorServices,
+    ) -> Result<ToolReply, ToolInvocationError> {
         let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
+        let target = self.resolve_tool(&auth, name).await?;
+        self.call_resolved(target, args, author, auth, request)
+            .await
+    }
+
+    /// The tool `name` calls for `auth`: the registry's, else the host
+    /// source's, listing it once.
+    pub(crate) async fn resolve_tool(
+        &self,
+        auth: &McpAuthContext,
+        name: &str,
+    ) -> Result<ToolTarget<'_>, ToolInvocationError> {
         if let Some(descriptor) = self
             .registry
             .list_mcp_tools()
             .iter()
             .find(|d| tool_name_matches(d.name, name))
         {
-            let ctx = self.ctx_for_request(author, &auth, request)?;
-            // Validate once for every transport before a behavior can log
-            // arguments or a tool can pass them to storage.
-            reject_nul_in_args(&args)?;
-            let call_fn = descriptor.call;
-            let terminal: TerminalDispatch<'_> = Box::new(move |call| {
-                let ToolCall { args, ctx, .. } = call;
-                call_fn(ctx, args)
-            });
-            return self
-                .dispatch_tool_output(descriptor.name.to_string(), args, ctx, terminal)
-                .await;
+            return Ok(ToolTarget::Registry(descriptor));
         }
-        if let Some(source) = &self.host_tools
-            && let Some(tool) = self
-                .host_tools_for(&auth)
-                .into_iter()
-                .find(|tool| tool_name_matches(&tool.name, name))
+        if let Some(tool) = self
+            .host_tools_for(auth)
+            .await?
+            .into_iter()
+            .find(|tool| tool_name_matches(&tool.name, name))
         {
-            let mut request = request;
-            request
-                .try_insert(McpHostToolCall::new(tool.name.clone(), tool.effect))
-                .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
-            let ctx = self.ctx_for_request(author, &auth, request)?;
-            reject_nul_in_args(&args)?;
-            let source = Arc::clone(source);
-            let terminal: TerminalDispatch<'_> =
-                Box::new(move |call| Box::pin(async move { source.call(call).await }));
-            return self
-                .dispatch_tool_output(tool.name, args, ctx, terminal)
-                .await;
+            return Ok(ToolTarget::Host(Box::new(tool)));
         }
-
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
     }
 
-    async fn dispatch_tool_output<'a>(
-        &'a self,
-        name: String,
+    /// Run a [`Self::resolve_tool`] result through the request behaviors.
+    pub(crate) async fn call_resolved(
+        &self,
+        target: ToolTarget<'_>,
         args: serde_json::Value,
-        ctx: McpToolCtx,
-        terminal: TerminalDispatch<'a>,
-    ) -> Result<serde_json::Value, ToolInvocationError> {
-        let output = self
+        author: McpAuthorContext,
+        auth: McpAuthContext,
+        mut request: FlavorServices,
+    ) -> Result<ToolReply, ToolInvocationError> {
+        let declares_output_schema = target.declares_output_schema();
+        let (name, terminal): (String, TerminalDispatch<'_>) = match target {
+            ToolTarget::Registry(descriptor) => {
+                let call_fn = descriptor.call;
+                (
+                    descriptor.name.to_string(),
+                    Box::new(move |call| {
+                        let ToolCall { args, ctx, .. } = call;
+                        Box::pin(async move { call_fn(ctx, args).await.map(ToolReply::Structured) })
+                    }),
+                )
+            }
+            ToolTarget::Host(tool) => {
+                let Some(source) = &self.host_tools else {
+                    // A host tool only exists in a source's list.
+                    return Err(ToolInvocationError::ToolNotFound(tool.name));
+                };
+                request
+                    .try_insert(McpHostToolCall::new(tool.name.clone(), tool.effect))
+                    .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
+                let source = Arc::clone(source);
+                (
+                    tool.name,
+                    Box::new(move |call| Box::pin(async move { source.call(call).await })),
+                )
+            }
+        };
+        let ctx = self.ctx_for_request(author, &auth, request)?;
+        // Validate once for every transport before a behavior can log
+        // arguments or a tool can pass them to storage.
+        reject_nul_in_args(&args)?;
+        let reply = self
             .dispatch_through_behaviors(name.clone(), args, ctx, terminal)
             .await?;
-        if !output.is_object() {
-            tracing::error!(tool = %name, "tool output after request behaviors must be a JSON object");
-            return Err(McpToolError::Other("tool output must be a JSON object".into()).into());
-        }
-        Ok(output)
+        Ok(checked_reply(&name, declares_output_schema, reply)?)
     }
 
     /// # Errors
@@ -418,7 +478,9 @@ impl McpToolHost {
     ///
     /// # Errors
     ///
-    /// As [`Self::read_resource`] and [`Self::ctx_for_request`].
+    /// As [`Self::read_resource`] and [`Self::ctx_for_request`]; a resource
+    /// is JSON, so a request behavior that answers anything but
+    /// [`ToolReply::Structured`] makes it an internal error.
     pub async fn read_resource_in_request(
         &self,
         uri: &str,
@@ -433,15 +495,21 @@ impl McpToolHost {
         let scope_key = parsed.scope_key();
 
         let terminal: TerminalDispatch<'_> = Box::new(move |call| {
-            Box::pin(async move { dispatch_resource(parsed, call.ctx).await })
+            Box::pin(async move {
+                dispatch_resource(parsed, call.ctx)
+                    .await
+                    .map(ToolReply::Structured)
+            })
         });
-        self.dispatch_through_behaviors(
-            scope_key.to_string(),
-            serde_json::json!({ "uri": uri }),
-            ctx,
-            terminal,
-        )
-        .await
+        let reply = self
+            .dispatch_through_behaviors(
+                scope_key.to_string(),
+                serde_json::json!({ "uri": uri }),
+                ctx,
+                terminal,
+            )
+            .await?;
+        Ok(json_reply(scope_key, reply)?)
     }
 
     /// Run `terminal` inside the registry's `RequestBehavior` onion (scope
@@ -457,12 +525,71 @@ impl McpToolHost {
         args: serde_json::Value,
         ctx: McpToolCtx,
         terminal: TerminalDispatch<'a>,
-    ) -> Result<serde_json::Value, ToolInvocationError> {
+    ) -> Result<ToolReply, ToolInvocationError> {
         Next::new(self.registry.request_behaviors(), terminal)
             .run(ToolCall { name, args, ctx })
             .await
             .map_err(Into::into)
     }
+}
+
+/// What a `tools/call` name resolved to.
+pub(crate) enum ToolTarget<'a> {
+    Registry(&'a McpToolDescriptor),
+    Host(Box<McpHostTool>),
+}
+
+impl ToolTarget<'_> {
+    /// The canonical name: what the gate judges and a call record carries.
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Registry(descriptor) => descriptor.name,
+            Self::Host(tool) => &tool.name,
+        }
+    }
+
+    /// Every registry tool declares an output schema; a host tool may not.
+    const fn declares_output_schema(&self) -> bool {
+        match self {
+            Self::Registry(_) => true,
+            Self::Host(tool) => tool.output_schema.is_some(),
+        }
+    }
+}
+
+/// The final reply of a tool call, checked where it leaves the behaviors: a
+/// structured answer is a JSON object, and only a tool that declared no
+/// output schema answers content, which a schema-validating client could not
+/// check. A failure carries content by definition and is not held to either.
+fn checked_reply(
+    tool: &str,
+    declares_output_schema: bool,
+    reply: ToolReply,
+) -> Result<ToolReply, McpToolError> {
+    match &reply {
+        ToolReply::Structured(output) if !output.is_object() => {
+            tracing::error!(tool = %tool, "tool output after request behaviors must be a JSON object");
+            Err(McpToolError::Other(
+                "tool output must be a JSON object".into(),
+            ))
+        }
+        ToolReply::Content(_) if declares_output_schema => {
+            tracing::error!(tool = %tool, "a tool that declares an output schema must answer structured content");
+            Err(McpToolError::Other(
+                "tool output must be structured content".into(),
+            ))
+        }
+        ToolReply::Structured(_) | ToolReply::Content(_) | ToolReply::Failure(_) => Ok(reply),
+    }
+}
+
+/// The JSON of a reply for a surface that carries nothing else (a resource
+/// read, the REST surface, `CoreMcpTools`).
+fn json_reply(name: &str, reply: ToolReply) -> Result<serde_json::Value, McpToolError> {
+    reply.into_structured().map_err(|_| {
+        tracing::error!(tool = %name, "this surface carries JSON; the tool answered content");
+        McpToolError::Other("tool reply must be a JSON object".into())
+    })
 }
 
 fn host_tool_name_refusal(
@@ -883,7 +1010,7 @@ mod tests {
 
     use super::*;
     use crate::auth::McpAuthContext;
-    use proxima_core::mcp::McpAuthorContext;
+    use proxima_core::mcp::{McpAuthorContext, ToolContent};
     use proxima_core::{AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
 
     fn fake_owner() -> Owner {
@@ -895,11 +1022,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl proxima_core::RequestBehavior for RecordingBehavior {
-        async fn handle(
-            &self,
-            call: ToolCall,
-            next: Next<'_>,
-        ) -> Result<serde_json::Value, McpToolError> {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
             self.0.lock().expect("lock").push(call.name.clone());
             next.run(call).await
         }
@@ -913,12 +1036,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl McpHostTools for OutputHostTools {
-        fn list(&self, _: &McpAuthContext) -> Vec<McpHostTool> {
-            vec![host_tool("host_output", READ)]
+        async fn list(&self, _: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
+            Ok(vec![host_tool("host_output", READ)])
         }
 
-        async fn call(&self, _: ToolCall) -> Result<serde_json::Value, McpToolError> {
-            Ok(self.0.clone())
+        async fn call(&self, _: ToolCall) -> Result<ToolReply, McpToolError> {
+            Ok(ToolReply::Structured(self.0.clone()))
         }
     }
 
@@ -965,19 +1088,19 @@ mod tests {
         proxima_core::ToolEffect::Additive(proxima_core::Replay::NonIdempotent);
 
     fn host_tool(name: &str, effect: proxima_core::ToolEffect) -> McpHostTool {
-        McpHostTool {
-            name: name.into(),
-            description: format!("{name} fixture"),
-            args_schema: serde_json::json!({"type": "object"}),
-            output_schema: serde_json::json!({"type": "object"}),
+        McpHostTool::new(
+            name,
+            format!("{name} fixture"),
+            serde_json::json!({"type": "object"}),
             effect,
-        }
+        )
+        .with_output_schema(serde_json::json!({"type": "object"}))
     }
 
     #[async_trait::async_trait]
     impl McpHostTools for EchoHostTools {
-        fn list(&self, _auth: &McpAuthContext) -> Vec<McpHostTool> {
-            vec![
+        async fn list(&self, _auth: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
+            Ok(vec![
                 host_tool("host_echo", READ),
                 host_tool("host_write", WRITE),
                 // Shadowed by the registry's own tool of this name.
@@ -989,20 +1112,20 @@ mod tests {
                 host_tool("core_goal:set", WRITE),
                 host_tool("host_echo", WRITE),
                 host_tool(&"h".repeat(MAX_HOST_TOOL_NAME_CHARS + 1), READ),
-            ]
+            ])
         }
 
-        async fn call(&self, call: ToolCall) -> Result<serde_json::Value, McpToolError> {
+        async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
             let marker = call
                 .ctx
                 .services
                 .get::<McpHostToolCall>()
                 .ok_or_else(|| McpToolError::Other("no host-call marker".into()))?;
-            Ok(serde_json::json!({
+            Ok(ToolReply::Structured(serde_json::json!({
                 "tool": call.name,
                 "marker": marker.name(),
                 "args": call.args,
-            }))
+            })))
         }
     }
 
@@ -1035,6 +1158,8 @@ mod tests {
         };
         let listed: Vec<String> = server
             .host_tools_for(&auth)
+            .await
+            .expect("the source lists")
             .into_iter()
             .map(|tool| tool.name)
             .collect();
@@ -1421,6 +1546,248 @@ mod tests {
             ctx.resolve_fact_memory(&id.into_inner().to_string())
                 .is_err(),
             "bare uuids must not be accepted on the wire"
+        );
+    }
+
+    /// A host source that counts its catalog reads and answers every call
+    /// with one scripted reply.
+    #[derive(Debug)]
+    struct ScriptedHostTools {
+        lists: Arc<std::sync::atomic::AtomicUsize>,
+        catalog: Result<Vec<McpHostTool>, &'static str>,
+        reply: ToolReply,
+    }
+
+    #[async_trait::async_trait]
+    impl McpHostTools for ScriptedHostTools {
+        async fn list(&self, _: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.catalog
+                .clone()
+                .map_err(|message| McpToolError::Unavailable(message.into()))
+        }
+
+        async fn call(&self, _: ToolCall) -> Result<ToolReply, McpToolError> {
+            Ok(self.reply.clone())
+        }
+    }
+
+    fn scripted(
+        catalog: Result<Vec<McpHostTool>, &'static str>,
+        reply: ToolReply,
+    ) -> (McpToolHost, Arc<std::sync::atomic::AtomicUsize>) {
+        let lists = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server = make_server().with_host_tools(Arc::new(ScriptedHostTools {
+            lists: Arc::clone(&lists),
+            catalog,
+            reply,
+        }));
+        (server, lists)
+    }
+
+    fn owner_auth() -> McpAuthContext {
+        let owner = fake_owner();
+        McpAuthContext {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        }
+    }
+
+    fn lists(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// One request, one catalog: a host call reads the source once to find
+    /// its tool, and a registry tool is found without reading it at all.
+    #[tokio::test]
+    async fn a_host_call_lists_the_catalog_once_and_a_registry_call_never() {
+        let (server, counter) = scripted(
+            Ok(vec![host_tool("host_echo", READ)]),
+            ToolReply::Structured(serde_json::json!({"ok": true})),
+        );
+        let auth = owner_auth();
+
+        server
+            .call_tool(
+                "host_echo",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+            )
+            .await
+            .expect("the host tool answers");
+        assert_eq!(lists(&counter), 1, "one catalog read for the call");
+
+        // The registry's own tool is found first; its outcome is not the
+        // subject, the source staying unread is.
+        let _ = server
+            .call_tool(
+                "core_memory_spaces",
+                serde_json::json!({}),
+                author(),
+                Some(auth),
+            )
+            .await;
+        assert_eq!(lists(&counter), 1, "a registry call reads no catalog");
+    }
+
+    /// A catalog that cannot be read is an error, never an empty list: the
+    /// call that needed it fails with the host's error, and so does asking
+    /// for the catalog.
+    #[tokio::test]
+    async fn a_failing_catalog_fails_the_call_that_needed_it() {
+        let (server, counter) = scripted(
+            Err("catalog down"),
+            ToolReply::Structured(serde_json::json!({})),
+        );
+        let auth = owner_auth();
+
+        for name in ["host_echo", "no_such_tool"] {
+            let result = server
+                .call_tool(name, serde_json::json!({}), author(), Some(auth.clone()))
+                .await;
+            assert!(
+                matches!(
+                    &result,
+                    Err(ToolInvocationError::Tool(McpToolError::Unavailable(message)))
+                        if message == "catalog down"
+                ),
+                "{name}: {result:?}"
+            );
+        }
+        assert!(matches!(
+            server.host_tools_for(&auth).await,
+            Err(McpToolError::Unavailable(message)) if message == "catalog down"
+        ));
+        assert_eq!(lists(&counter), 3);
+    }
+
+    /// The final reply is checked once, where it leaves the behaviors.
+    #[tokio::test]
+    async fn replies_are_checked_where_they_leave_the_behaviors() {
+        let auth = owner_auth();
+        let content = ToolReply::Content(vec![ToolContent::text("read me")]);
+        let failure = ToolReply::Failure(vec![ToolContent::text("token sk-live-1234 rejected")]);
+        let without_schema = || {
+            McpHostTool::new(
+                "host_out",
+                "no output schema",
+                serde_json::json!({"type": "object"}),
+                READ,
+            )
+        };
+
+        // A tool without an output schema may answer content.
+        let (server, _) = scripted(Ok(vec![without_schema()]), content.clone());
+        let reply = server
+            .call_tool_reply_in_request(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+                FlavorServices::default(),
+            )
+            .await
+            .expect("content from a tool that declared no schema");
+        assert_eq!(reply, content);
+        // A JSON-only surface cannot carry it.
+        let json = server
+            .call_tool(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+            )
+            .await;
+        assert!(
+            matches!(
+                &json,
+                Err(ToolInvocationError::Tool(McpToolError::Other(_)))
+            ),
+            "{json:?}"
+        );
+
+        // A tool that declared an output schema may not.
+        let (server, _) = scripted(Ok(vec![host_tool("host_out", READ)]), content);
+        let error = server
+            .call_tool_reply_in_request(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+                FlavorServices::default(),
+            )
+            .await
+            .expect_err("content against a declared schema is refused");
+        let ToolInvocationError::Tool(error) = error else {
+            panic!("expected an internal tool error, got {error:?}");
+        };
+        assert_eq!(error.kind(), McpToolErrorKind::Internal);
+        assert_eq!(error.client_message(), "internal server error");
+
+        // A failure is the host's own content: delivered as built, schema or no.
+        let (server, _) = scripted(Ok(vec![host_tool("host_out", READ)]), failure.clone());
+        let reply = server
+            .call_tool_reply_in_request(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth),
+                FlavorServices::default(),
+            )
+            .await
+            .expect("a failure passes");
+        assert_eq!(reply, failure);
+    }
+
+    /// A behavior that answers content for every call.
+    #[derive(Debug)]
+    struct ContentBehavior;
+
+    #[async_trait::async_trait]
+    impl proxima_core::RequestBehavior for ContentBehavior {
+        async fn handle(&self, _: ToolCall, _: Next<'_>) -> Result<ToolReply, McpToolError> {
+            Ok(ToolReply::Content(vec![ToolContent::text("replaced")]))
+        }
+    }
+
+    /// Every registry tool declares an output schema, and a resource is JSON:
+    /// a behavior that replaces either with content makes an internal error.
+    #[tokio::test]
+    async fn a_behavior_cannot_turn_a_registry_tool_or_a_resource_into_content() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(ContentBehavior);
+        let server = McpToolHost::from_parts(
+            Arc::new(registry.freeze_or_panic_for_tests()),
+            FlavorServices::default(),
+        );
+        let auth = owner_auth();
+
+        let tool = server
+            .call_tool_reply_in_request(
+                "core_memory_spaces",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+                FlavorServices::default(),
+            )
+            .await;
+        assert!(
+            matches!(
+                &tool,
+                Err(ToolInvocationError::Tool(McpToolError::Other(_)))
+            ),
+            "{tool:?}"
+        );
+        let resource = server
+            .read_resource("proxima://schemas", author(), Some(auth))
+            .await;
+        assert!(
+            matches!(
+                &resource,
+                Err(ToolInvocationError::Tool(McpToolError::Other(_)))
+            ),
+            "{resource:?}"
         );
     }
 

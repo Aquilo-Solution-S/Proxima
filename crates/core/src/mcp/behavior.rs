@@ -5,7 +5,9 @@ use futures::future::BoxFuture;
 
 use crate::AccessKind;
 
-use super::{McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, ToolEffect};
+use super::{
+    McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
+};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -15,7 +17,7 @@ pub struct ToolCall {
 }
 
 pub type TerminalDispatch<'a> =
-    Box<dyn FnOnce(ToolCall) -> BoxFuture<'a, Result<serde_json::Value, McpToolError>> + Send + 'a>;
+    Box<dyn FnOnce(ToolCall) -> BoxFuture<'a, Result<ToolReply, McpToolError>> + Send + 'a>;
 
 pub struct Next<'a> {
     rest: &'a [Arc<dyn RequestBehavior>],
@@ -43,7 +45,7 @@ impl<'a> Next<'a> {
     /// # Errors
     ///
     /// Returns a behavior or terminal tool error.
-    pub async fn run(mut self, call: ToolCall) -> Result<serde_json::Value, McpToolError> {
+    pub async fn run(mut self, call: ToolCall) -> Result<ToolReply, McpToolError> {
         if let Some((head, tail)) = self.rest.split_first() {
             head.handle(
                 call,
@@ -64,11 +66,132 @@ impl<'a> Next<'a> {
 
 #[async_trait]
 pub trait RequestBehavior: Send + Sync + std::fmt::Debug {
-    async fn handle(
-        &self,
-        call: ToolCall,
-        next: Next<'_>,
-    ) -> Result<serde_json::Value, McpToolError>;
+    /// Wrap one call: refuse it, or pass it to `next` and post-process the
+    /// reply. A behavior that only reads JSON matches
+    /// [`ToolReply::Structured`] and returns the other variants unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The behavior's own refusal, or the error `next` returned.
+    async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError>;
+
+    /// Whether `ctx`'s caller may see `tool` in a listing: `tools/list`, the
+    /// REST catalog and `OpenAPI` document, the generated instructions and
+    /// `core/list_substrate_tools`. Default: yes.
+    ///
+    /// Only narrows. A tool is listed when the palette, the owner role and
+    /// every behavior allow it, so `true` never lists a tool the other
+    /// filters hide, and a dispatcher is listed when one of its actions is
+    /// visible. Only a listing asks: the call path never does, so a
+    /// behavior that hides a tool still refuses its call in [`Self::handle`],
+    /// where the arguments are known.
+    fn visible(&self, _ctx: &McpToolCtx, _tool: &ToolDescriptorView<'_>) -> bool {
+        true
+    }
+}
+
+/// Which catalog serves a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSource {
+    /// The frozen flavor registry (substrate and flavor tools).
+    Registry,
+    /// A host's `McpHostTools`.
+    Host,
+}
+
+/// What [`RequestBehavior::visible`] judges: one tool, or one action of a
+/// registry dispatcher, borrowed from the descriptor that is being listed.
+/// Only the transport builds one, from a descriptor it is listing.
+///
+/// ```compile_fail,E0451
+/// let _view = proxima_core::ToolDescriptorView {
+///     name: "forged",
+///     description: "",
+///     effect: proxima_core::ToolEffect::ReadOnly,
+///     source: proxima_core::ToolSource::Host,
+///     action: None,
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolDescriptorView<'a> {
+    name: &'a str,
+    description: &'a str,
+    effect: ToolEffect,
+    source: ToolSource,
+    action: Option<&'a str>,
+}
+
+impl<'a> ToolDescriptorView<'a> {
+    /// A registry tool; `action` is the dispatcher action under test, `None`
+    /// for a flat tool. The effect is the action's declaration, the flat
+    /// tool's, or (a tool that declared none, which a frozen registry never
+    /// holds) the strongest write, as the owner-role gate reads silence.
+    #[must_use]
+    pub fn registry(descriptor: &'a McpToolDescriptor, action: Option<&'a str>) -> Self {
+        let effect = match action {
+            Some(action) => descriptor.action_effect(action),
+            None => descriptor.effect(),
+        };
+        Self {
+            name: descriptor.name,
+            description: descriptor.description,
+            effect: effect.unwrap_or(ToolEffect::Destructive(Replay::NonIdempotent)),
+            source: ToolSource::Registry,
+            action,
+        }
+    }
+
+    /// A host tool, which is flat.
+    #[must_use]
+    pub const fn host(name: &'a str, description: &'a str, effect: ToolEffect) -> Self {
+        Self {
+            name,
+            description,
+            effect,
+            source: ToolSource::Host,
+            action: None,
+        }
+    }
+
+    /// The tool's canonical name.
+    #[must_use]
+    pub const fn name(&self) -> &'a str {
+        self.name
+    }
+
+    #[must_use]
+    pub const fn description(&self) -> &'a str {
+        self.description
+    }
+
+    /// What the tool, or the action under test, does.
+    #[must_use]
+    pub const fn effect(&self) -> ToolEffect {
+        self.effect
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> ToolSource {
+        self.source
+    }
+
+    /// The dispatcher action under test; `None` for a flat tool.
+    #[must_use]
+    pub const fn action(&self) -> Option<&'a str> {
+        self.action
+    }
+}
+
+impl McpToolCtx {
+    /// Whether every request behavior of this context's registry lets the
+    /// caller see `tool` ([`RequestBehavior::visible`]).
+    #[must_use]
+    pub fn behaviors_show(&self, tool: &ToolDescriptorView<'_>) -> bool {
+        self.registry
+            .request_behaviors()
+            .iter()
+            .all(|behavior| behavior.visible(self, tool))
+    }
 }
 
 /// Marks one call as a host-served tool (not in the flavor registry) and
@@ -232,11 +355,7 @@ impl ScopeGateBehavior {
 
 #[async_trait]
 impl RequestBehavior for ScopeGateBehavior {
-    async fn handle(
-        &self,
-        call: ToolCall,
-        next: Next<'_>,
-    ) -> Result<serde_json::Value, McpToolError> {
+    async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
         Self::enforce_scope(&call.name, &call.args, &call.ctx)?;
         next.run(call).await
     }
@@ -265,11 +384,7 @@ mod tests {
 
     #[async_trait]
     impl RequestBehavior for RecordingBehavior {
-        async fn handle(
-            &self,
-            call: ToolCall,
-            next: Next<'_>,
-        ) -> Result<serde_json::Value, McpToolError> {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
             self.calls.lock().expect("recording lock").push(self.label);
             next.run(call).await
         }
@@ -292,21 +407,24 @@ mod tests {
                     .lock()
                     .expect("recording lock")
                     .push("terminal");
-                Ok(serde_json::json!({
+                Ok(ToolReply::Structured(serde_json::json!({
                     "tool": call.name,
                     "args": call.args,
-                }))
+                })))
             })
         });
 
-        let output = Next::new(&behaviors, terminal)
+        let ToolReply::Structured(output) = Next::new(&behaviors, terminal)
             .run(ToolCall {
                 name: protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
                 args: serde_json::json!({ "query": "x" }),
                 ctx: test_ctx(ToolScope::All),
             })
             .await
-            .expect("chain output");
+            .expect("chain output")
+        else {
+            panic!("the terminal answered structured");
+        };
 
         assert_eq!(output["tool"], protocol_tool::CORE_SEARCH_MEMORIES);
         assert_eq!(
@@ -318,8 +436,13 @@ mod tests {
     #[tokio::test]
     async fn scope_gate_denies_out_of_palette_before_terminal() {
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
-        let terminal: TerminalDispatch<'_> =
-            Box::new(|_call| Box::pin(async { Ok(serde_json::json!({ "unexpected": true })) }));
+        let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+            Box::pin(async {
+                Ok(ToolReply::Structured(
+                    serde_json::json!({ "unexpected": true }),
+                ))
+            })
+        });
 
         let err = Next::new(&behaviors, terminal)
             .run(ToolCall {
@@ -438,8 +561,9 @@ mod tests {
             crate::protocol::resource::GRAPH,
         ] {
             let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
-            let terminal: TerminalDispatch<'_> =
-                Box::new(|_call| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
+            let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+                Box::pin(async { Ok(ToolReply::Structured(serde_json::json!({"ok": true}))) })
+            });
             let out = Next::new(&behaviors, terminal)
                 .run(ToolCall {
                     name: scope_key.to_string(),
@@ -456,8 +580,9 @@ mod tests {
     #[tokio::test]
     async fn a_viewer_still_may_not_write() {
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
-        let terminal: TerminalDispatch<'_> =
-            Box::new(|_call| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
+        let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+            Box::pin(async { Ok(ToolReply::Structured(serde_json::json!({"ok": true}))) })
+        });
         let out = Next::new(&behaviors, terminal)
             .run(ToolCall {
                 name: protocol_tool::CORE_REMEMBER.to_string(),
@@ -831,6 +956,164 @@ mod owner_role_tests {
             )
             .is_err(),
             "silence must not be read as a promise to only read"
+        );
+    }
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::protocol::tool as protocol_tool;
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerRef,
+        ToolScope, UserId,
+    };
+
+    type Asked = Arc<Mutex<Vec<(String, Option<String>, ToolSource, ToolEffect)>>>;
+
+    /// Hides `hidden` (every action of it) and records what it was asked.
+    #[derive(Debug)]
+    struct Hides {
+        hidden: &'static str,
+        asked: Asked,
+    }
+
+    #[async_trait]
+    impl RequestBehavior for Hides {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
+            next.run(call).await
+        }
+
+        fn visible(&self, _ctx: &McpToolCtx, tool: &ToolDescriptorView<'_>) -> bool {
+            self.asked.lock().expect("asked").push((
+                tool.name().to_string(),
+                tool.action().map(ToString::to_string),
+                tool.source(),
+                tool.effect(),
+            ));
+            tool.name() != self.hidden
+        }
+    }
+
+    /// Passes everything on and keeps the default `visible`.
+    #[derive(Debug)]
+    struct PassThrough;
+
+    #[async_trait]
+    impl RequestBehavior for PassThrough {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
+            next.run(call).await
+        }
+    }
+
+    fn ctx_over(registry: FlavorRegistry) -> McpToolCtx {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+                .with_tool_scope(ToolScope::All),
+            registry: Arc::new(registry.freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "test".into(),
+                trusted_model_id: None,
+                client_name: "test".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            services: FlavorServices::default(),
+            engine: None,
+        }
+    }
+
+    #[test]
+    fn a_registry_without_a_visibility_opinion_hides_nothing() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(PassThrough);
+        let ctx = ctx_over(registry);
+        for descriptor in ctx.registry.list_mcp_tools() {
+            assert!(
+                ctx.behaviors_show(&ToolDescriptorView::registry(descriptor, None)),
+                "{} hidden by the default",
+                descriptor.name
+            );
+        }
+        let host = ToolDescriptorView::host("host_tool", "d", ToolEffect::ReadOnly);
+        assert!(ctx.behaviors_show(&host));
+    }
+
+    /// One behavior saying no is enough: `visible` is `ANDed`.
+    #[test]
+    fn any_one_behavior_hiding_a_tool_hides_it() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(PassThrough);
+        registry.add_request_behavior(Hides {
+            hidden: "host_secret",
+            asked: Asked::default(),
+        });
+        let ctx = ctx_over(registry);
+        let secret = ToolDescriptorView::host("host_secret", "d", ToolEffect::ReadOnly);
+        let other = ToolDescriptorView::host("host_other", "d", ToolEffect::ReadOnly);
+        assert!(!ctx.behaviors_show(&secret));
+        assert!(ctx.behaviors_show(&other));
+    }
+
+    /// A dispatcher is judged per action, with that action's own effect; a
+    /// flat tool and a host tool carry no action.
+    #[test]
+    fn the_view_names_the_action_under_test_and_its_own_effect() {
+        let asked = Asked::default();
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(Hides {
+            hidden: "nothing_is_called_this",
+            asked: Arc::clone(&asked),
+        });
+        let ctx = ctx_over(registry);
+        // A dispatcher whose actions differ in effect: the view must carry the
+        // action's own, not the join the tool as a whole declares.
+        let (goal, action, effect) = ctx
+            .registry
+            .list_mcp_tools()
+            .iter()
+            .find_map(|tool| {
+                let joined = tool.effect()?;
+                tool.actions()
+                    .find(|(_, effect)| *effect != joined)
+                    .map(|(action, effect)| (tool, action, effect))
+            })
+            .expect("a registered dispatcher mixes effects");
+        assert!(ctx.behaviors_show(&ToolDescriptorView::registry(goal, Some(action))));
+        let search = ctx
+            .registry
+            .mcp_tool(protocol_tool::CORE_SEARCH_MEMORIES)
+            .expect("core_search_memories is registered");
+        assert!(ctx.behaviors_show(&ToolDescriptorView::registry(search, None)));
+        assert!(ctx.behaviors_show(&ToolDescriptorView::host("h", "d", ToolEffect::ReadOnly)));
+
+        assert_eq!(
+            *asked.lock().expect("asked"),
+            [
+                (
+                    goal.name.to_string(),
+                    Some(action.to_string()),
+                    ToolSource::Registry,
+                    effect
+                ),
+                (
+                    protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
+                    None,
+                    ToolSource::Registry,
+                    ToolEffect::ReadOnly
+                ),
+                (
+                    "h".to_string(),
+                    None,
+                    ToolSource::Host,
+                    ToolEffect::ReadOnly
+                ),
+            ]
         );
     }
 }

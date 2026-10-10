@@ -373,6 +373,10 @@ pub use proxima_core::mcp::{
 /// own chain names. Host API only; flavors register behaviors, they do not
 /// build the chain.
 pub use proxima_core::mcp::{ScopeGateBehavior, TerminalDispatch};
+/// What a tool call answers ([`ToolReply`] of [`ToolContent`] blocks, which
+/// [`McpHostTools::call`] returns and every behavior passes on) and the
+/// borrowed view of one tool a behavior's [`RequestBehavior::visible`] reads.
+pub use proxima_core::mcp::{ToolContent, ToolDescriptorView, ToolReply, ToolSource};
 /// Host-bound `CloudEvents` extension attributes
 /// ([`AuthzContext::with_publication_extensions`]); the error and value
 /// types are what binding returns and `get` reads.
@@ -551,13 +555,14 @@ pub use proxima_mcp_server::{
     BodyLimitLayer, CorsLayer, HostGuardLayer, McpAuthLayer, body_limit_layer, enforce_body_limit,
     host_guard_layer, mcp_auth_layer_with_metadata,
 };
+pub use proxima_mcp_server::{
+    MAX_HOST_INSTRUCTIONS_CHARS, McpHostTool, McpHostTools, McpStreamableService, McpToolHost,
+    ToolListNotifier, auth_context, author_from_args, mcp_tool_error_to_error_data,
+    peer_implementation, reject_nul_in_args, strip_call_context_args,
+    tool_invocation_error_to_error_data,
+};
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
-pub use proxima_mcp_server::{
-    McpHostTool, McpHostTools, McpStreamableService, McpToolHost, ToolListNotifier, auth_context,
-    author_from_args, mcp_tool_error_to_error_data, peer_implementation, reject_nul_in_args,
-    strip_call_context_args, tool_invocation_error_to_error_data,
-};
 /// The reference consumer's and the publisher's types that
 /// `ReferenceConsumer::connect_with_hook`, `process_once`, `into_observed_parts`,
 /// `ReceivedEvent` and `JetStreamPublisher::connect_with_hook` name. Behind the
