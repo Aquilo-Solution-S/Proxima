@@ -234,6 +234,22 @@ when that authenticator is the environment one or the host passed its port to
 (`X-Proxima-Owner` / the session binding), the host still resolves the role
 ([14 §Owner-scoping](14-protocol-surface.md#owner-scoping--the-primary-axis)).
 
+Roles inside a host transaction. A host that holds its own transaction (a
+`PgPlatformScope::begin()` one, or an owner-scoped one) resolves roles on it
+with `roles_for_subject(&mut *tx, subject)` and `group_role(&mut *tx, subject,
+group)` (`proxima::host`, `proxima_storage_pg`), not with the resolver, which
+opens its own transaction, and not with raw `proxima_core.group_memberships`
+queries. They run the queries `PgOwnerAccessResolver` runs and fold them
+through `OwnerRoles::for_subject`: same answers, several relations in one group
+give their join, a Personal owner is never resolved. They begin, commit and
+set nothing, and read what the connection's scope allows: every group on a
+platform-scoped transaction, the groups the membership read policy admits
+under an owner scope. A row inserted earlier in the same transaction is
+visible. There is no bool probe: a membership bit does not authorize a write
+(Lean `Causa.Authorization` `may_write`); ask for the role and use
+`Role::manages` or its ceilings. `PgOwnerAccessResolver` is these two functions
+inside a transaction it opens and rolls back.
+
 Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
 (or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the
 per-Group probe answers the fixed role for whichever Group it selects, member

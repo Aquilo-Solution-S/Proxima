@@ -105,6 +105,54 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
         member_user_id: UserId,
     ) -> Result<(), StorageError>;
 
+    /// Remove the one `relation` row `member_user_id` holds in `group_id`;
+    /// the member's other relations stay. An absent row is `Ok`, as
+    /// [`Self::remove_group_member`] is `Ok` for a member with no rows.
+    ///
+    /// The default refuses, so an implementation written before this method
+    /// existed still compiles and refuses the call.
+    async fn remove_group_member_relation(
+        &self,
+        _permit: &OwnerWritePermit,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+        _relation: Relation,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "OwnerMembershipAdminPort::remove_group_member_relation is not implemented by this storage"
+                .into(),
+        ))
+    }
+
+    /// Replace the `from` relation `member_user_id` holds in `group_id` with
+    /// `to`, atomically: the one `from` row is deleted and the `to` row
+    /// inserted (an existing `to` row is kept) in one transaction under the
+    /// group's membership lock, so no reader sees the member with neither
+    /// role. The member's other relations stay.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict`, with nothing changed, when the member does not hold
+    /// `from`. The engine refuses `from == to` before this port; a direct
+    /// caller gets the same transaction, so `from` must still be held.
+    ///
+    /// The default refuses, so an implementation written before this method
+    /// existed still compiles and refuses the call.
+    async fn replace_group_member_relation(
+        &self,
+        _permit: &OwnerWritePermit,
+        _group_id: GroupId,
+        _member_user_id: UserId,
+        _from: Relation,
+        _to: Relation,
+        _granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "OwnerMembershipAdminPort::replace_group_member_relation is not implemented by this storage"
+                .into(),
+        ))
+    }
+
     async fn list_group_members(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
@@ -121,4 +169,101 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
         after: Option<(UserId, Relation)>,
         limit: i64,
     ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OwnerMembershipAdminPort;
+    use crate::storage_ports::OwnerWritePermit;
+    use crate::{AccessKind, GroupId, OwnerRef, Relation, StorageError, UserId};
+    use uuid::Uuid;
+
+    /// A port written before the relation-level methods existed: it supplies
+    /// only the original required methods.
+    struct LegacyMembershipAdmin;
+
+    #[async_trait::async_trait]
+    impl OwnerMembershipAdminPort for LegacyMembershipAdmin {
+        async fn bootstrap_group_admin(
+            &self,
+            _group_id: GroupId,
+            _first_admin_user_id: UserId,
+            _granted_by: Uuid,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn add_group_member(
+            &self,
+            _permit: &OwnerWritePermit,
+            _group_id: GroupId,
+            _member_user_id: UserId,
+            _relation: Relation,
+            _granted_by: Uuid,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn remove_group_member(
+            &self,
+            _permit: &OwnerWritePermit,
+            _group_id: GroupId,
+            _member_user_id: UserId,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn list_group_members(
+            &self,
+            _owner_scope: Option<&crate::OwnerScope>,
+            _group_id: GroupId,
+        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_group_members_page(
+            &self,
+            _owner_scope: Option<&crate::OwnerScope>,
+            _group_id: GroupId,
+            _after: Option<(UserId, Relation)>,
+            _limit: i64,
+        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_without_the_relation_methods_refuses_them_by_name() {
+        let group = GroupId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let permit = OwnerWritePermit::new_for_tests(OwnerRef::Group(group), AccessKind::Goal);
+        let port = LegacyMembershipAdmin;
+
+        let removed = port
+            .remove_group_member_relation(&permit, group, member, Relation::Viewer)
+            .await
+            .expect_err("the default must refuse");
+        let replaced = port
+            .replace_group_member_relation(
+                &permit,
+                group,
+                member,
+                Relation::Admin,
+                Relation::Viewer,
+                Uuid::now_v7(),
+            )
+            .await
+            .expect_err("the default must refuse");
+
+        assert!(
+            matches!(&removed, StorageError::Internal(message)
+                if message.contains("remove_group_member_relation")),
+            "refusal must name the missing method: {removed:?}"
+        );
+        assert!(
+            matches!(&replaced, StorageError::Internal(message)
+                if message.contains("replace_group_member_relation")),
+            "refusal must name the missing method: {replaced:?}"
+        );
+    }
 }

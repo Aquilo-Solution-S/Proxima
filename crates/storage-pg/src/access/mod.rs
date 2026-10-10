@@ -6,8 +6,8 @@ use proxima_core::{
     AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, StorageError,
     UserId,
 };
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 /// Stable Postgres-backed [`OwnerAccessPort`] adapter for embedding hosts.
 ///
@@ -119,40 +119,30 @@ impl PgOwnerAccessResolver {
             .await?;
         Ok(Some(scope.clone()))
     }
+
+    /// The transaction one probe runs in, rolled back by the caller: platform
+    /// scoped when the resolver has a platform scope, else the unscoped
+    /// compatible owner transaction.
+    async fn begin_probe_transaction(&self) -> Result<Transaction<'static, Postgres>, AccessError> {
+        let platform_scope = self
+            .platform_scope_lazy()
+            .await
+            .map_err(|err| resolution_error(&err))?;
+        match platform_scope.as_ref() {
+            Some(platform) => platform.begin().await,
+            None => crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await,
+        }
+        .map_err(|err| resolution_error(&err))
+    }
 }
 
 #[async_trait]
 impl OwnerAccessPort for PgOwnerAccessResolver {
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
-        let platform_scope = self
-            .platform_scope_lazy()
-            .await
-            .map_err(|err| AccessError::Resolution(err.to_string()))?;
-        let memberships = if let Some(platform) = platform_scope.as_ref() {
-            let mut tx = platform
-                .begin()
-                .await
-                .map_err(|err| AccessError::Resolution(err.to_string()))?;
-            let result =
-                owner_columns::resolve_membership(tx.as_mut(), &OwnerRef::Personal(subject)).await;
-            tx.rollback().await.ok();
-            result
-        } else {
-            let mut tx = crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
-                .await
-                .map_err(|err| AccessError::Resolution(err.to_string()))?;
-            let result =
-                owner_columns::resolve_membership(tx.as_mut(), &OwnerRef::Personal(subject)).await;
-            tx.rollback().await.ok();
-            result
-        }
-        .map_err(|err| AccessError::Resolution(err.to_string()))?;
-        OwnerRoles::for_subject(
-            subject,
-            memberships
-                .into_iter()
-                .map(|row| (OwnerRef::Group(row.group), row.relation.role())),
-        )
+        let mut tx = self.begin_probe_transaction().await?;
+        let result = roles_for_subject(&mut tx, subject).await;
+        tx.rollback().await.ok();
+        result
     }
 
     /// One probe on the membership primary key instead of the member's whole
@@ -166,40 +156,103 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
         subject: UserId,
         group: GroupId,
     ) -> Result<Option<Role>, AccessError> {
-        let owner = OwnerRef::Group(group);
-        let platform_scope = self
-            .platform_scope_lazy()
-            .await
-            .map_err(|err| AccessError::Resolution(err.to_string()))?;
-        let relations = if let Some(platform) = platform_scope.as_ref() {
-            let mut tx = platform
-                .begin()
-                .await
-                .map_err(|err| AccessError::Resolution(err.to_string()))?;
-            let result =
-                owner_columns::group_relations_for_member_on_connection(&mut tx, group, subject)
-                    .await;
-            tx.rollback().await.ok();
-            result
-        } else {
-            let mut tx = crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
-                .await
-                .map_err(|err| AccessError::Resolution(err.to_string()))?;
-            let result =
-                owner_columns::group_relations_for_member_on_connection(&mut tx, group, subject)
-                    .await;
-            tx.rollback().await.ok();
-            result
-        }
-        .map_err(|err| AccessError::Resolution(err.to_string()))?;
-        let roles = OwnerRoles::for_subject(
-            subject,
-            relations
-                .into_iter()
-                .map(|relation| (owner, relation.role())),
-        )?;
-        Ok(roles.role_for(&owner))
+        let mut tx = self.begin_probe_transaction().await?;
+        let result = group_role(&mut tx, subject, group).await;
+        tx.rollback().await.ok();
+        result
     }
+}
+
+/// Every role `subject` holds, resolved on the caller's connection.
+///
+/// The connection-taking form of [`OwnerAccessPort::resolve_roles_for_subject`]
+/// for a host that already holds a transaction (a platform-scoped one from
+/// [`crate::PgPlatformScope::begin`], or an owner-scoped one): it runs the
+/// query [`PgOwnerAccessResolver`] runs and folds it through
+/// [`OwnerRoles::for_subject`], so several relations in one group give their
+/// join and a Personal owner is only ever the subject's own, derived by the
+/// kernel rules. Pass a `Transaction` as `&mut *tx`.
+///
+/// It does not begin, commit or roll back, and sets no scope: it reads what the
+/// connection's scope lets it read, which is every group on a platform-scoped
+/// transaction. A row inserted earlier in the same open transaction is
+/// visible. There is no bool probe: ask for the role and use
+/// [`Role::manages`] or its ceilings, because a membership bit does not
+/// authorize a write (`Causa.Authorization` `may_write`).
+///
+/// # Errors
+///
+/// Returns [`AccessError::Resolution`] when the query fails.
+pub async fn roles_for_subject(
+    conn: &mut PgConnection,
+    subject: UserId,
+) -> Result<OwnerRoles, AccessError> {
+    let memberships = owner_columns::resolve_membership(&mut *conn, &OwnerRef::Personal(subject))
+        .await
+        .map_err(|err| resolution_error(&err))?;
+    OwnerRoles::for_subject(
+        subject,
+        memberships
+            .into_iter()
+            .map(|row| (OwnerRef::Group(row.group), row.relation.role())),
+    )
+}
+
+/// The role `subject` holds in `group`, resolved on the caller's connection;
+/// `None` when the subject holds no relation there.
+///
+/// The connection-taking form of [`OwnerAccessPort::resolve_group_role`], with
+/// the same contract as [`roles_for_subject`]: one probe on the membership
+/// primary key, the relations folded through [`OwnerRoles::for_subject`] (their
+/// join), no transaction control, and only the rows the connection's scope can
+/// see.
+///
+/// The probe is typed on [`GroupId`]: a Personal owner is derived by the
+/// kernel rules, never resolved, so it cannot be asked.
+///
+/// ```no_run
+/// # async fn probe(
+/// #     conn: &mut sqlx::PgConnection,
+/// #     user: proxima_core::UserId,
+/// #     group: proxima_core::GroupId,
+/// # ) {
+/// let _ = proxima_storage_pg::group_role(conn, user, group).await;
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # async fn probe(
+/// #     conn: &mut sqlx::PgConnection,
+/// #     user: proxima_core::UserId,
+/// # ) {
+/// let personal = proxima_core::OwnerRef::Personal(user);
+/// let _ = proxima_storage_pg::group_role(conn, user, personal).await;
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns [`AccessError::Resolution`] when the query fails.
+pub async fn group_role(
+    conn: &mut PgConnection,
+    subject: UserId,
+    group: GroupId,
+) -> Result<Option<Role>, AccessError> {
+    let owner = OwnerRef::Group(group);
+    let relations = owner_columns::group_relations_for_member_on_connection(conn, group, subject)
+        .await
+        .map_err(|err| resolution_error(&err))?;
+    let roles = OwnerRoles::for_subject(
+        subject,
+        relations
+            .into_iter()
+            .map(|relation| (owner, relation.role())),
+    )?;
+    Ok(roles.role_for(&owner))
+}
+
+fn resolution_error(err: &StorageError) -> AccessError {
+    AccessError::Resolution(err.to_string())
 }
 
 impl PgOwnerAccessResolver {
