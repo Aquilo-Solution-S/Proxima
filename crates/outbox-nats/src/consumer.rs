@@ -16,9 +16,11 @@ use std::time::Duration;
 use async_nats::jetstream;
 use bytes::Bytes;
 use futures::StreamExt;
+use proxima_core::MemoryId;
+use proxima_core::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::NatsConsumerConfig;
+use crate::config::{NatsConsumerConfig, ParsedSubject, SubjectParseError, parse_subject};
 
 /// The `CloudEvents` 1.0 structured envelope, as parsed off the wire.
 ///
@@ -71,6 +73,96 @@ pub struct ReceivedEvent {
     /// checks these, not a re-serialization of [`Self::envelope`].
     pub raw: Bytes,
     pub envelope: CloudEventEnvelope,
+}
+
+/// How a [`ReceivedEvent::id`] is spelled: a Fact id in Proxima's canonical
+/// wire form, or any other string.
+///
+/// This is a reading of the string, not a verdict on the event. `Fact`
+/// proves syntax, not admission: it does not say a Fact with that id was
+/// admitted, that its schema is listenable, that the subject's owner owns
+/// it, or that Proxima sent the message. Checking a producer signature on
+/// [`ReceivedEvent::raw`], and checking that subject, id and `proximaowner`
+/// agree, stay with the consumer.
+///
+/// The enum is closed, so a `match` over it must name `Opaque`; there is no
+/// third kind of id in the outbox today.
+///
+/// ```
+/// use proxima_outbox_nats::EventIdentity;
+///
+/// fn describe(identity: &EventIdentity) -> &'static str {
+///     match identity {
+///         EventIdentity::Fact(_) => "spelled like a Fact id",
+///         EventIdentity::Opaque(_) => "set aside",
+///     }
+/// }
+/// # let _ = describe;
+/// ```
+///
+/// Setting the `Opaque` case aside is not optional:
+///
+/// ```compile_fail
+/// use proxima_outbox_nats::EventIdentity;
+///
+/// fn fact_only(identity: &EventIdentity) {
+///     match identity {
+///         EventIdentity::Fact(_) => {}
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EventIdentity {
+    /// `F:` followed by a lowercase hyphenated UUID, the spelling
+    /// `format_prefixed_uuid(_, PrefixedUuidClass::Fact)` produces.
+    Fact(MemoryId),
+    /// Every other id, byte for byte.
+    Opaque(String),
+}
+
+impl ReceivedEvent {
+    /// The typed reading of [`Self::id`], the dedup key. Stores nothing.
+    ///
+    /// `Fact(m)` only when `id` parses as a Fact id and formatting `m` gives
+    /// back exactly `id`: the core parser accepts upper-case, simple, braced
+    /// and `urn:` UUID spellings, and the comparison is what refuses them.
+    /// Every other string, the synthetic `malformed:<hex>` id included, is
+    /// `Opaque(id)` unchanged. The UUID version is not checked, because
+    /// [`MemoryId`] does not constrain it.
+    ///
+    /// Two ids are equal exactly when their identities are equal, so
+    /// deduplicating on the identity and on `id` agree.
+    ///
+    /// Syntax, not admission: `Fact` says the string is spelled like an
+    /// admitted Fact's `t`, nothing more. See [`EventIdentity`].
+    #[must_use]
+    pub fn identity(&self) -> EventIdentity {
+        match parse_prefixed_uuid(&self.id, PrefixedUuidClass::Fact) {
+            Ok(uuid) if format_prefixed_uuid(uuid, PrefixedUuidClass::Fact) == self.id => {
+                EventIdentity::Fact(MemoryId::new(uuid))
+            }
+            _ => EventIdentity::Opaque(self.id.clone()),
+        }
+    }
+
+    /// The owner and event type [`Self::subject`] names, under the
+    /// deployment's subject `prefix`.
+    ///
+    /// This is [`parse_subject`] over `self.subject`. The prefix is an
+    /// argument because the consumer config has none and a stream transform
+    /// may have rewritten the publisher's.
+    ///
+    /// Syntax, not admission: a parsed subject does not say the owner owns
+    /// the event, and it is not reconciled with [`Self::identity`] or the
+    /// envelope's `proximaowner`.
+    ///
+    /// # Errors
+    ///
+    /// [`SubjectParseError`] when the subject is not one `subject_for`
+    /// produces under `prefix`, for example a transformed subject.
+    pub fn parsed_subject(&self, prefix: &str) -> Result<ParsedSubject, SubjectParseError> {
+        parse_subject(prefix, &self.subject)
+    }
 }
 
 /// What an intake did with one event.
@@ -780,6 +872,184 @@ mod tests {
         let first = malformed_envelope("a", &first_raw, &first_error);
         let second = malformed_envelope("ab", &second_raw, &second_error);
         assert_ne!(first.id, second.id);
+    }
+
+    const FACT_UUID: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+
+    fn received(id: &str, subject: &str) -> ReceivedEvent {
+        let raw = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "specversion": "1.0",
+                "id": id,
+                "source": "urn:test",
+                "type": "probe/listenable-v1",
+                "data": null,
+            }))
+            .expect("envelope serializes"),
+        );
+        let envelope = serde_json::from_slice(&raw).expect("envelope parses");
+        ReceivedEvent {
+            id: id.to_owned(),
+            subject: subject.to_owned(),
+            stream_sequence: 1,
+            delivered_count: 1,
+            raw,
+            envelope,
+        }
+    }
+
+    fn malformed_id() -> String {
+        let raw = Bytes::from_static(b"not json at all");
+        let error = serde_json::from_slice::<CloudEventEnvelope>(&raw).expect_err("not json");
+        malformed_envelope("proxima.fact.x", &raw, &error).id
+    }
+
+    /// Ids the core parser reads as a Fact id, whose spelling is not the
+    /// one `format_prefixed_uuid` emits.
+    fn parseable_but_not_canonical() -> Vec<String> {
+        let upper = FACT_UUID.to_uppercase();
+        let simple = FACT_UUID.replace('-', "");
+        vec![
+            format!("F:{upper}"),
+            format!("F:{simple}"),
+            format!("F:{{{FACT_UUID}}}"),
+            format!("F:urn:uuid:{FACT_UUID}"),
+        ]
+    }
+
+    fn opaque_ids() -> Vec<String> {
+        let upper = FACT_UUID.to_uppercase();
+        let mut ids = parseable_but_not_canonical();
+        ids.extend([
+            format!("A:{FACT_UUID}"),
+            format!("P:{FACT_UUID}"),
+            format!("G:{FACT_UUID}"),
+            format!("f:{FACT_UUID}"),
+            format!("urn:uuid:{FACT_UUID}"),
+            FACT_UUID.to_owned(),
+            upper,
+            String::new(),
+            "F:".to_owned(),
+            format!(" F:{FACT_UUID}"),
+            format!("F:{FACT_UUID} "),
+            format!("F: {FACT_UUID}"),
+            format!("F:{FACT_UUID}\n"),
+            format!("F:F:{FACT_UUID}"),
+            "evt-0001".to_owned(),
+            malformed_id(),
+        ]);
+        ids
+    }
+
+    #[test]
+    fn a_canonical_fact_id_reads_as_a_fact() {
+        let id = format!("F:{FACT_UUID}");
+        let uuid = uuid::Uuid::parse_str(FACT_UUID).expect("fixture uuid");
+        let identity = received(&id, "s").identity();
+        let EventIdentity::Fact(memory) = identity else {
+            panic!("a canonical Fact id must read as Fact, got {identity:?}");
+        };
+        assert_eq!(memory, MemoryId::new(uuid));
+        assert_eq!(
+            format_prefixed_uuid(memory.into_inner(), PrefixedUuidClass::Fact),
+            id
+        );
+    }
+
+    #[test]
+    fn every_other_spelling_reads_as_opaque_and_unchanged() {
+        for id in opaque_ids() {
+            assert_eq!(
+                received(&id, "s").identity(),
+                EventIdentity::Opaque(id.clone()),
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_canonical_comparison_is_what_refuses_parseable_spellings() {
+        // Without this the opaque cases above could be passing on the
+        // core parser alone, and the re-format comparison would be dead code.
+        for id in parseable_but_not_canonical() {
+            assert!(
+                parse_prefixed_uuid(&id, PrefixedUuidClass::Fact).is_ok(),
+                "{id:?} must parse, or the comparison is not exercised"
+            );
+        }
+    }
+
+    #[test]
+    fn identities_are_equal_exactly_when_ids_are_equal() {
+        let mut ids = opaque_ids();
+        ids.push(format!("F:{FACT_UUID}"));
+        ids.push(format!("F:{}", uuid::Uuid::from_u128(1)));
+        ids.push(format!("F:{}", uuid::Uuid::nil()));
+        // The same id twice, so the `true` direction is exercised too.
+        ids.push(format!("F:{FACT_UUID}"));
+        ids.push(malformed_id());
+        let events: Vec<_> = ids.iter().map(|id| received(id, "s")).collect();
+        for first in &events {
+            for second in &events {
+                assert_eq!(
+                    first.identity() == second.identity(),
+                    first.id == second.id,
+                    "{:?} vs {:?}",
+                    first.id,
+                    second.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parsed_subject_is_parse_subject_over_the_subject() {
+        let owner = uuid::Uuid::parse_str(FACT_UUID).expect("fixture uuid");
+        let built =
+            crate::config::subject_for("proxima.fact", "personal", owner, "probe/listenable-v1");
+        let event = received("evt-0001", &built);
+        let parsed = event
+            .parsed_subject("proxima.fact")
+            .expect("a subject_for subject parses");
+        assert_eq!(parsed.event_type, "probe/listenable-v1");
+        assert_eq!(
+            Ok(parsed),
+            parse_subject("proxima.fact", &event.subject),
+            "the accessor adds nothing to parse_subject"
+        );
+    }
+
+    #[test]
+    fn parsed_subject_refuses_with_the_existing_error() {
+        let built = crate::config::subject_for(
+            "proxima.fact",
+            "personal",
+            uuid::Uuid::parse_str(FACT_UUID).expect("fixture uuid"),
+            "probe/listenable-v1",
+        );
+        // A stream transform that inserted a token ahead of the owner kind.
+        let transformed = built.replacen("proxima.fact.", "proxima.fact.eu.", 1);
+        let unknown_kind = built.replacen(".personal.", ".tenant.", 1);
+        let cases = [
+            (built, "other.fact", "Prefix"),
+            (transformed, "proxima.fact", "Shape"),
+            (unknown_kind, "proxima.fact", "OwnerKind"),
+        ];
+        for (subject, prefix, variant) in cases {
+            let event = received("evt-0001", &subject);
+            let refused = event
+                .parsed_subject(prefix)
+                .expect_err("a subject_for subject under another reading is refused");
+            assert!(
+                format!("{refused:?}").starts_with(variant),
+                "{subject:?}: expected {variant}, got {refused:?}"
+            );
+            assert_eq!(
+                Err(refused),
+                parse_subject(prefix, &event.subject),
+                "the accessor adds nothing to parse_subject"
+            );
+        }
     }
 
     #[test]
