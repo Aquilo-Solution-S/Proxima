@@ -992,7 +992,8 @@ change is a **new** migration, never an edit to a released file
 
 ### Owner RLS
 
-One call per flavor schema, as the migration's whole owner-RLS section:
+A schema is installed in one call, or one table at a time. One call per
+flavor schema, as the migration's whole owner-RLS section:
 
 ```sql
 SELECT proxima_core.install_owner_rls(
@@ -1025,8 +1026,57 @@ memory FKs are ambiguous (several, or one beside a `t`, none on the key). A
 census then checks the structural part of the runtime RLS guard (RLS
 flags, three policies, owner-role platform policy). SECURITY INVOKER,
 EXECUTE for its owner only: run it as the migration role that owns the
-tables. A later migration that adds a table calls it again with the full
-classification; re-running re-creates the same policies.
+tables. Call it once, as the section of the migration that creates the
+schema's tables; re-running re-creates the same policies. A later migration
+that adds a table does not call it again: it uses the per-table call below.
+
+**Adding a table: `install_owner_rls_table`.** One call per table, in the
+migration that creates it, for a host or flavor whose schema grows one table
+per migration:
+
+```sql
+SELECT proxima_core.install_owner_rls_table(
+    'my_flavor',          -- schema
+    'page_v1',            -- table
+    'fk_parent'           -- proxima_core.owner_rls_class
+    -- , 'owner_id'       -- owner_column, class owner_id only
+);
+```
+
+`class` is the enum `proxima_core.owner_rls_class`: `owner_id`, `fk_parent`,
+`ownerless` (platform-only) and `memory_owner`, the four lists above and the
+same table shapes. The call enables and forces RLS on that one table and
+replaces its three policies with the expressions `install_owner_rls` builds
+for the class; it reads and writes no other table, so the other tables'
+policies are untouched, and a second call with the same arguments leaves the
+same policies. `owner_column` (default `owner_id`) names the owner column of
+class `owner_id` and is refused for every other class. Every refusal of
+`install_owner_rls` that concerns one table applies, with nothing applied:
+a system schema, a missing or non-base table, a missing owner column, an
+`owner_id` table in a class other than `owner_id` or `memory_owner`, an
+FK-parent table with no FK, with an ambiguous one, whose parent is neither
+memory/goal nor carries `t`, or whose parent chain returns to the table, and
+a memory-owner table with ambiguous memory FKs. The chain check follows the
+resolved parent FK through every in-schema parent without an owner column; it
+can refuse one chain the schema installer accepts (a parent of another class
+whose FK leads back), which is the safe side. Each call ends with the census
+for its table.
+
+An owner column is `uuid`: `app.owner` and the other scope settings are
+`uuid[]`, and `proxima_core.owners.owner_id` is `uuid`. A `text` owner column
+is refused. A table that keeps the canonical `personal:<uuid>` / `group:<uuid>`
+string stores `OwnerRef::stable_key_uuid()` in a `uuid` column and keeps the
+string at its edge. A platform-only table is class `ownerless`.
+
+A per-table call cannot see a table that was never given a call; the boot
+guard still refuses it, and a migration that adds several tables ends with
+`SELECT proxima_core.assert_owner_rls_census('my_flavor')`, which raises at
+migration time on the first base table of the schema that lacks RLS flags,
+exactly three policies or the owner-role platform policy. The call replaces
+the table's policies with the class it is given; nothing persisted is compared
+with an earlier call, so changing a table's class is a new call with the new
+class. After a core release changes the policies of a class, calling the
+installer again picks the change up.
 
 | Other SQL objects | Boot contract |
 |---|---|
@@ -1331,8 +1381,9 @@ serialization. Internal identity/storage/query paths must stay typed.
 - Sidecar SQL exists for every registered sidecar table.
 - PG sidecar insert/load registered.
 - Migrator on its own ledger (`NamedMigrator::flavor`).
-- Owner RLS installed by `proxima_core.install_owner_rls`; trigger SQL pinned
-  by `testkit::assert_trigger_migrations`.
+- Owner RLS installed by `proxima_core.install_owner_rls` (a schema) or
+  `install_owner_rls_table` (a table); trigger SQL pinned by
+  `testkit::assert_trigger_migrations`.
 - No JSON escape hatch in payload structs or sidecars.
 - Prefix guards pass at registry freeze.
 - Every flavor-owned lifecycle scope is DECLARED — `SCOPE_KIND`/`scope_id` on
