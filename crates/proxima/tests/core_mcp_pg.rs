@@ -17,12 +17,12 @@ use proxima_core::{
     FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Replay, Role, SchemaId,
     ToolEffect, UserId, provider_safe_tool_name,
 };
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{db_url, split_role_urls};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::sidecars::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
 };
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
 #[cfg(feature = "openai-compat-embed")]
@@ -240,8 +240,10 @@ mod embedding_failure_regressions {
 
     #[tokio::test]
     async fn core_search_and_recall_degrade_after_actual_provider_response_overflow() {
-        let name = unique_db_name("proxima_query_provider_overflow");
-        create_split_core_db(&name).await.expect("PG fixture");
+        let split_db = clone_split_core_db("proxima_query_provider_overflow")
+            .await
+            .expect("PG fixture");
+        let name = split_db.name().to_owned();
         let result: TestResult<Observed> = async {
             let (runtime_url, platform_url) = split_role_urls(&name).await?;
             let owner = company_owner(Uuid::now_v7());
@@ -259,9 +261,7 @@ mod embedding_failure_regressions {
             result
         }
         .await;
-        drop_db(&name)
-            .await
-            .expect("drop isolated fixture before assertions");
+        drop(split_db); // the fixture goes before the assertions
         let observed = result.expect("bounded handler exercise");
         eprintln!(
             "core overflow handlers: calls={:?}; fixture removed",
@@ -593,11 +593,13 @@ async fn read_test_model_resource(
 
 #[tokio::test]
 async fn core_memory_tools_route_by_explicit_space_grants() {
-    let db_name = unique_db_name("proxima_core_memory_spaces_route");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_memory_spaces_route")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -659,17 +661,18 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("explicit memory-space routing test failed");
 }
 
 #[tokio::test]
 async fn shared_space_include_body_uses_shared_owner() {
-    let db_name = unique_db_name("proxima_core_memory_spaces_body");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_memory_spaces_body")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -752,18 +755,19 @@ async fn shared_space_include_body_uses_shared_owner() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("shared-space search body test failed");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // legal Fact→A setup plus cross-space A→A assertion is intentionally end-to-end
 async fn cross_space_derive_succeeds_when_sources_readable() {
-    let db_name = unique_db_name("proxima_core_memory_spaces_derive");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_memory_spaces_derive")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -863,7 +867,6 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("cross-space derive success test failed");
 }
 
@@ -889,11 +892,13 @@ fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
-    let db_name = unique_db_name("proxima_core_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1035,17 +1040,18 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core MCP facade integration test failed");
 }
 
 #[tokio::test]
 async fn facade_reads_core_resources_with_resource_scope() {
-    let db_name = unique_db_name("proxima_core_resource_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_resource_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1111,18 +1117,20 @@ async fn facade_reads_core_resources_with_resource_scope() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core MCP resource facade integration test failed");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
-    let db_name = unique_db_name("proxima_core_recall_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_recall_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -1331,7 +1339,6 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core recall MCP facade integration test failed");
 }
 
@@ -1347,11 +1354,14 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_reaches_an_interpretations_subject_through_its_payload() {
-    let db_name = unique_db_name("proxima_core_think_payload");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_think_payload")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -1456,18 +1466,19 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core_think payload-provenance integration test failed");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_think_pages_ancestors_from_a_derivation() {
-    let db_name = unique_db_name("proxima_core_think_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_think_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1579,17 +1590,18 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core think MCP facade integration test failed");
 }
 
 #[tokio::test]
 async fn facade_core_episode_commit_binds_only_listed_members() {
-    let db_name = unique_db_name("proxima_core_episode_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_episode_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1649,7 +1661,6 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core episode commit MCP facade integration test failed");
 }
 
@@ -1671,11 +1682,13 @@ fn trusted_host_authz(owner: &Owner, trusted_model_id: &str) -> ResolvedAuthz {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_identity() {
-    let db_name = unique_db_name("proxima_core_episode_trusted");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_episode_trusted")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1780,18 +1793,19 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("episode nested model_id binding test failed");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_core_episode_commit_bound_replay_fails() {
-    let db_name = unique_db_name("proxima_core_episode_replay");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_episode_replay")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -1973,7 +1987,6 @@ async fn facade_core_episode_commit_bound_replay_fails() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("episode bound replay test failed");
 }
 
@@ -1982,11 +1995,13 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
     // Finding A: a deployment with NO embedding client must not hard-fail on the
     // DEFAULT (Hybrid) search — it degrades to lexical (selfdoc's promise). Only
     // an EXPLICIT semantic search errors when embeddings are unavailable.
-    let db_name = unique_db_name("proxima_core_search_degrade");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_search_degrade")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -2066,17 +2081,19 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core search degrade integration test failed");
 }
 
 #[tokio::test]
 async fn facade_core_citation_readback_is_owner_scoped() {
-    let db_name = unique_db_name("proxima_core_citation_mcp");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_citation_mcp")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -2174,7 +2191,6 @@ async fn facade_core_citation_readback_is_owner_scoped() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core citation MCP facade integration test failed");
 }
 
@@ -2224,11 +2240,14 @@ async fn ensure_fact_embedding_for_handle(
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member() {
-    let db_name = unique_db_name("proxima_authorized_read_transfer");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_authorized_read_transfer")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -2347,7 +2366,6 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("authorized-read owner-transfer visibility test failed");
 }
 
@@ -2357,11 +2375,14 @@ async fn core_forget_cools_a_remembered_fact() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
     }
-    let db_name = unique_db_name("proxima_core_forget");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_core_forget")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -2452,17 +2473,18 @@ async fn core_forget_cools_a_remembered_fact() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("core_forget must drive shipped forget_memory");
 }
 
 #[tokio::test]
 async fn request_services_reject_duplicate_boot_type() {
-    let db_name = unique_db_name("proxima_request_services");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_request_services")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<MarkApp>::app()
@@ -2487,6 +2509,5 @@ async fn request_services_reject_duplicate_boot_type() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("duplicate request service must fail");
 }

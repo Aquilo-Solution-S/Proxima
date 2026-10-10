@@ -19,9 +19,9 @@ use proxima_core::{
     ColdObjectStore, Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role,
     UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::db_url;
 use proxima_storage_pg::core_pg_sidecars;
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
 const LOGGED_TABLE: &str = "proxima_core.mcp_call_logged_v1";
@@ -119,9 +119,14 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
     }
-    let db_name = unique_db_name("proxima_mcp_call_log");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let split_db = clone_split_core_db("proxima_mcp_call_log")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
@@ -239,6 +244,5 @@ async fn a_persisted_mcp_call_is_readable_through_the_history_read() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("mcp call log pg test failed");
 }

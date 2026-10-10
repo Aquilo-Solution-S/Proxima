@@ -9,7 +9,9 @@ use std::sync::Arc;
 use proxima_core::authz::SystemAuthority;
 use proxima_core::llm::{EmbeddingClient, EmbeddingRouter};
 use proxima_core::storage_ports::publication::{OriginScope, PublicationOriginEligibilityPort};
-use proxima_core::{ColdObjectStore, Engine, EngineHandle, FlavorRegistry, StorageError};
+use proxima_core::{
+    ColdObjectStore, Engine, EngineHandle, FlavorRegistry, StorageError, composed_schema_names,
+};
 use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
 };
@@ -288,29 +290,6 @@ async fn admit_owner_rls(
         pg = pg.with_platform_scope(platform);
     }
     Ok(pg)
-}
-
-fn composed_schema_names(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<String> {
-    let mut schemas = vec!["proxima_core".to_owned()];
-    for contract in registry.contracts() {
-        for surface in contract.all_surfaces() {
-            if let Some((schema, _)) = surface.table.split_once('.')
-                && !schemas.iter().any(|known| known == schema)
-            {
-                schemas.push(schema.to_owned());
-            }
-        }
-        for schema_contract in contract.schemas {
-            if let Some(table) = schema_contract.sidecar_table
-                && let Some((schema, _)) = table.split_once('.')
-                && !schemas.iter().any(|known| known == schema)
-            {
-                schemas.push(schema.to_owned());
-            }
-        }
-    }
-    schemas.sort();
-    schemas
 }
 
 /// Freeze the PG sidecar registry against the composed contracts, then

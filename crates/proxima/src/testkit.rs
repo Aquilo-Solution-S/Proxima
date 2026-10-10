@@ -2,15 +2,180 @@
 //!
 //! Everything a flavor's `tests/support` used to rebuild: the Postgres
 //! fixtures (`proxima-pg-testkit`, re-exported whole), an owner-scoped
-//! [`AuthzContext`], split platform/runtime databases ([`SplitRoleDb`]), and
-//! the declaration/presence trigger drift check.
+//! [`AuthzContext`], split platform/runtime databases ([`SplitRoleDb`]), a
+//! migrated split-role database per test ([`HostTemplate`]), and the
+//! declaration/presence trigger drift check.
 
 pub use proxima_pg_testkit::*;
 
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, Role, UserId};
-use proxima_storage_pg::{PgSidecarRegistry, register_core_pg_sidecars};
+use proxima_storage_pg::{
+    PgPoolConfig, PgSidecarRegistry, PgStorage, PgTuning, register_core_pg_sidecars,
+};
+use sqlx::PgPool;
 
 use crate::bundle::FlavorBundle;
+use crate::migrations::{MigrationError, NamedMigrator, check_lineup, lineup, run_lineup};
+
+/// A migrated, split-role template database a host suite clones once per
+/// test.
+///
+/// The template holds the split roles and everything a boot would migrate:
+/// core, the flavors and the host's own migrators, applied as the platform
+/// role. [`Self::clone_split_role`] hands each test a [`SplitRoleDb`] cloned
+/// from it, so a boot over the clone finds every migration applied and
+/// applies none, and the roles are the ones every [`SplitRoleDb`] has: the
+/// runtime role is `NOSUPERUSER NOBYPASSRLS`, owns nothing and cannot write a
+/// migration ledger, so owner RLS is enforced in the clone as in production.
+///
+/// The template's name is a [`TemplateFamily`] prefix and 16 hex digits of a
+/// hash of everything the migrators contribute: for core and each migrator,
+/// its source id, its ledger and every `(version, checksum)` it applies, in
+/// order, and `fingerprint`. A changed migration is a different template, and
+/// the old one is dropped once nothing is connected to it. `fingerprint`
+/// carries only what the migrators cannot show, such as seed SQL a host
+/// applies on top.
+///
+/// ```compile_fail,E0308
+/// // The family is a validated `TemplateFamily`; a host never passes a raw name.
+/// let _ = proxima::testkit::HostTemplate::new("host_", "seed-v1", Vec::new());
+/// ```
+///
+/// A lineup the runner refuses has no template, so none is ever looked up:
+///
+/// ```compile_fail,E0599
+/// fn name(family: proxima::testkit::TemplateFamily) -> String {
+///     proxima::testkit::HostTemplate::new(family, "seed-v1", Vec::new()).template_name()
+/// }
+/// ```
+#[derive(Debug)]
+pub struct HostTemplate {
+    family: TemplateFamily,
+    hash: u64,
+    /// Core first, then the host's migrators: what a build runs and the hash
+    /// covers.
+    sources: Vec<NamedMigrator>,
+}
+
+impl HostTemplate {
+    /// A template of `family` for `migrators`, added to core's. Nothing
+    /// touches the database until [`Self::clone_split_role`].
+    ///
+    /// `migrators` are the flavors' and the host's own, as the host's
+    /// `FlavorBundle::migrators` returns them; a host passes the same list to
+    /// its boot, so what the template holds is what the boot expects.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`MigrationError`] a run refuses the lineup with before it
+    /// connects: a repeated version, a shared ledger. Such a lineup gets no
+    /// template name, because the hash cannot tell it from a valid one (it
+    /// reads each lane through `NamedMigrator::lane`, which lists a repeated
+    /// version once) and a name could match a cached template.
+    pub fn new(
+        family: TemplateFamily,
+        fingerprint: &str,
+        migrators: Vec<NamedMigrator>,
+    ) -> Result<Self, MigrationError> {
+        let sources = lineup(migrators);
+        check_lineup(&sources)?;
+        Ok(Self {
+            hash: fingerprint_hash(fingerprint, &sources),
+            family,
+            sources,
+        })
+    }
+
+    /// The name of the template database, for diagnostics: the family prefix
+    /// and 16 hex digits.
+    #[must_use]
+    pub fn template_name(&self) -> String {
+        self.family.template_name(self.hash)
+    }
+
+    /// Clone the template into `<prefix>_<uuid>` and return it as a
+    /// [`SplitRoleDb`], building the template first if the server does not
+    /// have it.
+    ///
+    /// The clone is adopted by a [`DbGuard`]: dropping the returned value
+    /// after a passing test drops the database; after a panic it keeps it
+    /// and prints a redacted `psql` URL. `schemas` is what
+    /// [`SplitRoleDb::create`] takes for its flavor schemas. The template is
+    /// already prepared, so providing the roles on the clone re-asserts the
+    /// two roles and the database grant and returns early.
+    ///
+    /// Safe to call from many tests at once: the template is built once per
+    /// server, under an advisory lock, and the others wait for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`sqlx::Error::Configuration`] when `PROXIMA_TEST_PG_URL` is
+    /// unset, [`sqlx::Error::Protocol`] carrying the text of a migration
+    /// error from the build (a refused ledger, a failing statement), and the
+    /// admin, clone or role-provisioning errors of the steps around it. A
+    /// failed build leaves no template behind.
+    pub async fn clone_split_role(
+        &self,
+        prefix: &str,
+        schemas: &[&str],
+    ) -> Result<SplitRoleDb, sqlx::Error> {
+        // The lease holds the template against collection until it is cloned.
+        let lease = ensure_template_in(&self.family, self.hash, |pool| self.build(pool)).await?;
+        let cloned = SplitRoleDb::from_template(prefix, &lease, schemas).await;
+        let released = lease.release().await;
+        let clone = cloned?;
+        released?;
+        Ok(clone)
+    }
+
+    /// Provision the split roles on the staging database `pool` points at,
+    /// then migrate it as the platform role, which owns what it creates.
+    async fn build(&self, pool: PgPool) -> Result<(), sqlx::Error> {
+        let staging: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await?;
+        // Nothing may stay connected to a database that is renamed into place.
+        pool.close().await;
+        let (_, platform_url) = split_role_urls(&staging).await?;
+        let pg = PgStorage::connect_for_migrations_with_config(
+            &platform_url,
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let migrated = run_lineup(&pg, &self.sources).await;
+        pg.clone_pool_for_backend().close().await;
+        migrated
+            .map(|_| ())
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))
+    }
+}
+
+/// The template hash: `fingerprint`, then each source's id, ledger and
+/// `(version, checksum)` pairs in run order, from the enumeration the ledger
+/// checks and the migration plan use ([`NamedMigrator::lane`]). Every field
+/// is length-prefixed, so two different inputs cannot spell the same bytes.
+fn fingerprint_hash(fingerprint: &str, sources: &[NamedMigrator]) -> u64 {
+    fn feed(hash: u64, bytes: &[u8]) -> u64 {
+        fnv1a64_extend(
+            fnv1a64_extend(hash, &(bytes.len() as u64).to_be_bytes()),
+            bytes,
+        )
+    }
+    let mut hash = feed(FNV_OFFSET_BASIS, fingerprint.as_bytes());
+    for source in sources {
+        hash = feed(hash, source.source().as_bytes());
+        hash = feed(hash, source.ledger().as_bytes());
+        let lane = source.lane();
+        hash = feed(hash, &(lane.len() as u64).to_be_bytes());
+        for migration in lane {
+            hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
+            hash = feed(hash, migration.checksum.as_ref());
+        }
+    }
+    hash
+}
 
 /// A verified [`AuthzContext`] scoped to exactly `owner`, as a trusted host
 /// resolves one: a personal owner is its own subject; a group owner is

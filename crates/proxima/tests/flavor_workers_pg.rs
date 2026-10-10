@@ -17,8 +17,7 @@ use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owne
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
 };
-use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
 /// Counts `spawn_workers` calls instead of spawning: proves whether a
@@ -71,11 +70,13 @@ impl Authenticator for TestAuthenticator {
 
 #[tokio::test]
 async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
-    let db_name = unique_db_name("proxima_test");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("proxima_test")
         .await
         .expect("PG required for tests");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // Holding this listener open makes the runtime's own bind on the
@@ -108,6 +109,5 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("failed-bind spawn test failed");
 }

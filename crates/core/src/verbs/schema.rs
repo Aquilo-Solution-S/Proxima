@@ -140,6 +140,38 @@ impl SchemaInfo {
     }
 }
 
+/// The Postgres schemas a composed registry stores into, sorted: core's
+/// `proxima_core`, then each schema that a linked flavor's contract names in
+/// a surface table or a sidecar table (`<schema>.<table>`).
+///
+/// The one derivation boot uses for the runtime-grant plan, the owner-RLS
+/// census and the platform scope, and the MCP tool host for its platform
+/// scope. A host that freezes a registry without booting (a test, a tool)
+/// calls it to run the same checks or grants on the same set.
+#[must_use]
+pub fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
+    let mut schemas = vec!["proxima_core".to_owned()];
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            if let Some((schema, _)) = surface.table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+        for schema_contract in contract.schemas {
+            if let Some(table) = schema_contract.sidecar_table
+                && let Some((schema, _)) = table.split_once('.')
+                && !schemas.iter().any(|known| known == schema)
+            {
+                schemas.push(schema.to_owned());
+            }
+        }
+    }
+    schemas.sort();
+    schemas
+}
+
 #[must_use]
 pub fn sidecar_tables(schemas: &[SchemaInfo], kind: PayloadKind) -> Vec<String> {
     let mut tables = schemas

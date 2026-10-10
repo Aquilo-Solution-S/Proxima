@@ -54,8 +54,8 @@ fn number(hit: &serde_json::Value, field: &str) -> f64 {
 
 #[tokio::test]
 async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors() -> TestResult {
-    let name = unique_db_name("proxima_served_hybrid_rrf");
-    create_split_core_db(&name).await?;
+    let split_db = clone_split_core_db("proxima_served_hybrid_rrf").await?;
+    let name = split_db.name().to_owned();
     let result: TestResult = async {
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
         let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
@@ -125,6 +125,5 @@ async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors()
         built.shutdown().await;
         Ok(())
     }.await;
-    drop_db(&name).await?;
     result
 }

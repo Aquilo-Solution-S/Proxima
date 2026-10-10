@@ -27,8 +27,7 @@ use proxima_core::flavor::{
 };
 use proxima_core::publication::{PublicationConfig, PublicationLimits, PublicationSource};
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_pg_testkit::{drop_db, split_role_urls, unique_db_name};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -238,9 +237,13 @@ async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
 
 #[tokio::test]
 async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
-    let db_name = unique_db_name("proxima_pub_boot");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_pub_boot")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let refused = Proxima::<ListenableApp>::app()
@@ -274,15 +277,18 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("publication boot guarantee");
 }
 
 #[tokio::test]
 async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
-    let db_name = unique_db_name("proxima_pub_env");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_pub_env")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // A malformed bound never reaches storage: `from_lookup` resolves
@@ -331,7 +337,6 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("publication env block");
 }
 
@@ -345,9 +350,14 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
 /// claim — there is no second path from a Fact write to the stream.
 #[tokio::test]
 async fn an_unauthorized_listenable_write_captures_nothing() {
-    let db_name = unique_db_name("proxima_pub_authz");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_pub_authz")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -439,15 +449,19 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("authorized capture only");
 }
 
 #[tokio::test]
 async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
-    let db_name = unique_db_name("proxima_pub_limit");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (db_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_pub_limit")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -519,6 +533,5 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
     }
     .await;
 
-    let _ = drop_db(&db_name).await;
     result.expect("configured capture ceiling");
 }

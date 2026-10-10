@@ -252,8 +252,18 @@ pub async fn run_core_and_flavor_migrations(
     pg: &PgStorage,
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<MigrationRunReport, MigrationError> {
-    let sources = prepare_sources(flavors)?;
-    let report = MigrationRunReport::from_sources(&sources);
+    run_lineup(pg, &lineup(flavors)).await
+}
+
+/// [`run_core_and_flavor_migrations`] over a [`lineup`] the caller keeps: the
+/// same refusals before any query, the same run. A test template builds from
+/// the migrators it also fingerprints, without consuming them.
+pub(crate) async fn run_lineup(
+    pg: &PgStorage,
+    sources: &[NamedMigrator],
+) -> Result<MigrationRunReport, MigrationError> {
+    check_lineup(sources)?;
+    let report = MigrationRunReport::from_sources(sources);
     let pool = pg.clone_pool_for_backend();
     ensure_core_ledger_compatible(&pool)
         .await
@@ -642,15 +652,15 @@ async fn reset_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx
 
 async fn run_sources_on_connection(
     conn: &mut PgConnection,
-    sources: Vec<NamedMigrator>,
+    sources: &[NamedMigrator],
 ) -> Result<(), MigrationError> {
     for source in sources {
         if source.source == CORE_SOURCE {
-            run_source_with_contention_retry(conn, &source).await?;
-            prepare_ledger(conn, &source).await?;
+            run_source_with_contention_retry(conn, source).await?;
+            prepare_ledger(conn, source).await?;
         } else {
-            prepare_ledger(conn, &source).await?;
-            run_source_with_contention_retry(conn, &source).await?;
+            prepare_ledger(conn, source).await?;
+            run_source_with_contention_retry(conn, source).await?;
         }
     }
 
@@ -1212,6 +1222,15 @@ fn core_source() -> NamedMigrator {
 fn prepare_sources(
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<Vec<NamedMigrator>, MigrationError> {
+    let sources = lineup(flavors);
+    check_lineup(&sources)?;
+    Ok(sources)
+}
+
+/// Core followed by `flavors` in the given order, each prepared the way a
+/// run needs it (`ignore_missing`). Nothing is refused here: a run
+/// validates the lineup ([`check_lineup`]) before it connects.
+pub(crate) fn lineup(flavors: impl IntoIterator<Item = NamedMigrator>) -> Vec<NamedMigrator> {
     let mut sources = vec![core_source()];
 
     for mut source in flavors {
@@ -1226,9 +1245,13 @@ fn prepare_sources(
         }
         sources.push(source);
     }
+    sources
+}
 
-    validate_sources(&sources.iter().collect::<Vec<_>>())?;
-    Ok(sources)
+/// [`validate_sources`] over a [`lineup`]: the one check a run, a plan and a
+/// test template make of the sources they are about to use.
+pub(crate) fn check_lineup(sources: &[NamedMigrator]) -> Result<(), MigrationError> {
+    validate_sources(&sources.iter().collect::<Vec<_>>())
 }
 
 /// The refusals that need no database, for core followed by the host's
