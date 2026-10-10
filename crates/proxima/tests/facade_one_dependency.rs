@@ -64,7 +64,7 @@ impl proxima::flavor::RequestBehavior for PassThrough {
         &self,
         call: proxima::flavor::ToolCall,
         next: proxima::flavor::Next<'_>,
-    ) -> Result<serde_json::Value, proxima::McpToolError> {
+    ) -> Result<proxima::flavor::ToolReply, proxima::McpToolError> {
         next.run(call).await
     }
 }
@@ -74,6 +74,15 @@ fn both_tiers_name_the_request_behavior_onion() {
     fn host_behavior<T: proxima::RequestBehavior>() {}
     host_behavior::<PassThrough>();
     let _: Option<(proxima::ToolCall, proxima::Next<'static>)> = None;
+    // Same reply and visibility types at both tiers.
+    let reply: proxima::ToolReply =
+        proxima::flavor::ToolReply::Content(vec![proxima::flavor::ToolContent::text("same type")]);
+    assert_eq!(
+        reply,
+        proxima::ToolReply::Content(vec![proxima::ToolContent::text("same type")])
+    );
+    let _: Option<proxima::ToolDescriptorView<'static>> =
+        None::<proxima::flavor::ToolDescriptorView<'static>>;
 
     let baseline = proxima::flavor::FlavorRegistry::new()
         .try_freeze()

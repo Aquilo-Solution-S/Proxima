@@ -15,6 +15,7 @@ mod ids;
 mod manifest;
 mod names;
 mod presentation;
+mod reply;
 mod tool;
 mod types;
 
@@ -23,6 +24,7 @@ mod tests;
 
 pub use behavior::{
     McpHostToolCall, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
+    ToolDescriptorView, ToolSource,
 };
 pub use core_tools::list_substrate_tools::scope_permits_action;
 // The one enforcement point for the reserved `model_id` operator label.
@@ -41,6 +43,7 @@ pub use manifest::{
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolPresentation};
+pub use reply::{ToolContent, ToolReply};
 pub use schema::{
     McpActionSchema, McpDispatcherSchema, mcp_wire_output_schema, normalize_mcp_output_schema,
     schema_bound_mismatches,

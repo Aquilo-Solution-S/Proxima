@@ -227,9 +227,13 @@ pub use detached::ingest_fact_detached;
 
 /// Types of the [`Tool::ARGV_ACTION_SPECS`] and [`Tool::AUDIENCE`] consts.
 pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};
-/// The request-behavior onion [`FlavorRegistry::add_request_behavior`] takes.
-/// Its transport context/error (`McpToolCtx`, `McpToolError`) stay host-tier.
-pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};
+/// The request-behavior onion [`FlavorRegistry::add_request_behavior`] takes,
+/// with the reply it passes along ([`ToolReply`]) and the view
+/// [`RequestBehavior::visible`] reads ([`ToolDescriptorView`]). Its transport
+/// context/error (`McpToolCtx`, `McpToolError`) stay host-tier.
+pub use proxima_core::mcp::{
+    Next, RequestBehavior, ToolCall, ToolContent, ToolDescriptorView, ToolReply, ToolSource,
+};
 /// sqlx → `StorageError` classifier for hand-written [`PgMemorySidecar`]
 /// inserts; `pg_sidecar!` expansions use the same one.
 pub use proxima_storage_pg::map_err;
