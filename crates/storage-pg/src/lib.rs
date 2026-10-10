@@ -83,6 +83,9 @@ pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;
+/// Role probes on a caller's connection (see [`access::roles_for_subject`]):
+/// what the resolver answers, for a host that already holds a transaction.
+pub use access::{group_role, roles_for_subject};
 pub use delegated_authority::PgDelegationStore;
 pub use owner_scope::{begin_compatible_owner_transaction, begin_owner_transaction};
 pub use platform_scope::{PgPlatformScope, begin_migration_transaction};

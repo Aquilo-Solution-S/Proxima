@@ -610,6 +610,8 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "transfer_to_owner",
             "add_group_member",
             "remove_group_member",
+            "remove_group_member_relation",
+            "replace_group_member_relation",
         ],
         "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
     }
