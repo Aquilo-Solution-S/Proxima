@@ -156,6 +156,109 @@ impl Engine {
             .map_err(|err| storage_error("remove_group_member", &err))
     }
 
+    /// Remove one relation of a user in one group; the user's other relations
+    /// stay. An absent row is `Ok`, as [`Self::remove_member`] is for a user
+    /// with no rows.
+    ///
+    /// Runs one `Remove` through the authorization hooks. Removing one relation
+    /// is not a downgrade: a member who holds only that relation is left with
+    /// no role. Use [`Self::replace_member_relation`] to change a relation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the caller lacks manage on the group or a
+    /// veto denies the removal, and `Internal` for storage failures.
+    pub async fn remove_member_relation(
+        &self,
+        authz: &AuthzContext,
+        group: GroupId,
+        member: UserId,
+        relation: Relation,
+    ) -> Result<(), ProtocolError> {
+        let group_owner = OwnerRef::Group(group);
+        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
+        require_group_manage(authz, &group_owner)?;
+        self.veto_and_observe_access_admin(
+            authz,
+            &group_owner,
+            permit.owner(),
+            AuthzOperation::Membership {
+                change: MembershipChange::Remove,
+                group,
+                member: OwnerRef::Personal(member),
+                relation,
+            },
+        )?;
+        self.storage()
+            .access_admin
+            .owner_membership_admin
+            .remove_group_member_relation(permit.owner_write_permit(), group, member, relation)
+            .await
+            .map_err(|err| storage_error("remove_group_member_relation", &err))
+    }
+
+    /// Replace the `from` relation of a user in one group with `to`,
+    /// atomically: the user holds a role throughout and no reader sees them
+    /// with neither relation. The user's other relations stay.
+    ///
+    /// Runs the authorization hooks for `Remove(from)` and then `Add(to)`,
+    /// both before the storage call; a veto on either leaves the membership
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the caller lacks manage on the group or a
+    /// veto denies either change, `InvalidArgument` when `from == to` or the
+    /// user does not hold `from`, and `Internal` for storage failures.
+    pub async fn replace_member_relation(
+        &self,
+        authz: &AuthzContext,
+        group: GroupId,
+        member: UserId,
+        from: Relation,
+        to: Relation,
+    ) -> Result<(), ProtocolError> {
+        let group_owner = OwnerRef::Group(group);
+        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
+        require_group_manage(authz, &group_owner)?;
+        if from == to {
+            return Err(ProtocolError::invalid_argument(
+                "to",
+                "must differ from the relation being replaced",
+            ));
+        }
+        let member_principal = OwnerRef::Personal(member);
+        for (change, relation) in [
+            (MembershipChange::Remove, from),
+            (MembershipChange::Add, to),
+        ] {
+            self.veto_and_observe_access_admin(
+                authz,
+                &group_owner,
+                permit.owner(),
+                AuthzOperation::Membership {
+                    change,
+                    group,
+                    member: member_principal,
+                    relation,
+                },
+            )?;
+        }
+        self.storage()
+            .access_admin
+            .owner_membership_admin
+            .replace_group_member_relation(
+                permit.owner_write_permit(),
+                group,
+                member,
+                from,
+                to,
+                actor_uuid(authz),
+            )
+            .await
+            .map_err(replace_storage_error)
+    }
+
     /// List one page of members for one group, in the keyset total order
     /// `(member_user_id, relation)`.
     ///
@@ -472,6 +575,12 @@ fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
     super::errors::map_write_storage_error(err, "group", "group not found")
 }
 
+/// `Conflict` is the member not holding `from`: the caller's argument, so
+/// `invalid_argument` as for the bootstrap's existing Admin.
+fn replace_storage_error(err: StorageError) -> ProtocolError {
+    super::errors::map_write_storage_error(err, "from", "group not found")
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -675,6 +784,250 @@ mod tests {
             *changes.lock().expect("changes lock"),
             vec![MembershipChange::Add, MembershipChange::Remove]
         );
+    }
+
+    /// Records every membership change it is asked about, with the outcome the
+    /// engine reported, and vetoes one `(change, relation)` pair when told to.
+    #[derive(Debug)]
+    struct RelationHook {
+        veto: Option<(MembershipChange, Relation)>,
+        seen: Arc<Mutex<Vec<(MembershipChange, Relation, crate::authz::AuthzOutcome)>>>,
+    }
+
+    impl AuthorizationHook for RelationHook {
+        fn veto(&self, input: &AuthzInput<'_>) -> Result<(), crate::authz::AuthzVeto> {
+            match (&input.operation, self.veto) {
+                (
+                    AuthzOperation::Membership {
+                        change, relation, ..
+                    },
+                    Some((c, r)),
+                ) if *change == c && *relation == r => {
+                    Err(crate::authz::AuthzVeto("vetoed".into()))
+                }
+                _ => Ok(()),
+            }
+        }
+
+        fn observe(&self, input: &AuthzInput<'_>, outcome: crate::authz::AuthzOutcome) {
+            if let AuthzOperation::Membership {
+                change, relation, ..
+            } = &input.operation
+            {
+                self.seen
+                    .lock()
+                    .expect("seen lock")
+                    .push((*change, *relation, outcome));
+            }
+        }
+    }
+
+    type SeenChanges = Arc<Mutex<Vec<(MembershipChange, Relation, crate::authz::AuthzOutcome)>>>;
+
+    /// An engine over the rejecting membership double, so `Internal` means the
+    /// storage call was reached, and the recording hook.
+    fn relation_engine(
+        group: GroupId,
+        member: UserId,
+        veto: Option<(MembershipChange, Relation)>,
+    ) -> (crate::Engine, SeenChanges) {
+        let seen = SeenChanges::default();
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RelationHook {
+            veto,
+            seen: seen.clone(),
+        }));
+        let engine = crate::Engine::new(registry.freeze_or_panic_for_tests())
+            .with_storage_ports(membership_storage_with_home(member, group, None).storage_ports());
+        (engine, seen)
+    }
+
+    fn admin_of(group: GroupId) -> AuthzContext {
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(OwnerRef::Group(group), Role::admin())],
+            AuthPath::HostBearer,
+        )
+    }
+
+    #[tokio::test]
+    async fn access_admin_replace_runs_remove_then_add_before_the_storage_call() {
+        use crate::authz::AuthzOutcome::{Allowed, DeniedVeto};
+
+        let group = GroupId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let authz = admin_of(group);
+
+        // No veto: both changes are observed in order, then storage is reached
+        // (the double rejects the write with `Internal`).
+        let (engine, seen) = relation_engine(group, member, None);
+        let err = engine
+            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .await
+            .expect_err("the double does not implement the replacement, so the default refuses");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(
+            err.message.contains("replace_group_member_relation"),
+            "the refusal names the missing port method: {}",
+            err.message
+        );
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![
+                (MembershipChange::Remove, Relation::Admin, Allowed),
+                (MembershipChange::Add, Relation::Viewer, Allowed),
+            ]
+        );
+
+        // A veto on `Remove(from)` stops before `Add(to)` is asked and before storage.
+        let (engine, seen) = relation_engine(
+            group,
+            member,
+            Some((MembershipChange::Remove, Relation::Admin)),
+        );
+        let err = engine
+            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .await
+            .expect_err("a veto on Remove(from) must refuse");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![(MembershipChange::Remove, Relation::Admin, DeniedVeto)]
+        );
+
+        // A veto on `Add(to)` refuses after `Remove(from)` was allowed, still before storage.
+        let (engine, seen) = relation_engine(
+            group,
+            member,
+            Some((MembershipChange::Add, Relation::Viewer)),
+        );
+        let err = engine
+            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .await
+            .expect_err("a veto on Add(to) must refuse");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![
+                (MembershipChange::Remove, Relation::Admin, Allowed),
+                (MembershipChange::Add, Relation::Viewer, DeniedVeto),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn access_admin_replace_refuses_the_same_relation_before_hooks_and_storage() {
+        let group = GroupId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let (engine, seen) = relation_engine(group, member, None);
+
+        let err = engine
+            .replace_member_relation(
+                &admin_of(group),
+                group,
+                member,
+                Relation::Editor,
+                Relation::Editor,
+            )
+            .await
+            .expect_err("from == to is not a change");
+        assert_eq!(
+            err.code,
+            ErrorCode::InvalidArgument,
+            "Internal here would mean the call reached storage: {}",
+            err.message
+        );
+        assert!(
+            seen.lock().expect("seen lock").is_empty(),
+            "no hook is asked about a change that is not one"
+        );
+    }
+
+    #[tokio::test]
+    async fn access_admin_remove_relation_runs_one_remove() {
+        use crate::authz::AuthzOutcome::{Allowed, DeniedVeto};
+
+        let group = GroupId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let authz = admin_of(group);
+
+        let (engine, seen) = relation_engine(group, member, None);
+        let err = engine
+            .remove_member_relation(&authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("the double rejects the write");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![(MembershipChange::Remove, Relation::Viewer, Allowed)]
+        );
+
+        let (engine, seen) = relation_engine(
+            group,
+            member,
+            Some((MembershipChange::Remove, Relation::Viewer)),
+        );
+        let err = engine
+            .remove_member_relation(&authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("a veto must refuse");
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![(MembershipChange::Remove, Relation::Viewer, DeniedVeto)]
+        );
+    }
+
+    /// `authorize_owner_admin` passes any role that writes Goals; only
+    /// `require_group_manage` separates `Role::new(Goal, Goal, false)` from
+    /// Admin. The control is the same engine with Admin reaching storage.
+    #[tokio::test]
+    async fn access_admin_relation_methods_require_manage_not_just_write() {
+        use crate::access::AccessCeiling;
+
+        let group = GroupId::new(Uuid::now_v7());
+        let member = UserId::new(Uuid::now_v7());
+        let write_only = Role::new(AccessCeiling::Goal, AccessCeiling::Goal, false)
+            .expect("write==read is a valid role");
+        let write_only_authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(OwnerRef::Group(group), write_only)],
+            AuthPath::HostBearer,
+        );
+        let (engine, seen) = relation_engine(group, member, None);
+
+        let denied = engine
+            .replace_member_relation(
+                &write_only_authz,
+                group,
+                member,
+                Relation::Admin,
+                Relation::Viewer,
+            )
+            .await
+            .expect_err("write-without-manage must not replace a relation");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+        let denied = engine
+            .remove_member_relation(&write_only_authz, group, member, Relation::Viewer)
+            .await
+            .expect_err("write-without-manage must not remove a relation");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+        assert!(
+            seen.lock().expect("seen lock").is_empty(),
+            "the manage gate refuses before any hook runs"
+        );
+
+        let admin = admin_of(group);
+        let past_gate = engine
+            .replace_member_relation(&admin, group, member, Relation::Admin, Relation::Viewer)
+            .await
+            .expect_err("the double rejects the write after the gate opens");
+        assert_eq!(past_gate.code, ErrorCode::Internal);
+        let past_gate = engine
+            .remove_member_relation(&admin, group, member, Relation::Viewer)
+            .await
+            .expect_err("the double rejects the write after the gate opens");
+        assert_eq!(past_gate.code, ErrorCode::Internal);
     }
 
     fn membership_storage_with_home(

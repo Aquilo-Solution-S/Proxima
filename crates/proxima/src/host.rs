@@ -278,6 +278,10 @@ pub use proxima_outbox_nats::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// Role probes on a host's own transaction (see
+/// [`proxima_storage_pg::roles_for_subject`]): the answers
+/// [`PgOwnerAccessResolver`] gives, with no transaction of their own.
+pub use proxima_storage_pg::{group_role, roles_for_subject};
 /// The `rmcp` crate Proxima's MCP handler is built on, at the version and
 /// feature set the workspace pins (`server`, `transport-streamable-http-server`).
 /// A host that implements [`rmcp::ServerHandler`] around [`DynamicHandler`]

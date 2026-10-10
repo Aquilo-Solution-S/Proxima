@@ -238,6 +238,13 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Host API only: the role probes `PgOwnerAccessResolver` answers with, on a host's own
+    // transaction.
+    role_probes {
+        host_only: [group_role, roles_for_subject],
+        both_tiers: [],
+    }
+
     // Needed by `ProximaHost::host_state_erase_context_for_host`.
     host_state_erase_context {
         host_only: [PgHostStateEraseContext],

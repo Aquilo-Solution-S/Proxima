@@ -662,6 +662,101 @@ pub(crate) async fn remove_group_member(
     .await
 }
 
+/// Delete the one `relation` row of `member_user_id` in `group_id`, under the
+/// group's membership lock. An absent row is `Ok`.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn remove_group_member_relation(
+    pool: &PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+) -> Result<(), StorageError> {
+    with_bounded_retry(move || async move {
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        sqlx::query(
+            "DELETE FROM proxima_core.group_memberships
+              WHERE group_id = $1
+                AND member_user_id = $2
+                AND relation = $3",
+        )
+        .bind(group_id.into_inner())
+        .bind(member_user_id.into_inner())
+        .bind(relation)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Replace the `from` row of `member_user_id` in `group_id` with a `to` row in
+/// one transaction under the group's membership lock: delete `from`, insert
+/// `to` (an existing `to` row stays), commit. The lock serializes every
+/// membership change of the group, so a second replacement of the same row
+/// waits, then finds `from` gone.
+///
+/// # Errors
+///
+/// Returns `Conflict`, with nothing changed, when the member does not hold
+/// `from` (including a row the owner scope cannot see), and `Internal` on sqlx
+/// failure.
+pub(crate) async fn replace_group_member_relation(
+    pool: &PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
+    group_id: GroupId,
+    member_user_id: UserId,
+    from: Relation,
+    to: Relation,
+    _granted_by: uuid::Uuid,
+) -> Result<(), StorageError> {
+    with_bounded_retry(move || async move {
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        lock_group_membership_tx(&mut tx, group_id).await?;
+        let deleted = sqlx::query(
+            "DELETE FROM proxima_core.group_memberships
+              WHERE group_id = $1
+                AND member_user_id = $2
+                AND relation = $3",
+        )
+        .bind(group_id.into_inner())
+        .bind(member_user_id.into_inner())
+        .bind(from)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+        if deleted.rows_affected() == 0 {
+            tx.rollback().await.map_err(map_err)?;
+            return Err(StorageError::Conflict(
+                "member does not hold the relation being replaced".into(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                (group_id, member_user_id, relation)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+        )
+        .bind(group_id.into_inner())
+        .bind(member_user_id.into_inner())
+        .bind(to)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(())
+    })
+    .await
+}
+
 /// True iff `member_user_id` currently holds exactly `relation` on `group_id`.
 /// A point-in-time single-role probe, distinct from
 /// [`resolve_membership`]'s full row enumeration.

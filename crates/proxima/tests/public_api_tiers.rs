@@ -17,6 +17,22 @@ impl proxima::flavor::GoalPayload for SdkGoalPayload {
     }
 }
 
+/// A host that holds its own transaction resolves roles on it through the
+/// facade: the connection-taking probes, not a second copy of the queries.
+#[test]
+fn host_api_names_the_connection_role_probes() {
+    async fn probes(
+        conn: &mut sqlx::PgConnection,
+        subject: proxima::UserId,
+        group: proxima::GroupId,
+    ) -> Result<(proxima::OwnerRoles, Option<proxima::Role>), proxima::AccessError> {
+        let roles = proxima::roles_for_subject(&mut *conn, subject).await?;
+        let role = proxima::group_role(conn, subject, group).await?;
+        Ok((roles, role))
+    }
+    std::hint::black_box(probes);
+}
+
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
