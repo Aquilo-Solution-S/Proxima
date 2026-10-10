@@ -92,6 +92,36 @@ impl proxima::HostStateCommand for HostStateTierCommand {
     }
 }
 
+/// A host builds palettes from typed keys; the facade names every piece of
+/// them, and the keys print the strings the env and docs spell.
+#[test]
+fn host_api_builds_a_palette_from_typed_scope_keys() {
+    use proxima::host::{ActionName, ResourceKey, ScopeKey, ScopeKeyError, ToolName, ToolScope};
+
+    let tool = ToolName::parse("host_echo").expect("a tool name");
+    let goal = ToolName::parse("core_goal").expect("a tool name");
+    let set = ActionName::parse("set").expect("an action name");
+    let scope = ToolScope::Palette(vec![
+        ScopeKey::Tool(tool),
+        ScopeKey::action(goal.clone(), set.clone()).expect("a leaf"),
+        ScopeKey::Resource(ResourceKey::parse("memory").expect("a resource name")),
+    ]);
+    assert!(scope.allows_action(&goal, &set));
+    assert_eq!(
+        ScopeKey::parse("resource:memory")
+            .expect("a resource key")
+            .to_string(),
+        "resource:memory"
+    );
+
+    let refusals: [Result<ScopeKey, ScopeKeyError>; 3] = [
+        ScopeKey::parse("a:b:c"),
+        ScopeKey::parse(""),
+        ScopeKey::action(ToolName::parse("resource").expect("a tool name"), set),
+    ];
+    assert!(refusals.iter().all(Result::is_err));
+}
+
 #[test]
 fn delegated_worker_surface_is_available_from_both_supported_facades() {
     fn needs_authority<T: proxima::EngineAuthority + ?Sized>() {}

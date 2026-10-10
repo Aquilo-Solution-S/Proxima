@@ -13,7 +13,7 @@ use std::time::Duration;
 use proxima_core::mcp::{
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolContent,
     ToolDescriptorView, ToolEffect, ToolReply, all_core_resources, mcp_wire_output_schema,
-    normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    normalize_mcp_output_schema, provider_safe_tool_name, tool_name_matches,
 };
 use proxima_core::{
     AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
@@ -57,7 +57,7 @@ const LIST_CACHE_SCOPE: CacheScope = CacheScope::Private;
 use crate::auth::McpAuthContext;
 use crate::host_tools::McpHostTool;
 use crate::server::{McpToolHost, ToolInvocationError};
-use proxima_core::ToolScope;
+use proxima_core::{ScopeKey, ToolName, ToolScope};
 
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
@@ -267,9 +267,7 @@ impl ServerHandler for DynamicHandler {
         let mut resources = vec![resource];
         resources.extend(
             all_core_resources()
-                .filter(|resource| {
-                    !resource.is_template && resource_scope_allows(scope, resource.scope_key)
-                })
+                .filter(|resource| !resource.is_template && resource_scope_allows(scope, resource))
                 .map(raw_resource_from_meta),
         );
         std::future::ready(Ok(ListResourcesResult::with_all_items(resources)
@@ -286,9 +284,7 @@ impl ServerHandler for DynamicHandler {
         let auth = auth_context(&context);
         let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let resource_templates = all_core_resources()
-            .filter(|resource| {
-                resource.is_template && resource_scope_allows(scope, resource.scope_key)
-            })
+            .filter(|resource| resource.is_template && resource_scope_allows(scope, resource))
             .map(raw_resource_template_from_meta)
             .collect();
         std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(
@@ -757,7 +753,7 @@ pub(crate) fn project_dispatcher_actions(
     scope: Option<&ToolScope>,
 ) -> serde_json::Value {
     descriptor.input_schema(|action| {
-        scope.is_none_or(|scope| scope_permits_action(scope, descriptor.name, action))
+        scope.is_none_or(|scope| descriptor.action_advertised_by(scope, action))
     })
 }
 
@@ -814,16 +810,19 @@ fn static_resource_uri(uri_template: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn resource_scope_allows(scope: Option<&ToolScope>, scope_key: &str) -> bool {
+pub(crate) fn resource_scope_allows(
+    scope: Option<&ToolScope>,
+    resource: &proxima_core::flavor::ResourceContract,
+) -> bool {
     match scope {
-        Some(scope) => scope.allows(scope_key),
+        Some(scope) => scope.allows(&ScopeKey::Resource(resource.key())),
         None => UNAUTHENTICATED_SCOPE_ALLOWS,
     }
 }
 
 pub(crate) fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
     all_core_resources()
-        .filter(|resource| resource_scope_allows(scope, resource.scope_key))
+        .filter(|resource| resource_scope_allows(scope, resource))
         .map(|resource| resource.scope_key)
         .collect()
 }
@@ -924,9 +923,7 @@ fn scope_allows(scope: Option<&ToolScope>, descriptor: &McpToolDescriptor) -> bo
             // Argv-keyed dispatchers advertise through `tool:action` leaves
             // exactly like `action`-tagged ones — the derived key is the
             // same vocabulary the invocation gate judges.
-            let has_actions =
-                !descriptor.action_arg_specs.is_empty() || !descriptor.argv_action_specs.is_empty();
-            scope.allows_tool_advertisement(descriptor.name, has_actions)
+            descriptor.advertised_by(scope)
         }
         // No auth context bound to the request. In release builds this
         // means the request bypassed `mcp_auth_layer` (which 401s before
@@ -1018,7 +1015,7 @@ pub(crate) fn action_allowed_for_auth(
 ) -> bool {
     let scope_allowed = caller
         .auth
-        .is_none_or(|ctx| scope_permits_action(ctx.authz.tool_scope(), descriptor.name, action));
+        .is_none_or(|ctx| descriptor.action_advertised_by(ctx.authz.tool_scope(), action));
     // One classification rule for both vocabularies, owned by the
     // descriptor, so this advertisement decision and the owner-role gate
     // `ScopeGateBehavior` runs at call time cannot answer differently.
@@ -1148,12 +1145,22 @@ pub fn strip_call_context_args(args: &mut serde_json::Value) {
     obj.remove("model_id");
 }
 
+/// Whether `scope` holds the key of a host tool, which is flat: its name as a
+/// [`ToolName`]. A served name is one (the host tool list checked it), so a
+/// name that is not is held by no palette.
+fn host_tool_in_scope(scope: &ToolScope, name: &str) -> bool {
+    match ToolName::parse(name) {
+        Ok(name) => scope.allows(&ScopeKey::Tool(name)),
+        Err(_) => matches!(scope, ToolScope::All),
+    }
+}
+
 /// Whether this caller may see one host tool: its name in the palette (a
 /// host tool is flat), the owner role its declaration needs and, in a
 /// listing, every request behavior's `visible`.
 fn host_tool_allowed_for_auth(caller: Caller<'_>, tool: &McpHostTool) -> bool {
     let in_scope = caller.auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
-        ctx.authz.tool_scope().allows(&tool.name)
+        host_tool_in_scope(ctx.authz.tool_scope(), &tool.name)
     });
     in_scope
         && owner_role_allows(caller.auth, tool.effect.is_read_only())
@@ -1290,6 +1297,14 @@ mod tests {
     use super::*;
     use proxima_core::mcp::Replay;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
+
+    fn palette(ids: &[&str]) -> ToolScope {
+        ToolScope::Palette(
+            ids.iter()
+                .map(|id| ScopeKey::parse(id).expect("a scope key"))
+                .collect(),
+        )
+    }
 
     // Retain the existing guard and JSON-RPC error assertions through the
     // shared host validator and the production transport error mapper.
@@ -1599,8 +1614,6 @@ mod tests {
 
     #[test]
     fn palette_scope_narrows_advertised_dispatcher_actions() {
-        use proxima_core::ToolScope;
-
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let goal = registry
             .list_mcp_tools()
@@ -1610,7 +1623,7 @@ mod tests {
             .clone();
 
         // A palette that permits only the `set` leaf of core_goal.
-        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let scope = palette(&[protocol_action::CORE_GOAL_SET]);
         let projected = project_dispatcher_actions(&goal, Some(&scope));
 
         let enum_values = projected
@@ -1669,10 +1682,8 @@ mod tests {
 
     #[test]
     fn not_authorized_message_lists_allowed_actions() {
-        use proxima_core::ToolScope;
-
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let scope = palette(&[protocol_action::CORE_GOAL_SET]);
         let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
             &registry,
@@ -1697,7 +1708,6 @@ mod tests {
     #[test]
     fn not_authorized_lists_a_flavor_dispatchers_allowed_actions() {
         use futures_util::future::BoxFuture;
-        use proxima_core::ToolScope;
         use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1753,7 +1763,7 @@ mod tests {
         registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
         let registry = registry.freeze_or_panic_for_tests();
 
-        let scope = ToolScope::Palette(vec!["proxima-stub_dispatch:look".to_string()]);
+        let scope = palette(&["proxima-stub_dispatch:look"]);
         let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
             &registry,
@@ -1910,7 +1920,7 @@ mod tests {
 
     #[test]
     fn a_bogus_action_scope_never_advertises_a_flat_tool() {
-        use proxima_core::{AuthPath, AuthzContext, Owner, ToolScope, UserId};
+        use proxima_core::{AuthPath, AuthzContext, Owner, UserId};
 
         let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
         let descriptor = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
@@ -1920,9 +1930,7 @@ mod tests {
                 UserId::new(uuid::Uuid::now_v7()),
                 AuthPath::HostBearer,
             )
-            .with_tool_scope(ToolScope::Palette(vec![
-                "proxima-stub_search:bogus".to_owned(),
-            ])),
+            .with_tool_scope(palette(&["proxima-stub_search:bogus"])),
         };
 
         assert!(descriptor.action_arg_specs.is_empty());

@@ -235,15 +235,16 @@ pub use proxima_core::verbs::query::{
 };
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{
-    AccessCeiling, AccessError, AccessKind, AuthPath, Authenticator, AuthzContext,
+    AccessCeiling, AccessError, AccessKind, ActionName, AuthPath, Authenticator, AuthzContext,
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
     DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
     FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
     Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
-    Relation, Role, SchemaId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
-    env_value, parse_external_key, provider_safe_tool_name,
+    Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, SourceId, StorageError,
+    ToolName, ToolScope, UserId, canonical_json_bytes, env_value, parse_external_key,
+    provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:
 /// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two
@@ -666,7 +667,9 @@ pub use {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlavorRegistryFrozen, ToolScope, tool_palette_excluding};
+    use super::{
+        ActionName, FlavorRegistryFrozen, ScopeKey, ToolName, ToolScope, tool_palette_excluding,
+    };
     use proxima_core::FlavorRegistry;
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{CoreGoalTool, SearchMemoriesTool};
@@ -680,6 +683,14 @@ mod tests {
         FlavorRegistry::new().freeze_or_panic_for_tests()
     }
 
+    fn tool(name: &str) -> ToolName {
+        ToolName::parse(name).expect("a tool name")
+    }
+
+    fn key(text: &str) -> ScopeKey {
+        ScopeKey::parse(text).expect("a scope key")
+    }
+
     #[test]
     fn excluding_an_action_scoped_tool_removes_every_action_entry() {
         let registry = registry();
@@ -689,19 +700,15 @@ mod tests {
         let ToolScope::Palette(entries) = &scope else {
             panic!("expected a palette scope")
         };
-        assert!(!entries.iter().any(|entry| entry == CoreGoalTool::NAME));
-        let action_prefix = format!("{}:", CoreGoalTool::NAME);
+        assert!(!entries.contains(&ScopeKey::Tool(tool(CoreGoalTool::NAME))));
         assert!(
-            !entries
-                .iter()
-                .any(|entry| entry.starts_with(&action_prefix)),
+            !entries.iter().any(|entry| matches!(
+                entry,
+                ScopeKey::Action { tool, .. } if tool.as_str() == CoreGoalTool::NAME
+            )),
             "excluding the tool name must also exclude every tool:action expansion"
         );
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry == SearchMemoriesTool::NAME)
-        );
+        assert!(entries.contains(&ScopeKey::Tool(tool(SearchMemoriesTool::NAME))));
     }
 
     #[test]
@@ -710,10 +717,13 @@ mod tests {
 
         let scope = tool_palette_excluding(&registry, &[]);
 
-        assert!(scope.allows_action(CoreGoalTool::NAME, "set"));
-        assert!(scope.allows(SearchMemoriesTool::NAME));
+        assert!(scope.allows_action(
+            &tool(CoreGoalTool::NAME),
+            &ActionName::parse("set").expect("an action name")
+        ));
+        assert!(scope.allows(&key(SearchMemoriesTool::NAME)));
         assert!(
-            !scope.allows(CoreGoalTool::NAME),
+            !scope.allows(&key(CoreGoalTool::NAME)),
             "flat entry must not leak for an action-scoped tool"
         );
     }
@@ -732,7 +742,7 @@ mod tests {
 
         for resource in proxima_core::all_core_resources() {
             assert!(
-                scope.allows(resource.scope_key),
+                scope.allows(&key(resource.scope_key)),
                 "palette must admit resource scope key {}",
                 resource.scope_key
             );
@@ -745,10 +755,26 @@ mod tests {
 
         let scope = tool_palette_excluding(&registry, &[protocol_resource::MEMORY]);
 
-        assert!(!scope.allows(protocol_resource::MEMORY));
+        assert!(!scope.allows(&key(protocol_resource::MEMORY)));
         assert!(
-            scope.allows(protocol_resource::SCHEMAS),
+            scope.allows(&key(protocol_resource::SCHEMAS)),
             "excluding one resource must not remove the others"
         );
+    }
+
+    /// A host extends the canonical palette with its own flat tools by their
+    /// `ToolName`; the typed key cannot be mistaken for a leaf or a resource.
+    #[test]
+    fn a_host_adds_its_flat_tools_to_the_canonical_palette_by_name() {
+        let ToolScope::Palette(mut entries) = tool_palette_excluding(&registry(), &[]) else {
+            panic!("expected a palette scope")
+        };
+        entries.push(ScopeKey::Tool(tool("host_echo")));
+        let scope = ToolScope::Palette(entries);
+
+        assert!(scope.allows(&key("host_echo")));
+        assert!(scope.allows(&key(SearchMemoriesTool::NAME)));
+        assert!(ToolName::parse("host_echo:set").is_err());
+        assert!(ToolName::parse("resource:host_echo").is_err());
     }
 }

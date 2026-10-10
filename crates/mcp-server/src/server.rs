@@ -577,9 +577,11 @@ fn host_tool_name_refusal(
     name: &str,
     served: &[McpHostTool],
 ) -> Option<&'static str> {
-    if name.is_empty()
-        || name.chars().count() > MAX_HOST_TOOL_NAME_CHARS
-        || proxima_core::provider_safe_tool_name(name) != name
+    // A host tool is flat: its palette key is `ScopeKey::Tool(name)`, and a
+    // `ToolName` is what makes that so. The grammar has no `:`, so the name
+    // is never the spelling of a `tool:action` leaf or a `resource:` key.
+    if name.chars().count() > MAX_HOST_TOOL_NAME_CHARS
+        || proxima_core::ToolName::parse(name).is_err()
     {
         return Some("a host tool name is 1..=128 characters of [A-Za-z0-9_.-]");
     }
@@ -991,7 +993,9 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::{McpAuthorContext, ToolContent};
-    use proxima_core::{AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
+    use proxima_core::{
+        AuthzContext, FlavorRegistry, Owner, OwnerRef, ScopeKey, ToolScope, UserId,
+    };
 
     fn fake_owner() -> Owner {
         OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
@@ -1119,6 +1123,51 @@ mod tests {
         }
     }
 
+    /// A host tool is flat, so its palette key is `ScopeKey::Tool(name)`. The
+    /// name grammar is what keeps it so: of every short string over an
+    /// alphabet that holds the delimiter, a space and a slash, the ones the
+    /// host accepts all parse to a `Tool` key printing as the name, and every
+    /// one that would parse to a leaf or a resource key is refused.
+    #[test]
+    fn no_served_host_tool_name_can_spell_a_leaf_or_a_resource_key() {
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let alphabet = ['a', 'b', ':', '.', '-', ' ', '/'];
+        let mut names = vec![String::new()];
+        let mut layer = vec![String::new()];
+        for _ in 0..4 {
+            layer = layer
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |c| format!("{prefix}{c}")))
+                .collect();
+            names.extend(layer.iter().cloned());
+        }
+        names.extend(["resource", "resource:memory", "core_goal:set"].map(String::from));
+
+        let (mut served, mut spelled_otherwise) = (0, 0);
+        for name in &names {
+            let refusal = host_tool_name_refusal(&registry, name, &[]);
+            match ScopeKey::parse(name) {
+                Ok(ScopeKey::Tool(tool)) if refusal.is_none() => {
+                    assert_eq!(tool.to_string(), *name);
+                    served += 1;
+                }
+                Ok(ScopeKey::Action { .. } | ScopeKey::Resource(_)) => {
+                    assert!(refusal.is_some(), "{name:?} spells a leaf or a resource");
+                    spelled_otherwise += 1;
+                }
+                Ok(ScopeKey::Tool(_)) | Err(_) => {
+                    assert!(refusal.is_some(), "{name:?} is no flat tool name");
+                }
+            }
+        }
+        assert!(
+            served > 100 && spelled_otherwise > 100,
+            "{served} {spelled_otherwise}"
+        );
+        // A flat tool named like the resource prefix is still a flat tool.
+        assert_eq!(host_tool_name_refusal(&registry, "resource", &[]), None);
+    }
+
     /// A host tool runs through the registry's behaviors, scope gate first,
     /// and the gate classifies it from the host's declaration.
     #[tokio::test]
@@ -1167,10 +1216,9 @@ mod tests {
         // The palette gates a host tool by its name.
         let narrowed = McpAuthContext {
             owner,
-            authz: auth
-                .authz
-                .clone()
-                .with_tool_scope(ToolScope::Palette(vec!["host_write".into()])),
+            authz: auth.authz.clone().with_tool_scope(ToolScope::Palette(vec![
+                ScopeKey::parse("host_write").expect("a scope key"),
+            ])),
         };
         assert!(matches!(
             server

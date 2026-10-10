@@ -46,7 +46,7 @@ the protocol surface [14](14-protocol-surface.md).
 Proxima::<App>::app()
     .from_env()
     .authenticator(auth)
-    .tool_scope(ToolScope::All) // or ToolScope::Palette([...]) for a restricted keep-set
+    .tool_scope(ToolScope::All) // or ToolScope::Palette(vec![ScopeKey, ..]) for a restricted keep-set
     .run()
     .await?;
 ```
@@ -106,8 +106,8 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_MCP_JSON_RESPONSE` | With sessions off, answer simple calls as `application/json` rather than SSE. Default `false`. |
 | `PROXIMA_RUNTIME_GRANTS` | Grant the runtime role its DML privileges at boot, after migrating and before the runtime pool connects ([15](15-deployment.md)). Default `false`. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed), `full` (opt-in), or `code` (the code flavor's search and read tools, no memory tools; [15](15-deployment.md)). |
-| `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
-| `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
+| `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. Each entry is parsed into a `ScopeKey` at boot; an entry that is not one fails boot naming it. |
+| `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. Parsed as `PROXIMA_TOOL_ALLOW` is. |
 | `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
@@ -356,7 +356,7 @@ Host-side MCP surface (v0.0.21):
 
 | Need | API | Contract |
 |---|---|---|
-| Serve host tools on `/mcp` | `.host_tools(Arc<dyn McpHostTools>)` | `async McpHostTools::list(&McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError>` per caller, once per request; an `Err` fails the `tools/list`, or the `tools/call` that needed the catalog, with its JSON-RPC mapping (return `Ok(vec![])` to degrade). Listed beside registry tools, filtered by palette (flat key = name), owner role (`effect: ToolEffect`; `ReadOnly` needs read access, anything else write) and every request behavior's `visible`. `async call(ToolCall) -> Result<ToolReply, McpToolError>` runs as the terminal of the registry's request behaviors, scope gate first; `ctx.services` carries `McpHostToolCall`. `ToolReply` is `Structured` (JSON object), `Content` (blocks; refused from a tool with an `output_schema`) or `Failure` (blocks, `isError: true`) ([12 §Tool Replies](12-tool-manifest.md#tool-replies)). `McpHostTool` is `#[non_exhaustive]`: `McpHostTool::new(name, description, args_schema, effect)` plus `with_output_schema`, `with_meta` (`_meta`), `with_open_world` (`openWorldHint`). `async instructions(&McpAuthContext) -> Option<String>` extends the server instructions (at most 4096 characters). Names are 1..=128 characters of `[A-Za-z0-9_.-]` (never a `tool:action` leaf or `resource:` key); a name a registry tool serves (canonical or wire) or a repeated one is dropped with a warning |
+| Serve host tools on `/mcp` | `.host_tools(Arc<dyn McpHostTools>)` | `async McpHostTools::list(&McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError>` per caller, once per request; an `Err` fails the `tools/list`, or the `tools/call` that needed the catalog, with its JSON-RPC mapping (return `Ok(vec![])` to degrade). Listed beside registry tools, filtered by palette (flat key = name), owner role (`effect: ToolEffect`; `ReadOnly` needs read access, anything else write) and every request behavior's `visible`. `async call(ToolCall) -> Result<ToolReply, McpToolError>` runs as the terminal of the registry's request behaviors, scope gate first; `ctx.services` carries `McpHostToolCall`. `ToolReply` is `Structured` (JSON object), `Content` (blocks; refused from a tool with an `output_schema`) or `Failure` (blocks, `isError: true`) ([12 §Tool Replies](12-tool-manifest.md#tool-replies)). `McpHostTool` is `#[non_exhaustive]`: `McpHostTool::new(name, description, args_schema, effect)` plus `with_output_schema`, `with_meta` (`_meta`), `with_open_world` (`openWorldHint`). `async instructions(&McpAuthContext) -> Option<String>` extends the server instructions (at most 4096 characters). Names are 1..=128 characters of `[A-Za-z0-9_.-]`, which is what a `ToolName` is, so a host tool's key is `ScopeKey::Tool(name)` and a name is never a `tool:action` leaf or `resource:` key; a name a registry tool serves (canonical or wire) or a repeated one is dropped with a warning |
 | Record served calls | `.record_mcp_calls(true)` | each `tools/call` of a registry tool, or a host tool listed for the caller, → `core/mcp-call-logged-v1` Fact under the call's owner: tool, ok or the JSON-RPC error code (a `ToolReply::Failure` is `ok = false`, error `tool failure`), latency, byte size; the host catalog is read once per call, by the call itself; actor = verified subject; no body and no caller text (`io_truncated = true`). Written off the request path with the caller's own context (a caller that cannot write the owner is not recorded), at most 64 in flight (beyond that the record is dropped with a warning). Calls refused before dispatch (a contradicting `model_id`, a bad request-services bag) are not recorded |
 | Compose own router | `BuiltProxima::mcp_edge()` → `McpEdge` | resolved tool host, bearer auth, Origin/Host allowlists, revalidation, resource metadata, transport; `McpEdge::router(app)` = `/mcp` (+ `/v1`) behind bearer auth, `app` without it, all behind body cap + Host guard + CORS. `layered_router_mcp_only` puts bearer auth on `/mcp` only for a hand-built service (no resource-metadata routes; the default body cap) |
 | Custom transport | `auth_context`, `peer_implementation`, `author_from_args`, `strip_call_context_args`, `reject_nul_in_args`, `tool_invocation_error_to_error_data`, `mcp_tool_error_to_error_data`, `McpToolHost::dispatch_through_behaviors` | the handler's own helpers, public. A host wrapping `DynamicHandler` in its own `ServerHandler` delegates `supported_protocol_versions`, `discover`, `accepted_subscription_filter` and `listen` too (v0.0.22), or rmcp's defaults serve every revision rmcp knows and drop per-caller instructions and tool-list subscriptions |
@@ -446,8 +446,11 @@ Profiles:
 Allow/deny ids use canonical scope keys: flat tool ids (`core_search_memories`),
 dispatcher action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`),
 resource keys (`resource:memory`, `resource:change-events`), or flavor ids
-(`proxima-code_search_chunks`). Unknown profile names and unknown allow/deny
-ids fail boot.
+(`proxima-code_search_chunks`). Each entry is parsed as a `ScopeKey`
+([12 §Scope keys](12-tool-manifest.md#scope-keys)) and compared with the keys
+this build registers. Unknown profile names, entries that are not scope keys
+(`core_goal:`, `a:b:c`, an entry with whitespace) and unknown allow/deny ids
+fail boot; the error names the variable and the entry.
 
 Production hosts that expose `full` but do not intend roster or owner-transfer
 operations should deny both controller surfaces:

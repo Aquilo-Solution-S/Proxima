@@ -8,7 +8,7 @@ use proxima_core::mcp::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, Owner,
-    SchemaId, SchemaVersion,
+    SchemaId, SchemaVersion, ScopeKeyError, ScopeKeyPart,
 };
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -222,6 +222,37 @@ enum TwoActionArgs {
     },
 }
 
+/// An action whose name holds the scope-key delimiter: `tool:look:at` would
+/// be read back as a leaf of the action `look`.
+#[derive(schemars::JsonSchema, serde::Deserialize)]
+#[serde(tag = "action")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum ColonActionArgs {
+    #[serde(rename = "look:at")]
+    LookAt {
+        #[schemars(description = "what to look at")]
+        id: String,
+    },
+}
+
+/// An action name with a space, which no provider accepts in a tool name.
+#[derive(schemars::JsonSchema, serde::Deserialize)]
+#[serde(tag = "action")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum SpacedActionArgs {
+    #[serde(rename = "look at")]
+    LookAt {
+        #[schemars(description = "what to look at")]
+        id: String,
+    },
+}
+
 macro_rules! stub_tool {
     ($tool:ident, $name:literal, $args:ty, $specs:expr) => {
         struct $tool;
@@ -281,6 +312,31 @@ stub_tool!(
         action: "run",
         allowed_fields: &["value"],
         required_fields: &["value"],
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
+        audience: McpToolAudience::Shared,
+    }]
+);
+
+stub_tool!(
+    ColonActionTool,
+    "proxima-test_colonaction",
+    ColonActionArgs,
+    &[McpActionArgSpec {
+        action: "look:at",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+        effect: ToolEffect::Additive(Replay::NonIdempotent),
+        audience: McpToolAudience::Shared,
+    }]
+);
+stub_tool!(
+    SpacedActionTool,
+    "proxima-test_spacedaction",
+    SpacedActionArgs,
+    &[McpActionArgSpec {
+        action: "look at",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
     }]
@@ -712,6 +768,41 @@ fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
     let rendered = err.to_string();
     assert!(rendered.contains("allowed_fields"), "{rendered}");
     assert!(rendered.contains("note"), "{rendered}");
+}
+
+/// An action name is a scope key part: one outside the grammar is refused
+/// when the registry freezes, naming the tool and the reason, not at the
+/// first palette build. The delimiter case is the one that would make
+/// `tool:look:at` read back as something else.
+#[test]
+fn a_dispatcher_action_outside_the_key_grammar_cannot_be_frozen() {
+    for (err, name) in [
+        (
+            freeze_error::<ColonActionTool>(),
+            "proxima-test_colonaction",
+        ),
+        (
+            freeze_error::<SpacedActionTool>(),
+            "proxima-test_spacedaction",
+        ),
+    ] {
+        assert!(
+            matches!(&err, FlavorRegistryError::InvalidScopeKey { name: refused, .. } if *refused == name),
+            "got {err:?}",
+        );
+        assert!(err.to_string().contains(name), "{err}");
+    }
+    let colon = freeze_error::<ColonActionTool>();
+    assert!(
+        matches!(
+            colon,
+            FlavorRegistryError::InvalidScopeKey {
+                reason: ScopeKeyError::Delimiter(ScopeKeyPart::Action),
+                ..
+            }
+        ),
+        "got {colon:?}",
+    );
 }
 
 /// Per-action annotations: the action spec, not the parent, answers
