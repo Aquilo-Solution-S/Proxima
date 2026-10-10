@@ -398,6 +398,17 @@ permitted; consumers deduplicate on the durable event identity beyond the
 broker's dedup window. The producer never waits for a subscriber's validation
 or response.
 
+`ReceivedEvent::id` stays the dedup key, a plain string.
+`ReceivedEvent::identity()` reads it as `EventIdentity::Fact(MemoryId)` when it
+is `F:` and a lowercase hyphenated UUID, the exact spelling the producer writes,
+and as `EventIdentity::Opaque(String)`, byte for byte, otherwise: upper-case,
+simple, braced or `urn:` UUIDs, other prefixes, no prefix, padding, the
+consumer's own `malformed:<hex>` id, anything another producer sent. Two ids
+are equal exactly when their identities are equal. A parsed identity proves
+syntax, not admission: it does not say a Fact with that id was admitted, that
+its schema is listenable, that the subject's owner owns it, or that Proxima sent
+the message. Signature and owner checks stay with the consumer.
+
 ## Deployment topology
 
 NATS topology is not an application profile. DevOps provisions the stream and
@@ -559,7 +570,11 @@ feature `outbox-nats`) is the inverse of `subject_for`: `ParsedSubject { owner,
 event_type }`. It accepts only what `subject_for` produces — the hyphenated
 lowercase owner uuid, the canonical escaping above — and refuses anything else
 (`SubjectParseError`), so a consumer routing on the result never reads two
-subjects as one event type.
+subjects as one event type. `ReceivedEvent::parsed_subject(prefix)` is
+`parse_subject(prefix, &event.subject)`; the prefix is the deployment's, because
+a stream transform may have rewritten the publisher's. Like `identity()`, a
+parsed subject proves syntax, not admission, and it is not reconciled with the
+id or the envelope's `proximaowner`.
 
 Owner routing lives in the subject, so NATS account permissions restrict a
 consumer by subject prefix. File storage plus PubAck is durability against
