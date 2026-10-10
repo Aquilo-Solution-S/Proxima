@@ -46,11 +46,14 @@ Supported Rust tiers:
 | Host extra-table | `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL. **Not** the atomic path with Fact writes — that is a second connection |
 | Host-state in UnitOfWork | `UnitOfWork::apply_host_state` + `PgHostStateParticipant` | Host API only. Startup-register exactly one typed participant on `RuntimeBuilder` / `Proxima::host_state_participant` (a second refuses boot); dispatch several command types with `HostStateRequest::is` / `try_downcast`. Owner write-gate first; command tables must be `FlavorContract.state_surfaces`. Same backend transaction as Fact ingest; drop/poisoned commit rolls every participant back. Do not hold the unit open across broker/provider I/O |
 | Host API (MCP surface) | `use proxima::{McpHostTools, McpHostTool, McpHostToolCall, McpEdge, layered_router_mcp_only, PlatformAuthContext};` | `RuntimeBuilder::{host_tools, record_mcp_calls, authenticator_with_platform_scope}`, `BuiltProxima::mcp_edge`, and the handler helpers (`auth_context`, `author_from_args`, `strip_call_context_args`, `reject_nul_in_args`, `tool_invocation_error_to_error_data`, …) — [10 §MCP Endpoint and Authentication](../10-configuration.md#mcp-endpoint-and-authentication) |
+| Host API (own handler or router) | `use proxima::{DynamicHandler, TerminalDispatch, ScopeGateBehavior, RevalidationConfig, enforce_body_limit, body_limit_layer, host_guard_layer, mcp_auth_layer_with_metadata, tool_name_matches, all_core_resources, core_action_meta, CoreActionMeta};` | a host that assembles its own `ServerHandler` or router. Implement `proxima::rmcp::ServerHandler` around `DynamicHandler` (the rmcp the workspace pins, one copy); apply the layers `McpEdge::router` applies: body cap, Host guard, bearer auth with protected-resource metadata. `RevalidationConfig` is the type of `McpEdge::revalidation` and `RuntimeConfig::stream_revalidation` |
+| Host API (tool-argument ids) | `use proxima::{PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid};` | format and parse the `<prefix>:<uuid>` ids tool arguments carry; the error type travels with the parser |
+| Host API (storage handle) | `use proxima::{PgStorage, PgHostStateEraseContext, OriginScope, PublicationOriginEligibility, PublicationOriginEligibilityPort, begin_owner_transaction};` | `PgStorage` is the migration helpers' parameter; `PgHostStateEraseContext` and `OriginScope` are what `ProximaHost::{host_state_erase_context_for_host, origin_scope_for_host}` return. `begin_owner_transaction(&PgPool, &OwnerScope)` is for authorized extra-table adapters: the pool comes from `clone_pool_for_host`, the scope from `authenticate`; every statement runs on the returned transaction; no `proxima_core.*` SQL through it or the pool; Fact and state writes use `UnitOfWork`. Not Flavor SDK |
 | Host API (OIDC) | `use proxima::auth::{OidcTokenValidator, ValidatedOidcToken, OidcRejection, OidcRoleShape, OidcRoleShaper, OidcClaimMap};` | `validate_with::<C>` reads host claims from the verified payload; `OidcRoleShape::Host` shapes a binding's context from every claim; requires feature `auth-oidc` |
 | Host API (system work) | `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` | sealed `AuthPath::System` context from the runtime's `SystemAuthority`, with no bearer or stub authenticator |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
-| Host API (AsyncAPI) | `use proxima::{asyncapi_document, AsyncApiInfo, DEFAULT_SUBJECT_PREFIX};` | offline AsyncAPI 3.0.0 document of the frozen registry's listenable Facts; channel addresses are the publisher's subjects ([18 §AsyncAPI Catalog](../18-fact-outbox.md#asyncapi-catalog)); requires feature `outbox-nats` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
+| Host API (AsyncAPI) | `use proxima::{asyncapi_document, AsyncApiInfo, DEFAULT_SUBJECT_PREFIX};` | offline AsyncAPI 3.0.0 document of the frozen registry's listenable Facts; channel addresses are the publisher's subjects ([18 §AsyncAPI Catalog](../18-fact-outbox.md#asyncapi-catalog)); requires feature `outbox-nats`; `DEFAULT_CONSUMER_STREAM` and `DEFAULT_CONSUMER_NAME` (the reference consumer's defaults) are exported beside `DEFAULT_SUBJECT_PREFIX` |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API. `EraseRule::HostState` is built from `flavor::HostStateEraseDisposition`, the SDK's only host-state name |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
 | Flavor SDK (tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
@@ -58,6 +61,53 @@ Supported Rust tiers:
 | Flavor SDK (after a side effect) | `use proxima::flavor::ingest_fact_detached;` | `ingest_fact_detached(&ctx, write, deadline)`: the Fact recording an upstream write survives client disconnect; `Engine::ingest_fact_detached` for hosts |
 | Flavor tests | `proxima = { features = ["testkit"] }` → `proxima::testkit::{SplitRoleDb, split_role_urls_for, scoped_authz, assert_trigger_migrations}` + `proxima-pg-testkit` | [09 §Tests](../09-developing-flavors.md#tests) |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
+
+Reachability rule: a type that appears in a public signature of the facade is
+reachable through the facade, in the tier of the signature that exposes it. A
+host-tier signature gets its types at the root (`src/host.rs` documents each
+group with the signatures that need it: engine verbs, storage ports and their
+rows, authorization witnesses, registry and contract vocabulary, the MCP tool
+and edge vocabulary, the S3 and outbox lanes, `PgStorage`'s methods). A Flavor
+SDK signature gets its types under `proxima::flavor`. Host-only names
+(`PgStorage`, `begin_owner_transaction`, the storage ports) stay out of the
+SDK. Naming an authorization witness or permit does
+not let anyone mint it: the constructors stay crate-private to the Engine's
+gates. Third-party crates (`sqlx`, `axum`, `tokio`) stay the host's own
+dependencies, except `rmcp`, re-exported as `proxima::rmcp` at the pinned version
+and feature set. A later `rmcp` major is a breaking change of the facade.
+
+The enforcer is a compile-checked list, not a scan:
+`crates/proxima/tests/facade_signature_names.rs` imports every one of those names
+through `proxima::` or `proxima::flavor::`, grouped by the signature that needs
+them, so a dropped or renamed re-export fails to compile, and fails when a
+host-only name appears in `src/flavor.rs`. Add a type to it, and to `src/host.rs`,
+whenever a public signature names a new type. Nothing checks that a new signature's
+type is on the list; stable Rust has no tool for that (rustdoc JSON is nightly).
+`crates/proxima/tests/facade_one_dependency.rs` builds against `proxima::` alone.
+
+Known and open: the Flavor SDK tier is not complete under this rule. A one-off
+source scan (not kept) found 49 types that SDK signatures name and
+`proxima::flavor` does not, and they are not exported yet. Through the
+`flavor::authorized_read` functions: `AuthzContext`, `Engine`. Through registry,
+tool and storage accessors: `AccessKind`, `AccessError`, `Relation`, `Role`,
+`Owner`, `OwnerRefKind`, `ToolScope`, `CapabilityTag`, `StorageError`,
+`TrimmedLenViolation`, `HostStateCommand`, `HostStateOutcome`. Through the write
+path: `WritePermit`, `OwnerWritePermit`, `PublicationPlan`, `Citation`,
+`FactReceiptDraft`, `AuthorizedNodeLinks`, `AuthorizedInlineCitedObject`,
+`AuthorizedInlineCitationMapping`, `DecomposedGoalOutcome`. Through reads and the
+registry: `QueryCursor`, `QueryPage`, `MemoryRow`, `SchemaInfo`, `SchemaRequest`,
+`SchemaResponse`, `ProtocolPayload`, `MemorySearchProjection`, `MemoryEmbedUnit`.
+Through MCP: `TerminalDispatch`, `McpToolCtx`, `McpToolDescriptor`,
+`McpToolError`, `McpToolPresentation`, `McpUnknownFieldPolicy`. Through the PG
+sidecar registry: `IntegrityReport`, `IntegrityViolation`, `Artifact`,
+`PgSidecarKey`, `PgMemoryPayloadBatchFuture`. Named only by trait-impl generic
+arguments (`impl From<..>`), needed by no value a host holds, and left
+unexported at the host tier: `CursorError`, `InterpretationSubjectKind`,
+`SearchMemoriesKind`, `SearchMemoriesMode`, `SearchMemoriesSupersession`,
+`WalkMemoryLineageDirectionArg` (the first five are among the 49).
+`AuthorDerivedOutcome` is among the 49 as well: the host tier exports it because
+a storage-port method returns it. Each is a maintainer decision about whether the
+SDK should name it; none is a regression of this change.
 
 Flavor contract declarations are const-constructible and imported from
 `proxima::flavor`. The same module owns `SchemaRef`, `KeyShape`, the erase /
@@ -225,6 +275,7 @@ Machine checks:
 | Check | Command |
 |---|---|
 | import tiers | `cargo test -p proxima --test public_api_tiers --locked` |
+| facade signature names | `cargo test -p proxima --test facade_signature_names --locked` |
 | architecture ratchets | `python3 scripts/check-architecture-guardrails.py` |
 | SQL policy ratchet | `python3 scripts/check-sql-policy.py` |
 | schema-id allocation ledger | `python3 scripts/check-schema-ids.py` |

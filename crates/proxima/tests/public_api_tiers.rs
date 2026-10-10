@@ -1112,7 +1112,17 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
 
     // `PgPoolConfig` is pure policy, not the raw SQLx handle this guard bans.
     assert!(!host_exports.replace("PgPoolConfig", "").contains("PgPool"));
-    assert!(!host_exports.contains("PgStorage"));
+    // `PgStorage` is exported once, as the parameter of the migration helpers
+    // and the host accessors (#413); no other line of host.rs names it, so its
+    // backend verbs are not republished by a second route.
+    let naming_pg_storage: Vec<&str> = host_exports
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//") && line.contains("PgStorage"))
+        .collect();
+    assert_eq!(
+        naming_pg_storage,
+        ["pub use proxima_storage_pg::PgStorage;"]
+    );
     assert!(!host_exports.contains("StorageHandle"));
     assert!(!flavor_exports.contains("PgPool"));
     assert!(!flavor_exports.contains("PgStorage"));
@@ -1161,10 +1171,49 @@ fn every_runtime_handle_reaches_the_one_host_accessor_set() {
     let _: fn(&proxima::RunningProxima) -> &proxima::ProximaHost = proxima::RunningProxima::host;
     let _: fn(&proxima::ProximaHost) -> Option<proxima::PgPlatformScope> =
         proxima::ProximaHost::platform_scope_for_host;
-    let _: fn(&proxima::ProximaHost) -> proxima_storage_pg::PgHostStateEraseContext =
+    let _: fn(&proxima::ProximaHost) -> proxima::PgHostStateEraseContext =
         proxima::ProximaHost::host_state_erase_context_for_host;
-    let _: fn(&proxima::ProximaHost) -> proxima_core::storage_ports::publication::OriginScope =
+    let _: fn(&proxima::ProximaHost) -> proxima::OriginScope =
         proxima::ProximaHost::origin_scope_for_host;
+}
+
+/// #413: the types the host accessors return are the facade's own names, and
+/// the storage handle and the owner-scoped transaction are host-tier only.
+#[test]
+fn host_tier_names_the_storage_and_publication_types_its_signatures_expose() {
+    async fn adapter_transaction(
+        pool: &sqlx::PgPool,
+        scope: &proxima::OwnerScope,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, proxima::StorageError> {
+        proxima::begin_owner_transaction(pool, scope).await
+    }
+    fn is_eligibility_port<P: proxima::PublicationOriginEligibilityPort>() {}
+
+    let _: fn(
+        &proxima::PgStorage,
+    ) -> Result<proxima::PgHostStateEraseContext, proxima::StorageError> =
+        proxima::PgStorage::host_state_erase_context;
+    std::hint::black_box(adapter_transaction);
+    is_eligibility_port::<proxima::PgStorage>();
+    let _: Option<proxima::PublicationOriginEligibility> = None;
+}
+
+/// #413: `EraseRule::HostState` is built from the Flavor SDK alone, and the
+/// SDK's name is the host tier's name.
+#[test]
+fn the_flavor_sdk_names_the_host_state_erase_disposition() {
+    use proxima::flavor::{EraseRule, HostStateEraseDisposition};
+
+    let rule = EraseRule::HostState {
+        whole_owner: HostStateEraseDisposition::Erase,
+        source: HostStateEraseDisposition::Retain,
+        exact_fact: HostStateEraseDisposition::Erase,
+    };
+    let EraseRule::HostState { source, .. } = rule else {
+        unreachable!("built above");
+    };
+    let host_tier: proxima::HostStateEraseDisposition = source;
+    assert_eq!(host_tier, proxima::HostStateEraseDisposition::Retain);
 }
 
 /// #389: the embedded builder, its config and boot result, the host-called
