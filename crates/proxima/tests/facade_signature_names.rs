@@ -231,10 +231,10 @@ facade_names! {
     }
 
     // Needed by `ReferenceConsumer`, `JetStreamPublisher`: `connect_with_hook`, `process_once`,
-    // `ReceivedEvent`.
+    // `ReceivedEvent` (and `ReceivedEvent::identity`).
     #[cfg(feature = "outbox-nats")]
     outbox_consumer {
-        host_only: [AckAction, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState, ConsumerHealth, ConsumerHealthReader, ConsumerPassState, ConsumerTaskState, HookAction, PublishHook],
+        host_only: [AckAction, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState, ConsumerHealth, ConsumerHealthReader, ConsumerPassState, ConsumerTaskState, EventIdentity, HookAction, PublishHook],
         both_tiers: [],
     }
 

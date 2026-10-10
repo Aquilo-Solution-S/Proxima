@@ -259,10 +259,10 @@ pub use proxima_outbox_nats::config::{DEFAULT_CONSUMER_NAME, DEFAULT_CONSUMER_ST
 #[cfg(feature = "outbox-nats")]
 pub use proxima_outbox_nats::{
     AsyncApiError, AsyncApiInfo, ConfigError as NatsConfigError, ConsumerError,
-    DEFAULT_SUBJECT_PREFIX, DrainReport, DrainSummary, DurableIntake, Intake, IntakeError,
-    JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig, ParsedSubject,
-    PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError, asyncapi_document,
-    parse_subject, subject_for,
+    DEFAULT_SUBJECT_PREFIX, DrainReport, DrainSummary, DurableIntake, EventIdentity, Intake,
+    IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
+    ParsedSubject, PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError,
+    asyncapi_document, parse_subject, subject_for,
 };
 /// The retained-copy cleaner's config ([`RuntimeBuilder::copy_cleaner`]) and
 /// the health views [`BuiltProxima::publisher_health`] /
