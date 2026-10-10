@@ -486,6 +486,14 @@ impl FlavorApp for AgentMemoryApp {
     }
 }
 
+fn palette_of(ids: &[&str]) -> ToolScope {
+    ToolScope::Palette(
+        ids.iter()
+            .map(|id| proxima::ScopeKey::parse(id).expect("a scope key"))
+            .collect(),
+    )
+}
+
 fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
     let authz = match *owner {
         OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::HostBearer),
@@ -946,9 +954,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             Some(ToolEffect::Additive(Replay::NonIdempotent))
         );
 
-        let palette = tools.list_core_tools_for_scope(&ToolScope::Palette(vec![
-            "core_search_memories".to_string(),
-        ]));
+        let palette = tools.list_core_tools_for_scope(&palette_of(&["core_search_memories"]));
         let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
         assert!(palette_names.contains("core_search_memories"));
         assert!(!palette_names.contains(retired_personality.as_str()));
@@ -971,10 +977,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
 
         let palette_denied = tools
             .call_core_tool(
-                host_authz(
-                    &owner,
-                    ToolScope::Palette(vec!["core_search_memories".to_string()]),
-                ),
+                host_authz(&owner, palette_of(&["core_search_memories"])),
                 owner,
                 None,
                 "core_remember",
@@ -1100,10 +1103,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
 
         let denied = read_test_model_resource(
             &tools,
-            host_authz(
-                &owner,
-                ToolScope::Palette(vec!["resource:schemas".to_string()]),
-            ),
+            host_authz(&owner, palette_of(&["resource:schemas"])),
             owner,
             &format!("proxima://memory/{memory}"),
         )

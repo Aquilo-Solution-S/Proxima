@@ -46,7 +46,51 @@ with the error's JSON-RPC mapping: Proxima never degrades it to an empty
 list.
 A palette's keys come from `McpToolDescriptor::palette_keys()` — the bare
 name of a flat tool, `tool:action` for every action of either dispatcher
-vocabulary — and `owner_only_keys()` is its owner-audience subset.
+vocabulary — and `owner_only_keys()` is its owner-audience subset. Both return
+typed [`ScopeKey`s](#scope-keys).
+
+### Scope keys
+
+`ToolScope::Palette` holds `ScopeKey`s, a closed choice of three spellings:
+
+| Key | Spelling | Holds |
+|---|---|---|
+| `ScopeKey::Tool(ToolName)` | `core_search_memories` | a flat tool, or a dispatcher by its bare name |
+| `ScopeKey::Action { tool, action }` | `core_goal:set` | one action of a dispatcher |
+| `ScopeKey::Resource(ResourceKey)` | `resource:memory` | one `proxima://` read |
+
+`ToolName` and `ActionName` are non-empty and provider-safe (`[A-Za-z0-9_.-]`,
+no `..`), so neither holds a `:`; `ResourceKey` is `resource:` plus a name of
+the same grammar. A value of any of them exists only through its constructor,
+which returns it or a `ScopeKeyError`. `ScopeKey::action` refuses the tool name
+`resource`, whose leaf would spell a resource key; a flat tool named
+`resource` is its key `resource`. The `Action` variant is not constructible
+by literal outside the crate, so the refusal cannot be skipped; `Tool` and
+`Resource` take an already validated `ToolName` or `ResourceKey`.
+
+`ScopeKey::parse` is the one parser: the prefix `resource:` gives a
+`Resource`, exactly one other `:` an `Action`, none a `Tool`. `Display` is the
+one printer, so `parse(s).to_string() == s` for every canonical key, and the
+strings in this document, in `PROXIMA_TOOL_ALLOW` / `PROXIMA_TOOL_DENY` and in
+stored delegated commands are unchanged. Text is parsed where it enters: a
+request name at the scope gate, env entries at boot, a wake tool id or delegated
+command by `GoalWakeToolId::parse` / `DelegatedCommand::parse`. A name that
+does not parse is in no palette (`All` still holds it). Keys are
+case-sensitive, and whitespace, `/` and non-ASCII are refused.
+
+Three questions are asked of a palette, each a named `ToolScope` method:
+
+| Method | Admits action `a` of dispatcher `t` when the palette holds |
+|---|---|
+| `allows_action(t, a)`, the call gate | the leaf `t:a` |
+| `advertises_action(t, a)`, `tools/list` | the bare `t` or the leaf `t:a` |
+| `covers_command(t, Some(a))`, delegation | the bare `t` or the leaf `t:a` (a flat command needs its own key) |
+
+A hand-built palette holding a bare dispatcher name is therefore listed with
+its actions and refuses a call of one. Canonical palettes
+(`canonical_scope_keys`) never hold one; whether the call gate should follow the
+listing is a separate authorization decision. `ToolScope::intersect` is key
+equality: a bare tool does not intersect with its leaves.
 
 Registered MCP tool names are already provider-safe. Slash-separated
 schema ids remain separate from MCP wire ids.
@@ -268,7 +312,7 @@ already fixes the instance to an object; an explicit non-object type cannot
 also introduce action-root `properties` or `required` fields.
 
 **The discriminator must literally be `action`.** Not a style preference:
-`ToolScope` keys are spelled `"{tool}:{action}"`, `validate_action_args` and
+`ToolScope` leaf keys are spelled `"{tool}:{action}"`, `validate_action_args` and
 `ScopeGateBehavior::enforce_scope` both read `args["action"]`, and the REST
 narrowed route injects `"action"` into the body before dispatch. A dispatcher
 tagged on anything else would be enumerated correctly and then gated,

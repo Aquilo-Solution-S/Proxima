@@ -7,7 +7,7 @@ use proxima_core::storage_ports::{
     DelegationGrant, DelegationGrantStorage, DelegationId, DelegationMutationPermit,
     DelegationStorePort,
 };
-use proxima_core::{AccessCeiling, OwnerRef, OwnerRefKind, Role, StorageError, UserId};
+use proxima_core::{AccessCeiling, ActionName, OwnerRef, OwnerRefKind, Role, StorageError, UserId};
 use sqlx::{PgPool, Row as _};
 use time::OffsetDateTime;
 
@@ -108,8 +108,8 @@ impl DelegationStorePort for PgDelegationStore {
         .bind(grant.subject().into_inner())
         .bind(owner_kind)
         .bind(owner_id)
-        .bind(grant.command().tool())
-        .bind(grant.command().action())
+        .bind(grant.command().tool().as_str())
+        .bind(grant.command().action().map(ActionName::as_str))
         .bind(PgAccessCeiling::from(grant.role_ceiling().read_ceiling()))
         .bind(PgAccessCeiling::from(grant.role_ceiling().write_ceiling()))
         .bind(OffsetDateTime::from(grant.expires_at()))

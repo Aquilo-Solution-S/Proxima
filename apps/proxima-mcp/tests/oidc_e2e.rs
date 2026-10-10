@@ -575,7 +575,14 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let running = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .rest_enabled(true)
-        .tool_scope(ToolScope::Palette(allowed_tools.iter().cloned().collect()))
+        .tool_scope(ToolScope::Palette(
+            allowed_tools
+                .iter()
+                .map(|tool| {
+                    proxima_core::ScopeKey::parse(tool).expect("an allowed tool is a scope key")
+                })
+                .collect(),
+        ))
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))

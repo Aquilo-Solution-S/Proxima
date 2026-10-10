@@ -8,6 +8,7 @@ use crate::AccessKind;
 use super::{
     McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
 };
+use crate::{ActionName, ScopeKey, ToolScope};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -239,6 +240,10 @@ impl ScopeGateBehavior {
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
         let scope = ctx.authz.tool_scope();
+        // The request name is parsed once, here. A name that is no key is in
+        // no palette (`All` holds everything, as ever), and every comparison
+        // below is between keys.
+        let key = ScopeKey::parse(tool);
         // Whether a tool dispatches actions is read off its descriptor, not
         // off the substrate `CoreActionMeta` tables: a flavor dispatcher is
         // absent from those tables, so keying on them would drop it to the
@@ -250,7 +255,11 @@ impl ScopeGateBehavior {
         let argv_specs =
             descriptor.map_or(&[] as &[super::McpArgvActionSpec], |d| d.argv_action_specs);
         if !specs.is_empty() {
-            if !scope.allows_group_advertisement(tool) {
+            // A registered tool's name is a `ToolName`: `try_freeze` checked.
+            let Ok(ScopeKey::Tool(tool_name)) = &key else {
+                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            };
+            if !scope.allows_group_advertisement(tool_name) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
             let Some(action) = args.get("action").and_then(serde_json::Value::as_str) else {
@@ -258,16 +267,24 @@ impl ScopeGateBehavior {
                     "tool {tool} requires string action"
                 )));
             };
-            if !specs.iter().any(|spec| spec.action == action) {
+            // A declared action is an `ActionName` (also checked at freeze),
+            // so text that is none is no declared action.
+            let declared = ActionName::parse(action)
+                .ok()
+                .filter(|name| specs.iter().any(|spec| spec.action == name.as_str()));
+            let Some(action) = declared else {
                 return Err(McpToolError::InvalidInput(format!(
                     "unknown action {action:?} for tool {tool}"
                 )));
-            }
-            if !scope.allows_action(tool, action) {
+            };
+            if !scope.allows_action(tool_name, &action) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
         } else if !argv_specs.is_empty() {
-            if !scope.allows_group_advertisement(tool) {
+            let Ok(ScopeKey::Tool(tool_name)) = &key else {
+                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            };
+            if !scope.allows_group_advertisement(tool_name) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
             // The same resolution the terminal dispatch runs, so the gate
@@ -275,18 +292,28 @@ impl ScopeGateBehavior {
             // `allows_action` judges, and argv matching no declared prefix
             // is refused here rather than sailing past into the tool.
             let action = super::resolve_argv_action(tool, argv_specs, args)?;
-            if !scope.allows_action(tool, action) {
+            let Ok(action_name) = ActionName::parse(action) else {
+                return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+            };
+            if !scope.allows_action(tool_name, &action_name) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
-        } else if !scope.allows(tool) {
-            return Err(McpToolError::NotAuthorized(tool.to_string()));
+        } else {
+            let allowed = match &key {
+                Ok(key) => scope.allows(key),
+                Err(_) => matches!(scope, ToolScope::All),
+            };
+            if !allowed {
+                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            }
         }
-        Self::enforce_owner_role(tool, args, descriptor, ctx)?;
+        Self::enforce_owner_role(tool, key.ok().as_ref(), args, descriptor, ctx)?;
         Ok(())
     }
 
     fn enforce_owner_role(
         tool: &str,
+        key: Option<&ScopeKey>,
         args: &serde_json::Value,
         descriptor: Option<&McpToolDescriptor>,
         ctx: &McpToolCtx,
@@ -301,7 +328,12 @@ impl ScopeGateBehavior {
         // The answer comes from the declaration, not from the shape of the
         // string: an unknown `resource:`-prefixed key is not waved through
         // as a read on the strength of its prefix.
-        let read_only = if let Some(resource) = crate::flavor::FLAVOR_0.resource_by_scope_key(tool)
+        let read_only = if let Some(resource) = key
+            .and_then(|key| match key {
+                ScopeKey::Resource(resource) => Some(resource),
+                ScopeKey::Tool(_) | ScopeKey::Action { .. } => None,
+            })
+            .and_then(|resource| crate::flavor::FLAVOR_0.resource_by_scope_key(resource))
         {
             resource.read_only
         } else if let Some(descriptor) =
@@ -375,6 +407,14 @@ mod tests {
         AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerRef,
         ToolScope, UserId,
     };
+
+    fn palette(ids: &[&str]) -> ToolScope {
+        ToolScope::Palette(
+            ids.iter()
+                .map(|id| ScopeKey::parse(id).expect("a scope key"))
+                .collect(),
+        )
+    }
 
     #[derive(Debug)]
     struct RecordingBehavior {
@@ -464,10 +504,7 @@ mod tests {
         let action_only = ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_REMEMBER,
             &serde_json::json!({ "title": "t", "body": "b" }),
-            &test_ctx(ToolScope::Palette(vec![format!(
-                "{}:x",
-                protocol_tool::CORE_REMEMBER
-            )])),
+            &test_ctx(palette(&[&format!("{}:x", protocol_tool::CORE_REMEMBER)])),
         )
         .expect_err("flat tool requires exact palette entry");
 
@@ -478,11 +515,66 @@ mod tests {
         ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_REMEMBER,
             &serde_json::json!({ "title": "t", "body": "b" }),
-            &test_ctx(ToolScope::Palette(vec![
-                protocol_tool::CORE_REMEMBER.to_string(),
-            ])),
+            &test_ctx(palette(&[protocol_tool::CORE_REMEMBER])),
         )
         .expect("bare palette entry allows flat tool");
+    }
+
+    /// The request name is parsed once, at the gate. Text that is no scope
+    /// key is in no palette, so a palette refuses it; `All` holds everything
+    /// and lets it through to the tool, which then answers for itself.
+    #[test]
+    fn a_request_name_that_is_no_key_is_refused_by_a_palette_and_passes_all() {
+        let args = serde_json::json!({});
+        let palette_ctx = test_ctx(palette(&[
+            protocol_tool::CORE_REMEMBER,
+            "core_goal:set",
+            "resource:memory",
+        ]));
+        let all_ctx = test_ctx(ToolScope::All);
+
+        for name in [
+            "",
+            ":",
+            "a:b:c",
+            "core_goal:",
+            ":set",
+            "resource:",
+            "resource:a:b",
+            "core remember",
+            "core_remember ",
+            "a/b",
+            "core_rémember",
+        ] {
+            let err = ScopeGateBehavior::enforce_scope(name, &args, &palette_ctx)
+                .expect_err("a palette holds no key for this name");
+            assert!(
+                matches!(err, McpToolError::NotAuthorized(ref denied) if denied == name),
+                "{name:?}: {err:?}"
+            );
+            ScopeGateBehavior::enforce_scope(name, &args, &all_ctx)
+                .unwrap_or_else(|error| panic!("{name:?} under All: {error:?}"));
+        }
+    }
+
+    /// The bare dispatcher name is listed with its actions and a call of one
+    /// is refused: the asymmetry the typed predicates pin
+    /// (`the_three_predicates_answer_as_the_string_matchers_did`), seen at
+    /// the gate.
+    #[test]
+    fn a_bare_dispatcher_entry_does_not_admit_a_call_of_its_action() {
+        let args = serde_json::json!({ "action": "set" });
+
+        let err = ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_GOAL,
+            &args,
+            &test_ctx(palette(&[protocol_tool::CORE_GOAL])),
+        )
+        .expect_err("the bare name is not the leaf");
+        assert!(
+            matches!(err, McpToolError::NotAuthorized(ref denied) if denied == "core_goal:set"),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -624,8 +716,17 @@ mod argv_scope_tests {
         McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, ToolScope, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, ScopeKey, ToolScope,
+        UserId,
     };
+
+    fn palette(ids: &[&str]) -> ToolScope {
+        ToolScope::Palette(
+            ids.iter()
+                .map(|id| ScopeKey::parse(id).expect("a scope key"))
+                .collect(),
+        )
+    }
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct ArgvArgs {
@@ -721,10 +822,7 @@ mod argv_scope_tests {
         ScopeGateBehavior::enforce_scope(
             ArgvTool::NAME,
             &args,
-            &argv_ctx(ToolScope::Palette(vec![format!(
-                "{}:approval-decide",
-                ArgvTool::NAME
-            )])),
+            &argv_ctx(palette(&[&format!("{}:approval-decide", ArgvTool::NAME)])),
         )
         .expect("a palette holding the derived leaf admits the call");
 
@@ -734,10 +832,7 @@ mod argv_scope_tests {
         let err = ScopeGateBehavior::enforce_scope(
             ArgvTool::NAME,
             &args,
-            &argv_ctx(ToolScope::Palette(vec![format!(
-                "{}:approval",
-                ArgvTool::NAME
-            )])),
+            &argv_ctx(palette(&[&format!("{}:approval", ArgvTool::NAME)])),
         )
         .expect_err("the sibling leaf must not admit the longer command");
         assert!(
@@ -804,7 +899,7 @@ mod owner_role_tests {
     use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, ToolEffect};
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerRef, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerRef, ScopeKey, UserId,
     };
     use futures::future::BoxFuture;
     use std::sync::Arc;
@@ -890,6 +985,7 @@ mod owner_role_tests {
         assert!(
             ScopeGateBehavior::enforce_owner_role(
                 "core_search_memories",
+                ScopeKey::parse("core_search_memories").ok().as_ref(),
                 &args,
                 ctx.registry.mcp_tool("core_search_memories"),
                 &ctx,
@@ -900,6 +996,7 @@ mod owner_role_tests {
         assert!(
             ScopeGateBehavior::enforce_owner_role(
                 DeclaredReadTool::NAME,
+                ScopeKey::parse(DeclaredReadTool::NAME).ok().as_ref(),
                 &args,
                 ctx.registry.mcp_tool(DeclaredReadTool::NAME),
                 &ctx,
@@ -950,6 +1047,7 @@ mod owner_role_tests {
         assert!(
             ScopeGateBehavior::enforce_owner_role(
                 SilentTool::NAME,
+                ScopeKey::parse(SilentTool::NAME).ok().as_ref(),
                 &args,
                 ctx.registry.mcp_tool(SilentTool::NAME),
                 &ctx,

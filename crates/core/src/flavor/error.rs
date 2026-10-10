@@ -1,4 +1,5 @@
 use super::{PayloadKind, SchemaId, SchemaVersion, ScopeKind};
+use crate::ScopeKeyError;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -111,6 +112,16 @@ pub enum FlavorRegistryError {
          declare exactly one"
     )]
     ConflictingActionVocabularies { name: &'static str },
+    /// A tool name, or the name of one of its actions, is no scope key, so no
+    /// palette could hold the key the scope gate judges the tool by: an
+    /// action outside `[A-Za-z0-9_.-]`, or a dispatcher called `resource`,
+    /// whose leaves would spell resource keys. Refused at freeze, not at the
+    /// first palette build.
+    #[error("tool {name} (or one of its actions) has no valid scope key: {reason}")]
+    InvalidScopeKey {
+        name: &'static str,
+        reason: ScopeKeyError,
+    },
     /// Two flavors claim the same ordinal. Ordinals are load-bearing at
     /// runtime (unscoped search is `ordinal == 0`), so they cannot collide.
     #[error(

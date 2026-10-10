@@ -385,7 +385,8 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
     use proxima_core::{
-        AccessError, AuthPath, OwnerRef, OwnerRoles, Role, UserId, access::AccessKind,
+        AccessError, ActionName, AuthPath, OwnerRef, OwnerRoles, Role, ScopeKey, ToolName, UserId,
+        access::AccessKind,
     };
     use serde::Serialize;
     use uuid::Uuid;
@@ -394,6 +395,19 @@ mod tests {
     use crate::StaticJwksResolver;
 
     const ISSUER: &str = "https://issuer.example";
+
+    fn key(text: &str) -> ScopeKey {
+        ScopeKey::parse(text).expect("a scope key")
+    }
+
+    /// The call gate's question, asked in the spelling the tests read best.
+    fn allows_leaf(scope: &ToolScope, tool: &str, action: &str) -> bool {
+        scope.allows_action(
+            &ToolName::parse(tool).expect("a tool name"),
+            &ActionName::parse(action).expect("an action name"),
+        )
+    }
+
     const AGENT_AUD: &str = "centauri-agent";
     const OWNER_AUD: &str = "centauri-owner";
     const KID: &str = "binding-key";
@@ -517,9 +531,9 @@ mod tests {
             resolver(keys.decoding.clone()),
             subject_map("agent-sub", agent),
             owner_access.clone(),
-            OidcRoleShape::ServerResolvedWithToolScope(ToolScope::Palette(vec![
-                "core_goal:set".to_string(),
-            ])),
+            OidcRoleShape::ServerResolvedWithToolScope(ToolScope::Palette(vec![key(
+                "core_goal:set",
+            )])),
         )
         .expect("agent binding");
         let owner_binding = OidcBinding::new(
@@ -607,12 +621,13 @@ mod tests {
 
         assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
         assert!(ctx.may_write(&OwnerRef::Group(agent_group), AccessKind::Perspective));
-        assert!(ctx.tool_scope().allows_action("core_goal", "set"));
-        assert!(!ctx.tool_scope().allows("core_membership"));
-        assert!(
-            !ctx.tool_scope()
-                .allows_action("core_transfer", "transfer_to_owner")
-        );
+        assert!(allows_leaf(ctx.tool_scope(), "core_goal", "set"));
+        assert!(!ctx.tool_scope().allows(&key("core_membership")));
+        assert!(!allows_leaf(
+            ctx.tool_scope(),
+            "core_transfer",
+            "transfer_to_owner"
+        ));
     }
 
     #[tokio::test]
@@ -767,7 +782,12 @@ mod tests {
                 .get("tenant")
                 .and_then(serde_json::Value::as_str)
                 .ok_or(AuthError::InvalidCredentials)?;
-            Ok(context.with_tool_scope(ToolScope::Palette(vec![format!("{tenant}_tool")])))
+            // The claim is outside data: it becomes a flat tool name here,
+            // or the token is refused. Going through `ScopeKey::parse` would
+            // let a tenant of `a:b` spell the leaf `a:b_tool`.
+            let tool = ToolName::parse(&format!("{tenant}_tool"))
+                .map_err(|_| AuthError::InvalidCredentials)?;
+            Ok(context.with_tool_scope(ToolScope::Palette(vec![ScopeKey::Tool(tool)])))
         }
     }
 
@@ -805,8 +825,24 @@ mod tests {
             .await
             .expect("the shaper admits a tenant token");
         assert_eq!(ctx.subject(), Some(owner));
-        assert!(ctx.tool_scope().allows("acme_tool"));
-        assert!(!ctx.tool_scope().allows("core_membership"));
+        assert!(ctx.tool_scope().allows(&key("acme_tool")));
+        assert!(!ctx.tool_scope().allows(&key("core_membership")));
+
+        // A claim that cannot be a tool name never becomes part of a palette:
+        // the delimiter in a tenant would make `{tenant}_tool` a leaf.
+        for tenant in ["a:b", "resource:x", "acme tool", "a/b"] {
+            let refused = bindings
+                .authenticate(&Credentials::Bearer(signed(
+                    &keys,
+                    &claims_with(OWNER_AUD, later, serde_json::json!({ "tenant": tenant })),
+                )))
+                .await;
+            assert_eq!(
+                refused.err(),
+                Some(AuthError::InvalidCredentials),
+                "tenant {tenant:?}"
+            );
+        }
 
         let refused = bindings
             .authenticate(&Credentials::Bearer(signed(

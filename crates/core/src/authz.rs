@@ -6,6 +6,7 @@
 //! carries credential material and auth failures.
 
 pub mod hooks;
+mod scope_key;
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -29,6 +30,7 @@ pub use hooks::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
     OwnerResolver,
 };
+pub use scope_key::{ActionName, ResourceKey, ScopeKey, ScopeKeyError, ScopeKeyPart, ToolName};
 
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,37 +71,71 @@ pub enum TrustedModelIdError {
 }
 
 /// WHAT: tool palette + access scope, separate from identity.
+///
+/// A palette holds typed [`ScopeKey`]s. Text becomes a key where it enters
+/// ([`ScopeKey::parse`]); every question below compares keys, and a request
+/// name that is no key is held by no palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolScope {
     All,
-    Palette(Vec<String>),
+    Palette(Vec<ScopeKey>),
 }
 
 impl ToolScope {
+    /// Exact membership: whether the palette holds `key`. A bare dispatcher
+    /// name does not hold its leaves, and a leaf does not hold its tool.
     #[must_use]
-    pub fn allows(&self, name: &str) -> bool {
+    pub fn allows(&self, key: &ScopeKey) -> bool {
         match self {
             Self::All => true,
-            Self::Palette(allowed) => allowed.iter().any(|tool| tool == name),
+            Self::Palette(allowed) => allowed.contains(key),
         }
     }
 
+    /// The call gate: whether a call of `action` on dispatcher `tool` may
+    /// run. Needs the leaf `tool:action`; the bare tool is not enough.
     #[must_use]
-    pub fn allows_action(&self, tool: &str, action: &str) -> bool {
-        self.allows(&format!("{tool}:{action}"))
+    pub fn allows_action(&self, tool: &ToolName, action: &ActionName) -> bool {
+        self.holds(|entry| {
+            matches!(entry, ScopeKey::Action { tool: held, action: act, .. }
+                if held == tool && act == action)
+        })
     }
 
+    /// Advertisement: whether a listing may show `action` of dispatcher
+    /// `tool`. Either the bare `tool` or the leaf `tool:action` is enough.
+    ///
+    /// Wider than [`Self::allows_action`] for a hand-built palette that holds
+    /// a bare dispatcher name: the listing shows its actions and a call of
+    /// one is refused. Canonical palettes never hold one
+    /// ([`canonical_scope_keys`](crate::canonical_scope_keys)); whether the
+    /// call gate should follow the listing is an authorization decision of
+    /// its own.
     #[must_use]
-    pub fn allows_group_advertisement(&self, tool: &str) -> bool {
-        match self {
-            Self::All => true,
-            Self::Palette(allowed) => {
-                let action_prefix = format!("{tool}:");
-                allowed
-                    .iter()
-                    .any(|entry| entry == tool || entry.starts_with(&action_prefix))
-            }
+    pub fn advertises_action(&self, tool: &ToolName, action: &ActionName) -> bool {
+        self.holds_tool(tool) || self.allows_action(tool, action)
+    }
+
+    /// Delegation: whether a delegated command (a flat tool, or one action of
+    /// a dispatcher) lies inside this scope. As [`Self::advertises_action`],
+    /// the bare tool or the leaf is enough for an action; a flat tool needs
+    /// its own key.
+    #[must_use]
+    pub fn covers_command(&self, tool: &ToolName, action: Option<&ActionName>) -> bool {
+        match action {
+            Some(action) => self.advertises_action(tool, action),
+            None => self.holds_tool(tool),
         }
+    }
+
+    /// Whether a dispatcher `tool` may be advertised at all: its bare name or
+    /// any one of its leaves.
+    #[must_use]
+    pub fn allows_group_advertisement(&self, tool: &ToolName) -> bool {
+        self.holds(|entry| match entry {
+            ScopeKey::Tool(held) | ScopeKey::Action { tool: held, .. } => held == tool,
+            ScopeKey::Resource(_) => false,
+        })
     }
 
     /// Whether a descriptor may be advertised from this palette.
@@ -109,34 +145,46 @@ impl ToolScope {
     /// dispatcher would let a bogus `flat:unknown` entry advertise a tool
     /// that the invocation gate correctly denies.
     #[must_use]
-    pub fn allows_tool_advertisement(&self, tool: &str, has_actions: bool) -> bool {
+    pub fn allows_tool_advertisement(&self, tool: &ToolName, has_actions: bool) -> bool {
         if has_actions {
             self.allows_group_advertisement(tool)
         } else {
-            self.allows(tool)
+            self.holds_tool(tool)
         }
     }
 
     /// Narrow `self` by `other`, never widening it. Used to layer a
     /// deployment-wide surface over a caller's own scope: `All` is the
-    /// identity element, and two palettes intersect to the ids both allow.
+    /// identity element, and two palettes intersect to the keys both hold,
+    /// by equality: a bare tool does not intersect with its leaves.
     /// A deployment palette applied to an `All` caller yields the palette;
-    /// applied to an already-narrower caller it keeps only the common ids.
+    /// applied to an already-narrower caller it keeps only the common keys.
     #[must_use]
     pub fn intersect(&self, other: &ToolScope) -> ToolScope {
         match (self, other) {
             (Self::All, scope) | (scope, Self::All) => scope.clone(),
             (Self::Palette(a), Self::Palette(b)) => {
-                let permitted: std::collections::HashSet<&str> =
-                    b.iter().map(String::as_str).collect();
+                let permitted: HashSet<&ScopeKey> = b.iter().collect();
                 Self::Palette(
                     a.iter()
-                        .filter(|id| permitted.contains(id.as_str()))
+                        .filter(|key| permitted.contains(key))
                         .cloned()
                         .collect(),
                 )
             }
         }
+    }
+
+    /// `All` holds every key; a palette holds the ones `matches` accepts.
+    fn holds(&self, matches: impl Fn(&ScopeKey) -> bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Palette(allowed) => allowed.iter().any(matches),
+        }
+    }
+
+    fn holds_tool(&self, tool: &ToolName) -> bool {
+        self.holds(|entry| matches!(entry, ScopeKey::Tool(held) if held == tool))
     }
 }
 
@@ -1332,7 +1380,7 @@ mod tests {
         assert!(
             !ctx.capabilities
                 .tool_scope
-                .allows(protocol_resource::MEMORY)
+                .allows(&key(protocol_resource::MEMORY))
         );
     }
 
@@ -1650,53 +1698,66 @@ mod tests {
         assert_eq!(ctx.trusted_model_id(), Some("runner/pinned"));
     }
 
+    fn key(text: &str) -> ScopeKey {
+        ScopeKey::parse(text).expect("a scope key")
+    }
+
+    fn tool(name: &str) -> ToolName {
+        ToolName::parse(name).expect("a tool name")
+    }
+
+    fn action(name: &str) -> ActionName {
+        ActionName::parse(name).expect("an action name")
+    }
+
+    fn palette(ids: &[&str]) -> ToolScope {
+        ToolScope::Palette(ids.iter().map(|id| key(id)).collect())
+    }
+
     #[test]
     fn palette_scope_allows_and_denies() {
-        let scope = ToolScope::Palette(vec![protocol_resource::MEMORY.to_string()]);
+        let scope = palette(&[protocol_resource::MEMORY]);
 
-        assert!(scope.allows(protocol_resource::MEMORY));
-        assert!(!scope.allows(protocol_action::CORE_GOAL_SET));
+        assert!(scope.allows(&key(protocol_resource::MEMORY)));
+        assert!(!scope.allows(&key(protocol_action::CORE_GOAL_SET)));
     }
 
     #[test]
     fn allows_action_requires_leaf_scope_key() {
-        let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let scope = palette(&[protocol_action::CORE_GOAL_SET]);
 
-        assert!(scope.allows_action(protocol_tool::CORE_GOAL, "set"));
-        assert!(!scope.allows_action(protocol_tool::CORE_GOAL, "transition"));
-        assert!(!scope.allows(protocol_tool::CORE_GOAL));
+        assert!(scope.allows_action(&tool(protocol_tool::CORE_GOAL), &action("set")));
+        assert!(!scope.allows_action(&tool(protocol_tool::CORE_GOAL), &action("transition")));
+        assert!(!scope.allows(&key(protocol_tool::CORE_GOAL)));
     }
 
     #[test]
     fn allows_group_advertisement_accepts_flat_or_leaf_key() {
-        let leaf = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
-        let flat = ToolScope::Palette(vec![protocol_tool::CORE_GOAL.to_string()]);
-        let unrelated = ToolScope::Palette(vec![protocol_resource::MEMORY.to_string()]);
+        let leaf = palette(&[protocol_action::CORE_GOAL_SET]);
+        let flat = palette(&[protocol_tool::CORE_GOAL]);
+        let unrelated = palette(&[protocol_resource::MEMORY]);
+        let goal = tool(protocol_tool::CORE_GOAL);
 
-        assert!(ToolScope::All.allows_group_advertisement(protocol_tool::CORE_GOAL));
-        assert!(leaf.allows_group_advertisement(protocol_tool::CORE_GOAL));
-        assert!(flat.allows_group_advertisement(protocol_tool::CORE_GOAL));
-        assert!(!unrelated.allows_group_advertisement(protocol_tool::CORE_GOAL));
+        assert!(ToolScope::All.allows_group_advertisement(&goal));
+        assert!(leaf.allows_group_advertisement(&goal));
+        assert!(flat.allows_group_advertisement(&goal));
+        assert!(!unrelated.allows_group_advertisement(&goal));
     }
 
     #[test]
     fn flat_tool_advertisement_requires_the_exact_tool_id() {
-        let exact = ToolScope::Palette(vec![protocol_tool::CORE_SEARCH_MEMORIES.to_string()]);
-        let bogus_leaf = ToolScope::Palette(vec![format!(
-            "{}:unknown",
-            protocol_tool::CORE_SEARCH_MEMORIES
-        )]);
-        let dispatcher_leaf = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let exact = palette(&[protocol_tool::CORE_SEARCH_MEMORIES]);
+        let bogus_leaf = palette(&[&format!("{}:unknown", protocol_tool::CORE_SEARCH_MEMORIES)]);
+        let dispatcher_leaf = palette(&[protocol_action::CORE_GOAL_SET]);
+        let search = tool(protocol_tool::CORE_SEARCH_MEMORIES);
 
-        assert!(exact.allows_tool_advertisement(protocol_tool::CORE_SEARCH_MEMORIES, false));
-        assert!(!bogus_leaf.allows_tool_advertisement(protocol_tool::CORE_SEARCH_MEMORIES, false));
-        assert!(dispatcher_leaf.allows_tool_advertisement(protocol_tool::CORE_GOAL, true));
+        assert!(exact.allows_tool_advertisement(&search, false));
+        assert!(!bogus_leaf.allows_tool_advertisement(&search, false));
+        assert!(dispatcher_leaf.allows_tool_advertisement(&tool(protocol_tool::CORE_GOAL), true));
     }
 
     #[test]
     fn tool_scope_intersect_only_narrows_never_widens() {
-        let palette =
-            |ids: &[&str]| ToolScope::Palette(ids.iter().map(|id| (*id).to_string()).collect());
         let mem = palette(&[
             protocol_resource::MEMORY,
             protocol_tool::CORE_SEARCH_MEMORIES,
@@ -1711,15 +1772,305 @@ mod tests {
         // scope can never re-add an id the caller's scope omitted.
         let caller = palette(&[protocol_resource::MEMORY, protocol_action::CORE_GOAL_SET]);
         let result = mem.intersect(&caller);
-        assert!(result.allows(protocol_resource::MEMORY));
-        assert!(!result.allows(protocol_tool::CORE_SEARCH_MEMORIES)); // caller lacked it
-        assert!(!result.allows(protocol_action::CORE_GOAL_SET)); // deployment lacked it
+        assert!(result.allows(&key(protocol_resource::MEMORY)));
+        assert!(!result.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES))); // caller lacked it
+        assert!(!result.allows(&key(protocol_action::CORE_GOAL_SET))); // deployment lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(
             palette(&["a"]).intersect(&palette(&["b"])),
             ToolScope::Palette(Vec::new())
         );
+    }
+
+    /// Intersection is key equality: a bare dispatcher name holds none of its
+    /// leaves, so neither palette narrows the other through subsumption. The
+    /// order of the receiver is kept.
+    #[test]
+    fn intersect_is_key_equality_without_subsumption() {
+        let bare = palette(&[protocol_tool::CORE_GOAL]);
+        let leaves = palette(&[protocol_action::CORE_GOAL_SET]);
+
+        assert_eq!(bare.intersect(&leaves), ToolScope::Palette(Vec::new()));
+        assert_eq!(leaves.intersect(&bare), ToolScope::Palette(Vec::new()));
+
+        let wide = palette(&["c", "a", "b"]);
+        let narrow = palette(&["b", "c"]);
+        assert_eq!(wide.intersect(&narrow), palette(&["c", "b"]));
+    }
+
+    /// The call gate, the advertisement and the delegation rule give the
+    /// answers the three string predicates gave, for the five shapes of
+    /// palette the issue names. The bare dispatcher row pins the asymmetry:
+    /// listed with its actions, refused when one is called. Changing it is a
+    /// one-line edit in `allows_action` and a new row here.
+    #[test]
+    fn the_three_predicates_answer_as_the_string_matchers_did() {
+        // The questions, in the column order of the table below.
+        const COLUMNS: [&str; 5] = [
+            // `allows_action(core_goal, set)`: the call gate.
+            "call",
+            // `advertises_action(core_goal, set)`: `tools/list`.
+            "advertise",
+            // `covers_command(core_goal, Some(set))`: delegation of a leaf.
+            "delegate a leaf",
+            // `covers_command(core_search_memories, None)`: delegation of a
+            // flat tool.
+            "delegate a flat tool",
+            // `allows_group_advertisement(core_goal)`: the dispatcher is
+            // listed at all.
+            "group",
+        ];
+        let goal = tool(protocol_tool::CORE_GOAL);
+        let set = action("set");
+        let search = tool(protocol_tool::CORE_SEARCH_MEMORIES);
+
+        let table = [
+            (
+                "leaf",
+                palette(&[protocol_action::CORE_GOAL_SET]),
+                [true, true, true, false, true],
+            ),
+            (
+                "bare dispatcher",
+                palette(&[protocol_tool::CORE_GOAL]),
+                [false, true, true, false, true],
+            ),
+            (
+                "flat tool",
+                palette(&[protocol_tool::CORE_SEARCH_MEMORIES]),
+                [false, false, false, true, false],
+            ),
+            (
+                "resource key",
+                palette(&[protocol_resource::MEMORY]),
+                [false; 5],
+            ),
+            ("empty", palette(&[]), [false; 5]),
+            ("all", ToolScope::All, [true; 5]),
+        ];
+        for (name, scope, expected) in &table {
+            let actual = [
+                scope.allows_action(&goal, &set),
+                scope.advertises_action(&goal, &set),
+                scope.covers_command(&goal, Some(&set)),
+                scope.covers_command(&search, None),
+                scope.allows_group_advertisement(&goal),
+            ];
+            for ((column, actual), expected) in COLUMNS.iter().zip(actual).zip(expected) {
+                assert_eq!(actual, *expected, "{name}: {column}");
+            }
+        }
+    }
+
+    /// A resource named like a tool is still a resource: `resource:core_goal`
+    /// holds neither the tool `core_goal`, nor one of its leaves, nor a
+    /// dispatcher called `resource`.
+    #[test]
+    fn a_resource_key_is_never_a_tool_or_a_leaf() {
+        let scope = palette(&["resource:core_goal"]);
+
+        assert!(!scope.allows_group_advertisement(&tool(protocol_tool::CORE_GOAL)));
+        assert!(!scope.allows(&key(protocol_tool::CORE_GOAL)));
+        assert!(!scope.allows_group_advertisement(&tool("resource")));
+        assert!(!scope.allows_action(&tool("resource"), &action("core_goal")));
+        assert!(!scope.covers_command(&tool("resource"), Some(&action("core_goal"))));
+    }
+
+    /// The string matchers `ToolScope` used before the keys were typed, kept
+    /// verbatim as the oracle for [`typed_matching_equals_the_string_matchers`].
+    mod string_matchers {
+        pub(super) fn allows(palette: &[&str], name: &str) -> bool {
+            palette.contains(&name)
+        }
+
+        pub(super) fn allows_action(palette: &[&str], tool: &str, action: &str) -> bool {
+            allows(palette, &format!("{tool}:{action}"))
+        }
+
+        pub(super) fn allows_group_advertisement(palette: &[&str], tool: &str) -> bool {
+            let action_prefix = format!("{tool}:");
+            palette
+                .iter()
+                .any(|entry| *entry == tool || entry.starts_with(&action_prefix))
+        }
+
+        pub(super) fn allows_tool_advertisement(
+            palette: &[&str],
+            tool: &str,
+            has_actions: bool,
+        ) -> bool {
+            if has_actions {
+                allows_group_advertisement(palette, tool)
+            } else {
+                allows(palette, tool)
+            }
+        }
+
+        /// `scope_permits_action`, the listing predicate.
+        pub(super) fn advertises_action(palette: &[&str], tool: &str, action: &str) -> bool {
+            palette.contains(&tool) || allows_action(palette, tool, action)
+        }
+
+        /// `DelegatedAuthorityService::validate_scopes`' closure.
+        pub(super) fn covers_command(palette: &[&str], tool: &str, action: Option<&str>) -> bool {
+            match action {
+                Some(action) => allows(palette, tool) || allows_action(palette, tool, action),
+                None => allows(palette, tool),
+            }
+        }
+
+        pub(super) fn intersect<'a>(a: &[&'a str], b: &[&str]) -> Vec<&'a str> {
+            a.iter().copied().filter(|id| b.contains(id)).collect()
+        }
+    }
+
+    /// Every palette over a vocabulary of canonical keys, asked every
+    /// question both ways: the typed answer equals the string answer. The
+    /// vocabulary mixes dispatcher, flat and resource spellings, including a
+    /// resource named like a dispatcher and a flat tool named `resource`.
+    /// Dispatcher queries leave out the name `resource`: it is the one name
+    /// whose leaf would spell a resource key, and the registry refuses a
+    /// dispatcher with it.
+    #[test]
+    fn typed_matching_equals_the_string_matchers() {
+        const VOCABULARY: [&str; 11] = [
+            "core_goal",
+            "core_goal:set",
+            "core_goal:transition",
+            "other:set",
+            "core_search_memories",
+            "core_search_memories:unknown",
+            "flat",
+            "flat:unknown",
+            "resource",
+            "resource:memory",
+            "resource:core_goal",
+        ];
+        const DISPATCHERS: [&str; 3] = ["core_goal", "other", "flat"];
+        const ACTIONS: [&str; 3] = ["set", "transition", "unknown"];
+        const FLAT: [&str; 4] = ["core_search_memories", "flat", "resource", "core_goal"];
+
+        let from_mask = |mask: u32| -> Vec<&str> {
+            VOCABULARY
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, id)| *id)
+                .collect()
+        };
+        let typed = |ids: &[&str]| palette(ids);
+
+        for mask in 0..(1u32 << VOCABULARY.len()) {
+            let strings = from_mask(mask);
+            let scope = typed(&strings);
+
+            for name in VOCABULARY {
+                assert_eq!(
+                    scope.allows(&key(name)),
+                    string_matchers::allows(&strings, name),
+                    "allows {name} in {strings:?}"
+                );
+            }
+            for dispatcher in DISPATCHERS {
+                let name = tool(dispatcher);
+                assert_eq!(
+                    scope.allows_group_advertisement(&name),
+                    string_matchers::allows_group_advertisement(&strings, dispatcher),
+                    "group {dispatcher} in {strings:?}"
+                );
+                for has_actions in [true, false] {
+                    assert_eq!(
+                        scope.allows_tool_advertisement(&name, has_actions),
+                        string_matchers::allows_tool_advertisement(
+                            &strings,
+                            dispatcher,
+                            has_actions
+                        ),
+                        "tool advertisement {dispatcher} ({has_actions}) in {strings:?}"
+                    );
+                }
+                for leaf in ACTIONS {
+                    let act = action(leaf);
+                    assert_eq!(
+                        scope.allows_action(&name, &act),
+                        string_matchers::allows_action(&strings, dispatcher, leaf),
+                        "call {dispatcher}:{leaf} in {strings:?}"
+                    );
+                    assert_eq!(
+                        scope.advertises_action(&name, &act),
+                        string_matchers::advertises_action(&strings, dispatcher, leaf),
+                        "advertise {dispatcher}:{leaf} in {strings:?}"
+                    );
+                    assert_eq!(
+                        scope.covers_command(&name, Some(&act)),
+                        string_matchers::covers_command(&strings, dispatcher, Some(leaf)),
+                        "delegate {dispatcher}:{leaf} in {strings:?}"
+                    );
+                }
+            }
+            for flat in FLAT {
+                assert_eq!(
+                    scope.covers_command(&tool(flat), None),
+                    string_matchers::covers_command(&strings, flat, None),
+                    "delegate {flat} in {strings:?}"
+                );
+            }
+        }
+    }
+
+    /// `intersect` over every pair of palettes drawn from six keys keeps the
+    /// entries, and their order, that the string version kept.
+    #[test]
+    fn typed_intersect_equals_the_string_intersect() {
+        const VOCABULARY: [&str; 6] = [
+            "core_goal",
+            "core_goal:set",
+            "flat",
+            "resource:memory",
+            "other:set",
+            "resource",
+        ];
+        let from_mask = |mask: u32| -> Vec<&str> {
+            VOCABULARY
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, id)| *id)
+                .collect()
+        };
+        for left in 0..(1u32 << VOCABULARY.len()) {
+            for right in 0..(1u32 << VOCABULARY.len()) {
+                let (left, right) = (from_mask(left), from_mask(right));
+                assert_eq!(
+                    palette(&left).intersect(&palette(&right)),
+                    palette(&string_matchers::intersect(&left, &right)),
+                    "{left:?} and {right:?}"
+                );
+            }
+        }
+    }
+
+    /// A request name that is no key is held by no palette, as no string in
+    /// a canonical palette equals it; `All` still allows it, at the gate.
+    #[test]
+    fn a_name_that_is_no_key_is_in_no_palette() {
+        for text in [
+            "",
+            ":",
+            "a:b:c",
+            "a b",
+            "core_goal:",
+            ":set",
+            "resource:",
+            "a/b",
+        ] {
+            assert!(ScopeKey::parse(text).is_err(), "{text:?}");
+            assert!(
+                !string_matchers::allows(&["core_goal", "core_goal:set", "resource:memory"], text),
+                "{text:?}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

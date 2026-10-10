@@ -208,6 +208,54 @@ fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
     assert_eq!(flat.as_str(), protocol_tool::CORE_SEARCH_MEMORIES);
 }
 
+/// The id is parsed as a scope key where it enters, and every text that is
+/// no registered tool or leaf keeps the invalid-argument result it had when
+/// this was a hand-written split: the message the caller reads depends on
+/// which half failed.
+#[test]
+fn goal_wake_tool_id_refuses_text_that_is_not_a_registered_key() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let leaf = "leaf action scope required and must be registered";
+    let canonical = "tool id must be provider-safe canonical id";
+
+    for (text, expected) in [
+        (":", leaf),
+        (":set", leaf),
+        ("core_goal:", leaf),
+        ("core_goal:set:extra", leaf),
+        ("a:b:c", leaf),
+        ("core_goal:Set", leaf),
+        ("core_goal:vanish", leaf),
+        ("unknown_tool:set", leaf),
+        // A resource key is a read, not a tool or a leaf.
+        ("resource:memory", leaf),
+        ("core goal", canonical),
+        ("core_search_memories\u{a0}x", canonical),
+        ("core/goal", canonical),
+        ("core/goal:set", canonical),
+        ("core_search_mémories", canonical),
+        ("unknown_tool", "tool id is not registered"),
+        (
+            protocol_tool::CORE_GOAL,
+            "leaf action scope required for grouped tools",
+        ),
+    ] {
+        let err = GoalWakeToolId::parse(text, &registry)
+            .expect_err(&format!("{text:?} names no registered tool or leaf"));
+        assert_eq!(
+            err.message,
+            format!("invalid argument tool_id: {expected}"),
+            "{text:?}"
+        );
+    }
+    assert!(GoalWakeToolId::parse("", &registry).is_err());
+    assert!(GoalWakeToolId::parse("   ", &registry).is_err());
+
+    let trimmed = GoalWakeToolId::parse("  core_search_memories  ", &registry)
+        .expect("the surrounding whitespace is trimmed before the key is parsed");
+    assert_eq!(trimmed.as_str(), protocol_tool::CORE_SEARCH_MEMORIES);
+}
+
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct StubDispatchOutput {}
 
