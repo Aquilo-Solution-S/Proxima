@@ -15,19 +15,25 @@
 //! lane shed a file. What is not normal is a binary whose lane does not
 //! continue the one its ledger records; [`LedgerConflict`] names those
 //! shapes, and each flavor ledger is checked against them before it runs.
+//!
+//! [`pending_migrations`] answers what a run would apply without applying it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use proxima_core::StorageError;
 use proxima_storage_pg::{
-    PgStorage, core_migrator, ensure_core_ledger_compatible, ensure_core_schema_current,
+    PgStorage, core_migrator, ensure_core_ledger_compatible,
+    ensure_core_ledger_compatible_on_connection, ensure_core_schema_current,
 };
-use sqlx::Connection;
-use sqlx::PgConnection;
-use sqlx::migrate::{Migrate, MigrateError, Migrator};
+use sqlx::migrate::{MigrateError, Migration, Migrator};
+use sqlx::pool::PoolConnection;
+use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Postgres, Transaction};
 
 const CORE_SOURCE: &str = "proxima-core";
+
+/// Core's tracking table, which a flavor still recording on it shares.
+const CORE_LEDGER: &str = "public._sqlx_migrations";
 
 /// One named `SQLx` migration source in a composite Proxima binary.
 #[derive(Debug)]
@@ -129,7 +135,7 @@ pub const fn is_flavor_ledger_id(id: &str) -> bool {
 }
 
 fn is_core_ledger(table_name: &str) -> bool {
-    table_name == "_sqlx_migrations" || table_name == "public._sqlx_migrations"
+    table_name == "_sqlx_migrations" || table_name == CORE_LEDGER
 }
 
 /// Successful migration run metadata.
@@ -252,7 +258,7 @@ pub async fn run_core_and_flavor_migrations(
     ensure_core_ledger_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
-    let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
+    let mut conn = acquire_session_connection(&pool).await?;
 
     pin_migration_search_path(&mut conn)
         .await
@@ -262,22 +268,10 @@ pub async fn run_core_and_flavor_migrations(
     let reset_result = reset_migration_search_path(&mut conn).await;
 
     match (migration_result, reset_result) {
-        (Ok(()), Ok(())) => {
-            // The migration connection carried a disabled statement_timeout
-            // Never return it to the pool with that override.
-            conn.close_on_drop();
-            Ok(report)
-        }
-        (Err(err), Ok(())) => {
-            conn.close_on_drop();
-            Err(err)
-        }
-        (Ok(()), Err(err)) => {
-            conn.close_on_drop();
-            Err(MigrationError::ResetSearchPath(err))
-        }
+        (Ok(()), Ok(())) => Ok(report),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(err)) => Err(MigrationError::ResetSearchPath(err)),
         (Err(err), Err(reset_err)) => {
-            conn.close_on_drop();
             tracing::warn!(
                 error = %reset_err,
                 "failed to reset migration search_path after migration error"
@@ -285,6 +279,22 @@ pub async fn run_core_and_flavor_migrations(
             Err(err)
         }
     }
+}
+
+/// A connection that is about to carry session state: the runner's disabled
+/// `statement_timeout`, a plan's `lock_timeout` and session lock.
+///
+/// It is marked close-on-drop here, before the caller can await on it, so no
+/// way out returns it to the pool: not an error, and not the caller dropping
+/// the future while it waits for the migration lock. A pooled connection
+/// would be granted that lock later and hold it, or carry the overrides into
+/// request serving. Closed, its session ends and takes both with it.
+async fn acquire_session_connection(
+    pool: &PgPool,
+) -> Result<PoolConnection<Postgres>, MigrationError> {
+    let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
+    conn.close_on_drop();
+    Ok(conn)
 }
 
 /// Run the pre-boot compatibility preflight **without applying any
@@ -323,8 +333,9 @@ pub async fn preflight_without_migrations(
         .filter(|source| !is_core_ledger(&source.migrator.table_name))
     {
         let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
-        let recorded = recorded_versions(&mut conn, source, true).await?;
-        let lane = lane_versions(&source.migrator);
+        let recorded =
+            ledger_versions(&read_ledger(&mut conn, source, &source.ledger(), true).await?);
+        let lane = source.lane_versions();
         if let Some(conflict) =
             ledger_conflict(&lane, &recorded).or_else(|| unapplied(&lane, &recorded))
         {
@@ -332,6 +343,258 @@ pub async fn preflight_without_migrations(
         }
     }
     Ok(report)
+}
+
+/// A migration a run on the same database would apply.
+///
+/// Only [`pending_migrations`] makes one: a value a caller builds would claim
+/// a plan nobody read from a ledger.
+///
+/// ```compile_fail,E0639
+/// let _planned = proxima::host::PendingMigration {
+///     ledger: "public._sqlx_migrations".to_owned(),
+///     version: 1,
+///     description: String::new(),
+///     checksum: Vec::new(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PendingMigration {
+    /// The schema-qualified table the migration records on, spelled as
+    /// [`flavor_ledger_table`] spells a flavor's (`public._sqlx_migrations`
+    /// for core).
+    pub ledger: String,
+    pub version: i64,
+    pub description: String,
+    /// `SQLx`'s checksum of the migration file; the ledger row a run writes
+    /// records it.
+    pub checksum: Vec<u8>,
+}
+
+/// What a migration run on this database would apply right now, applying
+/// nothing.
+///
+/// `sources` is what `flavors` is to [`run_core_and_flavor_migrations`]; core
+/// is always first. The list holds core's pending migrations, then each
+/// source's in the given order, inside a ledger in the order the run walks
+/// the migrator (ascending by version for `sqlx::migrate!`). It follows the
+/// runner's rules, from the runner's helpers:
+///
+/// - A flavor on its own ledger counts that ledger's rows, an absent ledger
+///   as empty, and the rows of core's ledger that the run's ledger
+///   preparation would copy for its versions. Nothing is copied or created.
+/// - A flavor still recording on core's ledger is read there.
+/// - Down migrations are not listed.
+///
+/// The plan runs under the migration lock a run takes per source (the
+/// `proxmigr` advisory key) and reads every ledger in one
+/// `REPEATABLE READ, READ ONLY` transaction: a run in the middle of a source
+/// has committed or not committed all of it when the plan reads. It needs
+/// `SELECT` on the ledgers, which a run leaves to the runtime role, issues no
+/// DDL and writes nothing. It is a snapshot, not a reservation: a run checks
+/// everything again under the lock. The connection that waits for the lock is
+/// closed, not pooled, if the caller drops the future.
+///
+/// The plan says what would apply, not whether the previous release's binary
+/// tolerates it. A coordinated cutover (docs/how-to/migrations.md, v0.0.15)
+/// overrides any such reading of a migration file.
+///
+/// # Errors
+///
+/// Returns `MigrationError::DuplicateVersion` or `DuplicateLedger` before any
+/// query; a table is matched by the name Postgres resolves, not by its
+/// spelling (`_sqlx_migrations_host` is `public."_sqlx_migrations_host"`), and
+/// a spelling outside Postgres' identifier rules is compared as written. Returns `Connection` if no connection can be acquired.
+/// Returns `CorePreflight` if core's ledger does not reconcile with this
+/// binary. Returns `Ledger` if a flavor's ledger records a lane its migrator
+/// does not continue ([`LedgerConflict`]). Returns `Core` or `Flavor` with
+/// `MigrateError::Dirty` for a `success = false` row and
+/// `MigrateError::VersionMismatch` for a changed checksum, as a run would, and
+/// with `MigrateError::Execute` if the lock is not granted within the
+/// runner's `lock_timeout` or a source holds a `no_tx` migration. Returns
+/// `LedgerRead` if a ledger cannot be read. The answer is the whole list or
+/// an error, never a partial list.
+pub async fn pending_migrations(
+    pool: &PgPool,
+    sources: &[NamedMigrator],
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    let core = core_source();
+    let lineup: Vec<&NamedMigrator> = std::iter::once(&core).chain(sources).collect();
+    validate_sources(&lineup)?;
+    let mut conn = acquire_session_connection(pool).await?;
+    plan_under_lock(&mut conn, &lineup).await
+}
+
+/// The lock wait and the snapshot's statements are a run's own, so their
+/// failures are a run's: core's, the first source a run locks for.
+fn execute_error(err: sqlx::Error) -> MigrationError {
+    MigrationError::Core(MigrateError::Execute(err))
+}
+
+async fn plan_under_lock(
+    conn: &mut PgConnection,
+    lineup: &[&NamedMigrator],
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    sqlx::query(MIGRATION_LOCK_TIMEOUT_SQL)
+        .execute(&mut *conn)
+        .await
+        .map_err(execute_error)?;
+    let mut lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
+    let mut snapshot = lock.begin_snapshot().await.map_err(execute_error)?;
+    let plan = plan_snapshot(&mut snapshot, lineup).await;
+    // Nothing to commit: the snapshot only read.
+    let ended = snapshot.rollback().await;
+    let released = lock.release().await;
+    let plan = plan?;
+    ended.map_err(execute_error)?;
+    released.map_err(execute_error)?;
+    Ok(plan)
+}
+
+/// [`MIGRATION_LOCK_KEY`] held on one session. The runner takes the same key
+/// per transaction (`pg_advisory_xact_lock`); the two exclude each other.
+///
+/// Held until [`Self::release`] or until the connection closes. The
+/// snapshot can only begin on a held lock: a lock taken inside a `REPEATABLE
+/// READ` transaction is granted after its snapshot is fixed.
+struct SessionLock<'c> {
+    conn: &'c mut PgConnection,
+}
+
+impl<'c> SessionLock<'c> {
+    async fn acquire(conn: &'c mut PgConnection) -> Result<Self, sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MIGRATION_LOCK_KEY)
+            .execute(&mut *conn)
+            .await?;
+        Ok(Self { conn })
+    }
+
+    async fn begin_snapshot(&mut self) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+        let mut snapshot = self.conn.begin().await?;
+        // Before any query: the snapshot is fixed by the first one.
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *snapshot)
+            .await?;
+        Ok(snapshot)
+    }
+
+    async fn release(self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATION_LOCK_KEY)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Walk the sources in the order a run does, so the first refusal is the
+/// run's: core's preflight, then per source its `no_tx` refusal, its lineage
+/// check, and the dirty and checksum refusals of `SQLx`'s run.
+async fn plan_snapshot(
+    snapshot: &mut PgConnection,
+    lineup: &[&NamedMigrator],
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    ensure_core_ledger_compatible_on_connection(snapshot)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+    let mut plan = Vec::new();
+    for source in lineup {
+        plan.extend(plan_source(snapshot, source).await?);
+    }
+    Ok(plan)
+}
+
+async fn plan_source(
+    snapshot: &mut PgConnection,
+    source: &NamedMigrator,
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    source.require_transactional()?;
+    let rows = ledger_after_prepare(snapshot, source).await?;
+    if !is_core_ledger(&source.migrator.table_name)
+        && let Some(conflict) = ledger_conflict(&source.lane_versions(), &ledger_versions(&rows))
+    {
+        return Err(source.ledger_error(conflict));
+    }
+    let ledger = source.ledger();
+    let pending = unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
+    Ok(pending
+        .into_iter()
+        .map(|migration| PendingMigration {
+            ledger: ledger.clone(),
+            version: migration.version,
+            description: migration.description.to_string(),
+            checksum: migration.checksum.to_vec(),
+        })
+        .collect())
+}
+
+/// The rows `source`'s ledger holds when a run reaches the source's
+/// migrations: the rows [`prepare_ledger`] leaves, read without preparing.
+async fn ledger_after_prepare(
+    snapshot: &mut PgConnection,
+    source: &NamedMigrator,
+) -> Result<Vec<LedgerRow>, MigrationError> {
+    let own = read_ledger(snapshot, source, &source.ledger(), true).await?;
+    if is_core_ledger(&source.migrator.table_name) {
+        return Ok(own);
+    }
+    let shared = read_ledger(snapshot, source, CORE_LEDGER, true).await?;
+    Ok(with_cutover_rows(own, shared, &source.cutover_versions()))
+}
+
+/// `own` plus the rows of `shared` at `versions` that `own` lacks, as
+/// [`PREPARE_LEDGER`]'s `INSERT ... ON CONFLICT (version) DO NOTHING` leaves
+/// them: a row the flavor's ledger already holds wins.
+fn with_cutover_rows(
+    own: Vec<LedgerRow>,
+    shared: Vec<LedgerRow>,
+    versions: &[i64],
+) -> Vec<LedgerRow> {
+    let mut rows: BTreeMap<i64, LedgerRow> =
+        own.into_iter().map(|row| (row.version, row)).collect();
+    for row in shared
+        .into_iter()
+        .filter(|row| versions.contains(&row.version))
+    {
+        rows.entry(row.version).or_insert(row);
+    }
+    rows.into_values().collect()
+}
+
+/// The migrations of `lane` that `rows` do not record, or the refusal
+/// `SQLx`'s `run_direct` raises first for these rows: a `success = false` row
+/// ([`MigrateError::Dirty`], the lowest version), then the first lane
+/// migration whose recorded checksum differs
+/// ([`MigrateError::VersionMismatch`]).
+///
+/// A recorded version the lane does not ship is never an error here: every
+/// source runs with `ignore_missing` ([`prepare_sources`]).
+fn unrecorded<'a>(
+    lane: &[&'a Migration],
+    rows: &[LedgerRow],
+) -> Result<Vec<&'a Migration>, MigrateError> {
+    if let Some(version) = rows
+        .iter()
+        .filter(|row| !row.success)
+        .map(|row| row.version)
+        .min()
+    {
+        return Err(MigrateError::Dirty(version));
+    }
+    let recorded: BTreeMap<i64, &LedgerRow> = rows.iter().map(|row| (row.version, row)).collect();
+    let mut pending = Vec::new();
+    for migration in lane {
+        match recorded.get(&migration.version) {
+            Some(row) if row.checksum.as_slice() != migration.checksum.as_ref() => {
+                return Err(MigrateError::VersionMismatch(migration.version));
+            }
+            Some(_) => {}
+            None => pending.push(*migration),
+        }
+    }
+    Ok(pending)
 }
 
 impl MigrationRunReport {
@@ -347,8 +610,8 @@ async fn pin_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::
         .await?;
     // The pool's request-serving `statement_timeout`
     // must not abort a long schema migration (CREATE INDEX / backfill) mid-way.
-    // Disable it for this boot connection; the caller marks the connection
-    // close-on-drop so the override never returns to the shared pool.
+    // Disable it for this boot connection; `acquire_session_connection` marks
+    // it close-on-drop so the override never returns to the shared pool.
     sqlx::query("SET statement_timeout = 0")
         .execute(&mut *conn)
         .await?;
@@ -432,13 +695,7 @@ async fn run_source_with_contention_retry(
 ) -> Result<(), MigrationError> {
     let mut attempt = 1;
     loop {
-        if source.migrator.iter().any(|migration| migration.no_tx) {
-            return Err(
-                source.run_error(MigrateError::Execute(sqlx::Error::Protocol(
-                    "platform-scoped migrations require transactional migration files".into(),
-                ))),
-            );
-        }
+        source.require_transactional()?;
         let mut transaction = proxima_storage_pg::begin_migration_transaction(conn)
             .await
             .map_err(|error| {
@@ -452,8 +709,10 @@ async fn run_source_with_contention_retry(
             .await
             .map_err(|error| source.run_error(MigrateError::Execute(error)))?;
         if !is_core_ledger(&source.migrator.table_name) {
-            let recorded = recorded_versions(&mut transaction, source, false).await?;
-            if let Some(conflict) = ledger_conflict(&lane_versions(&source.migrator), &recorded) {
+            let recorded = ledger_versions(
+                &read_ledger(&mut transaction, source, &source.ledger(), false).await?,
+            );
+            if let Some(conflict) = ledger_conflict(&source.lane_versions(), &recorded) {
                 transaction
                     .rollback()
                     .await
@@ -561,11 +820,7 @@ async fn prepare_ledger(
         source: source.source,
         err,
     };
-    let versions: Vec<i64> = source
-        .migrator()
-        .iter()
-        .map(|migration| migration.version)
-        .collect();
+    let versions = source.cutover_versions();
 
     let mut tx = conn.begin().await.map_err(map_err)?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -674,55 +929,235 @@ impl NamedMigrator {
             conflict,
         }
     }
+
+    /// A run applies each source inside the transaction that also carries
+    /// its scope and ledger rows, so it refuses a `no_tx` migration before
+    /// it touches the ledger.
+    fn require_transactional(&self) -> Result<(), MigrationError> {
+        if self.migrator.iter().any(|migration| migration.no_tx) {
+            return Err(self.run_error(MigrateError::Execute(sqlx::Error::Protocol(
+                "platform-scoped migrations require transactional migration files".into(),
+            ))));
+        }
+        Ok(())
+    }
+
+    /// The schema-qualified table this source records on, spelled as
+    /// [`flavor_ledger_table`] spells a flavor's. A table declared without a
+    /// schema lives in `public`, where a run pins `search_path`.
+    pub(crate) fn ledger(&self) -> String {
+        let table = self.migrator.table_name.as_ref();
+        if table.contains('.') {
+            table.to_owned()
+        } else {
+            format!("public.{table}")
+        }
+    }
+
+    /// What two sources must not share: the table Postgres resolves
+    /// [`Self::ledger`] to, whatever its spelling. Matching follows Postgres'
+    /// identifier rules ([`parse_ledger_name`]); a spelling outside them is
+    /// compared as written.
+    fn ledger_identity(&self) -> LedgerIdentity {
+        let name = self.migrator.table_name.as_ref();
+        match parse_ledger_name(name) {
+            Some((schema, table)) => LedgerIdentity::Resolved { schema, table },
+            None => LedgerIdentity::Spelled(name.to_owned()),
+        }
+    }
+
+    /// What a run applies for this source, in the order it applies it: every
+    /// migration it ships but its down migrations, in the migrator's own
+    /// order, which is what `SQLx`'s `run_direct` walks. `sqlx::migrate!`
+    /// yields ascending versions; a migrator built by hand keeps the order it
+    /// was given, and the plan, like the run, applies and refuses in that
+    /// order. The one enumeration the ledger checks, [`pending_migrations`]
+    /// and a test-template fingerprint share; [`Self::ledger`] names the table
+    /// each entry records on.
+    ///
+    /// A version a source repeats is listed once, at its first place; a
+    /// lineup with one is refused before a run or a plan reads the database
+    /// ([`validate_sources`]).
+    pub(crate) fn lane(&self) -> Vec<&Migration> {
+        let mut seen = BTreeSet::new();
+        self.migrator
+            .iter()
+            .filter(|migration| !migration.migration_type.is_down_migration())
+            .filter(|migration| seen.insert(migration.version))
+            .collect()
+    }
+
+    /// The versions of [`Self::lane`], ascending: the lineage view of a
+    /// ledger, where the order a run walks does not matter.
+    fn lane_versions(&self) -> Vec<i64> {
+        let versions: BTreeSet<i64> = self
+            .lane()
+            .into_iter()
+            .map(|migration| migration.version)
+            .collect();
+        versions.into_iter().collect()
+    }
+
+    /// The versions whose rows [`prepare_ledger`] copies from core's ledger
+    /// into this source's own: everything the migrator ships, down
+    /// migrations included.
+    fn cutover_versions(&self) -> Vec<i64> {
+        self.migrator
+            .iter()
+            .map(|migration| migration.version)
+            .collect()
+    }
 }
 
-/// The versions a migrator applies, ascending; down migrations excluded.
-fn lane_versions(migrator: &Migrator) -> Vec<i64> {
-    let versions: BTreeSet<i64> = migrator
-        .iter()
-        .filter(|migration| !migration.migration_type.is_down_migration())
-        .map(|migration| migration.version)
-        .collect();
-    versions.into_iter().collect()
+/// A ledger as two sources compare it. Private: only the shared-ledger check
+/// reads it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum LedgerIdentity {
+    /// The table the name resolves to.
+    Resolved { schema: String, table: String },
+    /// A spelling [`parse_ledger_name`] does not read (a comment inside the
+    /// name, say): all that is known is how it is written.
+    Spelled(String),
 }
 
-/// The versions `source`'s ledger records as applied, ascending. A ledger
-/// that does not exist records nothing when `may_be_absent`; the migration
-/// run creates every flavor ledger before reading it.
-async fn recorded_versions(
+impl std::fmt::Display for LedgerIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolved { schema, table } => write!(f, "{schema}.{table}"),
+            Self::Spelled(name) => f.write_str(name),
+        }
+    }
+}
+
+/// Postgres' whitespace between the tokens of a name.
+fn is_name_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c')
+}
+
+/// The `(schema, table)` a ledger name resolves to, by Postgres' rules for an
+/// identifier: parts split on `.` outside double quotes, with whitespace
+/// allowed around parts and dots; a quoted part keeps its case, with `""` for
+/// `"`; an unquoted part folds to ASCII lower case; each is cut to 63 bytes
+/// (`NAMEDATALEN` - 1) on a character boundary; a name without a schema is in
+/// `public`, where a run pins `search_path`.
+///
+/// `None` for a name that is not one or two such parts. That says nothing
+/// against the name (SQL accepts more spellings than this reads, comments
+/// among them): it is not matched by what it resolves to.
+fn parse_ledger_name(name: &str) -> Option<(String, String)> {
+    const MAX_IDENTIFIER_BYTES: usize = 63;
+    let mut parts: Vec<String> = Vec::new();
+    let mut chars = name.chars().peekable();
+    loop {
+        while chars.next_if(|c| is_name_space(*c)).is_some() {}
+        let mut part = String::new();
+        if chars.next_if_eq(&'"').is_some() {
+            loop {
+                match chars.next()? {
+                    '"' if chars.next_if_eq(&'"').is_some() => part.push('"'),
+                    '"' => break,
+                    c => part.push(c),
+                }
+            }
+            if part.is_empty() {
+                return None;
+            }
+        } else {
+            while let Some(c) = chars.next_if(|c| *c != '.' && !is_name_space(*c)) {
+                part.push(c);
+            }
+            let mut letters = part.chars();
+            let starts = letters
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || !c.is_ascii());
+            if !starts
+                || !letters
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || !c.is_ascii())
+            {
+                return None;
+            }
+            part.make_ascii_lowercase();
+        }
+        let mut end = part.len().min(MAX_IDENTIFIER_BYTES);
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
+        part.truncate(end);
+        parts.push(part);
+        while chars.next_if(|c| is_name_space(*c)).is_some() {}
+        match chars.next() {
+            None => break,
+            Some('.') => {}
+            Some(_) => return None,
+        }
+    }
+    match <[String; 1]>::try_from(parts) {
+        Ok([table]) => Some(("public".to_owned(), table)),
+        Err(parts) => <[String; 2]>::try_from(parts)
+            .ok()
+            .map(|[schema, table]| (schema, table)),
+    }
+}
+
+/// One row of a migration ledger, as `SQLx` writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LedgerRow {
+    version: i64,
+    checksum: Vec<u8>,
+    success: bool,
+}
+
+fn ledger_versions(rows: &[LedgerRow]) -> Vec<i64> {
+    rows.iter().map(|row| row.version).collect()
+}
+
+/// The rows of `ledger`, ascending by version, on behalf of `source`. A
+/// ledger that does not exist holds nothing when `may_be_absent`; the
+/// migration run creates every flavor ledger before reading it.
+///
+/// The one ledger read of the runner's lineage check, the preflight and the
+/// plan. It reads what `SQLx`'s run reads (`list_applied_migrations`, every
+/// row whatever its `success`) and adds the `success` that its
+/// `dirty_version` reads separately.
+async fn read_ledger(
     conn: &mut PgConnection,
     source: &NamedMigrator,
+    ledger: &str,
     may_be_absent: bool,
-) -> Result<Vec<i64>, MigrationError> {
-    let table = source.migrator.table_name.as_ref();
-    // The migration run pins `search_path` to `public`, so an unqualified
-    // ledger lives there; say so for the preflight, which pins nothing.
-    let ledger = if table.contains('.') {
-        table.to_owned()
-    } else {
-        format!("public.{table}")
-    };
+) -> Result<Vec<LedgerRow>, MigrationError> {
     let read_error = |err| MigrationError::LedgerRead {
         source: source.source,
-        ledger: ledger.clone(),
-        err,
+        ledger: ledger.to_owned(),
+        err: MigrateError::Execute(err),
     };
     if may_be_absent {
         let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind(&ledger)
+            .bind(ledger)
             .fetch_one(&mut *conn)
             .await
-            .map_err(|err| read_error(MigrateError::Execute(err)))?;
+            .map_err(read_error)?;
         if !exists {
             return Ok(Vec::new());
         }
     }
-    // SQLx's own ledger read, so the rows mean what its run means by them.
-    let applied = conn
-        .list_applied_migrations(&ledger)
-        .await
-        .map_err(read_error)?;
-    Ok(applied.into_iter().map(|row| row.version).collect())
+    // SQL-POLICY: fixed-fragment — `ledger` is a compiled-in migrator table
+    // name (`NamedMigrator::ledger`); no value reaches it from a caller.
+    // Interpolated as-is, like `SQLx` itself interpolates it in
+    // `list_applied_migrations`.
+    let rows: Vec<(i64, Vec<u8>, bool)> = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT version, checksum, success FROM {ledger} ORDER BY version"
+    )))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(read_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|(version, checksum, success)| LedgerRow {
+            version,
+            checksum,
+            success,
+        })
+        .collect())
 }
 
 /// Whether a lane (`lane`, the versions a binary ships) continues the one
@@ -770,11 +1205,14 @@ fn unapplied(lane: &[i64], recorded: &[i64]) -> Option<LedgerConflict> {
     (!pending.is_empty()).then_some(LedgerConflict::Unapplied { pending })
 }
 
+fn core_source() -> NamedMigrator {
+    NamedMigrator::new(CORE_SOURCE, core_migrator())
+}
+
 fn prepare_sources(
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<Vec<NamedMigrator>, MigrationError> {
-    let mut sources = Vec::new();
-    sources.push(NamedMigrator::new(CORE_SOURCE, core_migrator()));
+    let mut sources = vec![core_source()];
 
     for mut source in flavors {
         source.migrator.set_ignore_missing(true);
@@ -789,21 +1227,30 @@ fn prepare_sources(
         sources.push(source);
     }
 
-    reject_duplicate_versions(&sources)?;
-    reject_shared_flavor_ledgers(&sources)?;
+    validate_sources(&sources.iter().collect::<Vec<_>>())?;
     Ok(sources)
 }
 
-fn reject_shared_flavor_ledgers(sources: &[NamedMigrator]) -> Result<(), MigrationError> {
-    let mut seen: BTreeMap<String, &'static str> = BTreeMap::new();
+/// The refusals that need no database, for core followed by the host's
+/// sources: a run raises them before it connects, a plan likewise.
+fn validate_sources(sources: &[&NamedMigrator]) -> Result<(), MigrationError> {
+    reject_duplicate_versions(sources)?;
+    reject_shared_flavor_ledgers(sources)
+}
+
+fn reject_shared_flavor_ledgers(sources: &[&NamedMigrator]) -> Result<(), MigrationError> {
+    let mut seen: BTreeMap<LedgerIdentity, &'static str> = BTreeMap::new();
     for source in sources.iter().skip(1) {
-        let table = source.migrator.table_name.to_string();
-        if is_core_ledger(&table) {
+        if is_core_ledger(&source.migrator.table_name) {
             continue;
         }
-        if let Some(first_source) = seen.insert(table.clone(), source.source) {
+        // The table Postgres resolves the name to, not its spelling:
+        // `_sqlx_migrations_host`, `public."_sqlx_migrations_host"` and
+        // `PUBLIC._SQLX_Migrations_Host` are one table.
+        let identity = source.ledger_identity();
+        if let Some(first_source) = seen.insert(identity.clone(), source.source) {
             return Err(MigrationError::DuplicateLedger {
-                table,
+                table: identity.to_string(),
                 first_source,
                 second_source: source.source,
             });
@@ -812,7 +1259,7 @@ fn reject_shared_flavor_ledgers(sources: &[NamedMigrator]) -> Result<(), Migrati
     Ok(())
 }
 
-fn reject_duplicate_versions(sources: &[NamedMigrator]) -> Result<(), MigrationError> {
+fn reject_duplicate_versions(sources: &[&NamedMigrator]) -> Result<(), MigrationError> {
     let mut seen: BTreeMap<i64, (&'static str, String)> = BTreeMap::new();
 
     for source in sources {
@@ -840,11 +1287,12 @@ mod tests {
     use std::borrow::Cow;
 
     use sqlx::SqlSafeStr;
-    use sqlx::migrate::{Migration, MigrationType, Migrator};
+    use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 
     use super::{
-        LedgerConflict, MigrationError, NamedMigrator, flavor_ledger_table, ledger_conflict,
-        prepare_sources, unapplied,
+        LedgerConflict, LedgerRow, MigrationError, NamedMigrator, core_source, flavor_ledger_table,
+        ledger_conflict, pending_migrations, prepare_sources, unapplied, unrecorded,
+        with_cutover_rows,
     };
 
     const TEST_FLAVOR_VERSION: i64 = 20_260_612_000_010;
@@ -1016,6 +1464,415 @@ mod tests {
             Some(LedgerConflict::Unapplied {
                 pending: vec![2, 3]
             })
+        );
+    }
+
+    fn recorded(migration: &Migration) -> LedgerRow {
+        LedgerRow {
+            version: migration.version,
+            checksum: migration.checksum.to_vec(),
+            success: true,
+        }
+    }
+
+    fn pending_versions(
+        source: &NamedMigrator,
+        rows: &[LedgerRow],
+    ) -> Result<Vec<i64>, MigrateError> {
+        unrecorded(&source.lane(), rows).map(|pending| {
+            pending
+                .into_iter()
+                .map(|migration| migration.version)
+                .collect()
+        })
+    }
+
+    #[test]
+    fn a_source_enumerates_what_a_run_applies() {
+        let mut migrations = migrator(&[3, 1, 2]).migrations.into_owned();
+        migrations.push(Migration::new(
+            2,
+            Cow::Borrowed("test 2 down"),
+            MigrationType::ReversibleDown,
+            sqlx::AssertSqlSafe("SELECT 2;".to_owned()).into_sql_str(),
+            false,
+        ));
+        let source = NamedMigrator::new(
+            "alpha",
+            Migrator {
+                migrations: Cow::Owned(migrations),
+                ..Migrator::DEFAULT
+            },
+        );
+
+        assert_eq!(
+            source.lane_versions(),
+            vec![1, 2, 3],
+            "the lineage view is ascending, and a down migration is not applied"
+        );
+        assert_eq!(
+            source
+                .lane()
+                .iter()
+                .map(|migration| migration.description.as_ref())
+                .collect::<Vec<_>>(),
+            ["test 3", "test 1", "test 2"],
+            "the order the migrator holds, which `run_direct` walks; the up migration of version 2, not its down"
+        );
+        assert_eq!(
+            source.cutover_versions().len(),
+            4,
+            "the ledger preparation copies a version's row whatever its type"
+        );
+    }
+
+    #[test]
+    fn a_source_out_of_order_is_planned_and_refused_in_the_order_a_run_walks_it() {
+        let source = NamedMigrator::new("alpha", migrator(&[3, 1, 2]));
+        assert_eq!(
+            pending_versions(&source, &[]).expect("empty"),
+            [3, 1, 2],
+            "pending in the order `run_direct` applies"
+        );
+
+        let lane = source.lane();
+        let mut rows: Vec<LedgerRow> = lane.iter().map(|m| recorded(m)).collect();
+        rows.sort_by_key(|row| row.version);
+        for row in &mut rows {
+            if row.version != 2 {
+                row.checksum = vec![0];
+            }
+        }
+        assert!(
+            matches!(
+                pending_versions(&source, &rows),
+                Err(MigrateError::VersionMismatch(3))
+            ),
+            "the first changed checksum in the order the run walks, not the lowest version"
+        );
+    }
+
+    /// Two sources on `tables`, the second a version above the first.
+    fn on_tables(first: &str, second: &str) -> Vec<NamedMigrator> {
+        [("first", first, 0), ("second", second, 1)]
+            .into_iter()
+            .map(|(source, table, step)| {
+                let mut declared = migrator(&[TEST_FLAVOR_VERSION + step]);
+                declared.dangerous_set_table_name(table.to_owned());
+                NamedMigrator::new(source, declared)
+            })
+            .collect()
+    }
+
+    /// The runner's first step, then the plan's: both before any query, the
+    /// plan on a pool nothing listens behind.
+    async fn lineup_refusals(
+        sources: impl Fn() -> Vec<NamedMigrator>,
+    ) -> (Result<(), MigrationError>, Result<(), MigrationError>) {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("a lazy pool parses its URL and connects later");
+        (
+            prepare_sources(sources()).map(drop),
+            pending_migrations(&pool, &sources()).await.map(drop),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_ledger_is_matched_by_the_table_postgres_resolves_not_by_its_spelling() {
+        let one_table = |err: Result<(), MigrationError>| match err {
+            Err(MigrationError::DuplicateLedger {
+                table,
+                first_source: "first",
+                second_source: "second",
+            }) => table,
+            other => panic!("expected DuplicateLedger, got {other:?}"),
+        };
+        let long = "y".repeat(70);
+        for (first, second, table) in [
+            (
+                "_sqlx_migrations_host",
+                "public._sqlx_migrations_host",
+                "public._sqlx_migrations_host",
+            ),
+            (
+                "public._sqlx_migrations_host",
+                "public.\"_sqlx_migrations_host\"",
+                "public._sqlx_migrations_host",
+            ),
+            (
+                "_SQLX_Migrations_Host",
+                "_sqlx_migrations_host",
+                "public._sqlx_migrations_host",
+            ),
+            (
+                "\"_sqlx_migrations_host\"",
+                "PUBLIC._SQLX_MIGRATIONS_HOST",
+                "public._sqlx_migrations_host",
+            ),
+            (
+                "_sqlx_migrations_host",
+                "public . _sqlx_migrations_host",
+                "public._sqlx_migrations_host",
+            ),
+            ("\"Host\"", "public.\"Host\"", "public.Host"),
+            ("\"a\"\"b\"", "public.\"a\"\"b\"", "public.a\"b"),
+            (
+                &format!("x{long}a"),
+                &format!("x{long}b"),
+                &format!("public.x{}", &long[..62]),
+            ),
+        ] {
+            let (run, plan) = lineup_refusals(|| on_tables(first, second)).await;
+            assert_eq!(one_table(run), table, "{first} and {second}");
+            assert_eq!(one_table(plan), table, "{first} and {second}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ledgers_that_resolve_to_different_tables_are_not_one_ledger() {
+        for (first, second) in [
+            ("\"Host\"", "\"host\""),
+            ("\"Host\"", "host"),
+            ("a.t", "b.t"),
+            ("\"a.t\"", "a.t"),
+            // Schema `a.b`, table `c` and schema `a`, table `b.c` print alike.
+            ("\"a.b\".c", "a.\"b.c\""),
+        ] {
+            let (run, plan) = lineup_refusals(|| on_tables(first, second)).await;
+            run.unwrap_or_else(|err| panic!("{first} and {second}: {err:?}"));
+            assert!(
+                matches!(plan, Err(MigrationError::Connection(_))),
+                "{first} and {second} reach for the database: {plan:?}"
+            );
+        }
+    }
+
+    /// A lineup `main` completes is never refused for how a ledger is
+    /// spelled: a name the parser does not read is compared as written.
+    #[tokio::test]
+    async fn a_spelling_outside_postgres_identifier_rules_is_compared_as_written() {
+        for name in [
+            "\"unclosed",
+            "public.",
+            ".host",
+            "a..b",
+            "a.b.c",
+            "\"\"",
+            "a-b",
+            "a/* comment */.b",
+            "\"a\"b",
+            "",
+        ] {
+            assert_eq!(super::parse_ledger_name(name), None, "{name:?}");
+            let (run, plan) =
+                lineup_refusals(|| on_tables(name, "public._sqlx_migrations_ok")).await;
+            run.unwrap_or_else(|err| panic!("{name:?}: {err:?}"));
+            assert!(
+                matches!(plan, Err(MigrationError::Connection(_))),
+                "{name:?} reaches for the database: {plan:?}"
+            );
+
+            let (run, plan) = lineup_refusals(|| on_tables(name, name)).await;
+            for same in [run, plan] {
+                assert!(
+                    matches!(
+                        &same,
+                        Err(MigrationError::DuplicateLedger { table, .. }) if table == name
+                    ),
+                    "the same spelling twice is one ledger: {same:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn whitespace_around_the_parts_of_a_ledger_name_is_accepted() {
+        let (run, plan) =
+            lineup_refusals(|| on_tables("public . _sqlx_migrations_host", "other.t")).await;
+        run.expect("the runner takes it");
+        assert!(
+            matches!(plan, Err(MigrationError::Connection(_))),
+            "the plan reaches for the database: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn a_ledger_name_is_read_as_postgres_reads_an_identifier() {
+        let identity = |name: &str| super::parse_ledger_name(name).expect(name);
+        let pair = |schema: &str, table: &str| (schema.to_owned(), table.to_owned());
+        assert_eq!(identity("host"), pair("public", "host"));
+        assert_eq!(
+            identity(" public\t.\n\"Host\" "),
+            pair("public", "Host"),
+            "whitespace around parts and dots"
+        );
+        assert_eq!(identity("Acme.Host"), pair("acme", "host"));
+        assert_eq!(identity("\"Acme\".\"Host\""), pair("Acme", "Host"));
+        assert_eq!(
+            identity("\"a.b\""),
+            pair("public", "a.b"),
+            "a dot inside quotes"
+        );
+        assert_eq!(identity("\"a\"\"b\""), pair("public", "a\"b"));
+        assert_eq!(identity("a$b"), pair("public", "a$b"));
+        assert_eq!(
+            identity("\u{c9}t\u{e9}"),
+            pair("public", "\u{c9}t\u{e9}"),
+            "ASCII only"
+        );
+        let clipped = format!("{}\u{e9}", "a".repeat(62));
+        assert_eq!(
+            identity(&clipped),
+            pair("public", &"a".repeat(62)),
+            "cut to 63 bytes on a character boundary"
+        );
+    }
+
+    #[test]
+    fn a_ledger_is_named_as_flavor_ledger_table_names_it() {
+        assert_eq!(core_source().ledger(), "public._sqlx_migrations");
+        assert_eq!(
+            NamedMigrator::flavor("proxima-code", migrator(&[1])).ledger(),
+            flavor_ledger_table("proxima-code")
+        );
+        let mut declared = migrator(&[1]);
+        declared.dangerous_set_table_name("acme._sqlx_migrations");
+        assert_eq!(
+            NamedMigrator::flavor("acme", declared).ledger(),
+            "acme._sqlx_migrations"
+        );
+        let mut unqualified = migrator(&[1]);
+        unqualified.dangerous_set_table_name("_sqlx_migrations_host");
+        assert_eq!(
+            NamedMigrator::new("host", unqualified).ledger(),
+            "public._sqlx_migrations_host",
+            "a run pins `search_path` to public"
+        );
+    }
+
+    #[test]
+    fn the_rows_of_a_ledger_leave_what_a_run_would_apply() {
+        let source = NamedMigrator::new("alpha", migrator(&[1, 2, 3, 4]));
+        let lane = source.lane();
+        let first_two: Vec<LedgerRow> = lane[..2].iter().map(|m| recorded(m)).collect();
+
+        assert_eq!(pending_versions(&source, &[]).expect("empty"), [1, 2, 3, 4]);
+        assert_eq!(
+            pending_versions(&source, &first_two).expect("behind"),
+            [3, 4]
+        );
+        let mut with_unknown = first_two.clone();
+        with_unknown.push(LedgerRow {
+            version: 9,
+            checksum: vec![9],
+            success: true,
+        });
+        assert_eq!(
+            pending_versions(&source, &with_unknown).expect("a recorded version it does not ship"),
+            [3, 4],
+            "every source runs with `ignore_missing`"
+        );
+
+        let mut changed_second = first_two.clone();
+        changed_second[1].checksum = vec![0];
+        let mut changed_both = changed_second.clone();
+        changed_both[0].checksum = vec![0];
+        assert!(matches!(
+            pending_versions(&source, &changed_second),
+            Err(MigrateError::VersionMismatch(2))
+        ));
+        assert!(
+            matches!(
+                pending_versions(&source, &changed_both),
+                Err(MigrateError::VersionMismatch(1))
+            ),
+            "the first in the order the run walks"
+        );
+
+        let mut dirty = changed_both.clone();
+        dirty.push(LedgerRow {
+            version: 7,
+            checksum: vec![7],
+            success: false,
+        });
+        dirty.push(LedgerRow {
+            version: 5,
+            checksum: vec![5],
+            success: false,
+        });
+        assert!(
+            matches!(
+                pending_versions(&source, &dirty),
+                Err(MigrateError::Dirty(5))
+            ),
+            "a dirty row is refused before any checksum, lowest version first"
+        );
+    }
+
+    #[test]
+    fn the_cutover_copies_only_the_flavors_versions_and_never_over_its_own_rows() {
+        let row = |version, checksum: u8| LedgerRow {
+            version,
+            checksum: vec![checksum],
+            success: true,
+        };
+        let rows = with_cutover_rows(
+            vec![row(2, 20), row(4, 40)],
+            vec![row(1, 11), row(2, 12), row(3, 13), row(9, 19)],
+            &[1, 2, 4],
+        );
+        assert_eq!(
+            rows,
+            vec![row(1, 11), row(2, 20), row(4, 40)],
+            "the own row of version 2 wins; 3 and 9 are not the flavor's"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_refuses_a_lineup_before_it_issues_a_query() {
+        // Nothing listens here: a query would fail as `Connection` or
+        // `LedgerRead`, not as the refusals below.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("a lazy pool parses its URL and connects later");
+
+        let duplicate = pending_migrations(
+            &pool,
+            &[
+                NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
+                NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION])),
+            ],
+        )
+        .await
+        .expect_err("duplicate migration version");
+        assert!(matches!(
+            duplicate,
+            MigrationError::DuplicateVersion {
+                version: TEST_FLAVOR_VERSION,
+                first_source: "alpha",
+                second_source: "beta",
+                ..
+            }
+        ));
+
+        let shared = pending_migrations(
+            &pool,
+            &[
+                NamedMigrator::flavor("a-b", migrator(&[TEST_FLAVOR_VERSION])),
+                NamedMigrator::flavor("a_b", migrator(&[TEST_FLAVOR_VERSION + 1])),
+            ],
+        )
+        .await
+        .expect_err("two flavors on one ledger");
+        assert!(matches!(shared, MigrationError::DuplicateLedger { .. }));
+
+        let reachable = pending_migrations(&pool, &[]).await;
+        assert!(
+            matches!(reachable, Err(MigrationError::Connection(_))),
+            "a valid lineup does reach for the database: {reachable:?}"
         );
     }
 }
