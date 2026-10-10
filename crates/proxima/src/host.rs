@@ -21,6 +21,8 @@ pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
     serve,
 };
+/// The type of the public field [`RuntimeConfig::auth`].
+pub use crate::runtime_config::RuntimeAuthState;
 pub use crate::runtime_config::{
     McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
     RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
@@ -68,6 +70,11 @@ pub use proxima_core::engine::{
     GoalModifyRequest, GoalTransitionRequest,
 };
 pub use proxima_core::error::{ErrorCode, ProtocolError};
+/// The disposition inside `EraseRule::HostState { whole_owner, source,
+/// exact_fact }`. [`EraseRule`] is a Flavor SDK type
+/// and that variant cannot be built without this one, so it is exported to both
+/// tiers; it is a `Copy` contract enum and carries no authority.
+pub use proxima_core::flavor::HostStateEraseDisposition;
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
@@ -183,6 +190,16 @@ pub use proxima_core::storage_ports::publication::{
     AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,
 };
+/// This installation's identity and the host-only provenance check.
+///
+/// [`OriginScope`] is what [`ProximaHost::origin_scope_for_host`] returns.
+/// [`ProximaHost::publication_origin_eligibility_for_host`] returns a
+/// [`PublicationOriginEligibilityPort`], whose methods answer with a
+/// [`PublicationOriginEligibility`]. Without these names a host can call both
+/// accessors and cannot store, pass on or write the result.
+pub use proxima_core::storage_ports::publication::{
+    OriginScope, PublicationOriginEligibility, PublicationOriginEligibilityPort,
+};
 pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
@@ -228,6 +245,11 @@ pub use proxima_mcp_server::{
     HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
     RequestHeaderAllowlist, ResourceServerMetadata,
 };
+/// The reference consumer's defaults ([`NatsConsumerConfig`]), beside
+/// [`DEFAULT_SUBJECT_PREFIX`]. The crate defines them in `config` and does not
+/// re-export them at its root.
+#[cfg(feature = "outbox-nats")]
+pub use proxima_outbox_nats::config::{DEFAULT_CONSUMER_NAME, DEFAULT_CONSUMER_STREAM};
 /// The shipped NATS `JetStream` publisher and its reference consumer
 /// (docs/18, `crates/outbox-nats`).
 ///
@@ -256,6 +278,16 @@ pub use proxima_outbox_nats::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// The `rmcp` crate Proxima's MCP handler is built on, at the version and
+/// feature set the workspace pins (`server`, `transport-streamable-http-server`).
+/// A host that implements [`rmcp::ServerHandler`] around [`DynamicHandler`]
+/// uses this one rather than declaring its own: two copies would be two
+/// unrelated traits. The pin is part of the facade's public API, and so is
+/// the exported handler helpers' use of `rmcp`'s request-context and error
+/// types. A later `rmcp` major is a breaking change of the facade. Other
+/// third-party crates (`sqlx`, `axum`, `tokio`) stay the host's own
+/// dependencies.
+pub use rmcp;
 /// Cancellation token type of [`crate::flavor::FlavorWorkerContext::cancel`].
 pub use tokio_util::sync::CancellationToken;
 
@@ -294,11 +326,32 @@ pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str])
     ))
 }
 
+/// The S3 lane's upload, abort and read-url DTOs and its cold store, which
+/// [`CitedBlobStore`]'s `prepare_upload`, `stage_upload`, `abort_upload`,
+/// `read_url` and `cold_store` take or return.
+pub use proxima_blob_s3::{
+    CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs,
+    CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
+    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore,
+};
 /// Host-served MCP tools ([`RuntimeBuilder::host_tools`]), the per-call
 /// marker behaviors see, and the handler helpers a host transport reuses
 /// instead of copying: auth/peer extraction, author reconciliation, the
 /// reserved-argument strip, the NUL guard and the JSON-RPC error mapping.
 pub use proxima_core::McpHostToolCall;
+/// Stream revalidation cadence: the type of [`McpEdge::revalidation`] and of
+/// [`RuntimeConfig::stream_revalidation`], and the parameter of
+/// [`layered_router_with_revalidation`], [`layered_router_mcp_only`] and
+/// [`mcp_auth_layer_with_metadata`].
+pub use proxima_core::authz::RevalidationConfig;
+/// Tool names and core-tool metadata for a host that gates or presents its
+/// own surface. [`tool_name_matches`] compares a requested name with the
+/// canonical or the [`provider_safe_tool_name`] form. [`all_core_resources`]
+/// enumerates the core resources' scope keys and [`core_action_meta`] returns
+/// the [`CoreActionMeta`] of one core tool action.
+pub use proxima_core::mcp::{
+    CoreActionMeta, all_core_resources, core_action_meta, tool_name_matches,
+};
 /// Field types of [`McpToolDescriptor`] and consts of [`McpTool`]; a host
 /// partitioning tool surfaces by audience reads them. [`ToolEffect`] is also
 /// what an [`McpHostTool`] declares, and [`McpToolAnnotations`] the MCP hints
@@ -309,16 +362,195 @@ pub use proxima_core::mcp::{
 /// The request-behavior onion. A behavior wraps [`McpToolCtx`] /
 /// [`McpToolError`]; flavors register one through `proxima::flavor`.
 pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};
+/// The `<prefix>:<uuid>` ids tool arguments carry. [`PrefixedUuidError`]
+/// is what [`parse_prefixed_uuid`] returns, so it travels with the parser.
+pub use proxima_core::mcp::{
+    PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid,
+};
+/// The host-built behavior chain: [`Next::new`] and
+/// [`McpToolHost::dispatch_through_behaviors`] take a [`TerminalDispatch`],
+/// and [`ScopeGateBehavior`] is the tool-scope gate a host that assembles its
+/// own chain names. Host API only; flavors register behaviors, they do not
+/// build the chain.
+pub use proxima_core::mcp::{ScopeGateBehavior, TerminalDispatch};
 /// Host-bound `CloudEvents` extension attributes
 /// ([`AuthzContext::with_publication_extensions`]); the error and value
 /// types are what binding returns and `get` reads.
 pub use proxima_core::publication::{
     ExtensionValue, PublicationExtensions, PublicationExtensionsError,
 };
+/// Ids and payload types public signatures name ([`Engine::ingest_fact`],
+/// [`Engine::create_goal`], [`DerivedMemory`], [`DerivationIdentity`],
+/// [`SystemOrigin`], [`FactIngestOutcome`], [`MemorySnapshot`],
+/// [`Engine::transfer_to_owner`], [`Engine::authorize_fact_ingest`]). The
+/// Flavor SDK names some of them under `proxima::flavor` too; these are the
+/// host tier's names for them.
+pub use proxima_core::{
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EntityId, FactPayload,
+    FactReceiptId, FactTombstone, GoalId, GoalPayload, InputContractId, ModelId, OperatorId,
+    PayloadReference, PerspectivePayload, PromptVersion, ReferenceBinding, SchemaVersion, ScopeRef,
+    SearchProjectionColumnKind, SidecarPayload, ToolId,
+};
+/// Request, row and outcome types the storage-port methods take and return
+/// ([`FactIngestPort`], [`MemoryAuthoringPort`], [`GoalWritePort`],
+/// [`EmbeddingJobPort`] and the other `*Port` traits), so a host or backend that
+/// implements a port can write its signatures.
+pub use proxima_core::{
+    AbstractionRow, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest,
+    DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts,
+    EmbeddingWriteOutcome, FactRow, GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity,
+    MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, OperatorPhase,
+    goal_write::AchieveGoalAtomicRequest, goal_write::CreateGoalAtomicRequest,
+    goal_write::DecomposeGoalAtomicRequest, goal_write::GoalAtomicContext, goal_write::GoalDraft,
+    goal_write::GoalReplayOutcome, goal_write::GoalReplayRequest,
+    goal_write::ModifyGoalAtomicRequest, goal_write::TransitionGoalAtomicRequest,
+    own_erase::SeriesEraseOutcome, own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
+};
 /// Host authentication: the argument and error types of
 /// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the
 /// [`OwnerScope`] witness [`AuthzContext::owner_scope`] returns.
 pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
+/// Authorization witnesses, permits and the audit contexts the Engine derives
+/// for them, so a signature that takes or returns one can be written down.
+/// Naming a witness does not let anyone mint it: only the Engine's authorization
+/// gates construct these, their constructors are crate-private (the opt-in
+/// `testkit` feature adds `*_for_tests` constructors), and these exports confer
+/// no authority.
+pub use proxima_core::{
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
+    OperatorMaintenanceProof, WritePermit, fact_ingest::AuthorizedCitationAttachment,
+    fact_ingest::AuthorizedInlineCitationMapping, fact_ingest::AuthorizedInlineCitedObject,
+    fact_ingest::AuthorizedNodeLinks, owner_inverse::EraseAuthorization,
+    owner_inverse::ExportAuthorization, owner_inverse::OwnerEraseContext,
+    owner_inverse::OwnerExportContext, storage_ports::EmbeddingWriteProof,
+    storage_ports::OperatorWriteProof, storage_ports::OwnerWritePermit,
+};
+/// Rows, cursors and edges the read responses carry ([`QueryRequest`],
+/// [`QueryResponse`], [`MemoryLineageRequest`], [`ChangeHistoryResponse`],
+/// [`FactCitationReadback`], [`EdgeFilter`], [`FactWriteCommand`]): a host that
+/// pages a query, reads the change history or follows an edge names them.
+pub use proxima_core::{
+    ChangeEvent, ChangeEventForWake, ChangeEventKind, Edge, EdgeEndpoint, EdgeKind,
+    EdgeTargetProjection, EntityRef, UploadedBlobPageSpanV1, query::FactCitationCursor,
+    query::GoalRow, query::MemoryLineageCursor, query::QueryCursor, query::QueryPage,
+    query::UploadedBlobRef,
+};
+/// The storage ports and their handles. [`StoragePortsBuilder`]'s setters take the
+/// `*Handle` aliases (`Arc<dyn ...Port>`), [`StoragePortsBuilder::try_build`]
+/// returns the `StoragePortsBuildError`, and a host that supplies its own backend
+/// ([`Engine::with_storage_ports`]) implements the `*Port` traits those handles
+/// wrap.
+pub use proxima_core::{
+    ChangeEventPort, CitationPort, EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort,
+    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, McpCallReadPort,
+    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
+    OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort,
+    OwnerTransferPort, RegistryProjectionPort, SourceCursorPort, storage_ports::ChangeEventHandle,
+    storage_ports::CitationHandle, storage_ports::EmbeddingJobHandle,
+    storage_ports::EmbeddingMaintenanceHandle, storage_ports::EmbeddingTextHandle,
+    storage_ports::EmbeddingWriteHandle, storage_ports::FactIngestHandle,
+    storage_ports::GoalReadHandle, storage_ports::GoalWakeCandidateHandle,
+    storage_ports::GoalWakeCandidatePort, storage_ports::GoalWriteHandle,
+    storage_ports::McpCallReadHandle, storage_ports::MemoryAuthoringHandle,
+    storage_ports::MemoryInspectHandle, storage_ports::MemoryReadHandle,
+    storage_ports::OwnerAccessReadHandle, storage_ports::OwnerDropProofHandle,
+    storage_ports::OwnerEraseAuthorityHandle, storage_ports::OwnerInverseHandle,
+    storage_ports::OwnerMembershipAdminHandle, storage_ports::OwnerTransferHandle,
+    storage_ports::RegistryProjectionHandle, storage_ports::SourceCursorHandle,
+    storage_ports::StoragePortsBuildError, storage_ports::WriteSession,
+    storage_ports::WriteSessionFactory, storage_ports::WriteSessionFactoryHandle,
+};
+/// The Fact-with-citation write path: [`FactWriteCommand`],
+/// [`Engine::authorize_fact_with_citation`],
+/// [`Engine::authorize_fact_with_citation_by_ref`],
+/// [`Engine::authorize_citation_attachment`], [`UnitOfWork::read_own_sidecar`]
+/// and [`Engine::decompose_goal`] take these drafts and requests and return
+/// these outcomes.
+pub use proxima_core::{
+    CitationAttachmentRequest, fact_ingest::Citation, fact_ingest::CitationMappingHint,
+    fact_ingest::CitedObjectHint, fact_ingest::InlineCitationMappingDraft,
+    fact_ingest::InlineCitedObjectDraft, goal_write::DecomposedGoalOutcome,
+    storage_ports::SidecarSessionRead,
+};
+/// Request, response and outcome types of the [`Engine`] verbs a host calls:
+/// `get_graph`, `list_change_events`, `read_fact_citation`, `facts_citing_object`,
+/// `list_members`, `drain_embedding_jobs`, `reconcile_embeddings`,
+/// `embedding_coverage`, `purge_embedding_spaces`, `complete_upload_as_fact`,
+/// `inbound_pin_nodes`, `load_sketches`, `read_goal_wake_configs`, `try_compose`
+/// and `with_mcp_listener`. Without them a host can call each verb and cannot
+/// write its argument or result in a signature.
+pub use proxima_core::{
+    EmbeddingDrainOutcome, EmbeddingMode, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
+    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationReadRequest,
+    FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow,
+    GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse,
+    MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts,
+    UploadCompleted, UploadCompletionExpectation, query::FactCitationPage,
+    storage_ports::StoragePortsBuilder,
+};
+/// What [`AuthzContext`] reports about its caller: the identity and invoking
+/// tool [`AuthzContext::identity_for_revalidation`] and
+/// [`AuthzContext::invoking_tool`] return, and the refusal
+/// [`AuthzContext::with_trusted_model_id`] gives.
+pub use proxima_core::{Identity, InvokingTool, TrustedModelIdError};
+/// The tool-descriptor and handle vocabulary of [`McpToolDescriptor`],
+/// [`McpTool`], [`McpToolPresentation`], [`McpToolError`],
+/// [`RequestHeaderAllowlist::extract`] and the call log ([`McpCallLogInput`]): a
+/// host that registers or presents its own tools names them.
+pub use proxima_core::{
+    McpAuthorContext, McpCallFn, McpUnknownFieldPolicy, MemoryHandleClass, RequestHeaders,
+    ToolError, mcp::McpActionArgSpec, mcp::McpActionSchema, mcp::McpDispatcherSchema,
+    persist_mcp_call::McpCallLoggedV1,
+};
+/// The publication extension set and plan the Fact write path carries
+/// ([`PublicationExtensions::iter`], [`AuthorizedFactWrite`]'s `publication`):
+/// a host that binds extensions through
+/// [`AuthzContext::with_publication_extensions`] reads them with these.
+pub use proxima_core::{
+    PublicationDraft, PublicationPlan, publication::ExtensionEntries, publication::ExtensionEntry,
+};
+/// What [`ToolCtx`] carries into a [`Tool`] call: the caller provenance
+/// ([`ToolCaller`], from [`ToolCtx::caller`]) and the service bag ([`ToolServices`])
+/// a host fills when it runs a tool directly.
+pub use proxima_core::{ToolCaller, ToolCtx, ToolServices};
+/// The cited-blob service port's types: [`CitedBlobService`]'s `new`,
+/// `prepare_upload`, `abort_upload` and `read_url`, the staged and held blobs
+/// [`CitedBlobStore`] returns, and what [`Engine::complete_upload_as_fact`]
+/// reports.
+pub use proxima_core::{
+    UploadedBlobPayload, storage_ports::CitedBlobHeld, storage_ports::CitedBlobPort,
+    storage_ports::CitedBlobReadUrl, storage_ports::CitedBlobService,
+    storage_ports::CitedBlobStaged, storage_ports::CitedBlobUploadAborted,
+    storage_ports::CitedBlobUploadCompleted, storage_ports::CitedBlobUploadHeader,
+    storage_ports::CitedBlobUploadPrepared,
+};
+/// The native MCP handler: what [`CoreMcpTools::into_dynamic_handler`]
+/// returns and what [`McpStreamableService`] serves. A host implements
+/// [`rmcp::ServerHandler`] around it, with the `rmcp` re-exported below.
+pub use proxima_mcp_server::DynamicHandler;
+/// What parsing the allowlists ([`OriginAllowlist::parse`],
+/// [`RequestHeaderAllowlist::parse`]) and [`McpToolHost::from_database_urls`]
+/// return on failure.
+pub use proxima_mcp_server::McpServerError;
+/// Which protected-resource document [`ResourceServerMetadata`] renders.
+pub use proxima_mcp_server::ProtectedResource;
+/// What [`McpToolHost`]'s dispatch methods return on failure, and what the
+/// exported [`tool_invocation_error_to_error_data`] takes.
+pub use proxima_mcp_server::ToolInvocationError;
+/// The state [`McpAuthLayer`] authenticates against.
+pub use proxima_mcp_server::security::McpAuthLayerState;
+/// The layers [`McpEdge::router`] and [`layered_router_mcp_only`] apply, for
+/// a host that builds its own router: the body cap
+/// ([`enforce_body_limit`] at the default, [`body_limit_layer`] at a given
+/// size), the listener-wide Host guard, and bearer authentication with
+/// protected-resource metadata. [`BodyLimitLayer`], [`HostGuardLayer`],
+/// [`McpAuthLayer`] (over its [`McpAuthLayerState`]) and [`CorsLayer`] are the
+/// types they and [`cors_layer`] return.
+pub use proxima_mcp_server::{
+    BodyLimitLayer, CorsLayer, HostGuardLayer, McpAuthLayer, body_limit_layer, enforce_body_limit,
+    host_guard_layer, mcp_auth_layer_with_metadata,
+};
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
 pub use proxima_mcp_server::{
@@ -326,10 +558,82 @@ pub use proxima_mcp_server::{
     author_from_args, mcp_tool_error_to_error_data, peer_implementation, reject_nul_in_args,
     strip_call_context_args, tool_invocation_error_to_error_data,
 };
+/// The reference consumer's and the publisher's types that
+/// `ReferenceConsumer::connect_with_hook`, `process_once`, `into_observed_parts`,
+/// `ReceivedEvent` and `JetStreamPublisher::connect_with_hook` name. Behind the
+/// `outbox-nats` feature.
+#[cfg(feature = "outbox-nats")]
+pub use proxima_outbox_nats::{
+    AckAction, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState, ConsumerHealth,
+    ConsumerHealthReader, ConsumerPassState, ConsumerTaskState, HookAction, PublishHook,
+};
+/// What [`ProximaHost::host_state_erase_context_for_host`] returns. Opaque and
+/// authority-free: it grants no erase by itself.
+pub use proxima_storage_pg::PgHostStateEraseContext;
+/// The storage handle [`run_core_and_flavor_migrations`] and
+/// [`preflight_without_migrations`] take. Host API only: the Flavor SDK has
+/// no storage handle.
+pub use proxima_storage_pg::PgStorage;
+/// Begin a transaction under the caller's [`OwnerScope`], with the pool
+/// [`ProximaHost::clone_pool_for_host`] hands out.
+///
+/// Host API only, for authorized extra-table adapters: every statement of
+/// the operation runs on the returned transaction, since pool queries do not
+/// inherit its scope. No `proxima_core.*` SQL runs through it or through the
+/// pool; Fact and state writes go through [`UnitOfWork`] and
+/// [`UnitOfWork::apply_host_state`]. It is not a Flavor SDK name.
+pub use proxima_storage_pg::begin_owner_transaction;
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`ProximaHost::platform_scope_for_host`] returns, and the sqlx →
 /// [`StorageError`] classifier for host-state SQL.
 pub use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, map_err};
+/// The registry, contract and hook vocabulary a host composes and reads back:
+/// [`Engine::try_compose`], [`ProximaError`], [`FlavorApp`],
+/// [`FlavorRegistryFrozen`]'s accessors, [`ProximaHost::pg_sidecars_for_host`],
+/// the authorization hooks ([`AuthorizationHook`], [`OwnerResolver`]) and the
+/// sidecar registry's integrity report. The Flavor SDK names some of these under
+/// `proxima::flavor` too.
+pub use {
+    crate::{bundle::FlavorBundle, workers::FlavorWorker, workers::FlavorWorkerContext},
+    proxima_core::{
+        AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, Band,
+        BandComparability, CapabilityTag, CapabilityTagError, CounterRule, DbConstraint, DbTrigger,
+        EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule,
+        FlavorContract, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError,
+        ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, MembershipChange, OwnerResolver,
+        ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit,
+        ResourceContract, SchemaContract, SchemaRef, ScopeDecl, ScopeKind, SearchProjectionDecl,
+        SubstringArm, Surface, Tool, ToolContract, TransferLeg, TransferRule, WeightedField,
+        schema::MemoryEmbedUnit, schema::MemorySearchProjection,
+        schema::MemorySearchProjectionField, schema::ProtocolPayload, schema::RenderBands,
+        schema::SchemaInfo, schema::SchemaTombstone,
+    },
+    proxima_storage_pg::{
+        PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, integrity::IntegrityFinding,
+        integrity::IntegrityReport, integrity::IntegrityViolation, integrity::ProjectedSchema,
+        projection::Artifact, sidecars::PgCitationMappingSidecar, sidecars::PgCitedObjectSidecar,
+        sidecars::PgGoalSidecar, sidecars::PgMemoryPayload, sidecars::PgMemoryPayloadBatchFuture,
+        sidecars::PgMemoryPayloadFuture, sidecars::PgMemorySidecar, sidecars::PgSidecarFuture,
+        sidecars::PgSidecarReadCtx, sidecars::SidecarInsertPermit,
+    },
+};
+/// What [`PgStorage`]'s public methods take and return beyond the migration
+/// helpers: the cold store, the owner and scope surfaces, the maintenance locks,
+/// change-log pruning and cold-purge retry options and outcomes, and the host
+/// state erase selection [`HostStateEraseReceipt`] carries. Host API only, like
+/// [`PgStorage`].
+pub use {
+    proxima_core::{
+        ColdObjectStore, owner_inverse::CascadedDetail, owner_inverse::HostStateLifecycleSurface,
+        owner_inverse::OwnerSurfaces, owner_inverse::OwnerSurfacesError,
+        storage_ports::HostStateEraseSelection, storage_ports::HostStateFactCopyLocator,
+    },
+    proxima_storage_pg::{
+        ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions,
+        ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, PruneOwnerOutcome, StorageMaintenanceLock,
+        access::scope_surfaces::ScopeSurfaces,
+    },
+};
 
 #[cfg(test)]
 mod tests {
