@@ -763,9 +763,16 @@ runs the command on the same backend transaction as Fact ingest. Hosts that
 register no participant keep the existing UnitOfWork Fact path with no extra
 configuration. A host registers exactly one participant; a second registration
 refuses boot (`ProximaError::Config`) rather than
-replacing the first. A participant serving several command types dispatches
-with `HostStateRequest::is::<C>()` or `try_downcast::<C>()`, which hands the
-request back on a mismatch. Do not hold the unit open across broker or provider network I/O.
+replacing the first. A participant serving several command types is a
+`PgCommandDispatcher`: one `HostStateHandler<C>` per command type via
+`register::<C, _>(handler)?` (`C: HostStatePayloadOwners`, which states the
+owners the payload names). The dispatcher compares the command's owner and
+every payload owner with the engine-stamped permit once, before the handler
+runs, and hands the handler an `AgreedCommand<C>` that only it can build, and refuses boot for a foreign participant id, an undeclared table or a
+duplicate command type ([19 §Typed command dispatch](19-host-state-maintenance.md#typed-command-dispatch)).
+A hand-written participant dispatches with `HostStateRequest::is::<C>()` or
+`try_downcast::<C>()`, which hands the request back on a mismatch, and checks
+payload owners itself. Do not hold the unit open across broker or provider network I/O.
 A participant error after its SQL has succeeded poisons the unit: `commit`
 refuses and drop rolls every participant back. `ProximaHost::clone_pool_for_host`
 remains a different pool and is not this path.
