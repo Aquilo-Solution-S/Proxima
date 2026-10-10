@@ -13,6 +13,21 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.30
+
+Not yet released. Existing v0.0.25 databases upgrade in place.
+
+| Lane | Migration |
+|---|---|
+| Core | `0024_v030_owner_rls_table_installer.sql`: enum `proxima_core.owner_rls_class` (`owner_id`, `fk_parent`, `ownerless`, `memory_owner`), `proxima_core.install_owner_rls_table(schema, table, class[, owner_column])` and `proxima_core.assert_owner_rls_census(schema)`; `install_owner_rls` is re-created on top of the class code both installers share, with its signature, checks and policy expressions unchanged |
+
+**Per-table owner RLS (`_v030_`).** No table or row changes. A host that adds
+one table per migration calls `install_owner_rls_table` for that table instead
+of restating its whole schema; the other tables' policies are not touched
+([09 §Owner RLS](../09-developing-flavors.md#owner-rls)). A flavor that
+installed its schema with `install_owner_rls` keeps its policies; calling
+either installer again re-creates them from the current class code.
+
 ## v0.0.25
 
 No core or flavor migration ships in this release. Existing v0.0.24 databases
