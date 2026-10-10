@@ -1289,6 +1289,22 @@ fn host_state_participation_is_host_api_not_flavor_sdk() {
         host_exports.contains("PgHostStateParticipant"),
         "Host API names PgHostStateParticipant"
     );
+    for dispatch in [
+        "PgCommandDispatcher",
+        "AgreedCommand",
+        "HostStateHandler",
+        "HostStatePayloadOwners",
+        "CommandRegistrationError",
+    ] {
+        assert!(
+            !flavor_exports.contains(dispatch),
+            "Flavor SDK must not export `{dispatch}`, the host-state dispatch"
+        );
+        assert!(
+            host_exports.contains(dispatch),
+            "Host API names `{dispatch}`"
+        );
+    }
 }
 
 /// Naming [`proxima::flavor::AuthorizationHook`] is not enough: `veto`
