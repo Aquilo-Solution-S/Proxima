@@ -38,6 +38,24 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Cross-check: every tool name and every action name is a scope key.
+    ///
+    /// The scope gate and every palette identify a tool by
+    /// [`ScopeKey`](crate::ScopeKey)s built from these names
+    /// ([`McpToolDescriptor::palette_keys`] trusts this ran). An action outside
+    /// the grammar, or a dispatcher called `resource`, is refused here and
+    /// not at the first palette build.
+    pub(super) fn validate_scope_keys(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            tool.scope_keys()
+                .map_err(|reason| FlavorRegistryError::InvalidScopeKey {
+                    name: tool.name,
+                    reason,
+                })?;
+        }
+        Ok(())
+    }
+
     /// Cross-check: a dispatcher's declared actions and its derived schema
     /// describe the same dispatcher.
     ///

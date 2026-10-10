@@ -25,7 +25,7 @@ use proxima_core::llm::{
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
+    FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ScopeKey, ToolScope, all_core_actions,
     all_core_resources,
 };
 use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
@@ -633,7 +633,6 @@ fn build_app(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
     let registered_ids = registered_tool_ids()?;
-    let registered_ids: Vec<&str> = registered_ids.iter().map(String::as_str).collect();
     let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
     let platform_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
     let owner_access: Arc<dyn OwnerAccessPort> = if let Some(platform_url) = platform_url.as_deref()
@@ -786,7 +785,7 @@ enum ToolProfile {
 /// That is what lets `PROXIMA_TOOL_ALLOW` name one of its leaves and
 /// `PROXIMA_TOOL_PROFILE=full` grant it leaf by leaf, exactly as it does for
 /// a substrate dispatcher.
-fn registered_tool_ids() -> Result<Vec<String>, CliError> {
+fn registered_tool_ids() -> Result<Vec<ScopeKey>, CliError> {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as FlavorBundle>::register(&mut registry)
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
@@ -798,7 +797,7 @@ fn registered_tool_ids() -> Result<Vec<String>, CliError> {
 
 fn tool_scope_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
-    registered_ids: &[&str],
+    registered_ids: &[ScopeKey],
 ) -> Result<ToolScope, CliError> {
     resolve_tool_scope(
         lookup_non_empty(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
@@ -812,7 +811,7 @@ fn resolve_tool_scope(
     profile_name: Option<&str>,
     allow_raw: Option<&str>,
     deny_raw: Option<&str>,
-    registered_ids: &[&str],
+    registered_ids: &[ScopeKey],
 ) -> Result<ToolScope, CliError> {
     // Fail closed. With no PROXIMA_TOOL_PROFILE set, default to `memory` —
     // which excludes core_transfer (owner transfer of a memory series)
@@ -822,8 +821,8 @@ fn resolve_tool_scope(
         Some(name) => parse_tool_profile(name)?,
         None => ToolProfile::Memory,
     };
-    let allow = parse_tool_id_csv(allow_raw);
-    let deny = parse_tool_id_csv(deny_raw);
+    let allow = parse_tool_id_csv(allow_raw, PROXIMA_TOOL_ALLOW)?;
+    let deny = parse_tool_id_csv(deny_raw, PROXIMA_TOOL_DENY)?;
     reject_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW)?;
     reject_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY)?;
 
@@ -836,15 +835,15 @@ fn resolve_tool_scope(
         return Ok(ToolScope::All);
     }
 
-    let mut palette: BTreeSet<String> = match profile {
-        ToolProfile::Full => registered_ids.iter().map(|id| (*id).to_string()).collect(),
-        ToolProfile::Memory => memory_keep_set().into_iter().map(String::from).collect(),
+    let mut palette: BTreeSet<ScopeKey> = match profile {
+        ToolProfile::Full => registered_ids.iter().cloned().collect(),
+        ToolProfile::Memory => keep_set_keys(memory_keep_set()),
         #[cfg(feature = "code")]
-        ToolProfile::Code => code_keep_set().into_iter().map(String::from).collect(),
+        ToolProfile::Code => keep_set_keys(code_keep_set()),
     };
     palette.extend(allow);
-    for id in deny {
-        palette.remove(&id);
+    for key in deny {
+        palette.remove(&key);
     }
     Ok(ToolScope::Palette(palette.into_iter().collect()))
 }
@@ -870,14 +869,38 @@ fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
     }
 }
 
-fn parse_tool_id_csv(raw: Option<&str>) -> Vec<String> {
-    raw.map_or_else(Vec::new, |raw| {
-        raw.split(',')
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned)
-            .collect()
-    })
+/// A keep set is code: constants of the tools, actions and resources it
+/// names. They are keys by construction, and the profile tests resolve every
+/// one of them.
+fn keep_set_keys(ids: impl IntoIterator<Item = &'static str>) -> BTreeSet<ScopeKey> {
+    ids.into_iter()
+        .map(|id| ScopeKey::parse(id).expect("a keep-set id is a scope key"))
+        .collect()
+}
+
+/// The comma-separated ids of `env_var`, each parsed into a [`ScopeKey`]
+/// where it enters the process.
+///
+/// # Errors
+///
+/// A config error naming the entry that is not a scope key.
+fn parse_tool_id_csv(raw: Option<&str>, env_var: &str) -> Result<Vec<ScopeKey>, CliError> {
+    raw.map_or_else(
+        || Ok(Vec::new()),
+        |raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(|id| {
+                    ScopeKey::parse(id).map_err(|reason| {
+                        CliError::Runtime(ProximaError::Config(format!(
+                            "{env_var} contains invalid tool id {id:?}: {reason}"
+                        )))
+                    })
+                })
+                .collect()
+        },
+    )
 }
 
 /// Fail closed on a `PROXIMA_TOOL_ALLOW`/`PROXIMA_TOOL_DENY` entry that does
@@ -885,13 +908,14 @@ fn parse_tool_id_csv(raw: Option<&str>) -> Vec<String> {
 /// typo). A silently-ignored unknown `DENY` entry is a fail-open deployment
 /// bug: the operator believes a tool is disabled when it never was.
 fn reject_unknown_tool_ids(
-    ids: &[String],
-    registered_ids: &[&str],
+    ids: &[ScopeKey],
+    registered_ids: &[ScopeKey],
     env_var: &str,
 ) -> Result<(), CliError> {
-    let registered: HashSet<&str> = registered_ids.iter().copied().collect();
+    let registered: HashSet<&ScopeKey> = registered_ids.iter().collect();
     for id in ids {
-        if !registered.contains(id.as_str()) {
+        if !registered.contains(id) {
+            let id = id.to_string();
             return Err(CliError::Runtime(ProximaError::Config(format!(
                 "{env_var} contains unknown tool id {id:?}; not registered in this build"
             ))));
@@ -1104,6 +1128,19 @@ mod tests {
     use proxima_core::protocol::{action as protocol_action, resource as protocol_resource};
 
     use super::*;
+    use proxima_core::ToolName;
+
+    fn key(text: &str) -> ScopeKey {
+        ScopeKey::parse(text).expect("a scope key")
+    }
+
+    fn tool(name: &str) -> ToolName {
+        ToolName::parse(name).expect("a tool name")
+    }
+
+    fn keys<const N: usize>(ids: [&str; N]) -> Vec<ScopeKey> {
+        ids.map(key).to_vec()
+    }
 
     fn config() -> McpConfig {
         McpConfig {
@@ -1136,49 +1173,55 @@ mod tests {
     /// `PROXIMA_TOOL_PROFILE=full` grants it leaf by leaf.
     #[test]
     fn registered_ids_carry_a_flavor_dispatchers_leaves() {
-        use std::collections::BTreeSet;
-
         let mut registry = FlavorRegistry::new();
         <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
         let frozen = registry.try_freeze().expect("freeze");
         let ids = registered_tool_ids().expect("ids derive from the same registry");
 
-        let resource_keys: BTreeSet<&str> = all_core_resources()
-            .map(|resource| resource.scope_key)
-            .collect();
         for id in &ids {
-            if resource_keys.contains(id.as_str()) {
-                continue;
-            }
-            if let Some((tool, action)) = id.split_once(':') {
-                let descriptor = frozen
-                    .mcp_tool(tool)
-                    .unwrap_or_else(|| panic!("leaf {id} names an unregistered tool"));
-                assert!(
-                    descriptor
-                        .action_arg_specs
-                        .iter()
-                        .any(|spec| spec.action == action),
-                    "leaf {id} names an action {tool} does not declare",
-                );
-            } else {
-                let descriptor = frozen
-                    .mcp_tool(id)
-                    .unwrap_or_else(|| panic!("{id} is neither a registered tool nor a resource"));
-                assert!(
-                    descriptor.action_arg_specs.is_empty(),
-                    "{id} dispatches actions and must be named by its leaves, not bare",
-                );
+            match id {
+                ScopeKey::Resource(_) => {
+                    assert!(
+                        all_core_resources().any(|resource| resource.scope_key == id.to_string()),
+                        "{id} is a resource key no core resource declares",
+                    );
+                }
+                ScopeKey::Action { tool, action, .. } => {
+                    let descriptor = frozen
+                        .mcp_tool(tool.as_str())
+                        .unwrap_or_else(|| panic!("leaf {id} names an unregistered tool"));
+                    assert!(
+                        descriptor
+                            .action_arg_specs
+                            .iter()
+                            .map(|spec| spec.action)
+                            .chain(descriptor.argv_action_specs.iter().map(|spec| spec.action))
+                            .any(|declared| declared == action.as_str()),
+                        "leaf {id} names an action {tool} does not declare",
+                    );
+                }
+                ScopeKey::Tool(tool) => {
+                    let descriptor = frozen.mcp_tool(tool.as_str()).unwrap_or_else(|| {
+                        panic!("{id} is neither a registered tool nor a resource")
+                    });
+                    assert!(
+                        descriptor.action_arg_specs.is_empty()
+                            && descriptor.argv_action_specs.is_empty(),
+                        "{id} dispatches actions and must be named by its leaves, not bare",
+                    );
+                }
             }
         }
 
-        for tool in frozen.list_mcp_tools() {
-            let leaf_prefix = format!("{}:", tool.name);
+        for descriptor in frozen.list_mcp_tools() {
+            let name = tool(descriptor.name);
             assert!(
-                ids.iter()
-                    .any(|id| id == tool.name || id.starts_with(&leaf_prefix)),
+                ids.iter().any(|id| match id {
+                    ScopeKey::Tool(held) | ScopeKey::Action { tool: held, .. } => *held == name,
+                    ScopeKey::Resource(_) => false,
+                }),
                 "{} is registered and contributes no scope id",
-                tool.name,
+                descriptor.name,
             );
         }
 
@@ -1341,7 +1384,7 @@ mod tests {
 
     #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
-        let registered_ids = [
+        let registered_ids = keys([
             protocol_resource::MEMORY,
             protocol_resource::SCHEMAS,
             protocol_tool::CORE_SEARCH_MEMORIES,
@@ -1358,15 +1401,15 @@ mod tests {
             protocol_action::CORE_GOAL_SET,
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
-        ];
+        ]);
 
         // No PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
         let default_scope =
             resolve_tool_scope(None, None, None, &registered_ids).expect("default profile");
-        assert!(default_scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));
-        assert!(!default_scope.allows(protocol_tool::CORE_TRANSFER));
-        assert!(!default_scope.allows(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!default_scope.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
+        assert!(default_scope.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
+        assert!(!default_scope.allows(&key(protocol_tool::CORE_TRANSFER)));
+        assert!(!default_scope.allows(&key(protocol_tool::CORE_MEMBERSHIP)));
+        assert!(!default_scope.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
 
         // Explicit `full` still yields the whole surface.
         let full = resolve_tool_scope(Some(protocol_profile::FULL), None, None, &registered_ids)
@@ -1376,29 +1419,29 @@ mod tests {
         let memory =
             resolve_tool_scope(Some(protocol_profile::MEMORY), None, None, &registered_ids)
                 .expect("memory profile");
-        assert!(memory.allows(protocol_tool::CORE_SEARCH_MEMORIES));
-        assert!(memory.allows(protocol_tool::CORE_MEMORY_SPACES));
-        assert!(memory.allows(protocol_resource::MEMORY));
-        assert!(memory.allows(protocol_resource::SCHEMAS));
-        assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_FACT));
-        assert!(memory.allows(protocol_action::CORE_FACT_FACTS_CITING_OBJECT));
-        assert!(memory.allows(protocol_tool::CORE_FORGET));
-        assert!(!memory.allows(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!memory.allows(protocol_tool::CORE_TRANSFER));
-        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
-        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
-        assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
-        assert!(!memory.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
-        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_TRANSFER));
+        assert!(memory.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
+        assert!(memory.allows(&key(protocol_tool::CORE_MEMORY_SPACES)));
+        assert!(memory.allows(&key(protocol_resource::MEMORY)));
+        assert!(memory.allows(&key(protocol_resource::SCHEMAS)));
+        assert!(memory.allows(&key(protocol_action::CORE_FACT_CITATION_OF_FACT)));
+        assert!(memory.allows(&key(protocol_action::CORE_FACT_FACTS_CITING_OBJECT)));
+        assert!(memory.allows(&key(protocol_tool::CORE_FORGET)));
+        assert!(!memory.allows(&key(protocol_tool::CORE_MEMBERSHIP)));
+        assert!(!memory.allows(&key(protocol_tool::CORE_TRANSFER)));
+        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER)));
+        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER)));
+        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS)));
+        assert!(!memory.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
+        assert!(!memory.allows_group_advertisement(&tool(protocol_tool::CORE_MEMBERSHIP)));
+        assert!(!memory.allows_group_advertisement(&tool(protocol_tool::CORE_TRANSFER)));
 
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
-        assert!(memory.allows("proxima-code_register_repo"));
-        assert!(memory.allows(protocol_action::CORE_GOAL_SET));
-        assert!(!memory.allows("proxima-code_emit_execution_request"));
+        assert!(memory.allows(&key("proxima-code_register_repo")));
+        assert!(memory.allows(&key(protocol_action::CORE_GOAL_SET)));
+        assert!(!memory.allows(&key("proxima-code_emit_execution_request")));
 
         let overridden = resolve_tool_scope(
             Some(protocol_profile::MEMORY),
@@ -1407,8 +1450,8 @@ mod tests {
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows(protocol_resource::MEMORY));
-        assert!(overridden.allows("proxima-code_emit_execution_request"));
+        assert!(!overridden.allows(&key(protocol_resource::MEMORY)));
+        assert!(overridden.allows(&key("proxima-code_emit_execution_request")));
     }
 
     #[test]
@@ -1425,12 +1468,11 @@ mod tests {
     #[test]
     fn code_profile_grants_code_reads_only() {
         let registered = registered_tool_ids().expect("registered ids");
-        let registered: Vec<&str> = registered.iter().map(String::as_str).collect();
-        let granted = |scope: &ToolScope| -> BTreeSet<&str> {
+        let granted = |scope: &ToolScope| -> BTreeSet<String> {
             registered
                 .iter()
-                .copied()
                 .filter(|id| scope.allows(id))
+                .map(ToString::to_string)
                 .collect()
         };
 
@@ -1439,13 +1481,13 @@ mod tests {
         assert_eq!(
             granted(&code),
             BTreeSet::from([
-                "proxima-code_list_repos",
-                "proxima-code_open_file_revision",
-                "proxima-code_search_chunks",
-                "proxima-code_search_commits",
+                "proxima-code_list_repos".to_string(),
+                "proxima-code_open_file_revision".to_string(),
+                "proxima-code_search_chunks".to_string(),
+                "proxima-code_search_commits".to_string(),
             ])
         );
-        assert!(!code.allows_group_advertisement(protocol_tool::CORE_GOAL));
+        assert!(!code.allows_group_advertisement(&tool(protocol_tool::CORE_GOAL)));
 
         let administered = resolve_tool_scope(
             Some(protocol_profile::CODE),
@@ -1457,11 +1499,11 @@ mod tests {
         assert_eq!(
             granted(&administered),
             BTreeSet::from([
-                "proxima-code_list_repos",
-                "proxima-code_open_file_revision",
-                "proxima-code_register_repo",
-                "proxima-code_search_chunks",
-                "proxima-code_start_ingest_head_snapshot",
+                "proxima-code_list_repos".to_string(),
+                "proxima-code_open_file_revision".to_string(),
+                "proxima-code_register_repo".to_string(),
+                "proxima-code_search_chunks".to_string(),
+                "proxima-code_start_ingest_head_snapshot".to_string(),
             ])
         );
     }
@@ -1476,7 +1518,7 @@ mod tests {
 
     #[test]
     fn unknown_deny_entry_typo_fails_closed() {
-        let registered_ids = [protocol_tool::CORE_SEARCH_MEMORIES];
+        let registered_ids = keys([protocol_tool::CORE_SEARCH_MEMORIES]);
         let err = resolve_tool_scope(None, None, Some("core_memroy"), &registered_ids)
             .expect_err("typo'd deny entry must be rejected, not silently ignored");
         assert!(
@@ -1488,7 +1530,7 @@ mod tests {
 
     #[test]
     fn unknown_allow_entry_typo_fails_closed() {
-        let registered_ids = [protocol_tool::CORE_SEARCH_MEMORIES];
+        let registered_ids = keys([protocol_tool::CORE_SEARCH_MEMORIES]);
         let err = resolve_tool_scope(
             Some(protocol_profile::MEMORY),
             Some("core_memroy"),
@@ -1503,12 +1545,68 @@ mod tests {
         assert!(err.to_string().contains("core_memroy"), "message: {err}");
     }
 
+    /// An entry that is no scope key never reaches the registry comparison:
+    /// it fails startup, naming the variable and the entry, as an unknown id
+    /// does. Neighbouring valid entries do not rescue it.
+    #[test]
+    fn an_entry_that_is_not_a_scope_key_fails_startup_naming_it() {
+        let registered_ids = keys([
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            protocol_action::CORE_GOAL_SET,
+        ]);
+        for bad in [
+            "a:b:c",
+            "core_goal:",
+            ":set",
+            ":",
+            "resource:",
+            "core goal:set",
+            "core/goal",
+            "core_goal:set:extra",
+            "core_goal:\u{a0}set",
+        ] {
+            for (allow, deny, variable) in [
+                (
+                    Some(format!("core_search_memories, {bad}")),
+                    None,
+                    PROXIMA_TOOL_ALLOW,
+                ),
+                (
+                    None,
+                    Some(format!("{bad},core_search_memories")),
+                    PROXIMA_TOOL_DENY,
+                ),
+            ] {
+                let err = resolve_tool_scope(
+                    Some(protocol_profile::MEMORY),
+                    allow.as_deref(),
+                    deny.as_deref(),
+                    &registered_ids,
+                )
+                .expect_err("an entry that is no key must fail startup");
+                let message = err.to_string();
+                assert!(message.contains(variable), "{bad:?}: {message}");
+                assert!(message.contains("invalid tool id"), "{bad:?}: {message}");
+                assert!(message.contains(&format!("{bad:?}")), "{bad:?}: {message}");
+            }
+        }
+
+        // The same entry, set in the environment, stops the app from building.
+        let lookup = |name: &str| {
+            (name == PROXIMA_TOOL_ALLOW).then(|| "core_memory_spaces,a:b:c".to_string())
+        };
+        let Err(err) = build_app(config(), lookup) else {
+            panic!("a malformed PROXIMA_TOOL_ALLOW entry must fail startup");
+        };
+        assert!(err.to_string().contains("a:b:c"), "{err}");
+    }
+
     #[test]
     fn known_deny_entry_still_narrows_scope() {
-        let registered_ids = [
+        let registered_ids = keys([
             protocol_tool::CORE_SEARCH_MEMORIES,
             protocol_tool::CORE_MEMORY_SPACES,
-        ];
+        ]);
         let scope = resolve_tool_scope(
             None,
             None,
@@ -1516,18 +1614,18 @@ mod tests {
             &registered_ids,
         )
         .expect("known deny entry is accepted");
-        assert!(scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));
-        assert!(!scope.allows(protocol_tool::CORE_MEMORY_SPACES));
+        assert!(scope.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
+        assert!(!scope.allows(&key(protocol_tool::CORE_MEMORY_SPACES)));
     }
 
     #[test]
     fn grouped_action_deny_narrows_scope_and_advertisement() {
-        let registered_ids = [
+        let registered_ids = keys([
             protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
             protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
             protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
             protocol_action::CORE_TRANSFER_TO_OWNER,
-        ];
+        ]);
         let scope = resolve_tool_scope(
             None,
             None,
@@ -1536,12 +1634,12 @@ mod tests {
         )
         .expect("known grouped deny entries are accepted");
 
-        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
-        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
-        assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
-        assert!(!scope.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
-        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_TRANSFER));
+        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER)));
+        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER)));
+        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS)));
+        assert!(!scope.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
+        assert!(!scope.allows_group_advertisement(&tool(protocol_tool::CORE_MEMBERSHIP)));
+        assert!(!scope.allows_group_advertisement(&tool(protocol_tool::CORE_TRANSFER)));
     }
 
     #[test]

@@ -120,7 +120,7 @@ pub(crate) fn document_for_caller(
         .collect();
     let scope = auth.map(|context| context.authz.tool_scope());
     let resources: Vec<&ResourceContract> = all_core_resources()
-        .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource.scope_key))
+        .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource))
         .collect();
     document_with(&tools, &resources, public_url, caller)
 }

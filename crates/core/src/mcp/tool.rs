@@ -1,6 +1,6 @@
 use futures::future::BoxFuture;
 
-use crate::{ToolCaller, ToolCtx};
+use crate::{ActionName, ScopeKey, ScopeKeyError, ToolCaller, ToolCtx, ToolName, ToolScope};
 
 use super::{McpToolCtx, McpToolError, McpToolPresentation};
 
@@ -240,23 +240,43 @@ impl McpToolDescriptor {
     /// `tool:action` leaf per action for either dispatcher vocabulary
     /// (`action_arg_specs` or `argv_action_specs`). The one definition a
     /// palette is built from.
+    ///
+    /// # Panics
+    ///
+    /// When the tool or an action name is outside the scope-key grammar, or
+    /// a dispatcher is called `resource`. Registration refuses the first and
+    /// `try_freeze` refuses both, so a descriptor of a frozen registry never
+    /// does.
     #[must_use]
-    pub fn palette_keys(&self) -> Vec<String> {
+    pub fn palette_keys(&self) -> Vec<ScopeKey> {
         self.keyed_audiences().map(|(key, _)| key).collect()
     }
 
     /// The subset of [`Self::palette_keys`] that belongs to the owner alone:
     /// every key of an [`McpToolAudience::Owner`] tool, else each action
     /// declared [`McpToolAudience::Owner`].
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::palette_keys`].
     #[must_use]
-    pub fn owner_only_keys(&self) -> Vec<String> {
+    pub fn owner_only_keys(&self) -> Vec<ScopeKey> {
         self.keyed_audiences()
             .filter(|(_, audience)| *audience == McpToolAudience::Owner)
             .map(|(key, _)| key)
             .collect()
     }
 
-    fn keyed_audiences(&self) -> impl Iterator<Item = (String, McpToolAudience)> + '_ {
+    /// [`Self::palette_keys`] with the audience each key is for, or the first
+    /// name that is no scope key. The check `try_freeze` runs over every
+    /// tool; `palette_keys` is this, trusting it ran.
+    ///
+    /// # Errors
+    ///
+    /// [`ScopeKeyError`] for a tool or action name outside the grammar, or
+    /// an action under the tool `resource`.
+    pub(crate) fn scope_keys(&self) -> Result<Vec<(ScopeKey, McpToolAudience)>, ScopeKeyError> {
+        let tool = ToolName::parse(self.name)?;
         let tool_audience = self.audience;
         let effective = move |action: McpToolAudience| {
             if tool_audience == McpToolAudience::Owner {
@@ -265,21 +285,60 @@ impl McpToolDescriptor {
                 action
             }
         };
-        let flat = (self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty())
-            .then(|| (self.name.to_owned(), tool_audience));
+        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
+            return Ok(vec![(ScopeKey::Tool(tool), tool_audience)]);
+        }
         let tagged = self
             .action_arg_specs
             .iter()
-            .map(move |spec| (spec.action, effective(spec.audience)));
+            .map(|spec| (spec.action, effective(spec.audience)));
         let argv = self
             .argv_action_specs
             .iter()
-            .map(move |spec| (spec.action, effective(spec.audience)));
-        flat.into_iter().chain(
-            tagged
-                .chain(argv)
-                .map(|(action, audience)| (format!("{}:{action}", self.name), audience)),
-        )
+            .map(|spec| (spec.action, effective(spec.audience)));
+        tagged
+            .chain(argv)
+            .map(|(action, audience)| {
+                ScopeKey::action(tool.clone(), ActionName::parse(action)?)
+                    .map(|key| (key, audience))
+            })
+            .collect()
+    }
+
+    fn keyed_audiences(&self) -> impl Iterator<Item = (ScopeKey, McpToolAudience)> {
+        self.scope_keys()
+            .expect("try_freeze refuses a name that is no scope key")
+            .into_iter()
+    }
+
+    /// Whether `scope` lets a listing show this tool: a flat tool by its own
+    /// key, a dispatcher by its bare name or any one leaf
+    /// ([`ToolScope::allows_tool_advertisement`]). A name that is no key is
+    /// in no palette.
+    #[must_use]
+    pub fn advertised_by(&self, scope: &ToolScope) -> bool {
+        match scope {
+            ToolScope::All => true,
+            ToolScope::Palette(_) => ToolName::parse(self.name).is_ok_and(|tool| {
+                scope.allows_tool_advertisement(
+                    &tool,
+                    !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty(),
+                )
+            }),
+        }
+    }
+
+    /// Whether `scope` lets a listing show one `action` of this dispatcher
+    /// ([`ToolScope::advertises_action`]). An action name that is no key is
+    /// in no palette.
+    #[must_use]
+    pub fn action_advertised_by(&self, scope: &ToolScope, action: &str) -> bool {
+        match scope {
+            ToolScope::All => true,
+            ToolScope::Palette(_) => ToolName::parse(self.name)
+                .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
+                .is_ok_and(|(tool, action)| scope.advertises_action(&tool, &action)),
+        }
     }
 }
 
