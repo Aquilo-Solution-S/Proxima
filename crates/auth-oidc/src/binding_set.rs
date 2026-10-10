@@ -8,13 +8,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, ToolScope,
 };
 
 use crate::{
-    KeyResolver, OidcAuthConfig, OidcConfigError, OidcSubjectMap, OidcTokenValidator,
-    ValidatedOidcToken,
+    AuthorizedPartyPolicy, KeyResolver, OidcAuthConfig, OidcConfigError, OidcSubjectMap,
+    OidcTokenValidator, ValidatedOidcToken,
 };
 
 /// Every verified claim of a token, as [`OidcRoleShaper`] sees them.
@@ -200,6 +201,17 @@ impl OidcBinding {
         &self.route
     }
 
+    /// Refuse tokens whose authorized party (`azp`) this binding's route does
+    /// not allow. The policy belongs to this one `(issuer, audience)` route:
+    /// two bindings on one issuer each enforce their own. Without the call no
+    /// policy applies; a second call replaces the first. See
+    /// [`AuthorizedPartyPolicy`] for the rule.
+    #[must_use]
+    pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
+        self.validator = self.validator.with_authorized_party_policy(policy);
+        self
+    }
+
     async fn authz_for_token(
         &self,
         token: ValidatedOidcToken<OidcClaimMap>,
@@ -237,6 +249,32 @@ impl OidcBinding {
             binding.trusted_model_id,
         )?;
         self.role_shape.apply(ctx, &token)
+    }
+}
+
+/// The `iss` a token claims before any signature check.
+///
+/// It only selects which bindings are worth trying and never grants identity:
+/// every binding that remains validates the token in full, and one skipped for
+/// another issuer could not have accepted it, since the signed `iss` must equal
+/// that binding's issuer.
+struct ClaimedIssuer(String);
+
+impl ClaimedIssuer {
+    /// `None` when the payload or its `iss` cannot be read as a plain string
+    /// (a duplicate `iss` member included); every binding is then tried.
+    fn read(token: &str) -> Option<Self> {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            iss: String,
+        }
+        let payload = URL_SAFE_NO_PAD.decode(token.split('.').nth(1)?).ok()?;
+        let Payload { iss } = serde_json::from_slice(&payload).ok()?;
+        Some(Self(iss))
+    }
+
+    fn selects(&self, binding: &OidcBinding) -> bool {
+        binding.route.issuer == self.0
     }
 }
 
@@ -298,7 +336,16 @@ impl Authenticator for OidcBindingSet {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
         let Credentials::Bearer(token) = creds;
         let mut matches = Vec::new();
-        for binding in &self.bindings {
+        // The unverified `iss` skips bindings for other issuers, so their key
+        // resolvers never look up (or fetch) keys for a token they cannot
+        // accept. It is never an identity: the bindings left validate in full.
+        let claimed = ClaimedIssuer::read(token);
+        let candidates = self.bindings.iter().filter(|binding| {
+            claimed
+                .as_ref()
+                .is_none_or(|claimed| claimed.selects(binding))
+        });
+        for binding in candidates {
             match binding.validator.validate_with::<OidcClaimMap>(token).await {
                 Ok(validated) => matches.push((binding, validated)),
                 Err(reason) => tracing::debug!(
@@ -848,5 +895,193 @@ mod tests {
             Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(later)),
             "the stream cannot outlive the token"
         );
+    }
+
+    /// Counts the key lookups a binding's resolver serves.
+    struct CountingKeys {
+        inner: Arc<dyn KeyResolver>,
+        lookups: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl KeyResolver for CountingKeys {
+        async fn key_for(&self, kid: &str) -> Result<Arc<DecodingKey>, crate::KeyError> {
+            self.lookups
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.key_for(kid).await
+        }
+    }
+
+    const OTHER_ISSUER: &str = "https://other-issuer.example";
+
+    /// One binding per `(issuer, audience)`, each with its own lookup counter,
+    /// all trusting `keys`.
+    fn counted_set(
+        keys: &TestKeys,
+        routes: &[(&str, &str)],
+    ) -> (OidcBindingSet, Vec<Arc<std::sync::atomic::AtomicUsize>>) {
+        let subject = UserId::new(Uuid::from_u128(0x0E1E));
+        let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
+            agent: UserId::new(Uuid::from_u128(0xA9E1)),
+            owner: subject,
+            agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+        });
+        let mut counters = Vec::new();
+        let mut bindings = Vec::new();
+        for (issuer, audience) in routes {
+            let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            counters.push(Arc::clone(&lookups));
+            let mut map = OidcSubjectMap::new();
+            map.insert(*issuer, "owner-sub", subject)
+                .expect("subject map");
+            let mut config = config(audience);
+            config.issuer = (*issuer).to_owned();
+            bindings.push(
+                OidcBinding::new(
+                    config,
+                    Arc::new(CountingKeys {
+                        inner: resolver(keys.decoding.clone()),
+                        lookups,
+                    }),
+                    map,
+                    Arc::clone(&owner_access),
+                )
+                .expect("binding"),
+            );
+        }
+        (
+            OidcBindingSet::new(bindings).expect("binding set"),
+            counters,
+        )
+    }
+
+    fn lookups(counters: &[Arc<std::sync::atomic::AtomicUsize>]) -> Vec<usize> {
+        counters
+            .iter()
+            .map(|counter| counter.load(std::sync::atomic::Ordering::SeqCst))
+            .collect()
+    }
+
+    fn claims_of(issuer: &str, audience: &str) -> serde_json::Value {
+        claims_with(
+            audience,
+            jsonwebtoken::get_current_timestamp() + 3_600,
+            serde_json::json!({ "iss": issuer }),
+        )
+    }
+
+    /// The unverified `iss` only chooses which bindings look up keys: a token
+    /// naming an issuer no binding serves is refused before any lookup.
+    #[tokio::test]
+    async fn a_token_for_an_unserved_issuer_is_refused_without_a_key_lookup() {
+        let keys = test_keys();
+        let (bindings, counters) = counted_set(
+            &keys,
+            &[
+                (ISSUER, AGENT_AUD),
+                (ISSUER, OWNER_AUD),
+                (OTHER_ISSUER, OWNER_AUD),
+            ],
+        );
+        let token = signed(&keys, &claims_of("https://third-issuer.example", OWNER_AUD));
+
+        assert_eq!(
+            bindings
+                .authenticate(&Credentials::Bearer(token))
+                .await
+                .err(),
+            Some(AuthError::InvalidCredentials)
+        );
+        assert_eq!(lookups(&counters), [0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn only_the_bindings_of_the_claimed_issuer_look_up_keys() {
+        let keys = test_keys();
+        let (bindings, counters) = counted_set(
+            &keys,
+            &[
+                (ISSUER, AGENT_AUD),
+                (ISSUER, OWNER_AUD),
+                (OTHER_ISSUER, OWNER_AUD),
+            ],
+        );
+
+        let ctx = bindings
+            .authenticate(&Credentials::Bearer(signed(
+                &keys,
+                &claims_of(ISSUER, OWNER_AUD),
+            )))
+            .await
+            .expect("the owner binding of ISSUER accepts");
+        assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
+        assert_eq!(lookups(&counters), [1, 1, 0]);
+
+        bindings
+            .authenticate(&Credentials::Bearer(signed(
+                &keys,
+                &claims_of(OTHER_ISSUER, OWNER_AUD),
+            )))
+            .await
+            .expect("the binding of the other issuer accepts");
+        assert_eq!(lookups(&counters), [1, 1, 1]);
+    }
+
+    /// A payload that cannot be read selects nothing: every binding runs, as
+    /// before the selection existed, and the verified `iss` still decides.
+    #[tokio::test]
+    async fn an_unreadable_issuer_is_tried_against_every_binding() {
+        let keys = test_keys();
+        let (bindings, counters) = counted_set(
+            &keys,
+            &[
+                (ISSUER, AGENT_AUD),
+                (ISSUER, OWNER_AUD),
+                (OTHER_ISSUER, OWNER_AUD),
+            ],
+        );
+        let header = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({"alg": "RS256", "kid": KID, "typ": "JWT"}))
+                .expect("header"),
+        );
+        let unreadable = [
+            "!!not base64url!!".to_owned(),
+            URL_SAFE_NO_PAD.encode("not json"),
+            URL_SAFE_NO_PAD.encode(r#"{"sub":"owner-sub"}"#),
+            URL_SAFE_NO_PAD.encode(r#"{"iss":7}"#),
+            URL_SAFE_NO_PAD.encode(r#"{"iss":null}"#),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"iss":["{ISSUER}","{OTHER_ISSUER}"]}}"#)),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"iss":"{OTHER_ISSUER}","iss":"{ISSUER}"}}"#)),
+        ];
+        for (round, payload) in unreadable.iter().enumerate() {
+            let token = format!("{header}.{payload}.{}", URL_SAFE_NO_PAD.encode("signature"));
+            assert_eq!(
+                bindings
+                    .authenticate(&Credentials::Bearer(token))
+                    .await
+                    .err(),
+                Some(AuthError::InvalidCredentials),
+                "{payload}"
+            );
+            assert_eq!(lookups(&counters), [round + 1; 3], "{payload}");
+        }
+    }
+
+    /// A signed token with a non-string `iss` that names the binding's issuer
+    /// is accepted exactly as it was: the selection never narrows it away.
+    #[tokio::test]
+    async fn a_signed_issuer_array_is_still_accepted_by_the_binding_it_names() {
+        let keys = test_keys();
+        let (bindings, counters) =
+            counted_set(&keys, &[(ISSUER, OWNER_AUD), (OTHER_ISSUER, AGENT_AUD)]);
+        let mut claims = claims_of(ISSUER, OWNER_AUD);
+        claims["iss"] = serde_json::json!([ISSUER, "https://unrelated.example"]);
+
+        bindings
+            .authenticate(&Credentials::Bearer(signed(&keys, &claims)))
+            .await
+            .expect("the binding for ISSUER accepts an iss array that names it");
+        assert_eq!(lookups(&counters), [1, 1]);
     }
 }

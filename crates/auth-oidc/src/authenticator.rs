@@ -1,10 +1,11 @@
 //! OIDC bearer-JWT validation and authentication.
 //!
 //! [`OidcTokenValidator`] is the audited, authz-free boundary: JWKS
-//! signature verification (RSA-family pinned against alg-confusion),
-//! `iss`/`aud`/`exp` checks. Custom hosts that need more than one identity
-//! class (e.g. branching on `aud`) compose several validators sharing one
-//! [`KeyResolver`] and shape their own [`AuthzContext`] from
+//! signature verification (the algorithm follows the resolved key's type,
+//! never the token header), `iss`/`aud`/`exp` checks, and an optional
+//! authorized-party policy per binding. Custom hosts that need more than one
+//! identity class (e.g. branching on `aud`) compose several validators sharing
+//! one [`KeyResolver`] and shape their own [`AuthzContext`] from
 //! [`ValidatedOidcClaims`] — see `tests/custom_host_validation.rs`.
 //!
 //! [`OidcAuthenticator`] is the default [`Authenticator`] built on top of
@@ -18,22 +19,32 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, AlgorithmFamily, Validation, decode, decode_header};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::authorized_party::AuthorizedPartyPolicy;
 use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
 use crate::subject_map::OidcSubjectMap;
 
-/// The signature algorithms a token may carry: the RSA family, the only key
-/// type either resolver materializes. A pinned JWKS entry naming any other
-/// `alg` is refused against this same list, so the two cannot drift.
-pub(crate) const VERIFIED_ALGORITHMS: [Algorithm; 3] =
-    [Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
+/// The signature algorithms a key of this family verifies: RSA keys RS256,
+/// RS384 and RS512, EC keys ES256 (P-256), Ed25519 keys `EdDSA`. A shared
+/// secret verifies none, so `HS*` is refused whatever the key. The resolvers
+/// fix the family from the JWK's `kty`; the token header is only checked
+/// against this set, and a pinned JWKS entry naming any other `alg` is refused
+/// against the same set, so the two cannot drift.
+pub(crate) const fn verified_algorithms(family: AlgorithmFamily) -> &'static [Algorithm] {
+    match family {
+        AlgorithmFamily::Rsa => &[Algorithm::RS256, Algorithm::RS384, Algorithm::RS512],
+        AlgorithmFamily::Ec => &[Algorithm::ES256],
+        AlgorithmFamily::Ed => &[Algorithm::EdDSA],
+        AlgorithmFamily::Hmac => &[],
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct Claims {
@@ -74,7 +85,7 @@ pub enum OidcRejection {
     MissingKeyId,
     #[error("no verification key for kid {kid:?}: {reason}")]
     UnknownKey { kid: String, reason: String },
-    #[error("token algorithm is not one of RS256/RS384/RS512")]
+    #[error("token algorithm is not one the verification key's type accepts")]
     DisallowedAlgorithm,
     #[error("token signature does not verify")]
     BadSignature,
@@ -94,6 +105,13 @@ pub enum OidcRejection {
     ExpiryOutOfRange,
     #[error("token claims do not match the host's claim type: {0}")]
     CustomClaims(String),
+    /// The binding's [`AuthorizedPartyPolicy`] is set, `aud` names several
+    /// audiences and the token has no `azp`.
+    #[error("token has several audiences and no authorized party (azp)")]
+    MissingAuthorizedParty,
+    /// The binding's [`AuthorizedPartyPolicy`] does not list the token's `azp`.
+    #[error("token authorized party {azp:?} is not allowed")]
+    UnauthorizedParty { azp: String },
 }
 
 impl From<OidcRejection> for AuthError {
@@ -132,6 +150,7 @@ pub struct OidcTokenValidator {
     audience: String,
     leeway_secs: u64,
     keys: Arc<dyn KeyResolver>,
+    authorized_party: Option<AuthorizedPartyPolicy>,
 }
 
 impl std::fmt::Debug for OidcTokenValidator {
@@ -139,6 +158,7 @@ impl std::fmt::Debug for OidcTokenValidator {
         f.debug_struct("OidcTokenValidator")
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
+            .field("authorized_party", &self.authorized_party)
             .finish_non_exhaustive()
     }
 }
@@ -158,7 +178,17 @@ impl OidcTokenValidator {
             audience: config.audience,
             leeway_secs: config.leeway_secs,
             keys,
+            authorized_party: None,
         })
+    }
+
+    /// Refuse tokens whose authorized party (`azp`) this validator's issuer
+    /// and audience do not allow. Without the call no policy applies; a second
+    /// call replaces the first. See [`AuthorizedPartyPolicy`] for the rule.
+    #[must_use]
+    pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
+        self.authorized_party = Some(policy);
+        self
     }
 
     /// # Errors
@@ -178,7 +208,7 @@ impl OidcTokenValidator {
     ///
     /// `C` sees every claim, the registered ones included; nothing in it is
     /// trusted until the signature, `iss`, `aud`, `exp` and `nbf` checks
-    /// above it have passed.
+    /// above it, and the authorized-party policy when one is set, have passed.
     ///
     /// # Errors
     ///
@@ -201,13 +231,19 @@ impl OidcTokenValidator {
                 kid,
             })?;
 
-        // Pin the verification algorithm to the RSA family (the only key
-        // type the JWKS resolver materializes). Never derive it from the
-        // attacker-controlled token header — that enables alg-confusion
-        // (e.g. forging an HS256 token signed with the public RSA key, or
-        // `alg: none`).
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.algorithms = VERIFIED_ALGORITHMS.to_vec();
+        // The algorithms come from the resolved key's type, which the resolver
+        // fixed from the JWK's `kty`. The attacker-controlled token header is
+        // only checked against that set, never the source of it: that is what
+        // stops alg-confusion (an HS256 token signed with the public RSA key,
+        // `alg: none`, an ES256 token against an Ed25519 key).
+        let algorithms = verified_algorithms(key.family());
+        if !algorithms.contains(&header.alg) {
+            return Err(OidcRejection::DisallowedAlgorithm);
+        }
+        let mut validation = Validation {
+            algorithms: algorithms.to_vec(),
+            ..Validation::default()
+        };
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
         validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
@@ -219,6 +255,9 @@ impl OidcTokenValidator {
 
         let data = decode::<serde_json::Value>(token, &key, &validation)
             .map_err(|err| OidcRejection::from_jwt(&err, &self.issuer, &self.audience))?;
+        if let Some(policy) = &self.authorized_party {
+            policy.check(&data.claims)?;
+        }
         let registered = Claims::deserialize(&data.claims)
             .map_err(|err| OidcRejection::Malformed(err.to_string()))?;
         let expires_at = UNIX_EPOCH
@@ -279,6 +318,16 @@ impl OidcAuthenticator {
             subject_map,
             owner_access,
         })
+    }
+
+    /// Refuse tokens whose authorized party (`azp`) this authenticator's
+    /// issuer and audience do not allow. Without the call no policy applies; a
+    /// second call replaces the first. See [`AuthorizedPartyPolicy`] for the
+    /// rule.
+    #[must_use]
+    pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
+        self.validator = self.validator.with_authorized_party_policy(policy);
+        self
     }
 }
 
