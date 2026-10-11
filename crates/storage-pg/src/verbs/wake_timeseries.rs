@@ -166,6 +166,7 @@ pub async fn write_armed_goal(
             handle: None,
             schema_id: "core/task-v1".into(),
             title: title.into(),
+            text: None,
             state: GoalState::Active,
             request_id: request_id.into(),
             close_fact_t: None,

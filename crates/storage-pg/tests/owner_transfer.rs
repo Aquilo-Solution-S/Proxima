@@ -2620,6 +2620,7 @@ async fn transfer_refuses_goal_entities() {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
                 title: "transfer me".into(),
+                text: None,
                 state: GoalState::Active,
                 request_id: "pub-g".into(),
                 close_fact_t: None,

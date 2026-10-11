@@ -13,6 +13,59 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.27
+
+Existing v0.0.26 databases upgrade in place, in version order. The release
+ships one additive core migration and no flavor migration.
+
+The file is labelled `_v031_`: the label counts merged migrations, and `_v030_`
+is `0024` ([v0.0.26](#v0026)).
+
+| Lane | Migration |
+|---|---|
+| Core | `0025_v031_goal_text.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text)) > 0)`, backfilled from `proxima_core.goal_replay_declaration` |
+
+**Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
+unknown, never empty: a version that no declaration can speak for (written
+before v0.0.13 recorded declarations, or a row written outside the Goal write
+verbs) stays `NULL`, and the database refuses a blank text. Create, modify and
+decompose store the text they were given. Transition and achieve store exactly
+their prior version's text, `NULL` included. The table stays append-only, so a
+stored text never changes.
+
+**Backfill.** For every `goal` row, `text` is the text of the latest
+declaration among the rows of the same `handle` with `t` at or before the
+row's own that carries a non-blank string text. The text sits at a fixed place
+of the declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
+
+| `declaration ->> 'verb'` | JSON path |
+|---|---|
+| `create` | `#>> '{draft,text}'` |
+| `modify` | `#>> '{replacement,text}'` |
+| `decompose_child` | `#>> '{payload,text}'` |
+
+`transition` and `achieve` declare no text, so their versions inherit the
+text of the version before. A modify never reaches back to an earlier version,
+a blank or non-string text declares nothing, and a row with no declaration
+before it in its series stays `NULL`: the text is never guessed from the title.
+Re-running the file changes nothing: `ADD COLUMN IF NOT EXISTS` skips the
+column and its check together, and only rows whose text is still `NULL` are
+written. An empty database has no rows to visit.
+
+**Locks.** The migration takes `ACCESS EXCLUSIVE` on `proxima_core.goal` for
+its transaction: a validating scan for the check, then one `UPDATE` that writes
+a new row version for every Goal version it can give a text (the old versions
+are left for autovacuum). The append-only trigger `goal_append_only` is
+disabled for that one statement and enabled again before the transaction
+commits, so no concurrent write sees the gap. No other table is touched.
+
+**Operator action.** None when boot applies migrations. A deployment with
+`PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
+binary starts: boot checks for the column and its constraint and refuses a
+database without them ("apply migrations before boot"). A v0.0.26 binary run
+against the upgraded database keeps working and writes `NULL` text, which reads
+as unknown.
+
 ## v0.0.26
 
 Existing v0.0.25 databases upgrade in place, in version order. The release

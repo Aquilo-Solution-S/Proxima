@@ -2,7 +2,8 @@ use super::wake::prepare_goal_wake_plan;
 use super::{
     GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
     PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, StorageError, Transaction,
-    WakeWrite, lock_prepared_goal_write, persist_prepared_goal_write, prepare_goal_write,
+    WakeWrite, column_text, lock_prepared_goal_write, persist_prepared_goal_write,
+    prepare_goal_write,
 };
 use crate::verbs::goal_timeseries::{
     GoalWriteCommand, attach_goal_close_fact_reservation, load_goal_by_request_id,
@@ -86,6 +87,7 @@ pub(super) async fn prepare_goal_insert<'a>(
         handle,
         schema_id: draft.schema_id.as_str().to_string(),
         title: draft.title.clone(),
+        text: column_text(&draft.text),
         state: draft.state,
         request_id: draft.request_id.clone(),
         close_fact_t: None,

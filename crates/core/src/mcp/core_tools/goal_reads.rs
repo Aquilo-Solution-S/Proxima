@@ -5,6 +5,7 @@
 //! external harnesses that drive the wake loop.
 
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
 
 use crate::GoalId;
 use crate::mcp::cursor as wire_cursor;
@@ -47,8 +48,17 @@ pub struct GoalItem {
     /// Goal reference (`G:<uuid>`), as accepted by `core_goal`.
     pub goal: String,
     pub title: String,
+    /// The goal's prompt text as of this version; `null` when unknown (a
+    /// version written before the text was stored, with no recorded
+    /// declaration to recover it from).
+    pub text: Option<String>,
     pub state: String,
     pub schema_id: String,
+    /// When the goal was set: the time of its first version (RFC 3339).
+    pub set_at: String,
+    /// When this version was written (RFC 3339); equal to `set_at` on the
+    /// first version.
+    pub changed_at: String,
     /// Goals this one depends on (`G:<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
     /// Stored wake configuration; absent when the goal is not armed.
@@ -113,7 +123,7 @@ pub async fn list_goals(
 
     let goal_ids: Vec<GoalId> = response.goals.iter().map(|row| row.id).collect();
     let wake_configs = engine.read_goal_wake_configs(&ctx.authz, &goal_ids).await?;
-    let goals = project_goals(&ctx, response.goals, wake_configs);
+    let goals = project_goals(&ctx, response.goals, wake_configs)?;
     let next_cursor = response.next_cursor.and_then(|cursor| match cursor {
         QueryCursor::Goal {
             created_at,
@@ -151,7 +161,7 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
     let wake_configs = engine
         .read_goal_wake_configs(&ctx.authz, &[goal_id])
         .await?;
-    project_goals(&ctx, response.goals, wake_configs)
+    project_goals(&ctx, response.goals, wake_configs)?
         .into_iter()
         .next()
         .ok_or_else(|| McpToolError::NotFound(format!("goal {raw} not found")))
@@ -161,7 +171,7 @@ fn project_goals(
     ctx: &McpToolCtx,
     rows: Vec<crate::verbs::query::GoalRow>,
     wake_configs: Vec<GoalWakeConfigRow>,
-) -> Vec<GoalItem> {
+) -> Result<Vec<GoalItem>, McpToolError> {
     let mut wake_by_goal: std::collections::BTreeMap<uuid::Uuid, GoalWakeConfigRow> = wake_configs
         .into_iter()
         .map(|row| (row.goal_id.into_inner(), row))
@@ -171,20 +181,29 @@ fn project_goals(
             let wake = wake_by_goal
                 .remove(&row.id.into_inner())
                 .map(|config| wake_config_item(ctx, config));
-            GoalItem {
+            Ok(GoalItem {
                 goal: format_prefixed_uuid(row.id.into_inner(), PrefixedUuidClass::Goal),
                 title: row.title,
+                text: row.text,
                 state: state_str(row.state).to_string(),
                 schema_id: row.schema_id.as_str().to_string(),
+                set_at: format_rfc3339(row.set_at, "set_at")?,
+                changed_at: format_rfc3339(row.changed_at, "changed_at")?,
                 dependencies: row
                     .dependency_goal_ids
                     .into_iter()
                     .map(|id| format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal))
                     .collect(),
                 wake,
-            }
+            })
         })
         .collect()
+}
+
+fn format_rfc3339(value: time::OffsetDateTime, field: &str) -> Result<String, McpToolError> {
+    value
+        .format(&Rfc3339)
+        .map_err(|err| McpToolError::Other(format!("format goal {field}: {err}")))
 }
 
 fn wake_config_item(ctx: &McpToolCtx, config: GoalWakeConfigRow) -> WakeConfigItem {

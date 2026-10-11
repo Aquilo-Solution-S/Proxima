@@ -45,7 +45,7 @@ use replay::{
     modify_replay_declaration, record_goal_replay_declaration, require_goal_replay,
     resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
 };
-use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeWrite};
+use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeWrite, column_text, draft_text};
 
 pub(crate) use crate::verbs::goal_timeseries::{
     GoalWritePreparation, lock_prepared_goal_write, lock_prepared_goal_writes,

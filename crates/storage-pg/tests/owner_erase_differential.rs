@@ -706,6 +706,9 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     ("cooled", "origins"),
     ("cooled", "refs"),
     ("cooled", "cold_digest"),
+    // 0025 added the Goal prompt text after this frozen baseline; the
+    // export and erase of it are asserted directly in `goal_text.rs`.
+    ("goal", "text"),
 ];
 
 fn names_relation(table: &str, relation: &str) -> bool {

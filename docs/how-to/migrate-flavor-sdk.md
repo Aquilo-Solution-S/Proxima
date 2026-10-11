@@ -2,13 +2,18 @@
 
 ## v0.0.27
 
-Pin all Proxima Rust dependencies to the same `v0.0.27` tag. No migration.
-**Breaking, no shims** (#435): `MemoryReadPort` gained a required method, so a
-host or test double that implements it stops compiling until it adds the method.
+Pin all Proxima Rust dependencies to the same `v0.0.27` tag. One additive core
+migration, `0025_v031_goal_text.sql`; boot applies it ([migrations
+§v0.0.27](migrations.md#v0027)). **Breaking, no shims** (#435): `MemoryReadPort`
+gained a required method and `GoalRow` gained fields, so a host or test double
+that implements the one or builds the other stops compiling until it adds them.
 
 | Removed / changed | Upgrade |
 |---|---|
 | `impl MemoryReadPort for T` | Add `async fn count_memories(&self, owner_scope: Option<&OwnerScope>, read_owners: &[OwnerRef]) -> Result<MemoryCounts, StorageError>`: current memories by kind over the owners the caller reads, one per series head and one per Goal head. Fill the count with `MemoryCounts::slot(kind)`; a stored kind that is not one of the four is `StorageError::Internal`, never skipped. A fake that holds no memories returns `Ok(MemoryCounts::default())` |
+| `GoalRow { .. }` built by hand (a fake `MemoryReadPort`, a test) | Add `text: Option<String>`, `set_at: time::OffsetDateTime` and `changed_at: time::OffsetDateTime`. `text` is this version's prompt text, `None` when unknown and never blank. `set_at` is the time of the series' first version (the least `t` of the `handle`) and is the same on every version; `changed_at` is the time of this version's `id`, equal to `set_at` on the first version. Both serialize as RFC 3339 strings; `text` deserializes to `None` when absent, the two times are required |
+| `GoalWriteCommand { .. }` (`proxima_storage_pg::verbs::goal_timeseries`) | Add `text: Option<String>` after `title`. `Some` is stored as the version's text and must not be blank (the database refuses it, `goal_text_nonblank_chk`); `None` stores NULL, unknown. A lifecycle write that moves a Goal on stores exactly its prior version's text, `None` included. The Goal write verbs (`create_goal_atomic` and the rest) are unchanged and fill it themselves |
+| Changed | `proxima://goals` and `proxima://goal/{id}` return `text` (the full text in the listing too; JSON `null` when unknown, the key always present), `set_at` and `changed_at` (RFC 3339 strings) on every goal. A client that rejects unknown fields adds the three ([14 §Core Memory MCP Surface](../14-protocol-surface.md#core-memory-mcp-surface)). The export bundle's `proxima_core.goal` rows carry `text` |
 | New | Resource `proxima://memories/counts` (`resource:memory-counts` scope key, REST `GET /v1/resources/memories/counts`), answering `{"counts": {"Fact", "Abstraction", "Perspective", "Goal"}}` with all four keys always present ([14 §Core Memory MCP Surface](../14-protocol-surface.md#core-memory-mcp-surface)). A palette that lists resources by key adds `ScopeKey::Resource(ResourceKey::parse("memory-counts")?)` to expose it. `Engine::memory_counts(&AuthzContext) -> Result<MemoryCounts, ProtocolError>` and `MemoryCounts` are exported from `proxima::host` |
 
 ## v0.0.26

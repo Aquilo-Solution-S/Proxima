@@ -30,10 +30,10 @@ Goal series and version fields:
 | Surface | Fields |
 |---|---|
 | `goal_head` | stable `handle`, registered `schema_id`, frozen `owner`, current `t` |
-| Goal version | `handle`, UUIDv7 `t`, `owner`, `title`, `state`, Owner-scoped `request_id` |
+| Goal version | `handle`, UUIDv7 `t`, `owner`, `title`, nullable `text`, `state`, Owner-scoped `request_id` |
 | Topology | `assignment_t`, `dependency_t[]`, `evidence_t[]` |
 | Lifecycle/write | `close_fact_t`, optional `wake_id`, optional `write_act_t` |
-| Body | optional schema-specific typed sidecar keyed by `t`; no `text` or payload bytes on the Goal row |
+| Body | optional schema-specific typed sidecar keyed by `t`; no payload bytes on the Goal row. The prompt `text` is the one body field the row keeps (below) |
 
 States:
 
@@ -43,6 +43,18 @@ States:
 | `Paused` | no | no | Suspended direction |
 | `Achieved` | no | yes | Positive close |
 | `Abandoned` | no | yes | Post-active negative close |
+
+**Goal text.** `goal.text` is the prompt of that version, so a read returns it
+without the sidecar. `NULL` means unknown, never empty: a version no replay
+declaration can speak for (written before v0.0.13) stays `NULL`, and a check
+(`goal_text_nonblank_chk`) refuses a blank. Create, modify and each decomposed
+child store the text they were given. A transition (pause, resume, abandon) and
+an achievement store exactly the prior version's text, `NULL` included, so the
+text of a series changes only at a modify. A read also returns `set_at`, the
+time of the series' first version, and `changed_at`, the time of the version
+read; a first version has `set_at == changed_at`. Both come from the UUIDv7
+`t`, not from a column. `set_by` and per-version authors are not part of the
+row.
 
 Goal-to-Goal decomposition, dependency, and inspiration are **Goal row
 fields**: `dependency_t`, `evidence_t`, and `assignment_t`. The Goal owns the

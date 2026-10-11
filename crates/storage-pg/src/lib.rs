@@ -440,6 +440,7 @@ async fn ensure_core_schema_markers_on_connection(
         sqlx::query_scalar(OWNER_RLS_TABLE_INSTALLER_MARKERS),
     )
     .await?;
+    probe_marker_group(connection, sqlx::query_scalar(GOAL_TEXT_MARKERS)).await?;
     Ok(())
 }
 
@@ -1488,6 +1489,31 @@ const OWNER_RLS_TABLE_INSTALLER_MARKERS: &str = r"SELECT CASE
          ELSE NULL
        END";
 
+/// v0.0.31: the Goal version's prompt text, nullable and never blank
+/// (migration 0025). `goal` is proven present by `CORE_RELATION_MARKERS`.
+const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'goal'
+                     AND column_name = 'text'
+                     AND data_type = 'text'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'goal.text must be a nullable text column'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM pg_constraint c
+                   WHERE c.conrelid = to_regclass('proxima_core.goal')
+                     AND c.conname = 'goal_text_nonblank_chk'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND pg_get_constraintdef(c.oid, true)
+                         = 'CHECK (text IS NULL OR length(btrim(text)) > 0)'
+                )
+           THEN 'goal.text non-blank check is missing or incorrect'
+         ELSE NULL
+       END";
+
 /// Every `lexical_language` column in `proxima_core` is FK-stamped against
 /// `lexical_languages(config)`, and flavor #0 declared each one.
 ///
@@ -2516,7 +2542,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24,
+                24, 25,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2531,8 +2557,9 @@ mod tests {
              0017_v016_metadata_write_scope.sql, 0018_v020_owner_rls_installer.sql and
              0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql, \
              0021_v027_query_stopwords.sql, 0022_v028_coarse_pin_lock.sql, \
-             0023_v029_kind_scoped_owner_rls.sql and \
-             0024_v030_owner_rls_table_installer.sql"
+             0023_v029_kind_scoped_owner_rls.sql, \
+             0024_v030_owner_rls_table_installer.sql and \
+             0025_v031_goal_text.sql"
         );
     }
 
