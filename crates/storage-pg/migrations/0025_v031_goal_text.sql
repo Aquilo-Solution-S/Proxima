@@ -17,15 +17,14 @@
 --
 -- A write that gives a text (create, modify, a decomposed child) stores it. A
 -- write that only moves the lifecycle (transition, achieve) stores exactly its
--- prior version's text, NULL included. The database enforces that carry rule
--- for every writer: `goal_text_carried` below refuses a version whose state
--- differs from its predecessor's and whose text is not the predecessor's, so a
--- writer that omits the column (an older process) cannot drop a text.
+-- prior version's text, NULL included. The Goal write verbs do the carry. A
+-- foreign key keeps a series to its head's owner: a version of another owner
+-- cannot join it.
 --
 -- Additive and idempotent: ADD COLUMN IF NOT EXISTS skips the column and its
 -- CHECK together on a second run, the backfill only writes rows whose text is
--- still NULL, and the function and trigger are CREATE OR REPLACE. An empty
--- database has no rows to visit.
+-- still NULL, and the unique constraint and the foreign key are dropped and
+-- added again. An empty database has no rows to visit.
 
 ALTER TABLE proxima_core.goal
     ADD COLUMN IF NOT EXISTS text text
@@ -49,9 +48,9 @@ ALTER TABLE proxima_core.goal
 --
 -- The windows partition by owner as well as handle. A Proxima writer keeps a
 -- series to its head's owner, but before this version the database did not:
--- a raw insert could join another owner's handle. Partitioning by owner keeps
--- one owner's text out of another owner's row, so that row's export and read
--- never show it.
+-- a raw insert could join another owner's handle (from 0025 the foreign key
+-- below refuses such a row). Partitioning by owner keeps one owner's text out
+-- of another owner's row, so that row's export and read never show it.
 --
 -- `goal` is append-only, and `goal_append_only` refuses every UPDATE. The one
 -- statement that is allowed to fill the new column runs with that guard off.
@@ -102,83 +101,17 @@ UPDATE proxima_core.goal g
 
 ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only;
 
--- The carry rule. A version whose state differs from its predecessor's keeps
--- the predecessor's text exactly, NULL included; a version that keeps the
--- state (a modify) is free to change it. The first version of a series has no
--- predecessor and is free.
---
--- The predecessor is the series' last version, and a new version joins the
--- series after it: a t before the last one is refused (the last one's own t
--- is a duplicate, which the primary key refuses as one). Otherwise a
--- version slipped between two others would pass against its own neighbour
--- and leave the later one with a predecessor whose text it does not carry.
--- A Goal verb names the version it succeeds, and the head compare-and-set
--- refuses it when that is no longer the head, so a verb meets this only if the
--- clock stepped back; a raw writer that names no prior (write_goal) or picks
--- its own t is held to the series order here instead of misordering it.
---
--- Written the way `goal_no_later_after_terminal` guards the other series rule:
--- a BEFORE INSERT row trigger on `goal` raising 23514, an invoker routine. The
--- predecessor is a row of the inserted row's own owner, and the owner write
--- policy covers SELECT as well (FOR ALL), so every scope that may insert the
--- row sees it; no platform bridge is needed. The search_path is pinned like
--- the other routines since 0019.
---
--- One insert per series at a time, and only by the series' own owner. The
--- trigger first writes the series' goal_head row (a no-op `t = t`) where the
--- owner is the inserted row's owner, and refuses the version when there is no
--- such row: a head of another owner, or one the writer's RLS scope cannot
--- write, fails closed. Every goal row has a head (goal.handle references it),
--- and every Goal writer advances that head before it inserts, so for them the
--- row is theirs and already locked. A raw insert waits for the other writers
--- and they for it. Under READ COMMITTED the predecessor read that follows is a
--- new statement and sees the version the previous holder committed. Because
--- every insert writes the head, a REPEATABLE READ or SERIALIZABLE writer whose
--- snapshot predates another insert on the series fails with a serialization
--- error (40001) here instead of judging itself against a stale predecessor.
-CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = pg_catalog, proxima_core, pg_temp
-AS $$
-DECLARE
-    prior_t uuid;
-    prior_state proxima_core.goal_state;
-    prior_text text;
-BEGIN
-    UPDATE proxima_core.goal_head h
-       SET t = h.t
-     WHERE h.handle = NEW.handle
-       AND h.owner_id = NEW.owner_id;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION
-            'goal_text_carried: a version joins a series whose head belongs to its own owner'
-            USING ERRCODE = '23514';
-    END IF;
-    SELECT g.t, g.state, g.text
-      INTO prior_t, prior_state, prior_text
-      FROM proxima_core.goal g
-     WHERE g.handle = NEW.handle
-     ORDER BY g.t DESC
-     LIMIT 1;
-    IF FOUND AND prior_t > NEW.t THEN
-        RAISE EXCEPTION
-            'goal_text_carried: a version joins its series after the last version'
-            USING ERRCODE = '23514';
-    END IF;
-    IF FOUND
-       AND prior_state IS DISTINCT FROM NEW.state
-       AND NEW.text IS DISTINCT FROM prior_text
-    THEN
-        RAISE EXCEPTION
-            'goal_text_carried: a version whose state differs from its predecessor keeps the predecessor text exactly'
-            USING ERRCODE = '23514';
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE OR REPLACE TRIGGER goal_text_carried
-    BEFORE INSERT ON proxima_core.goal
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.goal_text_carried();
+-- A series belongs to its head's owner. A foreign key checks its target
+-- without row-level security, so a row of another owner cannot join the series
+-- whatever scope writes it. NOT VALID: a row an earlier raw insert put into
+-- another owner's series stays; every new row is checked. Postgres has no
+-- ADD CONSTRAINT IF NOT EXISTS, so both constraints are dropped (the foreign
+-- key first, it depends on the unique one) and added again.
+ALTER TABLE proxima_core.goal DROP CONSTRAINT IF EXISTS goal_owner_matches_head_fk;
+ALTER TABLE proxima_core.goal_head DROP CONSTRAINT IF EXISTS goal_head_handle_owner_key;
+ALTER TABLE proxima_core.goal_head
+    ADD CONSTRAINT goal_head_handle_owner_key UNIQUE (handle, owner_id);
+ALTER TABLE proxima_core.goal
+    ADD CONSTRAINT goal_owner_matches_head_fk
+    FOREIGN KEY (handle, owner_id) REFERENCES proxima_core.goal_head (handle, owner_id)
+    NOT VALID;

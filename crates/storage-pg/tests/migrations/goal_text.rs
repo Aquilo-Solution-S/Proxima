@@ -246,14 +246,15 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
         let mut seed = async |offset: u64,
                               versions: Vec<Version>,
                               texts: Vec<Option<&str>>|
-               -> Result<(), sqlx::Error> {
+               -> Result<Vec<Uuid>, sqlx::Error> {
             assert_eq!(versions.len(), texts.len(), "the fixture is complete");
             let ts = seed_series(pool, owner, base + offset, &versions).await?;
             expected.extend(
-                ts.into_iter()
+                ts.iter()
+                    .copied()
                     .zip(texts.into_iter().map(|text| text.map(str::to_owned))),
             );
-            Ok(())
+            Ok(ts)
         };
 
         // A full life: a modify changes the text for itself and what follows,
@@ -280,12 +281,15 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
         .await?;
 
         // A blank or non-string text declares nothing: the earlier text
-        // stands. A decoy `text` on a verb that has none is not read.
-        seed(
+        // stands. Blank is ASCII whitespace only (the CHECK's definition), the
+        // vertical tab and form feed included. A decoy `text` on a verb that
+        // has none is not read.
+        let gamma = seed(
             10,
             vec![
                 version("Active", Some(create("gamma"))),
                 version("Active", Some(modify("   "))),
+                version("Active", Some(modify("\t\n\u{b}\u{c}"))),
                 version("Active", Some(modify(7))),
                 version("Paused", {
                     let mut decoy = transition("Paused");
@@ -295,7 +299,7 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
                     Some(decoy)
                 }),
             ],
-            vec![Some("gamma"), Some("gamma"), Some("gamma"), Some("gamma")],
+            vec![Some("gamma"); 5],
         )
         .await?;
 
@@ -332,7 +336,27 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
             vec![Some("epsilon"), Some("epsilon")],
         )
         .await?;
-        assert_eq!(expected.len(), 18);
+
+        // Before 0025 a raw insert could put a row of another owner into a
+        // series (the foreign key checks the handle only). The backfill reads
+        // each owner's declarations apart, so the first owner's text never
+        // lands in that row, where its owner's export and reads would show it.
+        let other_owner = seed_owner(pool).await?;
+        let handle: Uuid = sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
+            .bind(gamma[0])
+            .fetch_one(pool)
+            .await?;
+        let stranger = t_at(base + 55);
+        insert_version(
+            pool,
+            handle,
+            other_owner,
+            stranger,
+            &version("Active", None),
+        )
+        .await?;
+        expected.insert(stranger, None);
+        assert_eq!(expected.len(), 20);
 
         // The released runner takes the database from 0024 to head.
         super::apply_current_migrations(&pg).await?;
@@ -365,159 +389,6 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
     result
 }
 
-/// Before 0025 a raw insert could put a row of owner B into owner A's series:
-/// the foreign key checks the handle only, and the row policy checks the row's
-/// own owner. The backfill reads each owner's declarations apart, so A's text
-/// never lands in B's row, where B's export and reads would show it, and B's
-/// text never lands in A's.
-#[tokio::test]
-async fn a_row_of_another_owner_in_the_series_never_takes_its_text()
--> Result<(), Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    let result: TestResult = async {
-        let pg = database_at_0024(&db_name).await?;
-        let pool = pg.pool_for_tests();
-        let owner_a = seed_owner(pool).await?;
-        let owner_b = seed_owner(pool).await?;
-        let base = 1_700_000_000_000;
-
-        let a_ts = seed_series(
-            pool,
-            owner_a,
-            base,
-            &[
-                version("Active", Some(create("secret"))),
-                version("Paused", Some(transition("Paused"))),
-            ],
-        )
-        .await?;
-        let handle: Uuid = sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
-            .bind(a_ts[0])
-            .fetch_one(pool)
-            .await?;
-        let mut expected: BTreeMap<Uuid, Option<String>> = a_ts
-            .into_iter()
-            .map(|t| (t, Some("secret".to_owned())))
-            .collect();
-
-        // B's rows interleave with A's later ones.
-        for (offset, owner, version, text) in [
-            (30, owner_b, version("Active", None), None),
-            (
-                40,
-                owner_b,
-                version("Active", Some(modify("bravo"))),
-                Some("bravo"),
-            ),
-            (
-                50,
-                owner_a,
-                version("Active", Some(transition("Active"))),
-                Some("secret"),
-            ),
-            (
-                60,
-                owner_b,
-                version("Paused", Some(transition("Paused"))),
-                Some("bravo"),
-            ),
-        ] {
-            let t = t_at(base + offset);
-            insert_version(pool, handle, owner, t, &version).await?;
-            expected.insert(t, text.map(str::to_owned));
-        }
-
-        super::apply_current_migrations(&pg).await?;
-        assert_eq!(stored_texts(pool).await?, expected);
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-/// Blank is one definition in the CHECK and in the backfill: nothing left after
-/// removing the six ASCII whitespace characters. A declaration whose text is
-/// blank in that sense declares nothing, so its version inherits the text
-/// declared before it, or stays unknown when there is none. A text with any
-/// other character in it, `U+00A0` and the other Unicode spaces included, is
-/// not blank to the database and is stored as declared.
-#[tokio::test]
-async fn an_ascii_whitespace_declaration_declares_nothing() -> Result<(), Box<dyn std::error::Error>>
-{
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    let result: TestResult = async {
-        let pg = database_at_0024(&db_name).await?;
-        let pool = pg.pool_for_tests();
-        let owner = seed_owner(pool).await?;
-        let base = 1_700_000_000_000;
-        let every_kind = " \t\n\r\x0b\x0c";
-
-        let mut expected: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
-        let mut seed = async |offset: u64, versions: Vec<Version>, texts: Vec<Option<&str>>| {
-            assert_eq!(versions.len(), texts.len(), "the fixture is complete");
-            let ts = seed_series(pool, owner, base + offset, &versions).await?;
-            expected.extend(
-                ts.into_iter()
-                    .zip(texts.into_iter().map(|text| text.map(str::to_owned))),
-            );
-            Ok::<(), sqlx::Error>(())
-        };
-
-        // Earlier text stands under a tab, a newline, a vertical tab, a form
-        // feed and all six together.
-        seed(
-            0,
-            vec![
-                version("Active", Some(create("alpha"))),
-                version("Active", Some(modify("\t"))),
-                version("Active", Some(modify("\n"))),
-                version("Active", Some(modify("\u{b}"))),
-                version("Active", Some(modify("\u{c}"))),
-                version("Active", Some(modify(every_kind))),
-                version("Paused", Some(transition("Paused"))),
-            ],
-            vec![Some("alpha"); 7],
-        )
-        .await?;
-
-        // Nothing declared before a blank one: unknown, until a real text.
-        seed(
-            10,
-            vec![
-                version("Active", Some(create("\t"))),
-                version("Paused", Some(transition("Paused"))),
-                version("Active", Some(modify("\r\n"))),
-                version("Active", Some(modify("real"))),
-                version("Paused", Some(transition("Paused"))),
-            ],
-            vec![None, None, None, Some("real"), Some("real")],
-        )
-        .await?;
-
-        // Not ASCII whitespace, so not blank: kept as declared, padding and
-        // all.
-        seed(
-            15,
-            vec![
-                version("Active", Some(create("\u{a0}"))),
-                version("Active", Some(modify(" \u{2003}\t"))),
-                version("Paused", Some(transition("Paused"))),
-            ],
-            vec![Some("\u{a0}"), Some(" \u{2003}\t"), Some(" \u{2003}\t")],
-        )
-        .await?;
-
-        super::apply_current_migrations(&pg).await?;
-        assert_eq!(stored_texts(pool).await?, expected);
-        super::assert_current_markers(pool).await?;
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result
-}
-
 /// The upgrade of a database with no Goal at all (a fresh install runs the
 /// same file) and its repeat.
 #[tokio::test]
@@ -540,7 +411,7 @@ async fn an_empty_database_takes_the_migration_and_a_repeat()
     result
 }
 
-/// Migration 0025's column and constraint, as the file writes them.
+/// Migration 0025's column and its CHECK, as the file writes them.
 const RESTORE: &str = r"
     ALTER TABLE proxima_core.goal ALTER COLUMN text DROP NOT NULL;
     ALTER TABLE proxima_core.goal DROP CONSTRAINT IF EXISTS goal_text_nonblank_chk;
@@ -549,11 +420,11 @@ const RESTORE: &str = r"
 
 const MISSING_OR_INCORRECT: &str = "goal.text non-blank check is missing or incorrect";
 
-const TRIGGER_MISSING_OR_INCORRECT: &str =
-    "goal.text carry-forward trigger goal_text_carried is missing or incorrect";
+const FOREIGN_KEY_MISSING: &str =
+    "goal series owner foreign key goal_owner_matches_head_fk is missing or incorrect";
 
 /// Each damage and the marker message it must produce.
-const DAMAGE: [(&str, &str); 15] = [
+const DAMAGE: [(&str, &str); 6] = [
     (
         "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
         MISSING_OR_INCORRECT,
@@ -581,131 +452,9 @@ const DAMAGE: [(&str, &str); 15] = [
         "ALTER TABLE proxima_core.goal ALTER COLUMN text SET NOT NULL",
         "goal.text must be a nullable text column",
     ),
-    // The carry-forward trigger: gone, switched off, with a body that carries
-    // nothing, a definer, an unpinned search_path, or wired to another event
-    // or time.
     (
-        "DROP TRIGGER goal_text_carried ON proxima_core.goal",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        "ALTER TABLE proxima_core.goal DISABLE TRIGGER goal_text_carried",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
-          RETURNS trigger LANGUAGE plpgsql
-          SET search_path = pg_catalog, proxima_core, pg_temp
-          AS $$ BEGIN RETURN NEW; END $$",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    // The carry check alone, against the version just before the new `t`: a
-    // version slipped between two others would pass it and leave the later one
-    // with a predecessor whose text it does not carry.
-    (
-        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
-          RETURNS trigger LANGUAGE plpgsql
-          SET search_path = pg_catalog, proxima_core, pg_temp
-          AS $$
-          DECLARE
-              prior_state proxima_core.goal_state;
-              prior_text text;
-          BEGIN
-              SELECT g.state, g.text INTO prior_state, prior_text
-                FROM proxima_core.goal g
-               WHERE g.handle = NEW.handle AND g.t < NEW.t
-               ORDER BY g.t DESC LIMIT 1;
-              IF FOUND
-                 AND prior_state IS DISTINCT FROM NEW.state
-                 AND NEW.text IS DISTINCT FROM prior_text
-              THEN
-                  RAISE EXCEPTION 'carry' USING ERRCODE = '23514';
-              END IF;
-              RETURN NEW;
-          END $$",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    // Order and carry, but no series lock: two concurrent inserts on one
-    // series would both judge themselves against the same predecessor.
-    (
-        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
-          RETURNS trigger LANGUAGE plpgsql
-          SET search_path = pg_catalog, proxima_core, pg_temp
-          AS $$
-          DECLARE
-              prior_t uuid;
-              prior_state proxima_core.goal_state;
-              prior_text text;
-          BEGIN
-              SELECT g.t, g.state, g.text INTO prior_t, prior_state, prior_text
-                FROM proxima_core.goal g
-               WHERE g.handle = NEW.handle
-               ORDER BY g.t DESC LIMIT 1;
-              IF FOUND AND prior_t > NEW.t THEN
-                  RAISE EXCEPTION 'order' USING ERRCODE = '23514';
-              END IF;
-              IF FOUND
-                 AND prior_state IS DISTINCT FROM NEW.state
-                 AND NEW.text IS DISTINCT FROM prior_text
-              THEN
-                  RAISE EXCEPTION 'carry' USING ERRCODE = '23514';
-              END IF;
-              RETURN NEW;
-          END $$",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    // A lock on the head instead of a write to the owner's head: it fails
-    // open for a scope that cannot see the head, and a stale REPEATABLE READ
-    // snapshot passes it.
-    (
-        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
-          RETURNS trigger LANGUAGE plpgsql
-          SET search_path = pg_catalog, proxima_core, pg_temp
-          AS $$
-          DECLARE
-              prior_t uuid;
-              prior_state proxima_core.goal_state;
-              prior_text text;
-          BEGIN
-              PERFORM 1 FROM proxima_core.goal_head h
-               WHERE h.handle = NEW.handle FOR UPDATE;
-              SELECT g.t, g.state, g.text INTO prior_t, prior_state, prior_text
-                FROM proxima_core.goal g
-               WHERE g.handle = NEW.handle
-               ORDER BY g.t DESC LIMIT 1;
-              IF FOUND AND prior_t > NEW.t THEN
-                  RAISE EXCEPTION 'order' USING ERRCODE = '23514';
-              END IF;
-              IF FOUND
-                 AND prior_state IS DISTINCT FROM NEW.state
-                 AND NEW.text IS DISTINCT FROM prior_text
-              THEN
-                  RAISE EXCEPTION 'carry' USING ERRCODE = '23514';
-              END IF;
-              RETURN NEW;
-          END $$",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        "ALTER FUNCTION proxima_core.goal_text_carried() SECURITY DEFINER",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        "ALTER FUNCTION proxima_core.goal_text_carried()
-             SET search_path = pg_catalog, proxima_core",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        r"DROP TRIGGER goal_text_carried ON proxima_core.goal;
-          CREATE TRIGGER goal_text_carried AFTER INSERT ON proxima_core.goal
-              FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_text_carried()",
-        TRIGGER_MISSING_OR_INCORRECT,
-    ),
-    (
-        r"DROP TRIGGER goal_text_carried ON proxima_core.goal;
-          CREATE TRIGGER goal_text_carried BEFORE INSERT OR UPDATE ON proxima_core.goal
-              FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_text_carried()",
-        TRIGGER_MISSING_OR_INCORRECT,
+        "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_owner_matches_head_fk",
+        FOREIGN_KEY_MISSING,
     ),
 ];
 
@@ -731,8 +480,8 @@ async fn the_boot_guardrail_rejects_a_damaged_goal_text_column()
                 .expect_err("a damaged goal.text must fail the boot guardrail");
             assert!(error.to_string().contains(message), "{sql}: {error}");
             // Put the schema back for the next damage: the constraint as the
-            // file writes it, then the file's own idempotent function and
-            // trigger (the repair a re-run of 0025 is).
+            // file writes it, then the file's own idempotent statements (the
+            // repair a re-run of 0025 is).
             let mut tx = platform.begin().await?;
             sqlx::raw_sql(RESTORE).execute(&mut *tx).await?;
             tx.commit().await?;

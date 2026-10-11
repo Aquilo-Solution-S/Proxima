@@ -33,8 +33,8 @@ mod access_probes;
 #[path = "rls_guard_pg/trigger_scope.rs"]
 mod trigger_scope;
 
-#[path = "rls_guard_pg/goal_text_carried.rs"]
-mod goal_text_carried;
+#[path = "rls_guard_pg/goal_owner_matches_head.rs"]
+mod goal_owner_matches_head;
 
 #[path = "rls_guard_pg/privileged_objects.rs"]
 mod privileged_objects;

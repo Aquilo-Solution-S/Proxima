@@ -23,7 +23,7 @@ is `0024` ([v0.0.26](#v0026)).
 
 | Lane | Migration |
 |---|---|
-| Core | `0025_v031_goal_text.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)` and the `BEFORE INSERT` row trigger `goal_text_carried`, backfilled from `proxima_core.goal_replay_declaration` |
+| Core | `0025_v031_goal_text.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`) |
 
 **Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
 unknown, never empty: a version that no declaration can speak for (written
@@ -31,11 +31,10 @@ before v0.0.13 recorded declarations, or a row written outside the Goal write
 verbs) stays `NULL`, and the database refuses a blank text ([06 §Goal
 text](../06-goals-and-self.md#goal-text) defines blank). Create, modify and
 decompose store the text they were given. Transition and achieve store exactly
-their prior version's text, `NULL` included, and the database enforces that for
-every writer: the trigger `goal_text_carried` refuses a version whose state
-differs from its predecessor's and whose text is not the predecessor's, and a
-version whose `t` is before the last one of its series ([06 §Goal
-text](../06-goals-and-self.md#goal-text)). The table stays
+their prior version's text, `NULL` included: the Goal write verbs carry it, and
+the database does not check the carry. The foreign key
+`goal_owner_matches_head_fk` keeps every new version in a series of its own
+owner ([06 §Goal text](../06-goals-and-self.md#goal-text)). The table stays
 append-only, so a stored text never changes.
 
 **Backfill.** For every `goal` row, `text` is the text of the latest
@@ -67,19 +66,17 @@ its transaction: a validating scan for the check, then one `UPDATE` that writes
 a new row version for every Goal version it can give a text (the old versions
 are left for autovacuum). The append-only trigger `goal_append_only` is
 disabled for that one statement and enabled again before the transaction
-commits, so no concurrent write sees the gap. The trigger function
-`goal_text_carried` (an invoker with a pinned `search_path`) and its trigger
-are created after the backfill; per insert the trigger writes the series'
-`goal_head` row of the version's own owner (a no-op update of the row the Goal
-writers have already advanced and locked, so it costs them one extra row
-version and makes a concurrent raw insert on the same series wait) and reads
-one row, the series' last version, by the primary key `(handle, t)`. No other table is touched.
+commits, so no concurrent write sees the gap. The unique constraint builds its
+index on `proxima_core.goal_head` (one scan of the heads), and the foreign key
+is added `NOT VALID`, so it scans no existing row; a row an earlier raw insert
+put into another owner's series stays, and every new insert is checked against
+`goal_head`. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
-binary starts: boot checks for the column, its constraint and the trigger
-`goal_text_carried` and refuses a database without them ("apply migrations
-before boot").
+binary starts: boot checks for the column, its constraint and the foreign key
+`goal_owner_matches_head_fk` and refuses a database without them ("apply
+migrations before boot").
 
 **Stop v0.0.26 processes before the upgrade.** A v0.0.26 binary cannot start
 against the upgraded database, with or without `PROXIMA_SKIP_MIGRATIONS`: both
@@ -88,23 +85,12 @@ version 25 and a v0.0.26 binary does not embed it, so boot fails with `core
 migration preflight failed: internal storage error: database core-migration
 ledger does not reconcile with this binary: core versions [25] are recorded as
 applied but this binary does not embed them (...)`. A v0.0.26 process that is
-already running keeps serving, and its Goal inserts name no `text` column, so
-every version it writes carries a `NULL` text. The database now holds that
-process to the carry rule:
-
-- It cannot pause, resume, abandon or achieve a Goal that has a text. The
-  version it writes has a `NULL` text and a different state than its
-  predecessor, so `goal_text_carried` refuses the insert (SQLSTATE `23514`, a
-  `ConstraintViolation` to the caller) and nothing is written. The same moves
-  of a Goal whose text is unknown (`NULL`) go through, carrying the `NULL`.
-- It still creates Goals, which store no text (unknown), and it still modifies
-  them. A modify keeps the state, so the database admits it, and it writes a
-  `NULL` text: the Goal's text is lost from that version on, and every later
-  transition and achievement carries the `NULL` forward. Only a modify by a
-  current binary declares a text again.
-
-Stop every v0.0.26 process sharing the database before the migration step, and
-do not leave one running through the rollout.
+already running keeps serving, but its Goal inserts name no `text` column, so
+every version it writes stores a `NULL` text: after it pauses, resumes,
+abandons or achieves a Goal, the Goal's text is unknown from that version on,
+until a modify by a current binary declares one again. Stop every v0.0.26
+process sharing the database before the migration step, and do not leave one
+running through the rollout.
 
 ## v0.0.26
 

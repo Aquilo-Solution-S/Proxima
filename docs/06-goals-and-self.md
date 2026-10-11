@@ -95,30 +95,22 @@ abandon) and an achievement store exactly the prior version's stored text,
 byte for byte and `NULL` included, with no judgement of it in Rust, so the text
 of a series changes only at a modify.
 
-The database enforces that carry rule for every writer, the Goal write verbs
-and the low-level `write_goal` alike. The `BEFORE INSERT` trigger
-`goal_text_carried` looks up the predecessor of the new version: the last
-version of the same `handle`. A new version joins its series after it, so a `t`
-before the last one is refused (the last one's own `t` is a duplicate, which
-the primary key refuses), and no version can be slipped between two others.
-The trigger first writes the series' `goal_head` row where its owner is the
-new version's owner (a no-op update, the row every Goal writer has already
-advanced and locked) and refuses the version when there is none: a series of
-another owner, or a head the writer's scope cannot write, fails closed.
-Concurrent inserts on one series take turns and each is judged against the
-version committed before it; a `REPEATABLE READ` or `SERIALIZABLE` writer whose
-snapshot predates another insert on the series gets a serialization failure
-(SQLSTATE `40001`) instead. When a predecessor exists, its `state` differs from
-the new version's, and the new version's text is not the predecessor's text
-(`NULL` equals only `NULL`), the insert is refused with SQLSTATE `23514`, a
-`ConstraintViolation` that names the rule. A version that keeps the state, which
-is a modify, may change the text, and the first version of a series has no
-predecessor. A writer that has to move a Goal on must therefore pass the prior
-version's text exactly; one that omits the text (an older binary) cannot drop
-it. A read also returns `set_at`, the time of the
-series' first version, and `changed_at`, the time of the version read; a first
-version has `set_at == changed_at`. Both come from the UUIDv7 `t`, not from a
-column. `set_by` and per-version authors are not part of the row.
+The Goal write verbs carry the prior text by construction: the row they build
+for a transition or an achievement takes its `text` from the prior version, and
+the database does not check the carry. `write_goal`, the low-level writer,
+stores the `text` of the `GoalWriteCommand` it is given and has no production
+caller: it is a test fixture, available with the `test-fixtures` feature. The
+foreign key `goal_owner_matches_head_fk`, from `goal (handle, owner_id)` to
+`goal_head (handle, owner_id)`, keeps every new version in a series of its own
+owner. Referential checks do not go through row-level security, so no scope can
+add a version to another owner's series. The key is `NOT VALID`: a row an
+earlier raw insert put into another owner's series stays, and every new row is
+checked.
+
+A read also returns `set_at`, the time of the series' first version, and
+`changed_at`, the time of the version read; a first version has
+`set_at == changed_at`. Both come from the UUIDv7 `t`, not from a column.
+`set_by` and per-version authors are not part of the row.
 
 <a id="goal-write-api"></a>
 

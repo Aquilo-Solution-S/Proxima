@@ -19,10 +19,8 @@ pub struct GoalWriteCommand {
     pub schema_id: String,
     pub title: String,
     /// This version's prompt text; `None` is unknown. Never blank: the column
-    /// refuses it. A version whose state differs from its predecessor's must
-    /// carry the predecessor's text exactly, `None` included: the trigger
-    /// `goal_text_carried` refuses any other (`ConstraintViolation`). Only a
-    /// version that keeps the state may change the text.
+    /// refuses it. The Goal write verbs fill it, and on a lifecycle write
+    /// (transition, achieve) they carry the prior version's text.
     pub text: Option<String>,
     pub state: GoalState,
     pub request_id: String,
@@ -227,6 +225,9 @@ pub(crate) async fn ingest_write_act_at(
     ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t)).await
 }
 
+/// Test-fixtures only: it writes `draft.text` as given and carries nothing.
+/// Production writes go through the Goal write verbs (`goal_write`).
+#[cfg(any(test, feature = "test-fixtures"))]
 pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
