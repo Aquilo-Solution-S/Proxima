@@ -18,8 +18,8 @@ use proxima_core::{
     MemoryTarget, SchemaId, SeriesHandle, SimpleTextGoalV1,
 };
 use proxima_core::{ErrorCode, Role, UserId};
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
-use split_core_db::create_split_core_db;
+use proxima_pg_testkit::db_url;
+use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
 struct EmptyApp;
@@ -113,9 +113,14 @@ fn typed_goal_request(
 
 #[tokio::test]
 async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
-    let db_name = unique_db_name("proxima_typed_goal");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let split_db = clone_split_core_db("proxima_typed_goal")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner = company_owner(Uuid::now_v7());
@@ -320,16 +325,20 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("typed Goal UoW test failed");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment() {
-    let db_name = unique_db_name("proxima_typed_goal_foreign_pending");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let split_db = clone_split_core_db("proxima_typed_goal_foreign_pending")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let owner_a = company_owner(Uuid::now_v7());
@@ -401,7 +410,6 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("cross-owner pending typed Goal regression failed");
 }
 
@@ -416,9 +424,13 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
 /// predicate that matches another owner's row still does not return it.
 #[tokio::test]
 async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
-    let db_name = unique_db_name("proxima_uow_read");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
+    let split_db = clone_split_core_db("proxima_uow_read")
+        .await
+        .expect("PG required");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner_a = company_owner(Uuid::now_v7());
         let owner_b = company_owner(Uuid::now_v7());
@@ -584,6 +596,5 @@ async fn unit_of_work_reads_its_own_sidecars_inside_the_transaction() {
         Ok(())
     }
     .await;
-    let _ = drop_db(&db_name).await;
     result.expect("session sidecar read");
 }

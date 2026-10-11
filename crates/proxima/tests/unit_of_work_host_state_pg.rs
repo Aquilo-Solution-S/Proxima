@@ -17,8 +17,8 @@ use proxima::{
     ToolScope, company_owner,
 };
 use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, unique_db_name};
-use split_core_db::create_split_core_db;
+use proxima_pg_testkit::db_url;
+use split_core_db::clone_split_core_db;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -262,9 +262,14 @@ async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
 
 #[tokio::test]
 async fn injected_failures_leave_no_partial_commit() {
-    let db_name = unique_db_name("proxima_uow_hs_fail");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_fail")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -371,15 +376,19 @@ async fn injected_failures_leave_no_partial_commit() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("injected failures");
 }
 
 #[tokio::test]
 async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() {
-    let db_name = unique_db_name("proxima_uow_hs_authz");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_authz")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -449,15 +458,19 @@ async fn unauthorized_unregistered_and_invalid_binding_refuse_before_mutation() 
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("refusals");
 }
 
 #[tokio::test]
 async fn concurrent_finalize_commits_exactly_one_transition() {
-    let db_name = unique_db_name("proxima_uow_hs_conc");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_conc")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let other_owner = company_owner(Uuid::now_v7());
@@ -604,15 +617,19 @@ async fn concurrent_finalize_commits_exactly_one_transition() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("concurrency");
 }
 
 #[tokio::test]
 async fn refused_finalize_of_missing_row_writes_nothing() {
-    let db_name = unique_db_name("proxima_uow_hs_refuse");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_refuse")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -643,15 +660,19 @@ async fn refused_finalize_of_missing_row_writes_nothing() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("refused missing");
 }
 
 #[tokio::test]
 async fn cancelled_host_op_after_sql_cannot_commit() {
-    let db_name = unique_db_name("proxima_uow_hs_cancel");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_cancel")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -691,15 +712,19 @@ async fn cancelled_host_op_after_sql_cannot_commit() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("cancel after SQL");
 }
 
 #[tokio::test]
 async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_and_group() {
-    let db_name = unique_db_name("proxima_uow_hs_authority");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_authority")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = Owner::Group(GroupId::new(Uuid::now_v7()));
         let personal = Owner::Personal(UserId::new(Uuid::now_v7()));
@@ -846,15 +871,18 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("host authority invariants");
 }
 
 #[tokio::test]
 async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_after_boot() {
-    let db_name = unique_db_name("proxima_uow_hs_descriptor");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_descriptor")
+        .await
+        .expect("PG required");
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         for (participant, expected_message) in [
@@ -921,15 +949,19 @@ async fn frozen_descriptor_rejects_full_invalid_registration_and_cannot_widen_af
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("frozen registration descriptor");
 }
 
 #[tokio::test]
 async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
-    let db_name = unique_db_name("proxima_uow_hs_origin");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_origin")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let group = company_owner(Uuid::now_v7());
         let editor = UserId::new(Uuid::now_v7());
@@ -983,15 +1015,19 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("ordinary caller provenance");
 }
 
 #[tokio::test]
 async fn subjectless_denied_ordinary_host_write_never_dispatches() {
-    let db_name = unique_db_name("proxima_uow_hs_denied_origin");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_denied_origin")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -1019,15 +1055,19 @@ async fn subjectless_denied_ordinary_host_write_never_dispatches() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("denied ordinary host state");
 }
 
 #[tokio::test]
 async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql() {
-    let db_name = unique_db_name("proxima_uow_hs_payload_owner");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_payload_owner")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
@@ -1062,15 +1102,19 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("payload owner boundary");
 }
 
 #[tokio::test]
 async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
-    let db_name = unique_db_name("proxima_uow_hs_deferred");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_deferred")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -1114,7 +1158,6 @@ async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("deferred COMMIT rollback");
 }
 
@@ -1122,9 +1165,14 @@ async fn deferred_fk_commit_failure_rolls_back_fact_and_host_state_rows() {
 async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways() {
     const TRIGGER_LOCK_KEY: i64 = 8_719_872_200_019;
 
-    let db_name = unique_db_name("proxima_uow_hs_owner_fence");
-    create_split_core_db(&db_name).await.expect("PG required");
-    let (url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    let split_db = clone_split_core_db("proxima_uow_hs_owner_fence")
+        .await
+        .expect("PG required");
+    let db_name = split_db.name().to_owned();
+    let (url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = Owner::Group(GroupId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
@@ -1294,6 +1342,5 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
         Ok(())
     }
     .await;
-    drop_db(&db_name).await.expect("drop fixture");
     result.expect("owner-fence serialization");
 }

@@ -16,9 +16,11 @@ use proxima::{
     LedgerConflict, MigrationError, NamedMigrator, PendingMigration, pending_migrations,
     run_core_and_flavor_migrations,
 };
-use proxima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{
+    DbGuard, SplitRoleDb, create_db, db_url, split_role_urls, unique_db_name,
+};
 use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_migrator};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 use sqlx::{Connection, PgConnection, PgPool, SqlSafeStr};
 
@@ -87,10 +89,26 @@ fn shared(versions: &[i64]) -> NamedMigrator {
     NamedMigrator::new("shared", migrator(versions))
 }
 
+/// What drops the database when the test ends.
+enum Guard {
+    /// A database made empty, or migrated by hand.
+    Created(DbGuard),
+    /// A clone of the split-core template.
+    Cloned(SplitRoleDb),
+}
+
+impl Guard {
+    fn name(&self) -> &str {
+        match self {
+            Self::Created(guard) => guard.name(),
+            Self::Cloned(clone) => clone.name(),
+        }
+    }
+}
+
 /// A disposable database with the split roles provisioned.
 struct Db {
-    /// Drops the database when the test ends.
-    guard: DbGuard,
+    guard: Guard,
     admin: PgPool,
     /// Runs migrations as the platform role.
     pg: PgStorage,
@@ -102,7 +120,7 @@ struct Db {
 }
 
 impl Db {
-    async fn open(guard: DbGuard) -> Self {
+    async fn open(guard: Guard) -> Self {
         let (runtime_url, platform_url) = split_role_urls(guard.name())
             .await
             .expect("split roles on the database");
@@ -128,14 +146,15 @@ impl Db {
     async fn empty() -> Self {
         let name = unique_db_name("proxima_plan");
         create_db(&name).await.expect("PG required");
-        Self::open(DbGuard::adopt(name)).await
+        Self::open(Guard::Created(DbGuard::adopt(name))).await
     }
 
     /// Core is migrated; no flavor ledger exists.
     async fn core_current() -> Self {
-        let name = unique_db_name("proxima_plan");
-        create_split_core_db(&name).await.expect("PG required");
-        Self::open(DbGuard::adopt(name)).await
+        let clone = clone_split_core_db("proxima_plan")
+            .await
+            .expect("PG required");
+        Self::open(Guard::Cloned(clone)).await
     }
 
     /// A live v0.0.8 database: the baseline applied, nothing after it.
@@ -182,7 +201,7 @@ impl Db {
         .await
         .expect("baseline row");
         admin.close().await;
-        Self::open(guard).await
+        Self::open(Guard::Created(guard)).await
     }
 
     async fn run(&self, sources: Vec<NamedMigrator>) {

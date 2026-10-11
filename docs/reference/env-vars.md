@@ -159,13 +159,14 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 
 | Variable | Scope | Notes |
 |---|---|---|
-| `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
+| `PROXIMA_TEST_PG_URL` | tests | admin URL of the Postgres server every pg-testkit test clones its databases from. Required and has no default: unset, empty or whitespace-only makes `admin_url()` / `db_url()` panic naming the variable and the async entry points return `sqlx::Error::Configuration`. `admin_url_or_skip()` skips the test with one line on stderr locally and fails under `CI=true`. The sweep and template GC act on every matching database behind this URL, so point it at a server you own. CI sets it |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
 | `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
 | `PROXIMA_TEST_NATS_PUBLISHER_URL` | tests | publish-only NATS URL | publisher acceptance path; CI grants publish and reply-inbox access but no stream-management rights |
 | `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
 | `PROXIMA_INTAKE_DATABASE_URL` | example | PostgreSQL connection for the reference consumer; required by `crates/outbox-nats/examples/durable_intake.rs`. Provision its example schema first. Not read by any shipped binary |
 | `PROXIMA_ENV_RS_PROCESS_ENV_UNSET` | tests | a name `crates/core/src/env.rs` asserts is absent, to prove the process-env lookup returns `None` rather than an empty string |
+| `PROXIMA_PG_TESTKIT_CHILD`, `PROXIMA_PG_TESTKIT_TEMPLATE` | tests | mark the re-executed child process in the `proxima-pg-testkit` admin-URL and split-template tests (the child's mode, and the template it clones); unset in every normal run |
 | `PROXIMA_RECONCILE_SHARED_KEYS_CHILD` | tests | marks the re-executed child process in the blob-s3 shared-key reconciliation test |
 | `PROXIMA_S1B_TEST_PRESENT`, `PROXIMA_S1B_TEST_ABSENT`, `PROXIMA_S1B_TEST_REG` | tests | fixture names for the env-lookup unit tests |
 | `PROXIMA_SCHEMA_PG_URL` | `scripts/regen-schema-sql.sh` | admin URL used to create and drop the scratch database the schema dump is taken from. Falls back to `PROXIMA_TEST_PG_URL` |

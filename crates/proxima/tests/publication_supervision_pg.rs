@@ -18,7 +18,7 @@ use proxima_core::publication::{PublicationConfig, PublicationSource};
 use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{AuthzContext, Engine, Owner};
-use split_core_db::create_split_core_db;
+use split_core_db::clone_split_core_db;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -217,22 +217,17 @@ async fn capture(engine: &Arc<Engine>, authz: &AuthzContext, owner: Owner, note:
 
 #[tokio::test]
 async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
-    if std::env::var_os("PROXIMA_TEST_PG_URL").is_none() {
-        assert!(
-            std::env::var("CI").as_deref() != Ok("true"),
-            "PROXIMA_TEST_PG_URL required under CI=true"
-        );
-        eprintln!("skipping publisher health PG fixture: PROXIMA_TEST_PG_URL is unset");
+    if proxima_pg_testkit::admin_url_or_skip().is_none() {
         return;
     }
 
-    let db_name = proxima_pg_testkit::unique_db_name("publisher_health_fixture");
-    create_split_core_db(&db_name)
+    let split_db = clone_split_core_db("publisher_health_fixture")
         .await
         .expect("PG fixture database");
-    let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
-        .await
-        .expect("split fixture roles");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
     let platform_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .connect(&platform_url)
@@ -277,7 +272,6 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
     if let Some(built) = built {
         built.shutdown().await;
     }
-    let _ = proxima_pg_testkit::drop_db(&db_name).await;
     if let Err(payload) = outcome {
         std::panic::resume_unwind(payload);
     }
