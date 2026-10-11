@@ -125,7 +125,7 @@ pub(super) fn substrate_tool_actions(
 /// Palette, owner role, then every request behavior's `visible`, which only
 /// narrows.
 fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> bool {
-    scope_permits_action(ctx.authz.tool_scope(), tool.name, action)
+    tool.action_advertised_by(ctx.authz.tool_scope(), action)
         && owner_role_permits(ctx, tool.action_is_read_only(action))
         && ctx.behaviors_show(&ToolDescriptorView::registry(tool, Some(action)))
 }
@@ -136,12 +136,7 @@ fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> b
 /// mostly-read CLI tool from a read-capable-only owner because one of its
 /// commands writes. Same rule the MCP server's `tools/list` applies.
 fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
-    let has_actions = !tool.action_arg_specs.is_empty() || !tool.argv_action_specs.is_empty();
-    if !ctx
-        .authz
-        .tool_scope()
-        .allows_tool_advertisement(tool.name, has_actions)
-    {
+    if !tool.advertised_by(ctx.authz.tool_scope()) {
         return false;
     }
     if !tool.action_arg_specs.is_empty() {
@@ -163,19 +158,6 @@ fn owner_role_permits(ctx: &McpToolCtx, read_only: bool) -> bool {
         ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
     } else {
         ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
-    }
-}
-
-/// Whether `scope` advertises `action` of dispatcher `tool`: either the whole
-/// tool is in the palette, or its specific `tool:action` leaf is. Shared by the
-/// substrate tool catalog and the MCP server's scope-projected `tools/list`.
-#[must_use]
-pub fn scope_permits_action(scope: &crate::authz::ToolScope, tool: &str, action: &str) -> bool {
-    match scope {
-        crate::authz::ToolScope::All => true,
-        crate::authz::ToolScope::Palette(allowed) => {
-            allowed.iter().any(|entry| entry == tool) || scope.allows_action(tool, action)
-        }
     }
 }
 

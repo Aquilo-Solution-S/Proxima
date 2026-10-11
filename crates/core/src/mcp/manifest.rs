@@ -1,5 +1,6 @@
 use crate::flavor::FLAVOR_0;
 use crate::flavor::contract::ResourceContract;
+use crate::{ScopeKey, ToolName};
 
 use super::core_tools;
 
@@ -176,7 +177,7 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
 /// Every scope key a `ToolScope::Palette` can be asked about, for a frozen
 /// registry.
 ///
-/// The scope gate is flat string membership ([`crate::ToolScope::allows`]), and
+/// The scope gate is key membership ([`crate::ToolScope::allows`]), and
 /// `read_resource` funnels through that same gate with the resource's scope key
 /// standing in for a tool name — so a palette assembled from tools alone denies
 /// every `proxima://` read rather than merely not advertising it. Resource keys
@@ -186,9 +187,10 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
 /// Flat tools contribute their id; dispatchers contribute one `tool:action`
 /// leaf per action, because the gate authorizes them at that granularity
 /// ([`McpToolDescriptor::palette_keys`](crate::mcp::McpToolDescriptor::palette_keys),
-/// argv-keyed dispatchers included).
+/// argv-keyed dispatchers included). Sorted by canonical spelling, without
+/// duplicates.
 #[must_use]
-pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<String> {
+pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
     canonical_scope_keys_excluding(registry, &[])
 }
 
@@ -197,25 +199,35 @@ pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<Strin
 /// Exclusion is applied to the *tool name* before its actions are expanded, so
 /// naming a dispatcher removes all of its leaves in one step and an action
 /// added to it later cannot silently re-enter the palette. Resource keys are
-/// excluded by their exact scope key.
+/// excluded by their exact scope key. An entry of `exclude` that is no scope
+/// key, or names no registered tool or resource, excludes nothing.
+///
+/// # Panics
+///
+/// Never for a registry from `try_freeze`, which checks that every tool name
+/// and action is a scope key part.
 #[must_use]
 pub fn canonical_scope_keys_excluding(
     registry: &crate::FlavorRegistryFrozen,
     exclude: &[&str],
-) -> Vec<String> {
-    let excluded: std::collections::HashSet<&str> = exclude.iter().copied().collect();
+) -> Vec<ScopeKey> {
+    let excluded: std::collections::HashSet<ScopeKey> = exclude
+        .iter()
+        .filter_map(|id| ScopeKey::parse(id).ok())
+        .collect();
     let mut keys = Vec::new();
     for tool in registry.list_mcp_tools() {
-        if excluded.contains(tool.name) {
+        let name = ToolName::parse(tool.name)
+            .expect("try_freeze refuses a tool name that is no scope key");
+        if excluded.contains(&ScopeKey::Tool(name)) {
             continue;
         }
         keys.extend(tool.palette_keys());
     }
     keys.extend(
         all_core_resources()
-            .map(|resource| resource.scope_key)
-            .filter(|scope_key| !excluded.contains(scope_key))
-            .map(ToString::to_string),
+            .map(|resource| ScopeKey::Resource(resource.key()))
+            .filter(|key| !excluded.contains(key)),
     );
     keys.sort();
     keys.dedup();
@@ -296,5 +308,88 @@ mod effect_tests {
                 }
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_key_tests {
+    use super::{all_core_resources, canonical_scope_keys, canonical_scope_keys_excluding};
+    use crate::{FlavorRegistry, ScopeKey};
+
+    fn default_registry() -> crate::FlavorRegistryFrozen {
+        FlavorRegistry::default()
+            .try_freeze()
+            .expect("the default registry seals")
+    }
+
+    /// `ResourceContract::key` parses the declared spelling and panics on
+    /// anything else; this is the table that keeps it from ever doing so.
+    #[test]
+    fn every_core_resource_declares_a_resource_key() {
+        let mut seen = 0;
+        for resource in all_core_resources() {
+            assert_eq!(
+                resource.key().to_string(),
+                resource.scope_key,
+                "{} prints as the string it declares",
+                resource.name
+            );
+            seen += 1;
+        }
+        assert!(seen > 0, "the table is not empty");
+    }
+
+    /// The canonical external strings did not change: every key of the
+    /// default registry's palette prints as the string that parses to it,
+    /// and the palette is sorted by that string without duplicates.
+    #[test]
+    fn every_canonical_key_round_trips_through_its_canonical_string() {
+        let keys = canonical_scope_keys(&default_registry());
+        assert!(!keys.is_empty());
+        for key in &keys {
+            let text = key.to_string();
+            let parsed = ScopeKey::parse(&text).expect("a canonical key parses");
+            assert_eq!(&parsed, key, "{text}");
+            assert_eq!(parsed.to_string(), text);
+        }
+        let spelled: Vec<String> = keys.iter().map(ToString::to_string).collect();
+        let mut sorted = spelled.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(spelled, sorted, "key order is the order of the strings");
+    }
+
+    /// Excluding a dispatcher removes its leaves; an entry that is no key, or
+    /// names nothing, excludes nothing and does not fail.
+    #[test]
+    fn exclusion_takes_a_tool_or_a_resource_and_ignores_text_that_is_no_key() {
+        let registry = default_registry();
+        let all = canonical_scope_keys(&registry);
+        let leaf = ScopeKey::parse("core_goal:set").expect("a leaf");
+        let resource = ScopeKey::parse("resource:memory").expect("a resource");
+        assert!(all.contains(&leaf));
+        assert!(all.contains(&resource));
+
+        let without = canonical_scope_keys_excluding(
+            &registry,
+            &[
+                "core_goal",
+                "resource:memory",
+                "",
+                "a:b:c",
+                "not a key",
+                "nope",
+            ],
+        );
+        assert!(!without.contains(&leaf));
+        assert!(!without.contains(&resource));
+        assert!(
+            without.iter().all(|key| all.contains(key)),
+            "exclusion never adds a key"
+        );
+        assert_eq!(
+            canonical_scope_keys_excluding(&registry, &["", "a:b:c", "not a key", "nope"]),
+            all
+        );
     }
 }

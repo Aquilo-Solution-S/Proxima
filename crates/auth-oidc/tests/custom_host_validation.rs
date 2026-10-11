@@ -22,8 +22,9 @@ use proxima_auth_oidc::{
     SubjectBinding,
 };
 use proxima_core::{
-    AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner,
-    OwnerAccessPort, OwnerRef, OwnerRoles, Role, ToolScope, UserId,
+    AccessError, ActionName, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
+    GroupId, Owner, OwnerAccessPort, OwnerRef, OwnerRoles, Role, ScopeKey, ToolName, ToolScope,
+    UserId,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -32,6 +33,18 @@ const ISSUER: &str = "https://issuer.example";
 const AGENT_AUD: &str = "centauri-agent";
 const OWNER_AUD: &str = "centauri-owner";
 const KID: &str = "k1";
+
+fn key(text: &str) -> ScopeKey {
+    ScopeKey::parse(text).expect("a scope key")
+}
+
+/// The call gate's question, asked in the spelling the tests read best.
+fn allows_leaf(scope: &ToolScope, tool: &str, action: &str) -> bool {
+    scope.allows_action(
+        &ToolName::parse(tool).expect("a tool name"),
+        &ActionName::parse(action).expect("an action name"),
+    )
+}
 
 struct TestKeys {
     signing: RsaKeyPair,
@@ -150,7 +163,7 @@ impl TwoAudienceHost {
                 .map_err(|_| AuthError::InvalidCredentials)?;
             return Ok(AuthzContext::server_resolved(roles, AuthPath::HostBearer)
                 .with_expires_at(Some(claims.expires_at))
-                .with_tool_scope(ToolScope::Palette(vec!["core_goal:set".to_string()])));
+                .with_tool_scope(ToolScope::Palette(vec![key("core_goal:set")])));
         }
         if let Ok(claims) = self.owner_validator.validate(token).await {
             let OwnerRef::Personal(subject) = self.owner_principal else {
@@ -191,12 +204,13 @@ async fn agent_audience_resolves_narrowed_tool_scope() {
         &OwnerRef::Group(group),
         proxima_core::AccessKind::Perspective
     ));
-    assert!(ctx.tool_scope().allows_action("core_goal", "set"));
-    assert!(!ctx.tool_scope().allows("core_membership"));
-    assert!(
-        !ctx.tool_scope()
-            .allows_action("core_transfer", "transfer_to_owner")
-    );
+    assert!(allows_leaf(ctx.tool_scope(), "core_goal", "set"));
+    assert!(!ctx.tool_scope().allows(&key("core_membership")));
+    assert!(!allows_leaf(
+        ctx.tool_scope(),
+        "core_transfer",
+        "transfer_to_owner"
+    ));
 }
 
 #[tokio::test]

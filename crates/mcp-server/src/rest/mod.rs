@@ -151,7 +151,7 @@ fn listing_ctx(
 async fn list_resources(RestAuth(auth): RestAuth) -> Response {
     let scope = Some(auth.authz.tool_scope());
     let resources: Vec<serde_json::Value> = all_core_resources()
-        .filter(|resource| resource_scope_allows(scope, resource.scope_key))
+        .filter(|resource| resource_scope_allows(scope, resource))
         .map(resource_json)
         .collect();
     json_ok(&serde_json::json!({ "resources": resources }))

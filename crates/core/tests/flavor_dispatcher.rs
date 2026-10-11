@@ -19,7 +19,7 @@ use proxima_core::mcp::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
-    OwnerRef, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
+    OwnerRef, ScopeKey, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
 };
 
 /// `CARGO_PKG_NAME` is `proxima-core` inside core's own `tests/`, so the
@@ -241,7 +241,9 @@ fn a_macro_registered_flavor_dispatcher_carries_its_action_specs() {
 #[tokio::test]
 async fn a_flavor_dispatcher_is_gated_per_action() {
     let registry = frozen();
-    let scope = ToolScope::Palette(vec![format!("{DISPATCH}:look")]);
+    let scope = ToolScope::Palette(vec![
+        ScopeKey::parse(&format!("{DISPATCH}:look")).expect("a leaf key"),
+    ]);
 
     through_the_gate(
         &registry,

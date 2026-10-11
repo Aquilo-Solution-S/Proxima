@@ -156,8 +156,8 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. Set `code` for a code-search deployment (below). |
-| `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
-| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Owner erase is not exposed as an MCP action. |
+| `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. An entry that is not a scope key, or names nothing this build registers, fails startup naming it. |
+| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
@@ -380,7 +380,9 @@ A build without the code flavor refuses the profile at startup.
 **Per-user tool scope is a host concern, not a substrate feature.** The env
 profile is one deployment-wide ceiling. A host that composes Proxima as a library
 resolves a per-subject `ToolScope` (e.g. derived from the subject's resolved
-role) and attaches it with
+role; a palette is a `Vec<ScopeKey>`, built from `proxima::host::{ScopeKey,
+ToolName, ActionName}` or `tool_palette_excluding`, never from raw strings) and
+attaches it with
 `AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the shared edge
 intersects it with the env ceiling (`ToolScope::intersect` only narrows, never
 widens), so a per-user scope can restrict but never exceed the deployment

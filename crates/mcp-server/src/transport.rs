@@ -940,12 +940,11 @@ mod tests {
             proxima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let mut auth = auth_for(personal_owner());
-        auth.authz = auth
-            .authz
-            .with_tool_scope(proxima_core::ToolScope::Palette(vec![
-                "host_shown".to_owned(),
-                "proxima-stub_ping".to_owned(),
-            ]));
+        auth.authz = auth.authz.with_tool_scope(proxima_core::ToolScope::Palette(
+            ["host_shown", "proxima-stub_ping"]
+                .map(|id| proxima_core::ScopeKey::parse(id).expect("a scope key"))
+                .to_vec(),
+        ));
         let message = first_message(mcp_service_for(host), authed_rpc("tools/list", auth)).await;
         let mut names = listed_names(&message);
         names.sort();

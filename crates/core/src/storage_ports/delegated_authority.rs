@@ -20,10 +20,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::authz::DelegationRuntimeBinding;
+use crate::text_bounds::check_trimmed_len;
+use crate::verbs::goal_write::{MAX_WAKE_TOOL_ID_CHARS, registered_tool_key};
 use crate::{
-    AccessError, AuthPath, Authenticator, AuthzContext, DelegatedPhase, DelegationRuntimeAuthority,
-    FlavorRegistryFrozen, GoalWakeToolId, OwnerAccessPort, OwnerRef, OwnerRoles, ProtocolError,
-    Role, StorageError, ToolScope, UserId,
+    AccessError, ActionName, AuthPath, Authenticator, AuthzContext, DelegatedPhase,
+    DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerRef, OwnerRoles,
+    ProtocolError, Role, ScopeKey, ScopeKeyError, StorageError, ToolName, ToolScope, UserId,
 };
 
 /// Opaque `UUIDv7` handle persisted by a queued job.
@@ -56,11 +58,19 @@ impl std::fmt::Debug for DelegationId {
 }
 
 /// One canonical registered flat tool or exact dispatcher action.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
-pub struct DelegatedCommand(String);
+///
+/// Holds the typed names of a [`ScopeKey::Tool`] or [`ScopeKey::Action`], never
+/// a resource key, so the delegated scope and the stored columns come from one
+/// parse. Its text ([`Display`](std::fmt::Display), `Serialize`) is `tool` or
+/// `tool:action`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DelegatedCommand {
+    tool: ToolName,
+    action: Option<ActionName>,
+}
 
 impl DelegatedCommand {
-    /// Parse through the same registry-aware grammar as Goal wake tool ids.
+    /// Parse through the same registry-aware resolution as Goal wake tool ids.
     ///
     /// # Errors
     ///
@@ -70,57 +80,81 @@ impl DelegatedCommand {
         raw: impl Into<String>,
         registry: &FlavorRegistryFrozen,
     ) -> Result<Self, ProtocolError> {
-        GoalWakeToolId::parse(raw, registry).map(Self::from)
+        let raw = raw.into();
+        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS).map_err(|violation| {
+            ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
+        })?;
+        Self::from_key(registered_tool_key(value, registry)?).ok_or_else(|| {
+            ProtocolError::invalid_argument("tool_id", "tool id must name a tool or a leaf action")
+        })
     }
 
+    /// The tool the command runs, or the dispatcher it is an action of.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn tool(&self) -> &ToolName {
+        &self.tool
     }
 
+    /// The dispatcher action; `None` for a flat tool.
     #[must_use]
-    pub fn tool(&self) -> &str {
-        self.0
-            .split_once(':')
-            .map_or(self.0.as_str(), |(tool, _)| tool)
+    pub fn action(&self) -> Option<&ActionName> {
+        self.action.as_ref()
     }
 
-    #[must_use]
-    pub fn action(&self) -> Option<&str> {
-        self.0.split_once(':').map(|(_, action)| action)
-    }
-
-    fn from_storage_parts(tool: &str, action: Option<&str>) -> Result<Self, StorageError> {
-        let raw = action.map_or_else(|| tool.to_owned(), |action| format!("{tool}:{action}"));
-        let valid_shape = !raw.is_empty()
-            && raw.trim() == raw
-            && raw.chars().count() <= crate::verbs::goal_write::MAX_WAKE_TOOL_ID_CHARS
-            && !raw.contains('/')
-            && match raw.split_once(':') {
-                Some((tool, action)) => {
-                    !action.contains(':')
-                        && crate::provider_safe_tool_name(tool) == tool
-                        && crate::provider_safe_tool_name(action) == action
-                }
-                None => crate::provider_safe_tool_name(&raw) == raw,
-            };
-        if !valid_shape {
-            return Err(StorageError::ConstraintViolation(
-                "stored delegation command is not canonical".into(),
-            ));
+    /// `None` for a resource key, which names no command.
+    fn from_key(key: ScopeKey) -> Option<Self> {
+        match key {
+            ScopeKey::Tool(tool) => Some(Self { tool, action: None }),
+            ScopeKey::Action { tool, action } => Some(Self {
+                tool,
+                action: Some(action),
+            }),
+            ScopeKey::Resource(_) => None,
         }
-        Ok(Self(raw))
     }
 
-    #[must_use]
-    fn tool_scope(&self) -> ToolScope {
-        ToolScope::Palette(vec![self.0.clone()])
+    /// Rebuild a command from the two stored columns.
+    fn from_storage_parts(tool: &str, action: Option<&str>) -> Result<Self, StorageError> {
+        let not_canonical = || {
+            StorageError::ConstraintViolation("stored delegation command is not canonical".into())
+        };
+        let tool = ToolName::parse(tool).map_err(|_| not_canonical())?;
+        let key = match action {
+            None => ScopeKey::Tool(tool),
+            Some(action) => {
+                let action = ActionName::parse(action).map_err(|_| not_canonical())?;
+                ScopeKey::action(tool, action).map_err(|_| not_canonical())?
+            }
+        };
+        let command = Self::from_key(key).ok_or_else(not_canonical)?;
+        if command.to_string().chars().count() > MAX_WAKE_TOOL_ID_CHARS {
+            return Err(not_canonical());
+        }
+        Ok(command)
+    }
+
+    /// The scope a redeemed phase runs under: exactly this command's key.
+    fn tool_scope(&self) -> Result<ToolScope, ScopeKeyError> {
+        let key = match &self.action {
+            None => ScopeKey::Tool(self.tool.clone()),
+            Some(action) => ScopeKey::action(self.tool.clone(), action.clone())?,
+        };
+        Ok(ToolScope::Palette(vec![key]))
     }
 }
 
-impl From<GoalWakeToolId> for DelegatedCommand {
-    fn from(value: GoalWakeToolId) -> Self {
-        Self(value.into_string())
+impl std::fmt::Display for DelegatedCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.action {
+            None => write!(formatter, "{}", self.tool),
+            Some(action) => write!(formatter, "{}:{action}", self.tool),
+        }
+    }
+}
+
+impl serde::Serialize for DelegatedCommand {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
@@ -522,6 +556,9 @@ impl DelegatedAuthorityService {
             return Err(DelegatedAuthorityError::RoleCeilingNoLongerHeld);
         }
         let effective_role = current_role.meet(grant.role_ceiling());
+        let tool_scope = grant.command().tool_scope().map_err(|_| {
+            DelegatedAuthorityError::CommandUnavailable(grant.command().to_string())
+        })?;
 
         let authz = AuthzContext::server_resolved(
             OwnerRoles::scoped_to(grant.subject(), expected_owner, effective_role),
@@ -529,7 +566,7 @@ impl DelegatedAuthorityService {
         )
         .with_expires_at(Some(grant.expires_at()))
         .with_auth_epoch(grant.auth_epoch())
-        .with_tool_scope(grant.command().tool_scope())
+        .with_tool_scope(tool_scope)
         // The durable grant was issued from a verified bearer. Redemption
         // rechecks identity epoch, expiry, current membership and ceiling above.
         // Seal only after those checks; never reconstruct from a queued owner.
@@ -646,11 +683,11 @@ impl DelegatedAuthorityService {
         &self,
         command: &DelegatedCommand,
     ) -> Result<(), DelegatedAuthorityError> {
-        let current = DelegatedCommand::parse(command.as_str(), &self.registry)
+        let current = DelegatedCommand::parse(command.to_string(), &self.registry)
             .map_err(|error| DelegatedAuthorityError::CommandUnavailable(error.message))?;
         if current != *command {
             return Err(DelegatedAuthorityError::CommandUnavailable(
-                command.as_str().to_owned(),
+                command.to_string(),
             ));
         }
         Ok(())
@@ -661,15 +698,10 @@ impl DelegatedAuthorityService {
         caller_scope: &ToolScope,
         command: &DelegatedCommand,
     ) -> Result<(), DelegatedAuthorityError> {
-        let allows = |scope: &ToolScope| match command.action() {
-            Some(action) => {
-                scope.allows(command.tool()) || scope.allows_action(command.tool(), action)
-            }
-            None => scope.allows(command.tool()),
-        };
-        if !allows(caller_scope) || !allows(&self.deployment_tool_scope) {
+        let covers = |scope: &ToolScope| scope.covers_command(command.tool(), command.action());
+        if !covers(caller_scope) || !covers(&self.deployment_tool_scope) {
             return Err(DelegatedAuthorityError::ToolScopeDenied(
-                command.as_str().to_owned(),
+                command.to_string(),
             ));
         }
         Ok(())
@@ -948,6 +980,14 @@ mod tests {
         )
     }
 
+    fn palette(ids: &[&str]) -> ToolScope {
+        ToolScope::Palette(
+            ids.iter()
+                .map(|id| ScopeKey::parse(id).expect("a scope key"))
+                .collect(),
+        )
+    }
+
     #[tokio::test]
     async fn phase_allows_bounded_fact_authorization_and_raw_delegated_is_denied() {
         let (subject, owner, store, access, authenticator) = fixtures();
@@ -957,7 +997,7 @@ mod tests {
             subject,
             owner,
             SystemTime::now() + Duration::from_secs(30),
-            ToolScope::Palette(vec![TOOL_NAME.into()]),
+            palette(&[TOOL_NAME]),
         );
         let issued = service
             .issue(&caller, owner, command.clone(), Role::editor())
@@ -1231,6 +1271,83 @@ mod tests {
         assert_eq!(store.loads.load(Ordering::SeqCst), 0);
     }
 
+    /// The command is a scope key, parsed once from the text a caller sends
+    /// and once from the two stored columns. Both springs refuse what is no
+    /// registered tool or leaf, and a command prints as the string it was
+    /// parsed from.
+    #[test]
+    fn a_command_is_a_registered_tool_or_leaf_from_text_and_from_storage() {
+        let flat_registry = registry(true);
+        let dispatcher_registry = dispatcher_registry();
+        let leaf = format!("{DISPATCHER_TOOL_NAME}:run");
+
+        let flat = DelegatedCommand::parse(TOOL_NAME, &flat_registry).expect("a flat tool");
+        assert_eq!((flat.tool().as_str(), flat.action()), (TOOL_NAME, None));
+        assert_eq!(flat.to_string(), TOOL_NAME);
+        assert_eq!(
+            serde_json::to_value(&flat).expect("serializes"),
+            serde_json::json!(TOOL_NAME)
+        );
+        let parsed = DelegatedCommand::parse(&leaf, &dispatcher_registry).expect("a leaf");
+        assert_eq!(parsed.to_string(), leaf);
+        assert_eq!(parsed.action().map(ActionName::as_str), Some("run"));
+
+        for text in [
+            "",
+            ":",
+            "a:b:c",
+            &format!("{TOOL_NAME}:"),
+            &format!("{DISPATCHER_TOOL_NAME}:run:extra"),
+            &format!("{DISPATCHER_TOOL_NAME}:bogus"),
+            // a dispatcher is named with its action, and a flat tool has none
+            DISPATCHER_TOOL_NAME,
+            &format!("{TOOL_NAME}:run"),
+            "resource:memory",
+            "test delegation",
+            "test/delegation",
+        ] {
+            let both = (
+                DelegatedCommand::parse(text, &flat_registry),
+                DelegatedCommand::parse(text, &dispatcher_registry),
+            );
+            assert!(
+                both.0.is_err() && both.1.is_err(),
+                "{text:?} is a command in neither registry: {both:?}"
+            );
+        }
+
+        assert_eq!(
+            DelegatedCommand::from_storage_parts(DISPATCHER_TOOL_NAME, Some("run"))
+                .expect("stored leaf"),
+            parsed
+        );
+        assert_eq!(
+            DelegatedCommand::from_storage_parts(TOOL_NAME, None).expect("stored flat tool"),
+            flat
+        );
+        for (tool, action) in [
+            ("", None),
+            (":", None),
+            ("a:b", None),
+            ("resource", Some("memory")),
+            ("a b", None),
+            ("a/b", None),
+            (TOOL_NAME, Some("")),
+            (TOOL_NAME, Some("a:b")),
+            (TOOL_NAME, Some("a b")),
+        ] {
+            assert!(
+                matches!(
+                    DelegatedCommand::from_storage_parts(tool, action),
+                    Err(StorageError::ConstraintViolation(_))
+                ),
+                "{tool:?} {action:?} is not a stored command"
+            );
+        }
+        let too_long = "a".repeat(MAX_WAKE_TOOL_ID_CHARS + 1);
+        assert!(DelegatedCommand::from_storage_parts(&too_long, None).is_err());
+    }
+
     #[tokio::test]
     async fn dispatcher_command_accepts_whole_or_exact_leaf_scope_only() {
         let (subject, owner, store, access, authenticator) = fixtures();
@@ -1243,8 +1360,8 @@ mod tests {
                 .expect("registered dispatcher action");
 
         for scope in [
-            ToolScope::Palette(vec![DISPATCHER_TOOL_NAME.into()]),
-            ToolScope::Palette(vec![format!("{DISPATCHER_TOOL_NAME}:run")]),
+            palette(&[DISPATCHER_TOOL_NAME]),
+            palette(&[&format!("{DISPATCHER_TOOL_NAME}:run")]),
         ] {
             let service = DelegatedAuthorityService::new(
                 store.clone(),
@@ -1286,7 +1403,7 @@ mod tests {
             subject,
             owner,
             SystemTime::now() + Duration::from_secs(30),
-            ToolScope::Palette(vec![format!("{DISPATCHER_TOOL_NAME}:other")]),
+            palette(&[&format!("{DISPATCHER_TOOL_NAME}:other")]),
         );
         assert!(matches!(
             service

@@ -102,15 +102,9 @@ fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
     ctx.registry
         .list_mcp_tools()
         .iter()
-        .filter(|desc| {
-            // Either dispatcher vocabulary is advertised through its
-            // `tool:action` leaves, as `list_substrate_tools` does.
-            let has_actions =
-                !desc.action_arg_specs.is_empty() || !desc.argv_action_specs.is_empty();
-            ctx.authz
-                .tool_scope()
-                .allows_tool_advertisement(desc.name, has_actions)
-        })
+        // Either dispatcher vocabulary is advertised through its `tool:action`
+        // leaves, as `list_substrate_tools` does.
+        .filter(|desc| desc.advertised_by(ctx.authz.tool_scope()))
         .map(|desc| SubstrateToolItem {
             tool_id: desc.name.to_string(),
             source: substrate_tool_source(desc),

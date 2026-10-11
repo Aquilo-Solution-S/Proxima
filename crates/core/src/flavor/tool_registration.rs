@@ -422,21 +422,26 @@ mod action_vocabulary_tests {
         registry.add_mcp_tool_or_panic_for_tests::<OwnerOnlyFlatTool>("proxima-stub");
         let frozen = registry.freeze_or_panic_for_tests();
 
+        // The canonical external spelling of a key is the string it parsed
+        // from, so the typed keys print as the strings palettes held.
+        let spelled = |keys: Vec<crate::ScopeKey>| -> Vec<String> {
+            keys.iter().map(ToString::to_string).collect()
+        };
         let argv_tool = frozen.mcp_tool(ArgvTool::NAME).expect("argv tool");
         assert_eq!(
-            argv_tool.palette_keys(),
+            spelled(argv_tool.palette_keys()),
             [
                 format!("{}:approval", ArgvTool::NAME),
                 format!("{}:approval-decide", ArgvTool::NAME),
             ]
         );
         assert_eq!(
-            argv_tool.owner_only_keys(),
+            spelled(argv_tool.owner_only_keys()),
             [format!("{}:approval-decide", ArgvTool::NAME)]
         );
         let flat = frozen.mcp_tool(OwnerOnlyFlatTool::NAME).expect("flat");
-        assert_eq!(flat.palette_keys(), [OwnerOnlyFlatTool::NAME]);
-        assert_eq!(flat.owner_only_keys(), [OwnerOnlyFlatTool::NAME]);
+        assert_eq!(spelled(flat.palette_keys()), [OwnerOnlyFlatTool::NAME]);
+        assert_eq!(spelled(flat.owner_only_keys()), [OwnerOnlyFlatTool::NAME]);
         // An owner-only tool makes every action key owner-only.
         let membership = frozen
             .mcp_tool(crate::protocol::tool::CORE_MEMBERSHIP)
@@ -450,7 +455,8 @@ mod action_vocabulary_tests {
         for key in argv_tool.palette_keys() {
             assert!(canonical.contains(&key), "{key} missing from {canonical:?}");
         }
-        assert!(!canonical.contains(&ArgvTool::NAME.to_owned()));
+        let bare = crate::ScopeKey::parse(ArgvTool::NAME).expect("a tool name");
+        assert!(!canonical.contains(&bare));
     }
 
     /// The substrate's own membership dispatcher declares the owner

@@ -17,6 +17,23 @@ fail, answer content or a tool failure, and be hidden by request behaviors
 | Handler wrapper listing host tools | Delete it; `list` is async now, and `McpHostTools::instructions` adds to the server instructions |
 | New | `RequestBehavior::visible(&McpToolCtx, &ToolDescriptorView) -> bool` (default `true`) hides a tool from `tools/list`, the REST catalog and OpenAPI document, `proxima://how-to` and `core/list_substrate_tools`; the call is still refused in `handle`. Listing surfaces now build the request's tool context, so a bad request-services bag fails them as it fails a call |
 
+**Also breaking, no shims** (#421): a palette holds typed scope keys instead of
+strings ([12 §Scope keys](../12-tool-manifest.md#scope-keys)). Wire, env and
+storage strings are unchanged; a flavor whose dispatcher action names fall
+outside `[A-Za-z0-9_.-]` now fails registry freeze with
+`FlavorRegistryError::InvalidScopeKey`.
+
+| Removed / changed | Upgrade |
+|---|---|
+| `ToolScope::Palette(Vec<String>)` | `Palette(Vec<ScopeKey>)`. Build keys with `ScopeKey::parse("core_goal:set")?`, `ScopeKey::Tool(ToolName::parse(name)?)`, `ScopeKey::action(tool, action)?`, `ScopeKey::Resource(ResourceKey::parse(name)?)`; all exported from `proxima::host` |
+| `ToolScope::allows(&str)` | `allows(&ScopeKey)`: exact membership. A name that does not parse is in no palette |
+| `allows_action`, `allows_group_advertisement`, `allows_tool_advertisement` taking `&str` | Take `&ToolName` / `&ActionName`. New `advertises_action` (listing) and `covers_command` (delegation) name the other two rules |
+| `canonical_scope_keys*`, `McpToolDescriptor::{palette_keys, owner_only_keys}`, `tool_palette_excluding` | Return `Vec<ScopeKey>` / `ToolScope`. Text still prints back as before: `key.to_string()` |
+| `scope_permits_action(scope, tool, action)` | `McpToolDescriptor::action_advertised_by(scope, action)`; `advertised_by(scope)` for the tool |
+| `match ToolScope::Palette(ids)` over strings | Match `ScopeKey::{Tool, Action { tool, action, .. }, Resource}`. `Action` is `#[non_exhaustive]`: only `ScopeKey::action` builds one |
+| `DelegatedCommand` | Holds `ToolName` and `Option<ActionName>`: `tool()` / `action()` return them, `as_str()` and `From<GoalWakeToolId>` are gone, `to_string()` prints `tool` or `tool:action` |
+| `ResourceContract::scope_key` text lookup | `FlavorContract::resource_by_scope_key(&ResourceKey)`; `ResourceContract::key()` |
+
 ## v0.0.25
 
 Pin all Proxima Rust dependencies to the same `v0.0.25` tag. No database

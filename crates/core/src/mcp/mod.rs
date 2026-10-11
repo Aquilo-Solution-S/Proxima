@@ -26,7 +26,6 @@ pub use behavior::{
     McpHostToolCall, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
     ToolDescriptorView, ToolSource,
 };
-pub use core_tools::list_substrate_tools::scope_permits_action;
 // The one enforcement point for the reserved `model_id` operator label.
 // Published because a flavor tool that accepts `model_id` must resolve it
 // the same way the core authoring tools do — the transport edges only see a

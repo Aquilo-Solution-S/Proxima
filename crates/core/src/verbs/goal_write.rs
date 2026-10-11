@@ -5,7 +5,7 @@
 //! storage-side body lives in proxima-storage-pg.
 
 use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
-use crate::{FlavorRegistryFrozen, ProtocolError};
+use crate::{FlavorRegistryFrozen, ProtocolError, ScopeKey};
 use crate::{
     GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
     PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
@@ -363,57 +363,12 @@ impl GoalWakeToolId {
         // The cap counts characters, matching the message the caller sees.
         // A byte count would refuse a short non-ASCII id for exceeding
         // something the caller cannot measure.
-        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS)
-            .map_err(|violation| {
-                ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
-            })?
-            .to_string();
-        if value.contains('/') {
-            return Err(ProtocolError::invalid_argument(
-                "tool_id",
-                "tool id must be provider-safe canonical id",
-            ));
-        }
-        // Both halves resolve through the descriptor's own `action_arg_specs`
-        // rather than the substrate `CoreActionMeta` tables, so a flavor
-        // dispatcher's leaf is nameable in a wake config.
-        if let Some((tool, action)) = value.split_once(':') {
-            if value.matches(':').count() == 1
-                && crate::provider_safe_tool_name(tool) == tool
-                && crate::provider_safe_tool_name(action) == action
-                && registry.mcp_tool(tool).is_some_and(|descriptor| {
-                    descriptor
-                        .action_arg_specs
-                        .iter()
-                        .any(|spec| spec.action == action)
-                })
-            {
-                return Ok(Self(value));
-            }
-            return Err(ProtocolError::invalid_argument(
-                "tool_id",
-                "leaf action scope required and must be registered",
-            ));
-        }
-        if crate::provider_safe_tool_name(&value) != value {
-            return Err(ProtocolError::invalid_argument(
-                "tool_id",
-                "tool id must be provider-safe canonical id",
-            ));
-        }
-        if let Some(descriptor) = registry.mcp_tool(&value) {
-            if !descriptor.action_arg_specs.is_empty() {
-                return Err(ProtocolError::invalid_argument(
-                    "tool_id",
-                    "leaf action scope required for grouped tools",
-                ));
-            }
-            return Ok(Self(value));
-        }
-        Err(ProtocolError::invalid_argument(
-            "tool_id",
-            "tool id is not registered",
-        ))
+        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS).map_err(|violation| {
+            ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
+        })?;
+        // A key prints back as the text it parsed from, so `value` is the
+        // canonical id.
+        registered_tool_key(value, registry).map(|_| Self(value.to_string()))
     }
 
     #[must_use]
@@ -424,6 +379,62 @@ impl GoalWakeToolId {
     #[must_use]
     pub fn into_string(self) -> String {
         self.0
+    }
+}
+
+/// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
+/// for a flat tool, a [`ScopeKey::Action`] for a declared action. The one
+/// resolution wake tool ids and delegated commands share.
+///
+/// # Errors
+///
+/// `InvalidArgument` on `tool_id` when `value` is no scope key, names a
+/// resource, is not registered, is a dispatcher without its action, or names
+/// an action the tool does not declare.
+pub(crate) fn registered_tool_key(
+    value: &str,
+    registry: &FlavorRegistryFrozen,
+) -> Result<ScopeKey, ProtocolError> {
+    const NOT_CANONICAL: &str = "tool id must be provider-safe canonical id";
+    const LEAF_REGISTERED: &str = "leaf action scope required and must be registered";
+    let invalid = |reason| ProtocolError::invalid_argument("tool_id", reason);
+    if value.contains('/') {
+        return Err(invalid(NOT_CANONICAL));
+    }
+    let Ok(key) = ScopeKey::parse(value) else {
+        // Text that is no key: the colon says which message the caller gets.
+        return Err(invalid(if value.contains(':') {
+            LEAF_REGISTERED
+        } else {
+            NOT_CANONICAL
+        }));
+    };
+    match &key {
+        // Both halves resolve through the descriptor's own `action_arg_specs`
+        // rather than the substrate `CoreActionMeta` tables, so a flavor
+        // dispatcher's leaf is nameable in a wake config.
+        ScopeKey::Action { tool, action } => {
+            let declared = registry.mcp_tool(tool.as_str()).is_some_and(|descriptor| {
+                descriptor
+                    .action_arg_specs
+                    .iter()
+                    .any(|spec| spec.action == action.as_str())
+            });
+            if declared {
+                Ok(key)
+            } else {
+                Err(invalid(LEAF_REGISTERED))
+            }
+        }
+        ScopeKey::Tool(tool) => match registry.mcp_tool(tool.as_str()) {
+            Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
+                Err(invalid("leaf action scope required for grouped tools"))
+            }
+            Some(_) => Ok(key),
+            None => Err(invalid("tool id is not registered")),
+        },
+        // `resource:name` is a read, not a tool or a leaf.
+        ScopeKey::Resource(_) => Err(invalid(LEAF_REGISTERED)),
     }
 }
 

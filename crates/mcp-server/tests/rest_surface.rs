@@ -23,7 +23,9 @@ use proxima_core::mcp::{Replay, ToolEffect};
 use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, ScopeKey, ToolScope, UserId,
+};
 use proxima_core::{GroupId, access::Role};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use tower::ServiceExt;
@@ -239,6 +241,15 @@ impl proxima_core::RequestBehavior for ReplaceOutputBehavior {
         );
         Ok(proxima_core::ToolReply::Structured(self.0.clone()))
     }
+}
+
+/// A palette of the scope keys `ids` spell.
+fn palette_of(ids: &[&str]) -> ToolScope {
+    ToolScope::Palette(
+        ids.iter()
+            .map(|id| ScopeKey::parse(id).expect("a scope key"))
+            .collect(),
+    )
 }
 
 /// A principal with full owner rights, so the owner-role gate never
@@ -570,9 +581,7 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
 async fn visible_true_never_lists_outside_the_palette_or_role() {
     let router = app(host_with(OpinionlessBehavior));
 
-    let palette = auth(ToolScope::Palette(vec![
-        protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
-    ]));
+    let palette = auth(palette_of(&[protocol_tool::CORE_SEARCH_MEMORIES]));
     let ids = catalog_ids(&get(&router, "/v1/tools", &palette).await);
     assert_eq!(
         ids,
@@ -769,10 +778,10 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
         // `resource:tools` is in the palette because the catalog resource is
         // itself scope-gated; without it the MCP side would be refused and
         // the comparison would be against nothing.
-        ToolScope::Palette(vec![
-            protocol_resource::TOOLS.to_string(),
-            protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
-            protocol_action::CORE_GOAL_SET.to_string(),
+        palette_of(&[
+            protocol_resource::TOOLS,
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            protocol_action::CORE_GOAL_SET,
         ]),
     ] {
         let ctx = auth(scope.clone());
@@ -816,9 +825,7 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
 #[tokio::test]
 async fn a_palette_narrows_the_advertised_dispatcher_actions() {
     let router = app(host());
-    let ctx = auth(ToolScope::Palette(vec![
-        protocol_action::CORE_GOAL_SET.to_string(),
-    ]));
+    let ctx = auth(palette_of(&[protocol_action::CORE_GOAL_SET]));
 
     let answer = get(&router, "/v1/tools", &ctx).await;
     let goal = answer.json()["tools"]
@@ -841,7 +848,7 @@ async fn a_palette_narrows_the_advertised_dispatcher_actions() {
 async fn a_bogus_leaf_never_advertises_a_flat_tool() {
     let router = app(host());
     let flat = protocol_tool::CORE_SEARCH_MEMORIES;
-    let ctx = auth(ToolScope::Palette(vec![format!("{flat}:bogus")]));
+    let ctx = auth(palette_of(&[&format!("{flat}:bogus")]));
 
     let list = get(&router, "/v1/tools", &ctx).await;
     assert_eq!(list.status, StatusCode::OK);
@@ -886,9 +893,7 @@ async fn a_bogus_leaf_never_advertises_a_flat_tool() {
 #[tokio::test]
 async fn a_denied_tool_is_403_on_invocation_and_404_in_the_catalog() {
     let router = app(host());
-    let ctx = auth(ToolScope::Palette(vec![
-        protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
-    ]));
+    let ctx = auth(palette_of(&[protocol_tool::CORE_SEARCH_MEMORIES]));
 
     let invoked = call(
         &router,
@@ -1158,7 +1163,7 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
 #[tokio::test]
 async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
     let router = app(flavor_host());
-    let ctx = auth(ToolScope::Palette(vec![format!("{FLAVOR_DISPATCH}:look")]));
+    let ctx = auth(palette_of(&[&format!("{FLAVOR_DISPATCH}:look")]));
 
     let answer = get(&router, "/v1/tools", &ctx).await;
     let dispatch = answer.json()["tools"]
@@ -1179,7 +1184,7 @@ async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
 #[tokio::test]
 async fn a_denied_flavor_dispatcher_action_is_403() {
     let router = app(flavor_host());
-    let ctx = auth(ToolScope::Palette(vec![format!("{FLAVOR_DISPATCH}:look")]));
+    let ctx = auth(palette_of(&[&format!("{FLAVOR_DISPATCH}:look")]));
 
     let answer = call(
         &router,

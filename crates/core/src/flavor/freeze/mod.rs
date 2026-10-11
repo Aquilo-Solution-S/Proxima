@@ -136,6 +136,7 @@ impl FlavorRegistry {
         self.validate_listenable_schemas_publish_a_json_schema()?;
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
+        self.validate_scope_keys()?;
         self.validate_contracts()?;
         self.validate_scope_declarations()?;
         self.validate_embedding_recipes_match_behavior()?;

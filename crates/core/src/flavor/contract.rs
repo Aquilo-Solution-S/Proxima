@@ -25,7 +25,7 @@
 
 use crate::scope::ScopeDecl;
 use crate::verbs::schema::PayloadKind;
-use crate::{SchemaId, SchemaVersion, SearchProjectionColumnKind};
+use crate::{ResourceKey, SchemaId, SchemaVersion, ScopeKey, SearchProjectionColumnKind};
 
 // ── Identity ────────────────────────────────────────────────────────────
 
@@ -1480,6 +1480,26 @@ pub struct ResourceContract {
     pub reads: &'static [&'static str],
 }
 
+impl ResourceContract {
+    /// This resource's palette key, [`Self::scope_key`] parsed.
+    ///
+    /// # Panics
+    ///
+    /// When `scope_key` is not `resource:` plus a valid name. Only flavor #0
+    /// declares resources and its table is static, so
+    /// `every_core_resource_declares_a_resource_key` pins this for all of them.
+    #[must_use]
+    pub fn key(&self) -> ResourceKey {
+        match ScopeKey::parse(self.scope_key) {
+            Ok(ScopeKey::Resource(key)) => key,
+            other => panic!(
+                "resource {} declares scope_key {:?}, which is not a resource key: {other:?}",
+                self.name, self.scope_key
+            ),
+        }
+    }
+}
+
 // ── The two levels ──────────────────────────────────────────────────────
 
 /// Everything a flavor declares about one schema.
@@ -1742,17 +1762,17 @@ impl FlavorContract {
             .any(|declared| declared == table)
     }
 
-    /// The resource this flavor declares under `scope_key`, if any.
+    /// The resource this flavor declares under `key`, if any.
     ///
     /// The authorization gate calls this instead of testing the scope key
     /// for a `resource:` prefix: a resource read is a read because the
     /// contract says [`ResourceContract::read_only`], not because of how
     /// its palette entry is spelled.
     #[must_use]
-    pub fn resource_by_scope_key(&self, scope_key: &str) -> Option<&'static ResourceContract> {
+    pub fn resource_by_scope_key(&self, key: &ResourceKey) -> Option<&'static ResourceContract> {
         self.resources
             .iter()
-            .find(|resource| resource.scope_key == scope_key)
+            .find(|resource| resource.key() == *key)
     }
 }
 
