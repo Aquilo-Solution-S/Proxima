@@ -249,12 +249,12 @@ const fn record_schema(
     }
 }
 
-/// A cited object or citation mapping: opaque, no Rust type, no sidecar of
-/// its own. The eight/eight pairs are how a code Fact cites a blob.
-const fn opaque_schema(name: &'static str, kind: PayloadKind) -> SchemaContract {
+/// A cited object: opaque, no Rust type, no sidecar of its own. These
+/// eight are how a code Fact cites a blob.
+const fn opaque_schema(name: &'static str) -> SchemaContract {
     SchemaContract {
         id: SchemaRef::new(FLAVOR_ID, name, 1),
-        kind,
+        kind: PayloadKind::CitedObject,
         sidecar_table: None,
         search: SearchProjectionDecl::None {
             why: "an opaque citation schema has no columns of its own; the bytes are the blob",
@@ -737,26 +737,14 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
         ENGINEER_SELF_V1,
         WORK_ASSIGNMENT_V1,
         // Opaque cited objects
-        opaque_schema("code-blob", PayloadKind::CitedObject),
-        opaque_schema("code-commit-object", PayloadKind::CitedObject),
-        opaque_schema("execution-request-object", PayloadKind::CitedObject),
-        opaque_schema("acceptance-criteria-object", PayloadKind::CitedObject),
-        opaque_schema("test-request-object", PayloadKind::CitedObject),
-        opaque_schema("execution-result-object", PayloadKind::CitedObject),
-        opaque_schema("test-result-object", PayloadKind::CitedObject),
-        opaque_schema("acceptance-verification-object", PayloadKind::CitedObject),
-        // Opaque citation mappings
-        opaque_schema("code-blob-whole", PayloadKind::CitationMapping),
-        opaque_schema("code-commit-whole", PayloadKind::CitationMapping),
-        opaque_schema("execution-request-whole", PayloadKind::CitationMapping),
-        opaque_schema("acceptance-criteria-whole", PayloadKind::CitationMapping),
-        opaque_schema("test-request-whole", PayloadKind::CitationMapping),
-        opaque_schema("execution-result-whole", PayloadKind::CitationMapping),
-        opaque_schema("test-result-whole", PayloadKind::CitationMapping),
-        opaque_schema(
-            "acceptance-verification-whole",
-            PayloadKind::CitationMapping,
-        ),
+        opaque_schema("code-blob"),
+        opaque_schema("code-commit-object"),
+        opaque_schema("execution-request-object"),
+        opaque_schema("acceptance-criteria-object"),
+        opaque_schema("test-request-object"),
+        opaque_schema("execution-result-object"),
+        opaque_schema("test-result-object"),
+        opaque_schema("acceptance-verification-object"),
     ],
     state_surfaces: STATE_SURFACES,
     // One declared lifecycle scope. From it the substrate generates the

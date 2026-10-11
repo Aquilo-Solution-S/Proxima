@@ -1,7 +1,6 @@
 //! Engine composite — wires `FlavorRegistryFrozen` behind the typed
 //! verb surfaces of docs/14-protocol-surface.md.
 
-#[allow(dead_code)]
 mod access_admin;
 mod builder;
 mod embeddings;

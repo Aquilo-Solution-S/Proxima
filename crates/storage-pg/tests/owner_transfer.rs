@@ -786,14 +786,8 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let mut first_draft = draft();
-        first_draft.citation = Some(
-            CitationSpec::v1(
-                "core/test-cited-object-v1",
-                [9_u8; 32],
-                "core/test-citation-mapping-v1",
-            )
-            .into(),
-        );
+        first_draft.citation =
+            Some(CitationSpec::v1("core/test-cited-object-v1", [9_u8; 32]).into());
         let first = pg.ingest_fact_atomic(&permit, &first_draft, None).await?;
         let cited_object_id = first
             .cited_object_id
@@ -1405,14 +1399,8 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         let pool = pg.pool_for_tests();
 
         let mut target_draft = draft();
-        target_draft.citation = Some(
-            CitationSpec::v1(
-                "core/test-cited-object-v1",
-                [17_u8; 32],
-                "core/test-citation-mapping-v1",
-            )
-            .into(),
-        );
+        target_draft.citation =
+            Some(CitationSpec::v1("core/test-cited-object-v1", [17_u8; 32]).into());
         let target = pg.ingest_fact_atomic(&permit, &target_draft, None).await?;
         let blob_id = target
             .cited_object_id
@@ -1575,14 +1563,8 @@ async fn transfer_serializes_destination_citation_dedupe() {
         let pool = pg.pool_for_tests();
 
         let mut source_draft = draft();
-        source_draft.citation = Some(
-            CitationSpec::v1(
-                "core/test-cited-object-v1",
-                [29_u8; 32],
-                "core/test-citation-mapping-v1",
-            )
-            .into(),
-        );
+        source_draft.citation =
+            Some(CitationSpec::v1("core/test-cited-object-v1", [29_u8; 32]).into());
         let source_row = pg
             .ingest_fact_atomic(&source_permit, &source_draft, None)
             .await?;
@@ -1619,14 +1601,8 @@ async fn transfer_serializes_destination_citation_dedupe() {
         let destination_citation = tokio::spawn(async move {
             let permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
             let mut citation = draft();
-            citation.citation = Some(
-                CitationSpec::v1(
-                    "core/test-cited-object-v1",
-                    [29_u8; 32],
-                    "core/test-citation-mapping-v1",
-                )
-                .into(),
-            );
+            citation.citation =
+                Some(CitationSpec::v1("core/test-cited-object-v1", [29_u8; 32]).into());
             destination_pg
                 .ingest_fact_atomic(&permit, &citation, None)
                 .await
@@ -2028,14 +2004,8 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
             let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
             let destination = destination();
             let mut cited = draft();
-            cited.citation = Some(
-                CitationSpec::v1(
-                    "core/test-cited-object-v1",
-                    [71_u8 + ordinal; 32],
-                    "core/test-citation-mapping-v1",
-                )
-                .into(),
-            );
+            cited.citation =
+                Some(CitationSpec::v1("core/test-cited-object-v1", [71_u8 + ordinal; 32]).into());
             let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
             let blob_id = written.cited_object_id.ok_or("cited blob missing")?;
             let upload_id = Uuid::now_v7();

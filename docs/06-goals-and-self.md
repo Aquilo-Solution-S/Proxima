@@ -98,8 +98,9 @@ Head-advance constraints:
 | Valid transition | prior state and new state pair is admitted |
 | Payload typed | the new `t` satisfies the registered payload contract; its sidecar may be absent |
 
-Lifecycle Facts are observations of Goal lifecycle writes. They do not
-replace Goal identity.
+A transition is the Goal's later `t` on the same `handle`. Only a terminal
+transition (`Achieved`, `Abandoned`) writes a Fact: the close Fact the new row
+names in `close_fact_t`, in the same transaction.
 
 Public Rust surface:
 
@@ -187,11 +188,10 @@ Core owns:
 | Entity | Goal row, Goal identity, 4-state lifecycle |
 | Payloads | `GoalPayload` schemas |
 | Verb | `GoalWrite` |
-| Lifecycle Facts | activated / paused / achieved / abandoned schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition` (pause / resume / abandon), `modify`, `mark_achieved`, `decompose` |
 | Topology | `assignment_t`, `dependency_t`, `evidence_t` on the Goal row; index entries are derived from them |
 | Query | active-goal traversal |
-| Renderers | Goal and lifecycle payload views |
+| Renderers | Goal payload views |
 
 Evidence:
 
@@ -222,14 +222,6 @@ wake targets, so hydrate them first.
 
 At the low-level contract, a named stale prior is a caller-fixable conflict;
 an unnamed head-snapshot drift is retryable.
-
-Lifecycle Fact provenance:
-
-```
-Lifecycle Fact --origin--> Fact evidence     (declared as derived_from)
-```
-
-Abstraction evidence stays in `goal.evidence_t`.
 
 ## Goal-Scoped Wake Policy
 
@@ -287,7 +279,6 @@ Owner is per row.
 | evidence entry | source-owned: edge Owner = source Goal Owner |
 | dependency entry | source-owned: edge Owner = source Goal Owner |
 | WakeConfig | Goal-owned row; no independent Owner or handle |
-| Lifecycle Fact | same Owner as Goal write |
 
 Cross-owner Goal assignment/evidence is write-surface policy — the writer
 needs write authority on the Goal and read authority on the target — not the

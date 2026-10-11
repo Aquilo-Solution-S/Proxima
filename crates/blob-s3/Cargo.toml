@@ -23,7 +23,6 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }
-hex = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "sync"] }
 
@@ -35,5 +34,4 @@ proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
 # Without a client here no test ever dereferences one, and the only hop that
 # actually carries bytes goes unexecuted.
 reqwest = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

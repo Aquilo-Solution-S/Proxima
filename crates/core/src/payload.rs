@@ -506,18 +506,6 @@ pub trait FactPayload:
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// Declared metadata: whether a host should treat this schema's rows as
-    /// a heightened-protection category of its own definition — health,
-    /// biometric, political, or whatever its regime names.
-    ///
-    /// The kernel never reasons over it. Nothing in core reads this flag to
-    /// decide anything: no predicate consults it, no erase or export branches
-    /// on it, and a schema that sets it is stored, searched and destroyed
-    /// exactly like one that does not. It exists so a hosting application can
-    /// ask a registered schema what it declared itself to be and apply its own
-    /// rules, which is the only place such a judgement can be made. Defaults
-    /// to `false`. See docs/03 §Special-category declaration.
-    const SPECIAL_CATEGORY: bool = false;
     /// Declared metadata: whether every admitted Fact of this schema
     /// captures a publication record in its own write transaction
     /// (docs/18 §Listen declaration).
@@ -600,8 +588,7 @@ pub trait FactPayload:
     }
     /// Per-schema typed Fact sidecar table, or `None` when the Fact
     /// carries no sidecar of its own (its typed payload lives elsewhere,
-    /// e.g. in a citation cited-object). Defaults to `None`; mirrors the
-    /// optional-sidecar treatment of `CitationMappingPayload`.
+    /// e.g. in a citation cited-object). Defaults to `None`.
     #[must_use]
     fn sidecar_table() -> Option<&'static str> {
         None
@@ -636,8 +623,6 @@ pub trait AbstractionPayload:
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
     /// Node references this payload's fields carry (docs/16
     /// §The Model). Ingest derives one `Reference` index entry per
@@ -699,8 +684,6 @@ pub trait PerspectivePayload:
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
     /// Node references this payload's fields carry (docs/16
     /// §The Model). Ingest derives one `Reference` index entry per
@@ -766,8 +749,6 @@ pub trait GoalPayload:
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
     /// Schema-owned body key used for `GoalWrite` idempotency conflict
     /// checks. Title/text and authorship are compared separately.
     #[must_use]
@@ -801,15 +782,13 @@ pub trait GoalPayload:
 /// Typed payload for a cited blob, keyed on `blob_id`. Cited blobs
 /// do not participate in F/A/P queries; the artifact body is the
 /// blob bytes, while `blob` stores ownership and a content-addressed
-/// hash. See docs/11 §"Trait families".
+/// hash. Citation schemas, typed or opaque, have no sidecar table. See
+/// docs/11 §"Trait families".
 pub trait CitedObjectPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
-    fn sidecar_table() -> &'static str;
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None
@@ -823,40 +802,6 @@ pub trait CitedObjectPayload:
     /// the same artifact for the same Owner deduplicates the
     /// `blob` row via `(owner_id, schema_id, content_hash)`.
     fn idempotency_key(&self) -> [u8; 32];
-}
-
-/// Typed locator for a Fact→blob citation. The link is `memory.blob_id`
-/// (0..1). A sidecar is **optional**, needed only when the citation
-/// carries schema-specific metadata such as byte ranges. A fieldless
-/// mapping (a pure link, the common case) returns `None`. See docs/11
-/// §"Trait families".
-pub trait CitationMappingPayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
-{
-    const SCHEMA_ID: &'static str;
-    const SCHEMA_VERSION: u32;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
-    /// Sidecar table for this mapping's schema-specific metadata, or
-    /// `None` when the mapping is a pure link with no extra columns.
-    /// Returning `None` means no sidecar row is written and no table is
-    /// required — don't mint an empty table just to satisfy the trait.
-    #[must_use]
-    fn sidecar_table() -> Option<&'static str> {
-        None
-    }
-    #[must_use]
-    fn json_schema() -> Option<serde_json::Value> {
-        None
-    }
-    #[must_use]
-    fn schema_id() -> SchemaId {
-        SchemaId::new(Self::SCHEMA_ID.to_string())
-    }
-
-    /// Schema id of the `CitedObjectPayload` this mapping is allowed
-    /// to annotate.
-    fn cited_object_schema() -> SchemaId;
 }
 
 #[cfg(test)]

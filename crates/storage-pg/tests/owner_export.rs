@@ -48,10 +48,7 @@ fn citation_surfaces() -> OwnerSurfaces {
     }
     OwnerSurfaces::from_surfaces(vec![
         citation("proxima_core.test_cited_object_v1", "cited_object_id"),
-        citation(
-            "proxima_core.test_citation_mapping_v1",
-            "citation_mapping_id",
-        ),
+        citation("proxima_core.test_cited_span_v1", "span_blob_id"),
     ])
 }
 
@@ -286,11 +283,11 @@ async fn export_carries_cooled_locators_and_sketches() {
     result.expect("cooled/sketch export test failed");
 }
 
-/// A citation is the `proxima_core.blob` row a Fact names, so both citation
-/// sidecar families key on `blob_id` and are owner-filtered through
+/// A citation is the `proxima_core.blob` row a Fact names, so citation
+/// sidecar tables key on `blob_id` and are owner-filtered through
 /// `blob.owner_id`. Export must act on the registered table lists it receives:
-/// discarding them drops a flavor's typed cited-object and citation-mapping
-/// payloads from the bundle.
+/// discarding them drops a flavor's typed cited-object payloads from the
+/// bundle.
 #[tokio::test]
 async fn export_carries_registered_citation_sidecar_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -318,8 +315,8 @@ async fn export_carries_registered_citation_sidecar_rows() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "CREATE TABLE proxima_core.test_citation_mapping_v1 (
-                 citation_mapping_id uuid PRIMARY KEY
+            "CREATE TABLE proxima_core.test_cited_span_v1 (
+                 span_blob_id uuid PRIMARY KEY
                      REFERENCES proxima_core.blob (blob_id),
                  page_from integer NOT NULL
              )",
@@ -354,8 +351,8 @@ async fn export_carries_registered_citation_sidecar_rows() {
             .execute(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.test_citation_mapping_v1
-                     (citation_mapping_id, page_from)
+                "INSERT INTO proxima_core.test_cited_span_v1
+                     (span_blob_id, page_from)
                  VALUES ($1, $2)",
             )
             .bind(blob_id)
@@ -372,15 +369,15 @@ async fn export_carries_registered_citation_sidecar_rows() {
         assert_eq!(
             tables,
             vec![
-                "proxima_core.test_citation_mapping_v1",
-                "proxima_core.test_cited_object_v1"
+                "proxima_core.test_cited_object_v1",
+                "proxima_core.test_cited_span_v1"
             ],
             "the bundle carries exactly the declared surfaces"
         );
-        let mapping = bundle.table("proxima_core.test_citation_mapping_v1");
+        let span = bundle.table("proxima_core.test_cited_span_v1");
         let cited = bundle.table("proxima_core.test_cited_object_v1");
-        assert_eq!(mapping.len(), 1);
-        assert_eq!(mapping[0]["page_from"].as_i64(), Some(4));
+        assert_eq!(span.len(), 1);
+        assert_eq!(span[0]["page_from"].as_i64(), Some(4));
         assert_eq!(cited.len(), 1);
         assert_eq!(
             cited[0]["body"].as_str(),

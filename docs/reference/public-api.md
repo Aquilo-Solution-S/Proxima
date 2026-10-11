@@ -56,7 +56,7 @@ Supported Rust tiers:
 | Host API (tool scope) | `use proxima::host::{ToolScope, ScopeKey, ToolName, ActionName, ResourceKey, ScopeKeyError, tool_palette_excluding};` | `ToolScope::Palette(Vec<ScopeKey>)`; a key exists only through `ScopeKey::parse` and the typed constructors, so a tool name cannot spell a `tool:action` leaf or a `resource:` key ([12 §Scope keys](../12-tool-manifest.md#scope-keys)) |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
 | Host API (AsyncAPI) | `use proxima::{asyncapi_document, AsyncApiInfo, DEFAULT_SUBJECT_PREFIX};` | offline AsyncAPI 3.0.0 document of the frozen registry's listenable Facts; channel addresses are the publisher's subjects ([18 §AsyncAPI Catalog](../18-fact-outbox.md#asyncapi-catalog)); requires feature `outbox-nats`; `DEFAULT_CONSUMER_STREAM` and `DEFAULT_CONSUMER_NAME` (the reference consumer's defaults) are exported beside `DEFAULT_SUBJECT_PREFIX` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft, CitationAttachmentRequest};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. Typed citation drafts and the citation-attachment request + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API. `EraseRule::HostState` is built from `flavor::HostStateEraseDisposition`, the SDK's only host-state name |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorContract, SchemaContract, Surface, FactPayload, pg_sidecar, InlineCitedObjectDraft};` | build-time schemas, complete contract declarations, payload references, tools, sidecars. The typed cited-object draft and `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API. `EraseRule::HostState` is built from `flavor::HostStateEraseDisposition`, the SDK's only host-state name |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
 | Flavor SDK (tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
@@ -97,7 +97,7 @@ tool and storage accessors: `AccessKind`, `AccessError`, `Relation`, `Role`,
 `TrimmedLenViolation`, `HostStateCommand`, `HostStateOutcome`. Through the write
 path: `WritePermit`, `OwnerWritePermit`, `PublicationPlan`, `Citation`,
 `FactReceiptDraft`, `AuthorizedNodeLinks`, `AuthorizedInlineCitedObject`,
-`AuthorizedInlineCitationMapping`, `DecomposedGoalOutcome`. Through reads and the
+`DecomposedGoalOutcome`. Through reads and the
 registry: `QueryCursor`, `QueryPage`, `MemoryRow`, `SchemaInfo`, `SchemaRequest`,
 `SchemaResponse`, `ProtocolPayload`, `MemorySearchProjection`, `MemoryEmbedUnit`.
 Through MCP: `TerminalDispatch`, `McpToolCtx`, `McpToolDescriptor`,
@@ -122,11 +122,12 @@ authorized write session; it does not expose a connection or pool.
 
 Cold-memory repair is part of the Host API: `Engine::hydrate_memory` and
 `Engine::hydrate_memories` accept an owner plus `MemoryId` values and use the
-server-resolved write authority. Their `MemoryHydrationOutcome` values expose
-only `Hydrated`, `AlreadyHot`, `NotFound`, `MissingColdObject`,
-`UnsupportedColdObject`, `UnsupportedColdSidecar`, `InvalidColdObject`, and
-honest batch `NotAttempted` classifications; raw Postgres transactions and
-cold-store locators are not public. The set limit is
+server-resolved write authority. Each `MemoryHydrationOutcome` carries a
+`status: MemoryHydrationStatus` that is only `Hydrated`, `AlreadyHot`,
+`NotFound`, `MissingColdObject`, `UnsupportedColdObject`,
+`UnsupportedColdSidecar`, `InvalidColdObject`, or the honest batch
+`NotAttempted`; raw Postgres transactions and cold-store locators are not
+public. The set limit is
 `MAX_MEMORY_HYDRATION_BATCH` (64), and the set is atomic over owner-visible
 cooled items. A row cooled before the integrity witness existed carries no
 `cold_digest` and its object predates the stamped cold format; it stays cooled

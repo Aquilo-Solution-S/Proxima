@@ -22,7 +22,6 @@ PAYLOAD_TRAITS = {
     "PerspectivePayload": "Perspective",
     "GoalPayload": "Goal",
     "CitedObjectPayload": "CitedObject",
-    "CitationMappingPayload": "CitationMapping",
 }
 
 IMPL_RE = re.compile(

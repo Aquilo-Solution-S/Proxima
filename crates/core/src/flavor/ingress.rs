@@ -1,6 +1,6 @@
 use super::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
-    PerspectivePayload, ProtocolPayload, SidecarPayload,
+    AbstractionPayload, CitedObjectPayload, FactPayload, GoalPayload, PerspectivePayload,
+    ProtocolPayload, SidecarPayload,
 };
 
 pub(super) fn decode_protocol_payload<T>(value: &serde_json::Value) -> Result<T, String>
@@ -82,20 +82,5 @@ where
         sidecar_payload: SidecarPayload::cited_object(payload),
         rendered_text: None,
         content_hash,
-    })
-}
-
-pub(super) fn ingest_citation_mapping_payload<M>(
-    value: &serde_json::Value,
-) -> Result<ProtocolPayload, String>
-where
-    M: CitationMappingPayload,
-{
-    let payload = decode_protocol_payload::<M>(value)?;
-    Ok(ProtocolPayload {
-        key_bytes: None,
-        sidecar_payload: SidecarPayload::citation_mapping(payload),
-        rendered_text: None,
-        content_hash: None,
     })
 }

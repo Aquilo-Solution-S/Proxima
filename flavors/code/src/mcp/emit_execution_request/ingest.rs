@@ -2,9 +2,7 @@ use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{EdgeEndpoint, FactPayload, FactWrite, Owner, ToolError, UnitOfWork};
 
 use crate::ingest::{
-    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
-    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
-    TEST_REQUEST_WHOLE_SCHEMA,
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
 };
 use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1, TestRequestV1};
 
@@ -22,14 +20,13 @@ async fn ingest_mcp_fact<P>(
     owner: Owner,
     source_id: &'static str,
     cited_object_schema: &'static str,
-    mapping_schema: &'static str,
     payload: &P,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError>
 where
     P: FactPayload + Clone,
 {
-    let citation = CitationSpec::v1_for_payload(cited_object_schema, payload, mapping_schema);
+    let citation = CitationSpec::v1_for_payload(cited_object_schema, payload);
     uow.ingest_fact(
         FactWrite::new(owner, source_id, payload)
             .citation(citation)
@@ -56,7 +53,6 @@ pub(super) async fn ingest_execution_request(
         owner,
         EXECUTION_REQUEST_SOURCE_ID,
         EXECUTION_REQUEST_OBJECT_SCHEMA,
-        EXECUTION_REQUEST_WHOLE_SCHEMA,
         payload,
         provenance,
     )
@@ -74,7 +70,6 @@ pub(super) async fn ingest_acceptance_criteria(
         owner,
         ACCEPTANCE_CRITERIA_SOURCE_ID,
         ACCEPTANCE_CRITERIA_OBJECT_SCHEMA,
-        ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
         payload,
         provenance,
     )
@@ -92,7 +87,6 @@ pub(super) async fn ingest_test_request(
         owner,
         TEST_REQUEST_SOURCE_ID,
         TEST_REQUEST_OBJECT_SCHEMA,
-        TEST_REQUEST_WHOLE_SCHEMA,
         payload,
         provenance,
     )

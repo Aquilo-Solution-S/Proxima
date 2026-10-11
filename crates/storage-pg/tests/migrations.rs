@@ -69,20 +69,6 @@ async fn index_exists(pg: &PgStorage, index_name: &str) -> bool {
 /// way (a column, a function call, prose) is not a relation reference.
 const RELATION_KEYWORDS: [&str; 5] = ["FROM", "INTO", "UPDATE", "JOIN", "TABLE"];
 
-/// Relations named by SQL that no code path can reach: the three
-/// `PgCitedObjectSidecar` / `PgCitationMappingSidecar` impls in
-/// `sidecars/core_sidecars.rs`, which `register_core_pg_sidecars` never
-/// registers, so their inserter slot is `None` and the statements never run.
-/// The citation-mapping tables they name were dropped with the timeseries cut;
-/// deleting the impls is a separate slice. `dead_sql_exclusions_are_still_live`
-/// fails the moment that slice lands, so this list cannot rot into a
-/// blanket pardon.
-const DEAD_SQL_RELATIONS: [&str; 3] = [
-    "citation_uploaded_blob_page_span_v1",
-    "cited_mcp_call_io_v1",
-    "cited_uploaded_blob_v1",
-];
-
 /// Every `proxima_core.<relation>` named by a keyword-led SQL fragment under
 /// `crates/storage-pg/src`.
 fn core_relations_named_in_storage_sql() -> BTreeSet<String> {
@@ -190,9 +176,6 @@ async fn every_core_relation_named_in_storage_sql_exists() {
 
         let mut missing = Vec::new();
         for relation in core_relations_named_in_storage_sql() {
-            if DEAD_SQL_RELATIONS.contains(&relation.as_str()) {
-                continue;
-            }
             let exists: bool =
                 sqlx::query_scalar("SELECT to_regclass('proxima_core.' || $1::text) IS NOT NULL")
                     .bind(&relation)
@@ -212,20 +195,6 @@ async fn every_core_relation_named_in_storage_sql_exists() {
 
     let _ = drop_db(&db_name).await;
     result.expect("core relation inventory test failed");
-}
-
-/// The dead-SQL exclusions above must stay dead *and* stay present. If a
-/// relation leaves the scan its exclusion is obsolete; if the migration starts
-/// creating one, it was never dead.
-#[test]
-fn dead_sql_exclusions_are_still_live() {
-    let named = core_relations_named_in_storage_sql();
-    for relation in DEAD_SQL_RELATIONS {
-        assert!(
-            named.contains(relation),
-            "{relation} is no longer named by storage-pg SQL; drop it from DEAD_SQL_RELATIONS"
-        );
-    }
 }
 
 #[tokio::test]

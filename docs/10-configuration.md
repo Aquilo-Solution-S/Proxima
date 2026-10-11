@@ -236,7 +236,7 @@ pub enum FeatureControlError { Stopped, Resumed }
 - **Quiescent is not drained.** Serving continues, so a write accepted while
   the worker is quiescent still enqueues its embedding job and its outbox
   record. `status()` says nothing about queue depth; a host that must know
-  the queue is empty reads it (the `core/get_graph` MCP tool reports
+  the queue is empty reads it (the `proxima://graph` MCP resource reports
   `pending_embedding_jobs` per owner).
 - **Lease caveat.** Quiescent means this process acts on no claim it holds.
   A release that failed leaves its lease to expire (publisher:

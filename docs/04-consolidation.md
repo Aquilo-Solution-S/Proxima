@@ -13,7 +13,7 @@ source receipt metadata
   -> receipt-backed Fact + its payload's reference entries
   -> Abstraction + origin entries
 
-announce(F/A/P/Goal/Edge)
+announce(F/A/P/Goal)
   -> external harness pull
   -> armed Active Goal wake match
   -> harness decision
@@ -47,7 +47,8 @@ removed in v0.0.8, and `source_batch_id` after v0.0.9. The gate on
 `core_interpret` instead authors an origin-free Perspective with references to
 Fact, Abstraction, or Perspective subjects (see 02 §The Layering Principle).
 
-Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars.
+Domain metadata belongs in the citing memory's typed payload; a cited
+object is owner, schema and content hash only (11).
 
 ## Phase 2 — Perspective-context embedding
 
@@ -190,11 +191,11 @@ set is a new `t`, not mutation of the old row.
 
 ## Invariants
 
-- F/A/P layering and edge direction: 02 §The Directionality Rule; the model
+- F/A/P layering and edge direction: 02 §The Layering Principle; the model
   itself: 16.
 - Typed A/P sidecars: 03 §Sidecar tables.
 - Append-only identity and head advancement: 07 §Append-only.
 - Build-time schemas, prompts, tools: 08 §Registration mechanism.
 - Bibliographic citation on Fact and Abstraction: 11 §Three-layer model.
-- Source-batch lifecycle is core; domain metadata is citation-sidecar data.
+- Domain metadata lives in the citing memory's typed payload; a cited object has no sidecar (11).
 - F->A exclusivity is per output Abstraction schema and operator.

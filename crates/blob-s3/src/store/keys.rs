@@ -7,11 +7,10 @@
 //!
 //! That is also what makes the read gate safe without a prefix: a locator
 //! is honoured only when it is byte-for-byte the key this store would mint
-//! for THAT row's own id. `core/uploaded-blob-v1` is a registered
-//! cited-object schema, so a locator row can be persisted under the
-//! caller's own owner — owning the row is therefore not evidence of
-//! anything. A forged row can only ever vouch for its own object, because
-//! the key is derived from its primary key.
+//! for THAT row's own id. Only the upload lane writes locator rows, and the
+//! gate does not rely on it: a row this store did not mint can only ever
+//! vouch for its own object, because the key is derived from its primary
+//! key.
 //!
 //! Every key is owner-free and derived from the row's primary key. There is
 //! no second branch to fall back to: a key that does not derive this way is

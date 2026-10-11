@@ -88,7 +88,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
         self
     }
 
-    /// Opaque cited-object / mapping hint (`CitationPlan::DraftHint`).
+    /// Opaque cited-object hint (`CitationPlan::DraftHint`).
     #[must_use]
     pub fn citation(mut self, citation: CitationSpec) -> Self {
         self.citation = Some(citation);

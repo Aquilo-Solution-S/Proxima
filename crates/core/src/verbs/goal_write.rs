@@ -151,7 +151,6 @@ impl GoalDraft {
 pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
     pub change_event_seq: uuid::Uuid,
-    pub lifecycle_memory_id: Option<MemoryId>,
     /// Index rows the goal write asserted — one `reference` per
     /// declared topology entry (assignment Perspective, dependency
     /// Goals, evidence memories). A count, not ids: an edge has no
@@ -668,26 +667,6 @@ impl<P> GoalCreateRequest<P> {
     ) -> Self {
         self.author_self_perspective_id = author_self_perspective_id;
         self
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GoalLifecycleFact {
-    Activated,
-    Paused,
-    Achieved,
-    Abandoned,
-}
-
-impl GoalLifecycleFact {
-    #[must_use]
-    pub const fn for_state(state: GoalState) -> Self {
-        match state {
-            GoalState::Active => Self::Activated,
-            GoalState::Paused => Self::Paused,
-            GoalState::Achieved => Self::Achieved,
-            GoalState::Abandoned => Self::Abandoned,
-        }
     }
 }
 

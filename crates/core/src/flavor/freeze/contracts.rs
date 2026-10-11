@@ -305,7 +305,7 @@ impl FlavorRegistry {
             // A cross-owner transfer of a shared blob gives the destination
             // a NEW `blob` row and repoints the columns that reference it.
             // Those columns are enumerable exactly because they are foreign
-            // keys. A cited-object or citation-mapping sidecar references a
+            // keys. A cited-object sidecar references a
             // blob by convention — `cited_object_id` holds a `blob_id` with
             // nothing in the catalog saying so — and the remap would walk
             // straight past it, leaving the rows pointing at the source
@@ -316,11 +316,8 @@ impl FlavorRegistry {
             // remap needs designing, so that is the moment this refuses,
             // rather than the moment a transfer silently splits a citation
             // from its bytes.
-            if matches!(
-                schema.kind,
-                crate::verbs::schema::PayloadKind::CitedObject
-                    | crate::verbs::schema::PayloadKind::CitationMapping
-            ) && let Some(table) = schema.sidecar_table
+            if schema.kind == crate::verbs::schema::PayloadKind::CitedObject
+                && let Some(table) = schema.sidecar_table
             {
                 return Err(FlavorRegistryError::CitationSidecarNotRemappable {
                     flavor_id: contract.flavor_id,

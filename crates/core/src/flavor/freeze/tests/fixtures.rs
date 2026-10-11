@@ -114,7 +114,7 @@ pub(super) static CITATION_WITH_A_SIDECAR: FlavorContract = contract(
     7,
     &[SchemaContract {
         id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
-        kind: PayloadKind::CitationMapping,
+        kind: PayloadKind::CitedObject,
         sidecar_table: Some("test_flavor.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "a fixture, not a surface",
@@ -319,7 +319,6 @@ pub(super) fn register_fixture_schema_of_kind(
         natural_key_columns: Vec::new(),
         tombstone: None,
         has_typed_ingress: true,
-        cited_object_schema: None,
         listenable: false,
     });
     registry
@@ -352,7 +351,6 @@ pub(super) fn registration_without_a_contract() -> SchemaInfo {
         natural_key_columns: Vec::new(),
         tombstone: None,
         has_typed_ingress: false,
-        cited_object_schema: None,
         listenable: false,
     }
 }

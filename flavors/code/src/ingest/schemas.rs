@@ -14,28 +14,13 @@ pub const CODE_BLOB_SCHEMA: &str = "proxima-code/code-blob-v1";
 /// (idempotency_key = blake3(commit sha)).
 pub const CODE_COMMIT_OBJECT_SCHEMA: &str = "proxima-code/code-commit-object-v1";
 
-/// CitationMapping for "this Fact references the whole blob"
-/// (used by `file-revision-v1`).
-pub const CODE_BLOB_WHOLE_SCHEMA: &str = "proxima-code/code-blob-whole-v1";
-
-/// CitationMapping for "this Fact references the whole commit object"
-/// (used by `commit-v1`).
-pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
-
 pub const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
-pub const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
 pub const ACCEPTANCE_CRITERIA_OBJECT_SCHEMA: &str = "proxima-code/acceptance-criteria-object-v1";
-pub const ACCEPTANCE_CRITERIA_WHOLE_SCHEMA: &str = "proxima-code/acceptance-criteria-whole-v1";
 pub const TEST_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/test-request-object-v1";
-pub const TEST_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/test-request-whole-v1";
 pub const EXECUTION_RESULT_OBJECT_SCHEMA: &str = "proxima-code/execution-result-object-v1";
-pub const EXECUTION_RESULT_WHOLE_SCHEMA: &str = "proxima-code/execution-result-whole-v1";
 pub const TEST_RESULT_OBJECT_SCHEMA: &str = "proxima-code/test-result-object-v1";
-pub const TEST_RESULT_WHOLE_SCHEMA: &str = "proxima-code/test-result-whole-v1";
 pub const ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA: &str =
     "proxima-code/acceptance-verification-object-v1";
-pub const ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA: &str =
-    "proxima-code/acceptance-verification-whole-v1";
 
 #[must_use]
 pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {

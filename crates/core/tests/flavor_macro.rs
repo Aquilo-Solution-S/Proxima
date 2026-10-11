@@ -6,8 +6,8 @@ use proxima_core::flavor::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload,
-    PayloadKeyBuilder, SchemaId, proxima_flavor, proxima_schema_id,
+    CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload, PayloadKeyBuilder,
+    proxima_flavor, proxima_schema_id,
 };
 
 /// The fixture flavor's ordinal. Any non-zero value: zero is core's, and
@@ -49,7 +49,6 @@ static MACRO_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
         fixture_schema("test-fact", PayloadKind::Fact, Some("fact_test_fact_v1")),
         fixture_schema("test-goal", PayloadKind::Goal, Some("goal_test_goal_v1")),
         fixture_schema("test-cited-object", PayloadKind::CitedObject, None),
-        fixture_schema("test-citation-mapping", PayloadKind::CitationMapping, None),
     ],
     state_surfaces: &[],
     scopes: &[],
@@ -135,35 +134,8 @@ impl CitedObjectPayload for TestCitedObjectV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-cited-object-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "cited_object_test_v1"
-    }
-
     fn idempotency_key(&self) -> [u8; 32] {
         *blake3::hash(&self.body).as_bytes()
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TestCitationMappingV1 {
-    start: u64,
-    end: u64,
-}
-
-impl CitationMappingPayload for TestCitationMappingV1 {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("test-citation-mapping-v1");
-    const SCHEMA_VERSION: u32 = 1;
-
-    // A citation mapping declares no sidecar: the shared-blob dedupe arm
-    // repoints citations by following foreign keys, and a sidecar naming a
-    // blob by convention would be walked past. Freeze refuses a contract
-    // that declares one.
-    fn sidecar_table() -> Option<&'static str> {
-        None
-    }
-
-    fn cited_object_schema() -> SchemaId {
-        TestCitedObjectV1::schema_id()
     }
 }
 
@@ -172,7 +144,6 @@ proxima_flavor! {
     fact_schemas = [ TestFactV1 ],
     goal_schemas = [ TestGoalV1 ],
     cited_object_schemas = [ TestCitedObjectV1 ],
-    citation_mapping_schemas = [ TestCitationMappingV1 ],
     schema_capability_tags = [
         (Fact, TestFactV1) => ["actor", "shared-vocab"],
         (Goal, TestGoalV1) => ["task"],
@@ -246,7 +217,7 @@ fn flavor_macro_registers_schema_capability_tags() {
 }
 
 #[test]
-fn flavor_macro_registers_citation_schemas() {
+fn flavor_macro_registers_cited_object_schema() {
     let mut registry = FlavorRegistry::new();
     register(&mut registry).unwrap();
     let frozen = registry.freeze_or_panic_for_tests();
@@ -257,13 +228,6 @@ fn flavor_macro_registers_citation_schemas() {
         .expect("cited object schema registered");
     assert_eq!(cited_schema.schema_version.into_inner(), 1);
     assert_eq!(cited_schema.kind, PayloadKind::CitedObject);
-
-    let citation_mapping_schema = schemas
-        .iter()
-        .find(|s| s.schema_id.as_str() == "proxima-core/test-citation-mapping-v1")
-        .expect("citation mapping schema registered");
-    assert_eq!(citation_mapping_schema.schema_version.into_inner(), 1);
-    assert_eq!(citation_mapping_schema.kind, PayloadKind::CitationMapping);
 }
 
 mod empty_goal_schemas {

@@ -4,8 +4,6 @@ repo_url: https://github.com/Aquilo-Solution-S/Proxima
 edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
-exclude_docs: |
-  superpowers/**
 theme:
   name: material
   features:

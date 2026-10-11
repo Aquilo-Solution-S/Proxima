@@ -126,7 +126,8 @@ A persisted score is an Abstraction: payload holds value and method,
 Query-time similarity is not persisted and authors no pin.
 
 Citation is `blob_id` 0..1 on Fact ∪ Abstraction. Perspectives never cite
-(11).
+(11). Derive takes no citation yet, so no shipped path writes the
+Abstraction's `blob_id`.
 
 ## Current surface
 

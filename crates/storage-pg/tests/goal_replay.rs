@@ -188,7 +188,6 @@ fn assert_exact_replay(first: &GoalWriteOutcome, replay: &GoalWriteOutcome) {
     assert!(replay.idempotent_replay);
     assert_eq!(replay.goal_id, first.goal_id);
     assert_eq!(replay.change_event_seq, first.change_event_seq);
-    assert_eq!(replay.lifecycle_memory_id, first.lifecycle_memory_id);
     assert_eq!(replay.edge_count, first.edge_count);
 }
 

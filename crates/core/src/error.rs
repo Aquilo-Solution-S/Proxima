@@ -32,6 +32,7 @@ pub enum ErrorCode {
     TriggerConflict,
     DuplicateTriggerInRequest,
     Suppressed,
+    CapacityExhausted,
     Internal,
 }
 
@@ -50,6 +51,7 @@ impl ErrorCode {
             Self::TriggerConflict => "trigger_conflict",
             Self::DuplicateTriggerInRequest => "duplicate_trigger_in_request",
             Self::Suppressed => "suppressed",
+            Self::CapacityExhausted => "capacity_exhausted",
             Self::Internal => "internal",
         }
     }
@@ -100,6 +102,16 @@ impl ProtocolError {
     pub fn not_found(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::NotFound,
+            message: message.into(),
+            request_id: None,
+        }
+    }
+
+    /// A legal write refused because a bounded backlog is full: retry
+    /// later, not a fault in the request and not an incident.
+    pub fn capacity_exhausted(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::CapacityExhausted,
             message: message.into(),
             request_id: None,
         }

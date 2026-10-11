@@ -1,7 +1,8 @@
 # 11 — Citations
 
 A citation answers "**what artefact in Reality does this memory come
-from?**" Three entities, two trait families. The Memory graph already
+from?**" One artefact table, one link column, one payload trait. The
+Memory graph already
 covers reasoning provenance via `origin` and `reference` entries; citations
 cover *bibliographic* provenance — the documents, images, videos, chat
 sessions, computation records, etc. that a Fact or an Abstraction points at.
@@ -18,11 +19,10 @@ Perspective     no blob_id; citations accumulate transitively
 
 - **blob** — the artefact (`proxima_core.blob`). Content-addressed per
   owner (`owner_id, schema_id, content_hash`).
-- **CitationMapping** — optional sidecar when the citation carries
-  schema-specific metadata (page, bbox, …). A fieldless link needs no
-  sidecar.
 - **`memory.blob_id`** — OPTIONAL for **Fact and Abstraction**,
-  forbidden on Perspective.
+  forbidden on Perspective. Only Fact ingest sets it today: derive takes
+  no citation, so the Abstraction half is admitted by the schema and
+  written by no shipped path.
 
 An Abstraction may cite because a **computed score is an Abstraction**
 (see [16 §Computed Scores Are Abstractions](16-edges.md#computed-scores-are-abstractions)):
@@ -36,37 +36,31 @@ and neither is a claim anything can check.
 Perspectives never cite directly. Grounding is `chain(p)` over `refs`
 and `origins` → Facts and Abstractions → their `blob_id`.
 
-## Trait families
+## Payload trait
 
 Parallel to `FactPayload` / `AbstractionPayload` / `PerspectivePayload`
 (03). Compile-time only; build-time registration only — same rule as
-all other payload traits (see invariant 7).
+all other payload traits. A citation schema is typed
+(`try_add_cited_object_schema`, parsed at ingress) or opaque
+(`add_opaque_cited_object_schema`, not parsed); either way the payload is
+the artefact's description, stored on no sidecar table.
 
 ```rust
 trait CitedObjectPayload: Serialize + Deserialize + 'static {
     const SCHEMA_ID:        &'static str;    // "doc-pdf", "media-image", "chat-telegram-session", ...
     const SCHEMA_VERSION:   u32;
-    const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
-    fn sidecar_table() -> &'static str;      // "cited_<schema>_v<n>"
 
     /// Stable hash of the artefact content. Re-ingesting the same
     /// PDF / image / session produces the same key, deduplicating
     /// the CitedObject row within Owner.
-    fn idempotency_key(&self) -> ContentHash;
-}
-
-trait CitationMappingPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:        &'static str;    // "doc-pdf-page-paragraph", "media-image-bbox", ...
-    const SCHEMA_VERSION:   u32;
-    const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
-    fn sidecar_table() -> Option<&'static str>; // None for pure-link mappings
-
-    /// Which CitedObjectPayload schema this mapping annotates.
-    /// Engine validates that the linked cited_object_id resolves to
-    /// a CitedObject of this schema_id.
-    fn cited_object_schema() -> SchemaId;
+    fn idempotency_key(&self) -> [u8; 32];
 }
 ```
+
+There is no second trait for *where* in the artefact a memory comes from.
+A page range, a region or a timestamp is content of the citing memory, a
+field of its own payload schema; the citation is `memory.blob_id` and
+nothing else.
 
 ## Tables
 
@@ -81,9 +75,6 @@ blob(
 
 memory.blob_id     0..1 FK blob     -- F/A only
 ```
-
-Optional mapping sidecar keyed by `t` when the citation carries extra
-columns (page, bbox). A whole-artefact link needs no sidecar.
 
 ## Multiplicity
 
@@ -108,28 +99,8 @@ Everything else is a flavor's.
 | Schema | Kind | Contract |
 |---|---|---|
 | `core/uploaded-blob-v1` | CitedObject | An uploaded artefact; see §Large artefact storage |
-| `core/uploaded-blob-whole-v1` | CitationMapping | The whole artefact. Pure link, no sidecar |
-| `core/uploaded-blob-page-span-v1` | CitationMapping | A page range inside it, optionally a character range |
-| `core/upload-v1` | Fact | That an artefact arrived, citing it through `core/uploaded-blob-whole-v1`. Minted by `complete`; no sidecar of its own |
-| `core/mcp-call-io` + `core/mcp-call-citation` | CitedObject + CitationMapping | Substrate-internal MCP call logging |
-
-Page numbers are **one-based and inclusive at both ends** — a single page
-is `page_from == page_to`. That is how a page is cited in prose and how it
-is printed on the page; zero-based would make "page 1" mean the second
-page in every citation read back by a human. `char_range_start` /
-`char_range_end` are optional, must be present together, and are relative
-to the span's text rather than the document's, so a mapping survives
-re-extraction as long as the pages did not move.
-
-A page span is core, not per-domain, because the artefact it locates into
-already is: a page range in an uploaded document says nothing about what
-kind of document it is, exactly as `uploaded-blob-v1` says nothing about
-what the bytes mean. What stays out of core is anything needing a
-coordinate-system contract — a region on a page has to agree with whoever
-produced the box about pixels, points, or fractions of the page, and that
-agreement belongs with the producer. Flavors register their own
-`CitationMappingPayload` for it, targeting `core/uploaded-blob-v1` or their
-own cited object.
+| `core/upload-v1` | Fact | That an artefact arrived, citing it. Minted by `complete`; no sidecar of its own |
+| `core/mcp-call-io-v1` | CitedObject | Substrate-internal MCP call logging |
 
 ## Large artefact storage
 
@@ -169,18 +140,18 @@ mounted rows may intentionally share the source row's canonical key. An
 owner transfer is an `owner_id` update on `blob` and `blob_uploads` and
 performs no object-store work at all.
 
-The upload lane is the only writer the presigner trusts. An inline
-`core/uploaded-blob-v1` citation payload is a caller-asserted locator:
-the substrate stores its `bucket`/`object_key` verbatim and never
-verifies they point at anything. Owning the row is therefore not
-enough — a forged row is owned by the forger. `read_url` serves a
-locator only when it is the configured bucket and the key this store
-would mint for THAT row's own `upload_id`, and answers any other row
-exactly like a missing object. There is exactly one key scheme and no
-legacy branch: objects written by an earlier scheme are not readable.
+The upload lane is the only writer of a locator. An inline
+`core/uploaded-blob-v1` citation stores a `blob` row (owner, schema,
+content hash) and nothing else, so it can name an artefact but never
+point the presigner at an object. `read_url` reaches bytes only through
+the blob's live upload row, and serves that locator only when it is the
+configured bucket and the key this store would mint for the row's own
+`upload_id`; any other row is answered exactly like a missing object.
+There is exactly one key scheme and no legacy branch: objects written by
+an earlier scheme are not readable.
 
-S3 preserves original bytes only. It does not replace
-`CitationMapping`, the 0..1 citation on a memory, or `origin` provenance.
+S3 preserves original bytes only. It does not replace the 0..1
+citation on a memory or `origin` provenance.
 
 <a id="the-upload-fact"></a>
 ## The upload Fact
@@ -193,9 +164,9 @@ until flavors wrote that record themselves, which made "a file entered
 the corpus" true only in the flavors that bothered.
 
 `complete` therefore also mints a `core/upload-v1` Fact citing the
-artefact through `core/uploaded-blob-whole-v1`. Its rendered text names
+artefact. Its rendered text names
 the file, so an upload is findable by name through
-`core/search_memories` with nobody having written a Fact for it.
+`core_search_memories` with nobody having written a Fact for it.
 
 **Findable, not embedded.** `core/upload-v1` declares
 `EmbeddingRecipe::Never`, so the Fact keeps its text — and with
@@ -220,21 +191,18 @@ uploaded under a second name. One file, one upload Fact, per owner: the
 Fact replays exactly when the upload does, and re-completing is both
 idempotent and the repair path.
 
-**On a replay the corpus and the response name different files, and that
-is deliberate.** `cited_uploaded_blob_v1` is inserted `ON CONFLICT DO
-NOTHING`, so the corpus keeps the filename and mime it recorded *first*;
-the completion response is built from what *this* call staged, so it
-returns the name the caller just uploaded. Upload `vertrag.pdf`, then the
-same bytes as `rechnung-2026.pdf`, and you get back `rechnung-2026.pdf`
-with `idempotent_replay: true` while the stored row still says
-`vertrag.pdf`. Answering a caller with a filename they never sent would be
-worse, and the artefact genuinely is the one already held — the name is
-metadata about an observation, not part of the artefact's identity. A
-client that needs the recorded name must read it back
-(`core_fact`'s `citation_of_fact`) rather than trust the completion
-response. The kernel states the row's side of this as CH-U15 in the
-proxima-docs Charta module, which is why that theorem is asserted by
-selecting the row rather than by reading a response field.
+**On a replay the Fact stays one and the upload rows do not, and that is
+deliberate.** Each upload keeps its own `blob_uploads` row with the filename
+and mime it was sent under; the completion response is built from what
+*this* call staged. Upload `vertrag.pdf`, then the same bytes as
+`rechnung-2026.pdf`, and you get back `rechnung-2026.pdf` with
+`idempotent_replay: true`. Both rows stay: the upload that minted the blob
+keeps `vertrag.pdf`, and the blob's ordinary reads resolve its newest
+completed upload. Answering a caller with a filename they never sent would
+be worse, and the artefact genuinely is the one already held — the name is
+metadata about an observation, not part of the artefact's identity.
+proxima-docs states the minting upload's side as CH-U15 (`Charta.Upload`),
+asserted on the stored row rather than on a response field.
 
 A flavor that wants more columns on that arrival — extraction status, a
 source system's id — registers its own sidecar schema and passes the row
@@ -244,17 +212,17 @@ the substrate's event rather than owning a parallel one. See docs/09
 
 ### One write
 
-The CitedObject, its `cited_uploaded_blob_v1` row, the citation, the Fact,
-its receipt, its embedding job, and any flavor extension rows are one
+The CitedObject (its `proxima_core.blob` row), the Fact that cites it, its
+receipt, its embedding job, and any flavor extension rows are one
 transaction. An artefact whose arrival nothing recorded is not a state
 completion can leave behind.
 
 That works because persisting a CitedObject already *is* a Fact write with
 an inline citation: storage upserts the object on
 `(owner, schema, content_hash)` — the key the upload lane deduplicates on —
-and inserts its typed row through the registered cited-object sidecar. Once
-the Fact carries the artefact as its citation, the two cannot come apart.
-The blob store no longer writes those rows itself.
+and the Fact carries it as its citation (`memory.blob_id`). Once it does,
+the two cannot come apart. Finishing then marks the `blob_uploads` row
+completed against that blob, outside the transaction (below).
 
 What cannot be inside that transaction is the object-store work. Streaming,
 hashing, and copying an S3 object is not a database statement and must not
@@ -307,15 +275,13 @@ request bodies, and the presigned-URL policy above is the transfer path:
    report `idempotent_replay`) together with the Fact's handle as
    `fact`. See §The upload Fact.
 4. Further Facts cite the same object via `core_remember`'s
-   `citation.cited_object_id` (by reference; `C:` prefix accepted) with a
-   registered mapping such as `core/uploaded-blob-whole-v1` or
-   `core/uploaded-blob-page-span-v1`. This is deliberately the only way
-   an MCP client can cite its own upload: `complete` never returns
-   `bucket`/`object_key`, and the inline `object_payload` path requires
-   them. By-ref and the inline `object_*` fields are mutually exclusive;
-   storage verifies the referenced object exists for the Fact's owner and
-   carries the schema the mapping targets, in the same transaction that
-   writes the mapping.
+   `citation.cited_object_id` (by reference; `C:` prefix accepted). This
+   is deliberately the only way an MCP client can cite its own upload:
+   `complete` never returns `bucket`/`object_key`, and the inline
+   `object_payload` path requires them. By-ref and the inline `object_*`
+   fields are mutually exclusive; storage verifies the referenced object
+   exists for the Fact's owner in the same transaction that writes the
+   Fact.
 5. `core_upload` `read_url` (`cited_object_id`) mints a presigned
    download URL later — only for locators the upload lane itself wrote;
    a caller-asserted inline locator never presigns (see §Large artefact
@@ -335,11 +301,8 @@ process an uploaded artefact after the tool call that received it has returned.
 The presigned-only rule above applies identically to a worker caller: it reads
 through `read_url` and never learns the bucket or object key.
 
-Citation read-back (`core_fact` `citation_of_fact`) returns the locator alongside the ids: the
-`core/uploaded-blob-page-span-v1` payload as `page_span` when the
-mapping carries one, and — when the cited object is an uploaded blob —
-a `document` block with `filename`/`mime`/`byte_len`/`sha256_hex`/
-`uploaded_at`. What the document IS, never where it lives:
+Citation read-back (`core_fact` `citation_of_fact`) returns the cited
+blob's `cited_object_id` and `cited_object_schema_id`, and nothing else.
 `bucket`/`object_key` stay internal, and fetching bytes goes through
 `read_url`.
 
@@ -363,9 +326,6 @@ CitedObject carries Owner. A document ingested for `User(A)` is not
 visible to `User(B)`; the same PDF re-ingested for B produces a
 separate CitedObject row under B's Owner. Cross-owner access is resolved through group membership / `OwnerRoles`; the citation layer never spans owners.
 
-CitationMapping inherits `owner` from its Fact (and equivalently from
-its CitedObject — the engine checks they match).
-
 ## Edges do not cite
 
 An edge has no citation, and nowhere that could hold one: it is a pin in the
@@ -388,8 +348,8 @@ manifest validates the declared inputs before admission (see
 
 ## What this does not include
 
-- **Renderers.** No `render()` on `CitedObjectPayload` or
-  `CitationMappingPayload`. The artefact is the artefact; UI fetches
+- **Renderers.** No `render()` on `CitedObjectPayload`. The artefact
+  is the artefact; UI fetches
   large binaries via presigned read URLs, not raw storage coordinates.
 - **Access control on artefacts.** Owner is the only scope. Per-asset
   ACLs (e.g., one document shared with N users) are a v2+ extension
@@ -403,7 +363,7 @@ manifest validates the declared inputs before admission (see
 
 - `three-layer-model`
 - `core-registered-schemas`
-- `trait-families`
+- `payload-trait`
 - `tables`
 - `multiplicity`
 - `idempotency`
@@ -411,5 +371,5 @@ manifest validates the declared inputs before admission (see
 - `mcp-surface`
 - `owner-scoping`
 - `edges-do-not-cite`
-- `operator-invocation-provenance-lives-on-the-memory-row`
+- `operator-invocation-provenance-is-not-a-citation`
 - `what-this-does-not-include`

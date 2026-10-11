@@ -117,42 +117,41 @@ facade_names! {
     // `authorize_fact_ingest`, `DerivedMemory`, `MemorySnapshot`.
     ids_and_payloads {
         host_only: [],
-        both_tiers: [AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EntityId, FactPayload, FactReceiptId, FactTombstone, GoalId, GoalPayload, InputContractId, ModelId, OperatorId, PayloadReference, PerspectivePayload, PromptVersion, ReferenceBinding, SchemaVersion, ScopeRef, SearchProjectionColumnKind, SidecarPayload, ToolId],
+        both_tiers: [AbstractionPayload, CitedObjectPayload, EntityId, FactPayload, FactReceiptId, FactTombstone, GoalId, GoalPayload, InputContractId, ModelId, OperatorId, PayloadReference, PerspectivePayload, PromptVersion, ReferenceBinding, SchemaVersion, ScopeRef, SearchProjectionColumnKind, SidecarPayload, ToolId],
     }
 
     // Needed by the storage-port methods' requests, rows and outcomes (`FactIngestPort`,
     // `GoalWritePort`, ...).
     storage_port_rows {
-        host_only: [AbstractionRow, AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, FactRow, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
+        host_only: [AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
         both_tiers: [],
     }
 
     // Needed by signatures that take or return an authorization witness, permit or audit context;
     // naming one mints nothing.
     witnesses {
-        host_only: [AuthorizedCitationAttachment, AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject, AuthorizedNodeLinks, EmbeddingWriteProof, EraseAuthorization, ExportAuthorization, OperatorMaintenanceProof, OperatorWriteProof, OwnerEraseContext, OwnerExportContext, OwnerWritePermit, WritePermit],
+        host_only: [AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, EmbeddingWriteProof, EraseAuthorization, ExportAuthorization, OperatorMaintenanceProof, OperatorWriteProof, OwnerEraseContext, OwnerExportContext, OwnerWritePermit, WritePermit],
         both_tiers: [AuthorizedFactWithCitation, AuthorizedFactWithCitationRef],
     }
 
     // Needed by `QueryRequest`, `QueryResponse`, `MemoryLineageRequest`, `ChangeHistoryResponse`,
     // `EdgeFilter`.
     read_rows {
-        host_only: [ChangeEvent, ChangeEventForWake, ChangeEventKind, FactCitationCursor, MemoryLineageCursor, QueryCursor, QueryPage, UploadedBlobPageSpanV1, UploadedBlobRef],
+        host_only: [ChangeEvent, ChangeEventForWake, ChangeEventKind, FactCitationCursor, MemoryLineageCursor, QueryCursor, QueryPage],
         both_tiers: [Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, GoalRow],
     }
 
     // Needed by `StoragePortsBuilder`'s setters, `Engine::with_storage_ports`, the `*Port` traits
     // behind the handles.
     storage_ports {
-        host_only: [ChangeEventHandle, ChangeEventPort, CitationHandle, CitationPort, EmbeddingJobHandle, EmbeddingJobPort, EmbeddingMaintenanceHandle, EmbeddingMaintenancePort, EmbeddingTextHandle, EmbeddingTextPort, EmbeddingWriteHandle, EmbeddingWritePort, FactIngestHandle, FactIngestPort, GoalReadHandle, GoalReadPort, GoalWakeCandidateHandle, GoalWakeCandidatePort, GoalWriteHandle, GoalWritePort, McpCallReadHandle, McpCallReadPort, MemoryAuthoringHandle, MemoryAuthoringPort, MemoryInspectHandle, MemoryInspectPort, MemoryReadHandle, MemoryReadPort, OwnerAccessReadHandle, OwnerAccessReadPort, OwnerDropProofHandle, OwnerDropProofPort, OwnerEraseAuthorityHandle, OwnerEraseAuthorityPort, OwnerInverseHandle, OwnerInversePort, OwnerMembershipAdminHandle, OwnerMembershipAdminPort, OwnerTransferHandle, OwnerTransferPort, RegistryProjectionHandle, RegistryProjectionPort, SourceCursorHandle, SourceCursorPort, StoragePortsBuildError, WriteSession, WriteSessionFactory, WriteSessionFactoryHandle],
+        host_only: [ChangeEventHandle, ChangeEventPort, CitationHandle, CitationPort, EmbeddingJobHandle, EmbeddingJobPort, EmbeddingMaintenanceHandle, EmbeddingMaintenancePort, EmbeddingTextHandle, EmbeddingTextPort, EmbeddingWriteHandle, EmbeddingWritePort, FactIngestHandle, FactIngestPort, GoalReadHandle, GoalReadPort, GoalWakeCandidateHandle, GoalWakeCandidatePort, GoalWriteHandle, GoalWritePort, McpCallReadHandle, McpCallReadPort, MemoryAuthoringHandle, MemoryAuthoringPort, MemoryInspectHandle, MemoryInspectPort, MemoryReadHandle, MemoryReadPort, OwnerAccessReadHandle, OwnerAccessReadPort, OwnerDropProofHandle, OwnerDropProofPort, OwnerEraseAuthorityHandle, OwnerEraseAuthorityPort, OwnerInverseHandle, OwnerInversePort, OwnerMembershipAdminHandle, OwnerMembershipAdminPort, OwnerTransferHandle, OwnerTransferPort, SourceCursorHandle, SourceCursorPort, StoragePortsBuildError, WriteSession, WriteSessionFactory, WriteSessionFactoryHandle],
         both_tiers: [],
     }
 
-    // Needed by `Engine::authorize_fact_with_citation`, `authorize_citation_attachment`,
-    // `decompose_goal`.
+    // Needed by `Engine::authorize_fact_with_citation`, `decompose_goal`.
     fact_with_citation {
-        host_only: [Citation, CitationMappingHint, CitedObjectHint, DecomposedGoalOutcome],
-        both_tiers: [CitationAttachmentRequest, InlineCitationMappingDraft, InlineCitedObjectDraft, SidecarSessionRead],
+        host_only: [Citation, CitedObjectHint, DecomposedGoalOutcome],
+        both_tiers: [InlineCitedObjectDraft, SidecarSessionRead],
     }
 
     // Needed by the arguments and results of the Engine verbs a host calls (`get_graph`,
@@ -302,7 +301,7 @@ facade_names! {
     // `ProximaHost::pg_sidecars_for_host`.
     registry_and_contracts {
         host_only: [Artifact, CapabilityTag, CapabilityTagError, IntegrityFinding, IntegrityReport, IntegrityViolation, MemoryEmbedUnit, MemorySearchProjection, MemorySearchProjectionField, PgMemoryPayloadBatchFuture, PgSidecarKey, ProjectedSchema, ProtocolPayload, RenderBands, SchemaInfo, SchemaTombstone],
-        both_tiers: [AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, Band, BandComparability, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorBundle, FlavorContract, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext, ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, MembershipChange, OwnerResolver, PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SchemaContract, SchemaRef, ScopeDecl, ScopeKind, SearchProjectionDecl, SidecarInsertPermit, SubstringArm, Surface, Tool, ToolContract, TransferLeg, TransferRule, WeightedField],
+        both_tiers: [AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, Band, BandComparability, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorBundle, FlavorContract, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext, ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, MembershipChange, OwnerResolver, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SchemaContract, SchemaRef, ScopeDecl, ScopeKind, SearchProjectionDecl, SidecarInsertPermit, SubstringArm, Surface, Tool, ToolContract, TransferLeg, TransferRule, WeightedField],
     }
 
     // Needed by `PgStorage`'s public methods; host API only like `PgStorage`.

@@ -14,8 +14,7 @@ use proxima_core::storage_ports::{
     FactIngestPort, GoalWritePort, MemoryAuthoringPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{
-    AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitationMappingDraft,
-    InlineCitedObjectDraft,
+    AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitedObjectDraft,
 };
 use proxima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
@@ -321,7 +320,7 @@ fn engine(pg: &PgStorage, registry: &proxima_core::FlavorRegistryFrozen) -> prox
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
 }
 
-fn inline_citation() -> (InlineCitedObjectDraft, InlineCitationMappingDraft) {
+fn inline_citation() -> InlineCitedObjectDraft {
     let cited = UploadedBlobPayload {
         content_hash: [7; 32],
         bucket: "test".to_owned(),
@@ -333,18 +332,11 @@ fn inline_citation() -> (InlineCitedObjectDraft, InlineCitationMappingDraft) {
         etag: None,
         uploaded_at: time::OffsetDateTime::now_utc(),
     };
-    (
-        InlineCitedObjectDraft {
-            schema_id: SchemaId::new("core/uploaded-blob-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            payload_bytes: serde_json::to_vec(&cited).expect("cited object JSON"),
-        },
-        InlineCitationMappingDraft {
-            schema_id: SchemaId::new("core/uploaded-blob-whole-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            payload_bytes: b"{}".to_vec(),
-        },
-    )
+    InlineCitedObjectDraft {
+        schema_id: SchemaId::new("core/uploaded-blob-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        payload_bytes: serde_json::to_vec(&cited).expect("cited object JSON"),
+    }
 }
 
 fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
@@ -569,13 +561,12 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             &inline_payload,
             time::OffsetDateTime::now_utc(),
         );
-        let (cited_object, mapping) = inline_citation();
+        let cited_object = inline_citation();
         let authorized = engine
             .authorize_fact_with_citation(
                 &authz,
                 inline_draft,
                 cited_object,
-                mapping,
                 &[SidecarPayload::fact(inline_payload.clone())],
             )
             .await?;
@@ -602,13 +593,11 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             &by_ref_payload,
             time::OffsetDateTime::now_utc(),
         );
-        let (_, mapping) = inline_citation();
         let authorized = engine
             .authorize_fact_with_citation_by_ref(
                 &authz,
                 by_ref_draft,
                 cited_object_id,
-                mapping,
                 &[SidecarPayload::fact(by_ref_payload.clone())],
             )
             .await?;
@@ -628,6 +617,98 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("citation Fact routes lost authorized links");
+}
+
+/// A by-ref citation names its object by a caller-supplied id. Storage
+/// refuses an id that does not exist and one that belongs to another owner
+/// with the same message, so a probe cannot tell them apart, and writes
+/// nothing for either.
+#[tokio::test]
+async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
+    let (db_name, pg, registry) = bootstrap().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let foreign_owner = owner();
+        let owner = owner();
+        let engine = engine(&pg, &registry);
+
+        let foreign_fact = seed_fact(&pg, foreign_owner).await?;
+        let foreign_goal = create_goal(
+            &pg,
+            &registry,
+            foreign_owner,
+            seed_perspective(&pg, foreign_owner).await?,
+        )
+        .await?;
+        let foreign_payload = payload(
+            "foreign-citation",
+            foreign_fact.into_inner(),
+            foreign_goal.into_inner(),
+        );
+        let foreign_authz = AuthzContext::single_owner(&foreign_owner, AuthPath::HostBearer);
+        let authorized = engine
+            .authorize_fact_with_citation(
+                &foreign_authz,
+                custom_draft(&foreign_payload),
+                inline_citation(),
+                &[SidecarPayload::fact(foreign_payload.clone())],
+            )
+            .await?;
+        let foreign_blob = engine
+            .ingest_fact_with_citation_and_typed_sidecar(&authorized)
+            .await?
+            .cited_object_id
+            .expect("foreign citation blob");
+
+        let fact_id = seed_fact(&pg, owner).await?;
+        let goal_id =
+            create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut refusals = Vec::new();
+        for (label, cited_object_id) in [("missing", Uuid::now_v7()), ("foreign", foreign_blob)] {
+            let payload = payload(
+                &format!("by-ref-{label}"),
+                fact_id.into_inner(),
+                goal_id.into_inner(),
+            );
+            let authorized = engine
+                .authorize_fact_with_citation_by_ref(
+                    &authz,
+                    custom_draft(&payload),
+                    cited_object_id,
+                    &[SidecarPayload::fact(payload.clone())],
+                )
+                .await?;
+            let error = engine
+                .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized)
+                .await
+                .expect_err("a by-ref citation must name an object of the Fact's owner");
+            refusals.push(
+                error
+                    .to_string()
+                    .replace(&cited_object_id.to_string(), "<id>"),
+            );
+        }
+        assert_eq!(
+            refusals[0], refusals[1],
+            "missing and foreign must read alike"
+        );
+        assert!(
+            refusals[0].contains("not found for this owner"),
+            "got {}",
+            refusals[0]
+        );
+
+        let written: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM test_refs.referenced_fact_v1 WHERE logical_id LIKE 'by-ref-%'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(written, 0, "a refused by-ref citation writes no Fact");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("by-ref citation accepted an object outside the Fact's owner");
 }
 
 #[tokio::test]

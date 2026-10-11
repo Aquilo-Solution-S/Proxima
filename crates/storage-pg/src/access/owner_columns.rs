@@ -94,11 +94,6 @@ pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
     owner.columns()
 }
 
-#[must_use]
-pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
-    owners.iter().map(owner_binds).unzip()
-}
-
 /// The owner admission fence is a distinct advisory-lock namespace from
 /// lifecycle keys and Memory series handles.  Its key includes the owner kind
 /// as well as the UUID: an identity accidentally reused across owner kinds
@@ -2040,11 +2035,11 @@ async fn mount_blob_for_destination(
 /// Repoint this series' referring columns from one row to another.
 ///
 /// `remaps` IS the loop. The declaration lists the referring columns
-/// this crate can see; columns that point at the row by convention rather
-/// than by constraint — every flavor's cited-object and citation-mapping
-/// sidecars point at a `blob_id` with no SQL FK — cannot be listed there,
-/// because the flavor declaring them is not the flavor declaring this
-/// surface, and the freeze check for citation sidecars covers those.
+/// this crate can see; a column that points at the row by convention rather
+/// than by constraint cannot be listed there, because the flavor declaring
+/// it is not the flavor declaring this surface. Freeze refuses the one way
+/// such a column could arise, a cited-object schema declaring a sidecar
+/// table (`FlavorRegistryError::CitationSidecarNotRemappable`).
 async fn remap_handle_refs(
     tx: &mut Transaction<'_, Postgres>,
     remaps: &'static [&'static str],

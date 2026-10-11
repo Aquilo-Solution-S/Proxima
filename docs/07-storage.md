@@ -158,9 +158,9 @@ made the call — so a transfer leaves it with the source, and every surface
 that reads it keys on that column. Every other sidecar follows the memory. The destination's `owners` row is minted inside the same
 transaction (`ensure_owner_row`), which is what keeps the FKs whole. It also
 commits paired `transfer` rows into `announce` (prior owner's lane +
-destination owner's lane). Goals do not transfer: the verb is memory-only,
-and `goal`/`goal_head` refuse UPDATE entirely (`goal_head_t_only` freezes
-`goal_head.owner_id` as the DDL backstop).
+destination owner's lane). Goals do not transfer: the verb is memory-only;
+`goal` refuses UPDATE, and `goal_head` may move only `t`
+(`goal_head_t_only` freezes `goal_head.owner_id` as the DDL backstop).
 
 <a id="storage-layout"></a>
 
@@ -202,7 +202,7 @@ Closed vocabularies are SQL enums.
 | `cooled` | forget stub; object key `cold/<t>` — owner-free, so a transfer re-homes the row and never the bytes; `blob_id`, `source_id`, and `ingest_key` copied from the hot row for replay and for source-scope erase |
 | `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
 | embeddings / jobs / heads | independent of graph authorship |
-| core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `task_goal_v1` |
+| core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `write_act_v1`, `task_goal_v1` |
 
 No `edges`, `memories`, `goals` (plural), `fact_entities`, `fact_receipts`, `cited_objects`, `citation_mappings`, `change_event` tables.
 

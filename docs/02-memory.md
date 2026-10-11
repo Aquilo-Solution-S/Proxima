@@ -19,7 +19,7 @@ Four node kinds. Citation is provenance, not a node.
 | **Goal** | A desired end-state with a lifecycle. | `goal` | GoalWrite / A→Goal |
 | **Citation** | Bibliographic proof. Not a node. | `memory.blob_id` 0..1 → `blob` | attached at write |
 
-Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this version (uuidv7, `UNIQUE`, the row id). Schema lives on `memory_head` / `goal_head` only. Head `t` is display/search, not identity.
+Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this version (uuidv7, `UNIQUE`, the row id). Schema lives on `memory_head` / `goal_head`; a `memory` row also carries `schema_id`, which must equal its head's. Head `t` is display/search, not identity.
 
 Typed payload is `Content` (owner-scoped). `memory.content_id` may be shared across admissions of the same owner and schema. Shared Content does not collapse `t`. Citation `blob_id` stays on the admission.
 
@@ -54,8 +54,10 @@ Abstractions, or Perspectives; it declares no derivation origins.
 | `t` | row id (`MemoryId`) |
 | `kind` | `fact` / `abstraction` / `perspective`; must equal `memory_head.kind` |
 | `owner_id` | NOT NULL FK → `owners` |
+| `schema_id` | must equal `memory_head.schema_id` |
 | `origins[]` | made-from pins (`t`). Empty on Facts. |
-| `refs[]` | points-at pins from `references()` |
+| `refs[]` | points-at pins onto Memories, from `references()` |
+| `goal_refs[]` | points-at pins onto Goals, from `references()` |
 | `blob_id` | 0..1 citation. F/A only. |
 | `content_id` | 0..1 typed payload. Required on A/P. Fact iff the schema has a sidecar. Shareable within owner. |
 | `source_id` / `ingest_key` | Facts only, both or neither. Replay key is `ingest_keys`. |
@@ -96,8 +98,9 @@ Pins connect Memories (and Goal columns pin `t`s). There is no edge table. [16](
 > A pin carries no information beyond its existence: endpoints, direction, kind. Content lives in nodes.
 
 ```
-memory.origins[]  -- Origin: what this row was made from
-memory.refs[]     -- Reference: payload fields that point at other t
+memory.origins[]   -- Origin: what this row was made from
+memory.refs[]      -- Reference: payload fields that point at other t
+memory.goal_refs[] -- Reference: payload fields that point at a Goal t
 ```
 
 Two kinds. The kind follows the operation. No verb writes a pin.

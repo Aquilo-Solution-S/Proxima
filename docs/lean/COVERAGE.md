@@ -39,7 +39,7 @@ that distinguishes a carrier from a decoy.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| U-1 | Layering strict & irreversible; no lower-layer memory from higher layer | theorem `fact_memory_kind` + THEOREM `operator_memory_output_not_fact` (from the phase output contract) + THEOREM `edge_layer_rule` (E3); header comments Memory.lean |
+| U-1 | Layering strict & irreversible; no lower-layer memory from higher layer | theorem `fact_memory_kind` + THEOREM `operator_memory_output_not_fact` (from the phase output contract) + THEOREM `origin_layer_rule` (E3); header comments Memory.lean |
 | U-2 | Causal claims perspective-relative; no semantic/causal Fact→Fact; Perspective is locus of causal claims | REBASED on the v0.0.7 model, in two parts. (a) STRUCTURAL: the closed `EdgeKind` has no Causal/Interpretive variant, so there is no row a causal claim could occupy — THEOREM `principle_epistemic_edge_kinds_are_exactly_two` exhausts the vocabulary. (b) DEFINITIONAL + THEOREM: `interpretationOf` DEFINES an interpretation as a Perspective whose payload references its subjects, and `fact_source_reaches_only_facts` (from E3) proves a Fact source can never reach an Abstraction or Perspective to interpret it. The definitional half is stated as such — with the class matrix retired there is no matrix cell left to prove it from, and pretending otherwise would be a decoy |
 | U-3 | Dreaming = flavor-declared consolidation; no Dream entity/relation/pipeline | structural absence; Operators.lean header comment |
 | U-4 | Reality enters as typed Facts | `Fact` subtype (`Memory` with kind `.Fact`) + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` witnesses optional event/receipt metadata without certifying external truth; the outbound half (a declared Fact's publication record) is OB-1 |
@@ -48,9 +48,9 @@ that distinguishes a carrier from a decoy.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ES-1 | Group org → no kernel face | excluded: org has no kernel face and the Owner=OwnerRef collapse is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decisions `2026-06-11-org-out-of-kernel.md`, owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) |
+| ES-1 | Group org → no kernel face | excluded: org has no kernel face and the Owner=OwnerRef collapse is absent from Core storage and identity — `OwnerRef` / resolved `Owner := Group` carry no org predicate; tenancy is a flavor/app concern. Decision 2026-06-11 (org out of the kernel), owner-ontology realign 2026-06-28 (was THEOREM `owner_org_denormalized` when Owner carried org) |
 | ES-2 | Visibility rule (group membership) | def `visible` (`o r ≠ none`, i.e. holds any `Role`) + theorem `visible_personal` |
-| ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28 |
+| ES-3 | org never enters access or identity | structural: org absent from `OwnerRef`, `OwnerState`, and resolved `Owner := Group` — decision 2026-06-11 (org out of the kernel), owner realign 2026-06-28 |
 | ES-4 | source-ingest dedup key deterministic over source/owner/payload | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity |
 | ES-5 | Batch id unique within (source, owner) | RETIRED: doc 01 declares no source batch id. No batch table, column, or close step exists; F→A admits any Fact set (doc 04) |
 | ES-6 | Facts are typed observations, not operator derivations | `Fact` subtype + `operator_memory_output_not_fact`; `Flavor.OptionalFactReceipt` models arbitrary observed-source receipts as optional metadata |
@@ -58,7 +58,7 @@ that distinguishes a carrier from a decoy.
 | ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: source/flavor ingest contract; kernel carries the consequence via `operator_memory_output_not_fact` + no downward operator writes |
 | ES-9 | Compliance metadata: every source declares 4 fields; Facts inherit | excluded: engine registration totality (CO-39..45 rows); source identity is engine-side — kernel `SourceId` axiom retired 2026-06-28 (unused once Compliance dropped `DeleteSourceScope`) |
 | ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | excluded: source/flavor ingest concern with no kernel carrier (suppression docstring retired 2026-06-28 with the `SuppressionKey` axioms) |
-| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) |
+| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_head_schema` fixed per head); migration mechanics excluded (SR-50..55 exclusion block) |
 | ES-12 | No legacy org-principal variant; org-wide = `<org>-everyone` group | structural: stable ownership uses `OwnerRef.personal u` / `OwnerRef.group id`; no Org variant (and, since the 2026-08-20 World removal, no reserved variant of any kind). Resolved owner is a Group (`User → Option Role`). Realign 2026-06-28; no-op under 2026-07-06 User token change |
 | ES-13 | Per-memory ACL / `AccessGrant` layer is absent | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
@@ -140,16 +140,16 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | CN-1 | F→A input/output shape | `OperatorPhase.inputKind`/`outputMemoryKind` + `InvocationShapeValid`; THEOREMs `operator_inputs_match_phase`, `invocation_output_memory_kind_valid`. The edge-shape carrier is retired: there is no authorship column to match a phase against, and the origins a write declares ARE its inputs |
 | CN-2 | A→P input/output shape | same carrier: `InvocationShapeValid` + `operator_inputs_match_phase`; the output kind is `.Perspective` by `OperatorPhase.outputMemoryKind` |
 | CN-3 | A→Goal evidence shape | `OperatorPhase.outputGoalAllowed` + `InvocationProvenanceComplete.goalInputs` (a Goal output declares its inputs as `reference` rows, because a Goal rests on them rather than deriving from them) + `OperatorPhase.inputEdgeKind` |
-| CN-4 | frame — `P × A_cross → P` | RETIRED as an edge shape. A frame is a Perspective whose payload references the cross-domain Abstraction (doc 02 §The Layering Principle), i.e. an ordinary `reference` declaration; `interpretationDeclaration` is its constructive witness and `PerspectiveLink` has no successor |
+| CN-4 | frame — `P × A_cross → P` | RETIRED as an edge shape. A frame is a Perspective whose payload references the cross-domain Abstraction (doc 02 §The Layering Principle), i.e. an ordinary `reference` declaration; `interpretationOf` is its constructive witness and `PerspectiveLink` has no successor |
 | CN-5 | No downward writes | THEOREM `operator_memory_output_not_fact` (from the phase output contract alone — F→A/A→A give Abstraction, A→P gives Perspective, A→Goal gives no memory row) + THEOREM `operator_origin_row_not_upward` (E3 on the ledger's own rows) + ME-1 Fact subtype |
 | CN-6 | Derived memories have valid provenance | live carrier: `MemoryGraphValid.derivedProvenance` + `abstractionHasOrigins`, with `abstraction_has_provenance` and `perspective_has_provenance`; retained carrier keeps only structural nonemptiness (`RetainedMemoryGraphValid.derivedProvenance`/`abstractionHasOrigins`) plus recorded-kind target checks and makes no Fact-grounding claim |
-| CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) |
+| CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2) |
 | CN-8 | F→A batch-gate exclusivity per (owner, batch, input contract, operator, output schema) | RETIRED: no source-batch / operator / input-contract columns on Memory. Visit is a Fact + refs. Recipe, if any, is sidecar |
 | CN-8b | Operator invocation input completeness | `OperatorInvocation` + `InvocationProvenanceComplete`: memory outputs name inputs in `origins`; Goal outputs name them in `evidence_t`. THEOREM `invocation_without_inputs_is_complete` (E4z) |
 | CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity); Lean only validates an admitted invocation ledger/manifest |
 | CN-10 | Retry/changed-prompt = new derivation, never mutation | `AppendOnly Memory` + comment Operators.lean |
 | CN-11 | Wake dispatcher loop, cursors, depth bound, runtime tables | excluded: engine runtime |
-| CN-12 | Prompt locality (core ships no domain prompts) | excluded: engine/flavor split mechanics; spirit carried by CF-A |
+| CN-12 | Prompt locality (core ships no domain prompts) | excluded: engine/flavor split mechanics |
 
 ## 06 — Goals (GO)
 
@@ -180,10 +180,10 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | SR-2 | Every memory payload schema-typed | CORRECTED 2026-09-10: this cell named `Memory.schema`, a field that no longer exists — `schema` moved to the series catalog and lives only on `MemoryHead` (see SR-49). Live carrier: structure field `MemoryHead.schema : SchemaRef` + accessor `memory_head_schema`, with `MemoryHeadAligned` binding every row to its head, so schema-typing is a series property (accessor totality — every series carries an opaque schema tag). Schema registration in the active registry remains engine admission, not yet a kernel rule (D16) |
 | SR-8 | Schema ids flavor-qualified | excluded: namespacing is engine id-minting (collision-freedom = "the engine mints distinct ids"), not kernel ontology (D16) |
 | SR-11/16 | F/A/P may carry optional free text; sidecars may carry opaque typed payload | REBASED: no `Memory.text`. Sidecar text is `KnowledgeArtifact.text`. `Flavor.OptionalMemorySidecar` / `OptionalGoalSidecar` remain optional wrappers. No edge sidecar — there is no Edge type |
-| SR-13 | Fact identity ≠ payload hash; UUIDv7 | structure field `Memory.id` + table/store invariant `MemoryIdUnique` + ST-22 comment |
+| SR-13 | Fact identity ≠ payload hash; UUIDv7 | structure field `Memory.t` + table/store invariant `MemoryIdUnique` + ST-22 comment |
 | SR-14/44 | Fact has no supersedes | RETIRED as lineage. THEOREM `facts_declare_no_origins` — Fact origins are empty |
-| SR-24 | edge kind closed, not flavor-extensible | inductive `EdgeKind` — two variants (`origin`, `reference`), not five classes under an open relation vocabulary. The `relation_class` enum, its namespaced relation ids, and `EdgePayload` are all deleted (doc 16 §Kinds are closed); a feature that seems to need a third kind is missing a node |
-| SR-25 | Index rows immutable v1 | `Immutable Edge` |
+| SR-24 | edge kind closed, not flavor-extensible | inductive `EdgeKind` — two variants (`origin`, `reference`), not five classes under an open relation vocabulary. The `relation_class` enum, its namespaced relation ids, and `EdgePayload` are all deleted (doc 16 §The Model); a feature that seems to need a third kind is missing a node |
+| SR-25 | Index rows immutable v1 | `AppendOnly Memory`: pins are the `origins` / `refs` / `goal_refs` columns of a Memory row, so there is no Edge type to be immutable |
 | SR-30..33 | special_category per schema, author-declared | excluded: GDPR controller/engine concern (`schema_special_category` cut 2026-06-28, D16) — the kernel never reasons over special-category |
 | SR-43 | Stateful Fact: each observation a new Fact | REBASED: same `handle`, later `t`. No `FactEntity`. Head is `MemoryHead.t` |
 | SR-46 | Tombstone is a Fact (deletion is observed state) | comment Identity.lean / excluded detail: stateful-schema mechanics |
@@ -194,9 +194,9 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CF-G | Payload opacity — the domainless boundary | structural ABSENCE: `SchemaRef` (Identity) is an opaque per-row tag with NO accessor at all (no resolution, no payload, no capabilities); `Flavor.OptionalMemorySidecar` / `OptionalGoalSidecar` prove sidecar payload changes do not affect kernel-visible rows. Opacity is also why `NodeDeclaration` carries resolved endpoints rather than payload fields: WHICH payload fields are reference fields is schema-registry knowledge below the boundary |
-| CF-* (compliance) | A flavor must comply with the basic rules | THEOREMS in `Causa.Flavor` — a concrete flavor's rows discharge the universal invariants (`fact_is_fact`, `perspective_is_perspective`, `abstraction_grounded`, `flavor_perspective_has_provenance`, `flavor_declared_edges_valid`, `transferred_readable_by_destination_member`, `transferred_denies_non_members`, `wipeable_when_abandoned`, `own_fact_wipeable_by_flavor_scoped_erase`) via only pre-existing theorems; the rules quantify over every row, so compliance is derived, never axiomatized. The two access rows are the owner-to-owner TRANSFER laws that replaced `published_readable` / `published_read_only`, deleted 2026-08-20 with the World owner — a transferred memory is exactly as readable as its destination group, and nothing is readable by a non-member, so there is no publish law left to state |
-| CF-OPEN | Substrate is OPEN — any app integrates as a flavor with zero kernel change and no new Causa axiom | `Causa.Flavor` constructive witness: a flavor's vocabulary is inhabitants of the existing opaque type `SchemaRef`, taken as a PARAMETER; `#print axioms` on the flavor theorems names no Causa axioms — never one named `flavor`. That machine-checked absence IS the openness (D16/D18). NARROWED in v0.0.7: `RelationId` is gone, so a flavor can no longer mint traversable link vocabulary — the deliberate loss recorded in doc 16 §What This Removes. The escape valve is an interpretation node, and it is total |
+| CF-G | Payload opacity — the domainless boundary | structural ABSENCE: `SchemaRef` (Identity) is an opaque per-row tag with NO accessor at all (no resolution, no payload, no capabilities); `Flavor.OptionalMemorySidecar` / `OptionalGoalSidecar` prove sidecar payload changes do not affect kernel-visible rows. Opacity is also why the kernel sees resolved reference targets (`refs`, `goal_refs`) rather than payload fields: WHICH payload fields are reference fields is schema-registry knowledge below the boundary |
+| CF-* (compliance) | A flavor must comply with the basic rules | THEOREMS in `Causa.Flavor` — a concrete flavor's rows discharge the universal invariants (`fact_is_fact`, `perspective_is_perspective`, `abstraction_grounded`, `flavor_perspective_has_provenance`, `flavor_declared_pins_are_node_content`, `transferred_readable_by_destination_member`, `transferred_denies_non_members`, `wipeable_when_abandoned`, `own_fact_wipeable_by_flavor_scoped_erase`) via only pre-existing theorems; the rules quantify over every row, so compliance is derived, never axiomatized. The two access rows are the owner-to-owner TRANSFER laws that replaced `published_readable` / `published_read_only`, deleted 2026-08-20 with the World owner — a transferred memory is exactly as readable as its destination group, and nothing is readable by a non-member, so there is no publish law left to state |
+| CF-OPEN | Substrate is OPEN — any app integrates as a flavor with zero kernel change and no new Causa axiom | `Causa.Flavor` constructive witness: a flavor's vocabulary is inhabitants of the existing opaque type `SchemaRef`, taken as a PARAMETER; `#print axioms` on the flavor theorems names no Causa axioms — never one named `flavor`. That machine-checked absence IS the openness (D16/D18). NARROWED in v0.0.7: `RelationId` is gone, so a flavor can no longer mint traversable link vocabulary — the deliberate loss recorded in doc 16 §The Thesis. The escape valve is an interpretation node, and it is total |
 | CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal lives in the kernel; payloads opaque |
 | CF-60 | Cross-flavor reads obey Owner/access surface | Owner/read authorization (Causa.Authorization); no materialized personality read-scope after D4 |
 
@@ -208,8 +208,8 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | ST-5 | Index rows insert-only | RETIRED: no Edge table. Pins are fields of append-only node rows |
 | ST-6 | source-ingest dedup key deterministic; duplicate = replay | excluded: source/flavor ingest metadata after D1; no core `FactReceiptId` entity |
 | ST-7/8 | Blob ids, insert-only, 0..1 citation per memory | `Blob` + `BlobIdUnique` + `Memory.blob_id : Option BlobId`; THEOREM `citation_unique_per_subject`. No mapping table |
-| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`personal u` / `group id` — the `world` variant was deleted 2026-08-20, so every owner kind carries an id); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decisions `2026-06-11-org-out-of-kernel.md`, owner realign 2026-06-28; no-op under 2026-07-06 User token change |
-| ST-10 | Index-row ownership: source-owned rows; cross-owner targets always allowed when readable | row-validity predicate `EdgeSourceOwned` + THEOREM `cross_owner_target_admitted`. The Supersession carve-out is GONE because supersession is not an edge: it is a same-owner row pointer by construction (ME-5b). Target erasure/visibility affects `edge_target_redacted`, not `edge_owner` |
+| ST-9 | Owner identity columns (principal kind + id) | `OwnerRef` is the stable stored owner reference (`personal u` / `group id` — the `world` variant was deleted 2026-08-20, so every owner kind carries an id); `OwnerState.resolve` maps it to resolved `Owner := Group` for access. The exact SQL column shape is engine storage. org has no kernel face — decision 2026-06-11 (org out of the kernel), owner realign 2026-06-28; no-op under 2026-07-06 User token change |
+| ST-10 | Index-row ownership: source-owned rows; cross-owner targets always allowed when readable | write-admission THEOREM `pin_write_admitted_source_write` (the writer must hold write on the source row) + THEOREM `cross_owner_target_admitted`. The Supersession carve-out is GONE because supersession is not an edge: it is a same-owner row pointer by construction (ME-5b). Target erasure/visibility affects `pin_target_readable`, not the source row's `memory_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
 | ST-13 | Only compliance erasure deletes | REBASED: def `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy) ∨ flavorScoped` + THEOREMs `wipeable_when_abandoned`, `wipeable_when_cold_unreferenced_policy`, `wipeable_when_flavor_scoped`, `drop_personal_abandoned` (`world_never_abandoned` RETIRED 2026-08-20 with the World owner; an owner-to-owner transfer moves erase reach to the destination, so no owner is exempt from abandonment). Content: `contentWipeable := abandoned ∨ contentUnreferenced`. Forget is the separate reversible `ForgetMemoryTransition`; `forget_memory_leaves_witnesses` and `forget_memory_no_witness_for_target` prove it adds no witness; hard erase is abandonment, cold ∧ unreferenced ∧ policy, or a flavor-scoped erase (CO-FS). `HardEraseMemoryTransition`, `HardEraseCooledTransition`, and `HardEraseGoalTransition` remove only a concrete victim and add its exact kind witness. Compatibility/fail-closed carriers are `hard_erase_memory_rejects_wrong_kind` / `hard_erase_cooled_rejects_wrong_kind` / `hard_erase_goal_rejects_wrong_kind`; resulting witness uniqueness/disjointness is proved by the three `*_result_well_formed` theorems, and exact surviving source rows/pin arrays by `hard_erase_memory_preserves_source` / `hard_erase_cooled_preserves_memory_source` / `hard_erase_goal_preserves_memory_source` |
 | ST-14 | Stateful current-state = head query, never replacement | `MemoryHead.t` / `GoalHead.t` are display/search heads. Each `t` stays. No `FactEntity` |
@@ -223,11 +223,11 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CI-1 | Citation is Fact ∪ Abstraction (citation ⇒ not a Perspective; OPTIONAL) | `Memory.blob_id` 0..1 + row fields `perspective_never_cites` / `blob_fa_only`; THEOREMs `citation_subject_is_citable`, `citation_perspective_never_cites`, `citation_implies_citable`, `citation_pointer_never_on_perspective`. No `CitationMapping` table |
+| CI-1 | Citation is Fact ∪ Abstraction (citation ⇒ not a Perspective; OPTIONAL) | `Memory.blob_id` 0..1 + row fields `perspective_never_cites` / `blob_fa_only`; THEOREMs `citation_subject_is_citable`, `citation_perspective_never_cites`, `citation_implies_citable`, `citation_pointer_never_on_perspective`. The link carries nothing else |
 | CI-2 | At most one citation per citing memory | STRUCTURAL: one `Option BlobId`. THEOREM `citation_unique_per_subject` |
 | CI-3 | A/P cite transitively via provenance | table-scoped `GroundsInFact` / `memory_grounds_in_facts` over `MemoryGraphValid`; closure now terminates at Fact citations AND direct Abstraction citations (doc 16), and descends along both index kinds — an interpretation Perspective grounds through its references |
 | CI-7/8 | Owner scoping; citing memory's owner = blob owner | def `memory_cites` + THEOREM `citation_owner_match` |
-| CI-9 | One object ↔ N mappings | structural absence of object-side restriction |
+| CI-9 | One object ↔ N citing memories | structural absence of object-side restriction |
 | CI-12/13 | Edges do not cite | structural absence of a citation accessor on `Edge` — and now of any accessor beyond the key and the owner (E6) |
 | CI-14 | Operator provenance = row metadata, not citation | comment Operators.lean |
 | CI-4/5/6/10/11 | content-hash idempotency mechanics | excluded: engine (hash invisible below opacity boundary) |
@@ -256,8 +256,8 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | REBASED: head is `GoalHead.t`. `GoalTerminalClosed` forbids later `t` after terminal. `GoalRequestUnique` is replay |
 | GO-15 | Goal title/text core retrieval text | REBASED: `goal_title` stays on the row; body text is sidecar (no `goal_text`) |
 | GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence; authorship blob RETIRED; write-act is `Goal.write_act_t` |
-| CI-17 | Cited objects / mappings schema-registered | structure fields `cited_object_schema`/`citation_mapping_schema : SchemaRef` (schema-typed); registration is engine admission (D16) |
-| ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 | RETIRED with the column it constrained. There is no edge id: `EdgeId`, `ContentHash`, `EdgeUuid`, `EdgeIdAuthorshipValid` and `edge_id_authorship_split` are all deleted, and E5 (`edge_key_determines_row`) gives structurally what the identity hash approximated. The row that carried this cell also carried the only reference to a numbered "AGENTS.md invariant 17" — no such numbered ledger exists there, so the anchor is dropped rather than repointed |
+| CI-17 | Cited objects schema-registered | structure field `Blob.schema : SchemaRef` (schema-typed cited object); a citation is the `Memory.blob_id` link and carries no schema of its own; registration is engine admission (D16) |
+| ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 | RETIRED with the column it constrained. There is no edge id: `EdgeId`, `ContentHash`, `EdgeUuid`, `EdgeIdAuthorshipValid` and `edge_id_authorship_split` are all deleted, and the E5 theorem that stood in for it (`edge_key_determines_row`) no longer exists. The row that carried this cell also carried the only reference to a numbered "AGENTS.md invariant 17" — no such numbered ledger exists there, so the anchor is dropped rather than repointed |
 
 ## 18 — Fact outbox (OB)
 
@@ -350,10 +350,8 @@ Carriers live in `Causa/HostStateFactCopyErase.lean`.
 ## Principle surface map
 
 Principles aggregate multiple ID rows above under one named surface property
-(cross-cutting summaries, not independent coverage rows), so this table's
-`Runtime enforcement` values are ROLLUPS of the named constituent ID rows —
-the constituent row is the authoritative cell; a principle whose parts differ
-says `mixed` and names which part is which.
+(cross-cutting summaries, not independent coverage rows), so the
+constituent ID row is the authoritative cell.
 
 | Principle | Named surface prop | Kernel carrier |
 |---|---|---|

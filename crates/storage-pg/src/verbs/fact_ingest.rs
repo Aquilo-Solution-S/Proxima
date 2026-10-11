@@ -21,7 +21,7 @@ use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, Owner, SchemaId, SidecarPayload, StorageError,
+    MemoryId, Owner, SidecarPayload, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -183,7 +183,6 @@ enum CitationPlan<'a> {
     },
     ByRef {
         cited_object_id: uuid::Uuid,
-        expected_object_schema: &'a SchemaId,
     },
 }
 
@@ -275,15 +274,17 @@ pub(crate) async fn ingest_fact_command_in_tx(
     .await
 }
 
-/// Run gated Fact ingest plus typed inline citation sidecars inside an
+/// Run gated Fact ingest plus its inline cited object inside an
 /// already-open transaction.
+///
+/// The cited object is one `proxima_core.blob` row, upserted on
+/// `(owner, schema, content_hash)`; the Fact's `blob_id` points at it.
 ///
 /// # Errors
 ///
-/// Returns storage errors from core row materialization, caller-owned
-/// Fact sidecar insertion, cited-object sidecar insertion, or
-/// citation-mapping sidecar insertion. The caller owns transaction
-/// rollback/commit.
+/// Returns storage errors from core row materialization (the Fact, the
+/// cited-object `blob` row and the `blob_id` link) or caller-owned Fact
+/// sidecar insertion. The caller owns transaction rollback/commit.
 pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -324,17 +325,16 @@ where
 /// already-open transaction.
 ///
 /// The by-ref twin of [`ingest_fact_with_citation_in_tx`]: verifies the
-/// referenced object (existence, owner, schema) in the same transaction,
-/// then reuses the mapping-insert plumbing against the existing row.
+/// referenced object (existence, owner) in the same transaction, then
+/// points the Fact's `blob_id` at the existing row.
 /// Receipt/idempotency semantics are identical to the inline path — a
 /// receipt replay returns before any citation row is written.
 ///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` when the referenced object is missing
-/// for the Fact's owner or its schema differs from the mapping's target;
-/// otherwise storage errors from core row materialization, Fact sidecar
-/// insertion, or citation-mapping sidecar insertion. The caller owns
+/// for the Fact's owner; otherwise storage errors from core row
+/// materialization or Fact sidecar insertion. The caller owns
 /// transaction rollback/commit.
 pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
@@ -356,7 +356,6 @@ where
         embedding_spaces,
         citation_plan: CitationPlan::ByRef {
             cited_object_id: authorized.cited_object_id(),
-            expected_object_schema: authorized.expected_object_schema(),
         },
     };
     ingest_core(
@@ -407,12 +406,9 @@ async fn persist_citation_timeseries(
         .await
         .map(Some),
         CitationPlan::ByRef {
-            cited_object_id,
-            expected_object_schema,
-            ..
+            cited_object_id, ..
         } => {
-            verify_cited_object_ref_in_tx(tx, owner, cited_object_id, expected_object_schema)
-                .await?;
+            verify_cited_object_ref_in_tx(tx, owner, cited_object_id).await?;
             Ok(Some(cited_object_id))
         }
     }
@@ -478,40 +474,33 @@ async fn citation_object_for_t(
 }
 
 /// Verify a by-ref citation target: the cited object must exist for the
-/// Fact's owner and carry exactly the schema the mapping targets. Both
-/// failures are caller-fixable `ConstraintViolation`s whose messages the
-/// MCP surface passes through verbatim.
+/// Fact's owner. The failure is a caller-fixable `ConstraintViolation`
+/// whose message the MCP surface passes through verbatim.
 async fn verify_cited_object_ref_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     cited_object_id: uuid::Uuid,
-    expected_object_schema: &SchemaId,
 ) -> Result<(), StorageError> {
     let owner_id = owner.stored_owner_id();
-    let schema_id: Option<String> = sqlx::query_scalar(
-        "SELECT schema_id
-           FROM proxima_core.blob
-          WHERE blob_id = $1
-            AND owner_id = $2",
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.blob
+              WHERE blob_id = $1
+                AND owner_id = $2
+         )",
     )
     .bind(cited_object_id)
     .bind(owner_id)
-    .fetch_optional(tx.as_mut())
+    .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
 
     // Absent and other-owner are deliberately the same message: whether
     // the row exists under a foreign owner must not be observable.
-    let Some(schema_id) = schema_id else {
+    if !exists {
         return Err(StorageError::ConstraintViolation(format!(
             "cited object {cited_object_id} not found for this owner"
-        )));
-    };
-    if schema_id != expected_object_schema.as_str() {
-        return Err(StorageError::ConstraintViolation(format!(
-            "citation mapping targets cited-object schema {}, but cited object \
-             {cited_object_id} has schema {schema_id}",
-            expected_object_schema.as_str(),
         )));
     }
     Ok(())

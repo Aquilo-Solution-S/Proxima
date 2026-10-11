@@ -6,17 +6,15 @@ use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingSpace;
 use crate::verbs::fact_ingest::{
-    AuthorizedCitationAttachment, AuthorizedFactCore, AuthorizedFactWithCitation,
-    AuthorizedFactWithCitationRef, AuthorizedFactWrite, AuthorizedInlineCitationMapping,
-    AuthorizedInlineCitedObject, AuthorizedNodeLinks, CitationAttachmentRequest, CitationSpec,
-    FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    AuthorizedFactCore, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
+    AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, CitationSpec,
+    FactIngestOutcome, FactWriteCommand, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{
-    MCP_CALL_CITATION_SCHEMA, MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput,
-    McpCallLogOutcome,
+    MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput, McpCallLogOutcome,
 };
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
+use crate::{EntityKind, MemoryId, Owner, SidecarPayload};
 
 /// Capture only the values which can select a natural series; body replay semantics are unchanged.
 fn bind_fact_natural_key(
@@ -182,10 +180,6 @@ impl Engine {
                 &citation.object.schema_id,
                 citation.object.schema_version,
             )?;
-            self.ensure_fact_ingest_schema(
-                &citation.mapping.schema_id,
-                citation.mapping.schema_version,
-            )?;
         }
         let links = self
             .authorize_fact_node_links(
@@ -214,22 +208,20 @@ impl Engine {
         ))
     }
 
-    /// Authorize + schema-validate + owner-stamp a Fact with typed
-    /// inline citation payloads. Does NOT write.
+    /// Authorize + schema-validate + owner-stamp a Fact with a typed
+    /// inline cited object. Does NOT write.
     ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one owner it
-    /// may write Facts on, or the citation mapping targets a different cited-object
-    /// schema; `UnknownSchema` when any schema is absent for the required kind;
-    /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
-    /// a registered citation schema has no sidecar inserter.
+    /// may write Facts on; `UnknownSchema` when any schema is absent for the
+    /// required kind; `InvalidArgument` when JSON payload validation fails; or
+    /// `Internal` when the cited object produces no content hash.
     pub async fn authorize_fact_with_citation<A>(
         &self,
         authority: &A,
         mut draft: FactWriteCommand,
         cited_object: InlineCitedObjectDraft,
-        mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
     ) -> Result<AuthorizedFactWithCitation, ProtocolError>
     where
@@ -243,12 +235,12 @@ impl Engine {
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_fact_ingest`. The Fact payload is built from a
-        // trusted typed struct. The untrusted citation payloads are
-        // agent-supplied JSON, so they stay fully validated below.
+        // trusted typed struct. The untrusted cited-object payload is
+        // agent-supplied JSON, so it stays fully validated below.
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
-        let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
+        let cited_object = self.authorize_inline_citation(cited_object)?;
         let links = self
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
@@ -269,30 +261,25 @@ impl Engine {
             .with_natural_key_values(natural_key_values)
             .with_publication(publication),
             cited_object,
-            mapping,
         ))
     }
 
     /// Authorize + schema-validate + owner-stamp a Fact that cites an
     /// ALREADY-STORED cited object by id. Does NOT write, and does not
-    /// resolve the referenced object — existence, owner, and schema of
-    /// the stored row are storage's check, inside the same transaction
-    /// that writes the mapping (no TOCTOU window).
+    /// resolve the referenced object — existence and owner of the stored
+    /// row are storage's check, inside the same transaction that writes
+    /// the Fact (no TOCTOU window).
     ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one
-    /// owner it may write Facts on; `UnknownSchema` when the Fact
-    /// or mapping schema is absent for the required kind;
-    /// `InvalidArgument` when the mapping payload fails validation; or
-    /// `Internal` when the mapping schema declares no cited-object
-    /// target.
+    /// owner it may write Facts on; or `UnknownSchema` when the Fact
+    /// schema is absent for the required kind.
     pub async fn authorize_fact_with_citation_by_ref<A>(
         &self,
         authority: &A,
         mut draft: FactWriteCommand,
         cited_object_id: uuid::Uuid,
-        mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
     ) -> Result<AuthorizedFactWithCitationRef, ProtocolError>
     where
@@ -306,7 +293,6 @@ impl Engine {
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
-        let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
         let links = self
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
@@ -327,8 +313,6 @@ impl Engine {
             .with_natural_key_values(natural_key_values)
             .with_publication(publication),
             cited_object_id,
-            expected_object_schema,
-            mapping,
         ))
     }
 
@@ -670,7 +654,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns caller-fixable storage rejections (missing or foreign
-    /// cited object, mapping-target mismatch) as `InvalidArgument` and
+    /// cited object) as `InvalidArgument` and
     /// infrastructure faults as `Internal`.
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
@@ -697,66 +681,10 @@ impl Engine {
             })
     }
 
-    /// Authorize + schema-validate + owner-stamp a citation attachment
-    /// for an existing Fact memory. Does NOT write.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot write `memory_kind` on
-    /// `requested_owner`, or the citation mapping targets a different
-    /// cited-object schema; `UnknownSchema` when a citation schema is
-    /// absent for the required kind; `InvalidArgument` when JSON payload
-    /// validation fails or `memory_kind` is not a kind that cites
-    /// directly; or `Internal` when a registered cited-object schema has
-    /// no sidecar inserter.
-    pub async fn authorize_citation_attachment(
-        &self,
-        authz: &AuthzContext,
-        requested_owner: OwnerRef,
-        request: CitationAttachmentRequest,
-    ) -> Result<AuthorizedCitationAttachment, ProtocolError> {
-        let CitationAttachmentRequest {
-            memory_id,
-            memory_kind,
-            cited_object,
-            mapping,
-        } = request;
-        let requested = requested_owner;
-        let permit = self
-            .authorize_write(authz, &requested, memory_kind.into())
-            .await?;
-        let owner = *permit.owner();
-        // A citation is legal on a Fact or an Abstraction and on nothing
-        // else. The rule is about what a memory kind MEANS — a
-        // Perspective that cited directly would be grounding itself
-        // twice, alongside the references it already grounds through —
-        // so it is decided here, from the declared kind, and storage
-        // rejects the write if the row disagrees.
-        if !crate::citations::kind_may_cite_directly(memory_kind) {
-            return Err(ProtocolError::invalid_argument(
-                "memory_kind",
-                format!(
-                    "a {} cannot carry a citation; only Fact and Abstraction memories cite directly",
-                    memory_kind.as_str()
-                ),
-            ));
-        }
-        let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
-        Ok(AuthorizedCitationAttachment::new(
-            permit,
-            memory_id,
-            memory_kind,
-            owner,
-            cited_object,
-            mapping,
-        ))
-    }
-
     fn authorize_inline_citation(
         &self,
         cited_object: InlineCitedObjectDraft,
-        mapping: InlineCitationMappingDraft,
-    ) -> Result<(AuthorizedInlineCitedObject, AuthorizedInlineCitationMapping), ProtocolError> {
+    ) -> Result<AuthorizedInlineCitedObject, ProtocolError> {
         let (_cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
@@ -764,27 +692,6 @@ impl Engine {
             &cited_object.payload_bytes,
             "cited_object.payload_bytes",
         )?;
-        let (mapping_info, mapping_payload) = self.ingest_protocol_payload(
-            &mapping.schema_id,
-            mapping.schema_version,
-            PayloadKind::CitationMapping,
-            &mapping.payload_bytes,
-            "mapping.payload_bytes",
-        )?;
-
-        if mapping_info.cited_object_schema.as_ref() != Some(&cited_object.schema_id) {
-            return Err(ProtocolError::forbidden(format!(
-                "citation mapping schema {} v{} targets {:?}, not cited object schema {}",
-                mapping.schema_id.as_str(),
-                mapping.schema_version.into_inner(),
-                mapping_info
-                    .cited_object_schema
-                    .as_ref()
-                    .map(SchemaIdDisplay::new),
-                cited_object.schema_id.as_str(),
-            )));
-        }
-
         let content_hash = cited_object_payload.content_hash.ok_or_else(|| {
             ProtocolError::internal(format!(
                 "cited object schema {} v{} did not produce a content hash",
@@ -792,61 +699,11 @@ impl Engine {
                 cited_object.schema_version.into_inner(),
             ))
         })?;
-        let cited_object_sidecar = cited_object_payload.sidecar_payload;
-        let mapping_sidecar = if mapping_info.sidecar_table.is_some() {
-            Some(mapping_payload.sidecar_payload)
-        } else {
-            None
-        };
-
-        Ok((
-            AuthorizedInlineCitedObject::new(
-                cited_object.schema_id,
-                cited_object.schema_version,
-                content_hash,
-                cited_object_sidecar,
-            ),
-            AuthorizedInlineCitationMapping::new(
-                mapping.schema_id,
-                mapping.schema_version,
-                mapping_sidecar,
-            ),
-        ))
-    }
-
-    /// Validate a citation-mapping draft alone (no inline cited object),
-    /// returning the authorized mapping plus the cited-object schema it
-    /// targets — the schema the referenced stored object must carry.
-    fn authorize_citation_mapping_draft(
-        &self,
-        mapping: InlineCitationMappingDraft,
-    ) -> Result<(AuthorizedInlineCitationMapping, crate::SchemaId), ProtocolError> {
-        let (mapping_info, mapping_payload) = self.ingest_protocol_payload(
-            &mapping.schema_id,
-            mapping.schema_version,
-            PayloadKind::CitationMapping,
-            &mapping.payload_bytes,
-            "mapping.payload_bytes",
-        )?;
-        let expected_object_schema = mapping_info.cited_object_schema.clone().ok_or_else(|| {
-            ProtocolError::internal(format!(
-                "citation mapping schema {} v{} declares no cited-object schema",
-                mapping.schema_id.as_str(),
-                mapping.schema_version.into_inner(),
-            ))
-        })?;
-        let mapping_sidecar = if mapping_info.sidecar_table.is_some() {
-            Some(mapping_payload.sidecar_payload)
-        } else {
-            None
-        };
-        Ok((
-            AuthorizedInlineCitationMapping::new(
-                mapping.schema_id,
-                mapping.schema_version,
-                mapping_sidecar,
-            ),
-            expected_object_schema,
+        Ok(AuthorizedInlineCitedObject::new(
+            cited_object.schema_id,
+            cited_object.schema_version,
+            content_hash,
+            cited_object_payload.sidecar_payload,
         ))
     }
 
@@ -1041,7 +898,6 @@ impl Engine {
                 .with_citation(CitationSpec::v1(
                     MCP_CALL_IO_SCHEMA,
                     input.io_content_hash(),
-                    MCP_CALL_CITATION_SCHEMA,
                 ));
         // Whole-verb replay key. `from_payload` digests the payload alone,
         // which would collapse two identical calls made at different times
@@ -1064,20 +920,6 @@ impl Engine {
     }
 }
 
-struct SchemaIdDisplay<'a>(&'a crate::SchemaId);
-
-impl<'a> SchemaIdDisplay<'a> {
-    const fn new(schema_id: &'a crate::SchemaId) -> Self {
-        Self(schema_id)
-    }
-}
-
-impl std::fmt::Debug for SchemaIdDisplay<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.0.as_str())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1088,8 +930,8 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::{
-        AuthPath, FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder, PayloadReference,
-        ReferenceBinding, Relation, SchemaId,
+        AuthPath, FactPayload, FlavorRegistry, GroupId, OwnerRef, PayloadKeyBuilder,
+        PayloadReference, ReferenceBinding, Relation, SchemaId,
     };
     use serde::{Deserialize, Serialize};
 
@@ -1604,18 +1446,12 @@ mod tests {
             schema_version: SchemaVersion::new(1),
             payload_bytes: Vec::new(),
         };
-        let mapping = InlineCitationMappingDraft {
-            schema_id: SchemaId::new("test/citation-mapping".into()),
-            schema_version: SchemaVersion::new(1),
-            payload_bytes: Vec::new(),
-        };
 
         let err = engine
             .authorize_fact_with_citation(
                 &AuthzContext::denied_for_owner(&owner),
                 draft,
                 cited_object,
-                mapping,
                 &[],
             )
             .await

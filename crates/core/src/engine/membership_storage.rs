@@ -492,7 +492,6 @@ impl GoalWritePort for MembershipStorage {
         let replay = |ordinal: u128| GoalWriteOutcome {
             goal_id: GoalId::new(uuid::Uuid::from_u128(ordinal)),
             change_event_seq: uuid::Uuid::from_u128(ordinal),
-            lifecycle_memory_id: None,
             edge_count: 3,
             idempotent_replay: true,
         };
@@ -915,29 +914,6 @@ impl OwnerInversePort for MembershipStorage {
 }
 
 #[async_trait::async_trait]
-impl RegistryProjectionPort for MembershipStorage {
-    async fn load_memory_batch_facts(
-        &self,
-        _owner_scope: Option<&crate::OwnerScope>,
-        _owner: &Owner,
-        _memory_id: MemoryId,
-        _schemas: &[crate::read_models::MemorySchemaSpec],
-    ) -> Result<Vec<FactRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_abstraction_heads(
-        &self,
-        _owner_scope: Option<&crate::OwnerScope>,
-        _owner: &Owner,
-        _schemas: &[crate::read_models::MemorySchemaSpec],
-        _limit: usize,
-    ) -> Result<Vec<AbstractionRow>, StorageError> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
 impl WriteSessionFactory for MembershipStorage {
     async fn begin(
         &self,
@@ -973,7 +949,6 @@ impl MembershipStorage {
             .owner_transfer(storage.clone())
             .source_cursor(storage.clone())
             .owner_erase(storage.clone())
-            .registry_projection(storage.clone())
             .write_session(storage)
             .build()
     }

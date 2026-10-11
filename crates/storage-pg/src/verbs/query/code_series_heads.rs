@@ -269,27 +269,6 @@ pub(crate) fn unique_chunk_series_heads(
     Ok(rows)
 }
 
-/// Present chunk indexes at the current head of each owned series for a file.
-///
-/// # Errors
-///
-/// Returns `StorageError::ConstraintViolation` when two heads share an
-/// index. Returns `StorageError::Internal` on query failure.
-pub async fn owned_present_chunk_indexes<'e, E: PgExecutor<'e>>(
-    pool: E,
-    owner: Owner,
-    schema_id: &SchemaId,
-    repo_id: Uuid,
-    file_path: &str,
-) -> Result<Vec<i32>, StorageError> {
-    let heads = owned_chunk_series_heads(pool, owner, schema_id, repo_id, file_path).await?;
-    Ok(heads
-        .into_iter()
-        .filter(|head| head.state == "Present")
-        .map(|head| head.chunk_index)
-        .collect())
-}
-
 /// Present chunk head `t`s for one file across `read_owners`.
 ///
 /// # Errors

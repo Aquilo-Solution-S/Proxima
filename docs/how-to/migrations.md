@@ -13,9 +13,15 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
-## v0.0.30
+## v0.0.26
 
-Not yet released. Existing v0.0.25 databases upgrade in place.
+Existing v0.0.25 databases upgrade in place, in version order. The release
+ships one additive core migration and no flavor migration.
+
+The file is labelled `_v030_`, not `_v026_`. A label counts merged migrations,
+not tags ([v0.0.24](#v0024) rolled up `_v024_` through `_v029_`), and `_v026_`
+is `0020`, which shipped in v0.0.24. The label stays as merged; an applied
+ledger records it.
 
 | Lane | Migration |
 |---|---|
@@ -27,6 +33,16 @@ of restating its whole schema; the other tables' policies are not touched
 ([09 §Owner RLS](../09-developing-flavors.md#owner-rls)). A flavor that
 installed its schema with `install_owner_rls` keeps its policies; calling
 either installer again re-creates them from the current class code.
+
+**Locks.** Additive: one enum type, six new functions (not executable by
+`PUBLIC`), and `install_owner_rls` re-created with the same signature. No table,
+row, policy or index is read or written, so no table lock and no backfill.
+Existing policies stay as they are until an installer is called again.
+
+**Operator action.** None when boot applies migrations. A deployment with
+`PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.26
+binary starts: boot checks for the type and functions and refuses a database
+without them ("apply migrations before boot").
 
 ## v0.0.25
 

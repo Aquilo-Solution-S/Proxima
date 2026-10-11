@@ -27,8 +27,7 @@ use proxima_core::{
     StorageError, UserId,
 };
 use proxima_outbox_nats::{
-    AckAction, AckHook, DurableIntake, Intake, IntakeError, NatsConsumerConfig,
-    NatsPublisherConfig, ReceivedEvent,
+    DurableIntake, Intake, IntakeError, NatsConsumerConfig, NatsPublisherConfig, ReceivedEvent,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::fresh_pg;
@@ -74,22 +73,6 @@ pub fn nats_url_or_skip(test: &str) -> Option<String> {
                 "{ENV_NATS_URL} required under CI=true (test {test})"
             );
             eprintln!("skipping {test}: {ENV_NATS_URL} is unset");
-            None
-        }
-    }
-}
-
-/// The publisher URL used by the permission-boundary acceptance test.
-#[must_use]
-pub fn publisher_url_or_skip(test: &str) -> Option<String> {
-    match std::env::var(ENV_NATS_PUBLISHER_URL) {
-        Ok(url) if !url.trim().is_empty() => Some(url),
-        _ => {
-            assert!(
-                std::env::var("CI").as_deref() != Ok("true"),
-                "{ENV_NATS_PUBLISHER_URL} required under CI=true (test {test})"
-            );
-            eprintln!("skipping {test}: {ENV_NATS_PUBLISHER_URL} is unset");
             None
         }
     }
@@ -703,35 +686,6 @@ impl DurableIntake for RecordingIntake {
         }
         record(SeenOutcome::Accepted);
         Ok(Intake::Accepted)
-    }
-}
-
-/// An ack hook that drops the FIRST `n` acknowledgements — the "the intake
-/// committed and the ACK never arrived" failure.
-#[derive(Debug)]
-pub struct DropFirstAcks {
-    remaining: Mutex<u32>,
-}
-
-impl DropFirstAcks {
-    #[must_use]
-    pub fn new(n: u32) -> Arc<Self> {
-        Arc::new(Self {
-            remaining: Mutex::new(n),
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl AckHook for DropFirstAcks {
-    async fn before_ack(&self, _event: &ReceivedEvent, _outcome: &Intake) -> AckAction {
-        let mut remaining = self.remaining.lock().expect("lock");
-        if *remaining == 0 {
-            AckAction::Continue
-        } else {
-            *remaining -= 1;
-            AckAction::DropAck
-        }
     }
 }
 

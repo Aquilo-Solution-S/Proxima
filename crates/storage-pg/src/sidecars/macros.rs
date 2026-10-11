@@ -582,20 +582,3 @@ macro_rules! pg_sidecar {
         }
     };
 }
-
-#[macro_export]
-macro_rules! goal_lifecycle_fact {
-    ($($payload_ty:ident)::+, $row_ty:ident, $table:literal) => {
-        $crate::pg_sidecar! {
-            payload: $($payload_ty)::+,
-            row: $row_ty,
-            kinds: [Fact],
-            table: $table,
-            key: memory_id,
-            fields: {
-                goal_id => goal_id: (uuid),
-                transitioned_at => transitioned_at: (timestamptz),
-            },
-        }
-    };
-}

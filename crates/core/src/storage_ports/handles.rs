@@ -11,7 +11,6 @@ use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::McpCallReadPort;
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
-use super::registry::RegistryProjectionPort;
 use super::write_session::WriteSessionFactory;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
@@ -33,7 +32,6 @@ pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
 pub type SourceCursorHandle = Arc<dyn SourceCursorPort>;
 pub type OwnerInverseHandle = Arc<dyn OwnerInversePort>;
-pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
 pub type OwnerEraseAuthorityHandle = Arc<dyn OwnerEraseAuthorityPort>;
 pub type OwnerDropProofHandle = Arc<dyn OwnerDropProofPort>;
 pub type WriteSessionFactoryHandle = Arc<dyn WriteSessionFactory>;

@@ -3679,8 +3679,8 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// `proxima_core.blob` is
 /// referenced by exactly three columns — `memory.blob_id`,
 /// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
-/// admission cites it" is the whole reference question. Citation sidecars
-/// hold no foreign key on it: they are opaque payload tables, which is why
+/// admission cites it" is the whole reference question. Citation schemas
+/// are opaque and have no sidecar table, which is why
 /// `OwnerSurfaces::for_registry` finds no cited-object family for
 /// core or code to consult.
 ///

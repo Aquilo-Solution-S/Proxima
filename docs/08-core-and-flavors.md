@@ -25,7 +25,7 @@ runtime framework core (`proxima-core`)
   ids, Owner, Memory / Goal contracts
   the closed edge kinds and the edge index
   F/A/P and Goal payload traits
-  core GoalPayload schemas + lifecycle Fact schemas
+  core GoalPayload schemas
   frozen registry
   storage ports
   agent long-term memory sidecars + tools
@@ -59,9 +59,8 @@ then calls `try_freeze()`. Registry failure is typed startup failure.
 `FlavorRegistryFrozen` is constructed only by successful `try_freeze()` and
 has no post-freeze schema mutation surface.
 
-Core registers substrate schemas, core GoalPayload schemas, Goal
-lifecycle Fact schemas, and substrate MCP memory/config/goal tools in the
-default registry. Flavor crates append
+Core registers substrate schemas, core GoalPayload schemas, and substrate MCP
+memory/config/goal tools in the default registry. Flavor crates append
 their own descriptors through `proxima_flavor!`.
 
 <a id="macro-surface"></a>
@@ -83,10 +82,8 @@ Supported keys:
 | `abstraction_schemas` | `AbstractionPayload` sidecar schemas. |
 | `perspective_schemas` | `PerspectivePayload` sidecar schemas. |
 | `goal_schemas` | `GoalPayload` sidecar schemas. |
-| `cited_object_schemas` | `CitedObjectPayload` sidecar schemas (see 11). |
-| `citation_mapping_schemas` | `CitationMappingPayload` sidecar schemas (see 11). |
+| `cited_object_schemas` | `CitedObjectPayload` schemas; no sidecar (see 11). |
 | `opaque_cited_object_schemas` | Untyped cited-object schema ids. |
-| `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
 | `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
 | `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. A tool that declares `ACTION_ARG_SPECS` is a dispatcher: its actions become `tool:action` scope leaves rather than one whole-tool grant, and its `Args` must be an internally tagged enum tagged on `action` (see [12 §Action-Dispatch Tools](12-tool-manifest.md#action-dispatch-tools)). |
 
@@ -228,8 +225,9 @@ writes use the same tool with the matching action key.
 1. Duplicate schemas, tool names, and `FlavorDescriptor::flavor_id`.
 2. Capability tags for unregistered schemas.
 3. An opaque Fact, Abstraction, Perspective, or Goal descriptor. Only
-   `CitedObject` and `CitationMapping` schemas may be opaque;
-   `try_add_opaque_schema` rejects the invalid kinds before freeze too.
+   `CitedObject` schemas may be opaque, and
+   `add_opaque_cited_object_schema` takes no kind, so the public API cannot
+   build one; the guard catches internal drift.
 4. Any schema/ingress mismatch: each typed schema has exactly one protocol
    ingress parser, each opaque citation schema has none, and every parser
    resolves to a typed schema.
@@ -406,13 +404,10 @@ are `Keep { why }` now, and
 `cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both` fails
 if either is restored.
 
-Two places are worth knowing about individually, because each looks like it
-reads the contract and does not:
-
-1. `storage-pg/src/lib.rs` — the boot marker's `to_regclass` relation probes
-   are a hand-written list. It names `proxima_core.agent_note_v1`, which is a
-   flavor-#0 declared sidecar, and `proxima_code.code_chunk_v1`, which is
-   another flavor's sidecar named in kernel code.
+One place is worth knowing about individually, because it looks like it
+reads the contract and does not: in `storage-pg/src/lib.rs`, the boot
+marker's `to_regclass` relation probes are a hand-written list. It names
+`proxima_core.agent_note_v1`, which is a flavor-#0 declared sidecar.
 One more used to be on that list, and Phase 4 removed it:
 `storage-pg/src/access/owner_columns.rs` did not read `TransferRule` at all —
 *which columns move on a transfer* was code, and the declaration merely

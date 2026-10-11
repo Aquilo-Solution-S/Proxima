@@ -74,14 +74,13 @@ pub use proxima_core::storage_ports::{
 };
 /// Transaction-scoped, owner-stamped sidecar precondition reads.
 pub use proxima_core::storage_ports::{SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead};
-/// Typed inline citation drafts and the Engine admission witnesses they
-/// produce. `authorize_fact_with_citation` takes the drafts plus a sidecar
+/// Typed inline cited-object drafts and the Engine admission witnesses they
+/// produce. `authorize_fact_with_citation` takes the draft plus a sidecar
 /// slice; without these names an out-of-tree flavor can only spell
 /// `CitationSpec` (opaque hash) or take `proxima-core`.
 pub use proxima_core::verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationAttachmentRequest,
-    CitationSpec, FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft,
-    InlineCitedObjectDraft,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
+    FactWriteCommand, InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
@@ -111,17 +110,17 @@ pub use proxima_core::verbs::schema::PayloadKind;
 /// identify which hot-head payload value represents a deletion observation.
 /// Core Query does not filter tombstone heads.
 pub use proxima_core::{
-    AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload,
-    DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
-    DelegationId, DelegationIssued, DelegationRevocation, EndpointUrlError, EndpointUrlPolicy,
-    EngineAuthority, FactPayload, FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance,
-    FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
-    GoalId, GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH,
-    MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId,
-    OperatorId, OwnerRef, PayloadKeyBuilder, PerspectivePayload, PromptVersion, RequestHeaders,
-    SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx,
-    ToolError, ToolId, ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint,
-    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
+    AbstractionPayload, CapabilitySet, CitedObjectPayload, DelegatedAuthorityError,
+    DelegatedAuthorityService, DelegatedCommand, DelegatedPhase, DelegationId, DelegationIssued,
+    DelegationRevocation, EndpointUrlError, EndpointUrlPolicy, EngineAuthority, FactPayload,
+    FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
+    FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, GoalId,
+    GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
+    MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId, OwnerRef,
+    PayloadKeyBuilder, PerspectivePayload, PromptVersion, RequestHeaders, SchemaId, SchemaVersion,
+    SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolId,
+    ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint, is_loopback_host,
+    proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]
 /// (Host API). `Engine` itself stays off this module (`docs/14`).
@@ -209,8 +208,8 @@ pub use proxima_storage_pg::access::owner_columns::{
 };
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{
-    PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload,
-    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit,
+    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+    PgSidecarReadCtx, SidecarInsertPermit,
 };
 pub use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

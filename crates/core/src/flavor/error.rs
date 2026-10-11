@@ -54,7 +54,7 @@ pub enum FlavorRegistryError {
         kind: PayloadKind,
     },
     #[error(
-        "schema {schema_id} v{schema_version} {kind:?} is opaque; only CitedObject and CitationMapping schemas may be opaque"
+        "schema {schema_id} v{schema_version} {kind:?} is opaque; only CitedObject schemas may be opaque"
     )]
     OpaqueSchemaKind {
         schema_id: SchemaId,
@@ -446,7 +446,7 @@ pub enum FlavorRegistryError {
         levels: usize,
         classes: usize,
     },
-    /// A cited-object or citation-mapping schema declared a sidecar table.
+    /// A cited-object schema declared a sidecar table.
     /// Those tables point at a blob row by convention rather than by
     /// constraint, so the shared-blob dedupe arm's remap cannot find them.
     #[error(

@@ -1,6 +1,7 @@
 //! `dev-idp` — a real OIDC issuer, on loopback, for self-hosted Proxima.
 //!
-//! Proxima authenticates MCP callers one way: an RS256 bearer, verified
+//! Proxima authenticates MCP callers one way: a signed bearer (`RS256`,
+//! `RS384`, `RS512`, `ES256` or `EdDSA`; this issuer signs `RS256`), verified
 //! against a JWKS discovered from the configured issuer, with `(iss, sub)`
 //! mapped to a user through an explicit subject map. That is the only auth
 //! path, deliberately — there is no dev bypass in the server, and adding one

@@ -15,12 +15,8 @@ pub(super) struct LifecycleWrite<'a> {
     pub(super) evidence: &'a [EvidenceTarget],
 }
 
-/// The tail every Goal write shares: record the lifecycle transition as a
-/// Fact, derive the reference rows the Goal's topology columns imply, and
-/// report what was written.
-///
-/// A replay is resolved from its persisted command declaration before this
-/// tail. Reaching this function with one means a caller skipped that proof.
+/// The tail every Goal write shares: assert the reference rows the Goal's
+/// topology columns imply and report what was written.
 pub(super) async fn lifecycle_outcome(
     tx: &mut Transaction<'_, Postgres>,
     write: LifecycleWrite<'_>,
@@ -30,8 +26,6 @@ pub(super) async fn lifecycle_outcome(
             "Goal replay reached lifecycle persistence without declaration proof",
         ));
     }
-    // Goal `t` is the transition. No lifecycle Fact / sidecar.
-    let lifecycle_memory_id = None;
     let edge_count = assert_goal_topology_references(
         tx,
         write.owner,
@@ -44,7 +38,6 @@ pub(super) async fn lifecycle_outcome(
     Ok(GoalWriteOutcome {
         goal_id: write.inserted.goal_id,
         change_event_seq: write.inserted.change_event_seq,
-        lifecycle_memory_id,
         edge_count,
         idempotent_replay: false,
     })

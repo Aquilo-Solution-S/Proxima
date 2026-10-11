@@ -2,8 +2,10 @@
 
 ## v0.0.26
 
-Pin all Proxima Rust dependencies to the same `v0.0.26` tag. No database
-change. **Breaking, no shims** (#412): host tools list per request and can
+Pin all Proxima Rust dependencies to the same `v0.0.26` tag. Boot applies one
+additive core migration ([migrations §v0.0.26](migrations.md#v0026)); a
+deployment with `PROXIMA_SKIP_MIGRATIONS=true` runs it before the new binary
+starts. **Breaking, no shims** (#412): host tools list per request and can
 fail, answer content or a tool failure, and be hidden by request behaviors
 ([12 §Tool Replies](../12-tool-manifest.md#tool-replies)).
 
@@ -33,6 +35,58 @@ outside `[A-Za-z0-9_.-]` now fails registry freeze with
 | `match ToolScope::Palette(ids)` over strings | Match `ScopeKey::{Tool, Action { tool, action, .. }, Resource}`. `Action` is `#[non_exhaustive]`: only `ScopeKey::action` builds one |
 | `DelegatedCommand` | Holds `ToolName` and `Option<ActionName>`: `tool()` / `action()` return them, `as_str()` and `From<GoalWakeToolId>` are gone, `to_string()` prints `tool` or `tool:action` |
 | `ResourceContract::scope_key` text lookup | `FlavorContract::resource_by_scope_key(&ResourceKey)`; `ResourceContract::key()` |
+
+**Also breaking, no shims** (#416): the Postgres testkit no longer falls back
+to a default server.
+
+| Removed / changed | Upgrade |
+|---|---|
+| `DEFAULT_ADMIN_URL` (`postgres://proxima:proxima@localhost/proxima`) | Removed. Set `PROXIMA_TEST_PG_URL` to the admin URL of a server you own; the testkit's sweep and template GC act on every matching database behind it |
+| `PROXIMA_TEST_PG_URL` unset, empty or blank | `admin_url()` / `db_url()` panic naming the variable; the async entry points return `sqlx::Error::Configuration`. `admin_url_or_skip()` still skips locally and panics under `CI=true` |
+| `ensure_template_in` | Returns a `TemplateLease` that holds the template against collection until released |
+| Hand-built host template | `proxima::testkit::HostTemplate::new(TemplateFamily::new("my_host_")?, fingerprint, migrators)?`, then `.clone_split_role(prefix, schemas)`; `new` refuses a migrator lineup the runner would refuse |
+
+**Tightened** (#417): flavor ledgers that name one table through different
+spellings (case, quoting, schema, whitespace) are refused at boot, as two
+identical spellings already were.
+
+**Also breaking, no shims**: public surface that nothing wired is deleted. No
+row below changes what is stored: none of these items was persisted or read
+back by a shipped path. One was checked and then dropped: a citation mapping
+was validated at admission (an unregistered mapping schema was refused) and
+never stored, so that refusal goes with it.
+
+| Removed / changed | Upgrade |
+|---|---|
+| Citation mappings: `CitationMappingPayload`, `InlineCitationMappingDraft`, `AuthorizedInlineCitationMapping`, `CitationMappingHint`, `PayloadKind::CitationMapping`, `FlavorRegistry::try_add_citation_mapping_schema`, `add_citation_mapping_schema_or_panic_for_tests`, `SidecarPayload::citation_mapping`, `SchemaInfo::cited_object_schema`, the core payload types `UploadedBlobWholeV1`, `UploadedBlobPageSpanV1`, `McpCallIoCitationV1`, the `citation_mapping_schemas` / `opaque_citation_mapping_schemas` keys of `proxima_flavor!` and `flavor_bundle!` | Delete your mapping types and registrations. No mapping was ever stored: the citation is `memory.blob_id`. A locator inside the artefact (a page, a region, a byte range) is a field of the citing Fact's payload ([11 §Payload trait](../11-citations.md#payload-trait)) |
+| Registered schemas `core/uploaded-blob-whole-v1`, `core/uploaded-blob-page-span-v1`, `core/mcp-call-io-citation-v1`, and the code flavor's eight `proxima-code/*-whole-v1`; their constants `UPLOADED_BLOB_WHOLE_SCHEMA_ID`, `UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID`, `MCP_CALL_CITATION_SCHEMA` and the code flavor's `*_WHOLE_SCHEMA` | Gone from the registry and `proxima://schemas`; the ids are retired, not reused |
+| `Engine::authorize_fact_with_citation(authz, draft, cited_object, mapping, sidecars)`, `_by_ref(.., cited_object_id, mapping, ..)` | Drop the `mapping` argument. By reference, storage checks that the object exists for the Fact's owner; there is no target schema left to compare. The witnesses `AuthorizedFactWithCitation` and `AuthorizedFactWithCitationRef` lose `mapping()`, and the by-reference one `expected_object_schema()` |
+| `CitationSpec::v1(object_schema, hash, mapping_schema)`, `v1_for_payload(object_schema, payload, mapping_schema)` | `CitationSpec::v1(object_schema, hash)`, `v1_for_payload(object_schema, payload)`. `Citation` is `{ object }` |
+| `FactCitationReadback::{citation_mapping_id, mapping_schema_id, page_span, uploaded_blob}`, `UploadedBlobRef`, and in `citation_of_fact`'s output `page_span`, `document` and `UploadedBlobDocumentOutput` | Read `cited_object_id` and `cited_object_schema_id`; the removed fields were derived from the blob or always `None` |
+| `Engine::authorize_citation_attachment`, `CitationAttachmentRequest`, `AuthorizedCitationAttachment`, `citations::kind_may_cite_directly` | Removed; no storage path consumed the witness. Cite at Fact ingest |
+| `PgCitedObjectSidecar`, `PgCitationMappingSidecar`, `PgSidecarRegistry::{add_cited_object, add_citation_mapping}`, `CitedObjectPayload::sidecar_table()` | Delete the impls and registrations. Citation schemas have had no sidecar since v0.0.10; no inserter was called |
+| `FlavorRegistry::try_add_opaque_schema(id, version, kind) -> Result`, `add_opaque_schema_or_panic_for_tests` | `add_opaque_cited_object_schema(id, version)`, infallible: a cited object is the only kind that may be opaque. A duplicate is still refused at freeze |
+| `const SPECIAL_CATEGORY` on `FactPayload`, `AbstractionPayload`, `PerspectivePayload`, `GoalPayload`, `CitedObjectPayload` | Delete it from your impls; nothing read it and the registry did not record it. A host with Art. 9 obligations keeps the classification in its own trait ([13 §Declared metadata](../13-compliance.md#declared-metadata)) |
+| `GoalWriteOutcome::lifecycle_memory_id` | Removed; it was always `None`. A terminal transition's close Fact is the Goal row's `close_fact_t` |
+| `RegistryProjectionPort`, `RegistryProjectionHandle`, `StoragePortsBuilder::registry_projection`, `read_models::{FactRow, AbstractionRow}`, `proxima_storage_pg::verbs::consolidate::{load_abstraction_heads, load_abstraction_heads_on_connection, load_memory_batch_facts}` | Removed; nothing read them. Use the authorized flavor reads ([public API](../reference/public-api.md#authorized-flavor-read-facade)) |
+| `proxima_core::verbs::goal_write::GoalLifecycleFact`, the `goal_lifecycle_fact!` macro (`proxima-storage-pg`), `SCOPE_PREFIX`, `active_goals_for_memory_targets`, `owner_arrays`, `owned_present_chunk_indexes`, the `*_sql_for_tests` helpers, `test_fixtures::{EmbedRefusal, RefusingEmbedding}`, the storage-pg `test_fixtures::operator_proofs` module, `assert_no_serde_json_value_fields` | Removed with no caller. The code flavor's unused ingest chain and run helpers (`append_code_slice{,s}`, `existing_code_chunk_handle`, `resolve_code_chunk_handles`, `code_slice_memory_id_for`, `build_engine_with`, `get_active_run`, `retire_stale_runs`) went with them |
+
+MCP wire, same release: `core_remember`'s `citation` drops `mapping_schema_id`,
+`mapping_schema_version` and `mapping_payload`. They used to be validated and
+then dropped; now a client that still sends them has them ignored without
+validation (nested fields are not refused), so an unregistered mapping schema
+is no longer an error.
+`core_fact` `citation_of_fact` returns `cited_object_id` and
+`cited_object_schema_id` only. `proxima://schemas{?kind}` no longer knows
+`CitationMapping`, and Goal write outputs drop `lifecycle_memory`.
+
+**Changed, same release**: a write refused because the publication outbox is
+full now reads as backpressure on every surface. Through `Engine` it was
+`ErrorCode::Internal` (MCP `-32603`, REST 500); it is the new
+`ErrorCode::CapacityExhausted` (MCP `-32000` with
+`data.code = "capacity_exhausted"`, REST 503 `capacity-exhausted`), the
+class the direct storage path already used ([18 §Capture](../18-fact-outbox.md#capture)).
+`ErrorCode` is exhaustive, so a `match` over it needs the new arm.
 
 ## v0.0.25
 

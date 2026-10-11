@@ -8,13 +8,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CitationMappingPayload, CitedObjectPayload, FactPayload, FactReceiptId, MemoryId, Owner,
-    PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId,
+    CitedObjectPayload, FactPayload, FactReceiptId, MemoryId, Owner, PayloadKeyBuilder,
+    SchemaVersion, SourceId,
 };
 
 pub const MCP_CALL_FACT_SCHEMA: &str = "core/mcp-call-logged-v1";
 pub const MCP_CALL_IO_SCHEMA: &str = "core/mcp-call-io-v1";
-pub const MCP_CALL_CITATION_SCHEMA: &str = "core/mcp-call-io-citation-v1";
 pub const MCP_CALL_SOURCE_ID: &str = "core/mcp-call";
 
 #[derive(Debug, Clone)]
@@ -141,27 +140,8 @@ impl CitedObjectPayload for McpCallIoV1 {
     const SCHEMA_ID: &'static str = MCP_CALL_IO_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        ""
-    }
-
     fn idempotency_key(&self) -> [u8; 32] {
         self.content_hash
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct McpCallIoCitationV1;
-
-impl CitationMappingPayload for McpCallIoCitationV1 {
-    const SCHEMA_ID: &'static str = MCP_CALL_CITATION_SCHEMA;
-    const SCHEMA_VERSION: u32 = 1;
-
-    // Pure link — no sidecar table (uses the trait default `None`). The
-    // memory.blob_id carries the whole mapping.
-
-    fn cited_object_schema() -> SchemaId {
-        SchemaId::new(MCP_CALL_IO_SCHEMA.to_string())
     }
 }
 
@@ -172,10 +152,6 @@ pub struct McpCallLogOutcome {
     /// The cited I/O object this call's Fact reaches. Content-addressed on
     /// [`McpCallLogInput::io_content_hash`], so repeated calls with
     /// identical I/O share one object.
-    ///
-    /// There is no `citation_mapping_id` beside it: `McpCallIoCitationV1`
-    /// is a pure link with no sidecar table of its own — `memory.blob_id`
-    /// carries the whole mapping.
     pub cited_object_id: Option<Uuid>,
     pub change_event_seq: Uuid,
     pub idempotent_replay: bool,

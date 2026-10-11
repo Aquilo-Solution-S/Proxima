@@ -896,7 +896,7 @@ def run_fixture(path: Path) -> int:
 # crate declares), the ledger name `SQLx` itself interpolates in its own
 # ledger read; no caller value reaches the statement and no row value is
 # spliced.
-EXPECTED_DYNAMIC_SQL_SITES = 198
+EXPECTED_DYNAMIC_SQL_SITES = 197
 
 
 def run_self_test() -> int:

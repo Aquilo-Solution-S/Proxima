@@ -97,7 +97,6 @@ Registered schemas:
 |---|---|
 | `core/mcp-call-logged-v1` | Fact | tool, actor, status, latency, I/O hash |
 | `core/mcp-call-io-v1` | CitedObject | inline I/O bytes, byte length, truncation flag |
-| `core/mcp-call-io-citation-v1` | CitationMapping | pure link; no sidecar table |
 
 Invariant:
 

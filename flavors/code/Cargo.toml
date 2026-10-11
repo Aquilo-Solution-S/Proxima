@@ -18,7 +18,6 @@ host-api = []
 proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
-async-trait = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
@@ -28,7 +27,6 @@ uuid = { workspace = true }
 time = { workspace = true }
 blake3 = { workspace = true }
 globset = { workspace = true }
-hex = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-typescript = { workspace = true }
@@ -39,7 +37,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process", "time"] }
 
 [dev-dependencies]
-proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 # The flavor test kit, used as an out-of-tree flavor uses it.
 proxima = { path = "../../crates/proxima", features = ["testkit"] }
@@ -48,8 +45,8 @@ proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtu
 pgvector = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
-tokio-stream = { workspace = true }
 tempfile = "3"
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-//! citation_of_fact is memory ⋈ blob; no fabricated mapping columns.
+//! citation_of_fact is memory ⋈ blob.
 #![allow(clippy::doc_markdown)]
 
 use proxima_core::storage_ports::FactIngestPort;
@@ -63,11 +63,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
             .await?
             .expect("cited fact");
         assert_eq!(readback.cited_object_id, blob_id);
-        assert_eq!(readback.citation_mapping_id, blob_id);
         assert_eq!(readback.cited_object_schema_id.as_str(), "core/bytes-v1");
-        assert_eq!(readback.mapping_schema_id.as_str(), "core/bytes-v1");
-        assert!(readback.page_span.is_none());
-        assert!(readback.uploaded_blob.is_none());
         Ok(())
     }
     .await;

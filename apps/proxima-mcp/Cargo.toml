@@ -8,7 +8,6 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-proxima-auth-oidc = { path = "../../crates/auth-oidc" }
 proxima-code = { path = "../../flavors/code", optional = true }
 proxima-core = { path = "../../crates/core" }
 proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
@@ -16,7 +15,6 @@ proxima-blob-s3 = { path = "../../crates/blob-s3" }
 proxima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
 proxima = { path = "../../crates/proxima" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-uuid = { workspace = true }
 time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -36,7 +34,6 @@ nats = ["proxima/outbox-nats"]
 
 [dev-dependencies]
 boon = { workspace = true }
-async-nats = { workspace = true, features = ["nkeys"] }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }

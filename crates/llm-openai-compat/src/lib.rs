@@ -4,7 +4,9 @@
 //! canonical one.
 //!
 //! The surface is intentionally minimal. No retries; failures bubble up
-//! as `LlmError::Embed`.
+//! as `LlmError::Embed`, `LlmError::EmbedPermanent` when the provider refuses
+//! the input itself (HTTP 413/422), or `LlmError::Internal` when the client
+//! cannot be built.
 
 use std::time::Duration;
 

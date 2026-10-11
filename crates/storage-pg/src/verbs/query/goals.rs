@@ -5,7 +5,7 @@ use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
     EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 
 use crate::error::map_err;
 
@@ -157,35 +157,12 @@ pub async fn active_goals_for_memory_targets_on_connection(
     .map_err(map_err)
 }
 
-/// Compatibility wrapper for callers that already own a pool.
-///
-/// # Errors
-/// Returns `StorageError` when acquiring a connection or executing the query fails.
-pub async fn active_goals_for_memory_targets(
-    pool: &PgPool,
-    owner_id: uuid::Uuid,
-    targets: &[uuid::Uuid],
-) -> Result<Vec<ActiveGoalTargetRow>, StorageError> {
-    let mut connection = pool.acquire().await.map_err(map_err)?;
-    active_goals_for_memory_targets_on_connection(&mut connection, owner_id, targets).await
-}
-
 /// One Active Goal head that names a work-item neighbour.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ActiveGoalTargetRow {
     pub goal_id: uuid::Uuid,
     pub assignment_t: Option<uuid::Uuid>,
     pub evidence_t: Vec<uuid::Uuid>,
-}
-
-/// Emit the exact page statement [`query_goals`] would run for `req` — the
-/// golden-pin surface for the tuning arms, compiled only for tests. Same
-/// cfg gate as the search `*_sql_for_tests` exports.
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-#[doc(hidden)]
-#[must_use]
-pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
-    goal_page_sql(req, req.schema_id.is_some())
 }
 
 #[cfg(test)]

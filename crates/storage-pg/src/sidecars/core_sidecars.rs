@@ -1,8 +1,7 @@
 use super::{
-    GoalId, MemoryId, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection, PgGoalSidecar,
-    PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarInsertPermit,
-    SidecarPayload, StorageError, Transaction,
+    GoalId, MemoryId, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemorySidecar,
+    PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres,
+    SidecarInsertPermit, SidecarPayload, StorageError, Transaction,
 };
 use proxima_core::verbs::schema::PayloadKind;
 
@@ -239,115 +238,6 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
                     ))
                 })
                 .collect()
-        })
-    }
-}
-
-impl PgCitedObjectSidecar for proxima_core::UploadedBlobPayload {
-    fn insert_cited_object_sidecar<'t>(
-        &'t self,
-        tx: &'t mut PgConnection,
-        cited_object_id: uuid::Uuid,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            let byte_len = i64::try_from(self.byte_len).map_err(|err| {
-                StorageError::ConstraintViolation(format!("byte_len out of range: {err}"))
-            })?;
-            sqlx::query(
-                "INSERT INTO proxima_core.cited_uploaded_blob_v1
-                    (cited_object_id, bucket, object_key, sha256, byte_len,
-                     mime, filename, etag, uploaded_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                 ON CONFLICT (cited_object_id) DO NOTHING",
-            )
-            .bind(cited_object_id)
-            .bind(&self.bucket)
-            .bind(&self.object_key)
-            .bind(&self.sha256[..])
-            .bind(byte_len)
-            .bind(&self.mime)
-            .bind(&self.filename)
-            .bind(self.etag.as_deref())
-            .bind(self.uploaded_at)
-            .execute(tx)
-            .await
-            .map_err(crate::error::map_err)?;
-            Ok(())
-        })
-    }
-}
-
-impl PgCitationMappingSidecar for proxima_core::UploadedBlobPageSpanV1 {
-    fn insert_citation_mapping_sidecar<'t>(
-        &'t self,
-        tx: &'t mut PgConnection,
-        citation_mapping_id: uuid::Uuid,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            // The CHECK constraints on the table are the authority for any
-            // client; these conversions only keep an out-of-range u32 from
-            // arriving as a negative integer, which would satisfy no check
-            // and report as a confusing constraint violation instead of the
-            // range error it is.
-            let to_i32 = |value: u32, field: &str| {
-                i32::try_from(value).map_err(|err| {
-                    StorageError::ConstraintViolation(format!("{field} out of range: {err}"))
-                })
-            };
-            let page_from = to_i32(self.page_from, "page_from")?;
-            let page_to = to_i32(self.page_to, "page_to")?;
-            let char_start = self
-                .char_range_start
-                .map(|value| to_i32(value, "char_range_start"))
-                .transpose()?;
-            let char_end = self
-                .char_range_end
-                .map(|value| to_i32(value, "char_range_end"))
-                .transpose()?;
-            sqlx::query(
-                "INSERT INTO proxima_core.citation_uploaded_blob_page_span_v1
-                    (citation_mapping_id, page_from, page_to,
-                     char_range_start, char_range_end)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (citation_mapping_id) DO NOTHING",
-            )
-            .bind(citation_mapping_id)
-            .bind(page_from)
-            .bind(page_to)
-            .bind(char_start)
-            .bind(char_end)
-            .execute(tx)
-            .await
-            .map_err(crate::error::map_err)?;
-            Ok(())
-        })
-    }
-}
-
-impl PgCitedObjectSidecar for proxima_core::verbs::persist_mcp_call::McpCallIoV1 {
-    fn insert_cited_object_sidecar<'t>(
-        &'t self,
-        tx: &'t mut PgConnection,
-        cited_object_id: uuid::Uuid,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            let byte_len = i64::try_from(self.byte_len).map_err(|err| {
-                StorageError::ConstraintViolation(format!("byte_len out of range: {err}"))
-            })?;
-            sqlx::query(
-                "INSERT INTO proxima_core.cited_mcp_call_io_v1
-                    (cited_object_id, byte_len, truncated, body)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (cited_object_id) DO NOTHING",
-            )
-            .bind(cited_object_id)
-            .bind(byte_len)
-            .bind(self.truncated)
-            .bind(&self.body)
-            .execute(tx)
-            .await
-            .map_err(crate::error::map_err)?;
-            Ok(())
         })
     }
 }

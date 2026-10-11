@@ -107,7 +107,7 @@ impl FactIngestPort for PgStorage {
             &self.sidecars,
         )?;
         // Retry the whole begin→body→commit on transient deadlock/
-        // serialization; re-clone the citation sidecar payload per attempt.
+        // serialization; re-clone the Fact sidecar payloads per attempt.
         with_bounded_retry(move || {
             let natural_key = natural_key.clone();
             let sidecars = self.sidecars.clone();

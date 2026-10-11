@@ -49,7 +49,7 @@ of erased-target witnesses preserved by exact restore.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 15 tools + 10
+Storage stays behind the Engine. The substrate surface is 15 tools + 11
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -74,7 +74,7 @@ owner, and `ToolListNotifier::notify(owner)` sends
 Registrations are per process; a host with several replicas notifies on
 each.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and the target exists; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and read authority on the target, which must exist; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
 
 Canonical substrate tools:
 
@@ -287,7 +287,7 @@ let outcome = engine
         &authz,
         GoalCreateRequest::product(
             owner,
-            target_perspective_id,
+            GoalAssignmentTarget::perspective(target_perspective_id),
             IdempotencyKey::new("product:onboarding:initial-goal:1")?,
             "Practice goal",
             "Practice every weekday.",
@@ -321,7 +321,7 @@ Binary-scoped registry introspection.
 
 | Includes | Contract |
 |---|---|
-| payload schemas | registered Fact / Abstraction / Perspective / Goal / cited-object / citation-mapping schemas |
+| payload schemas | registered Fact / Abstraction / Perspective / Goal / cited-object schemas |
 | filters | only keys actually registered by the running binary |
 
 Schema is structural metadata. Deployments may expose it without
@@ -553,7 +553,7 @@ Current contract:
 - `compliance-admin-surface`
 - `auth-model`
 - `error-envelope`
-- `eventsource-registration`
+- `source-registration`
 - `backpressure`
 - `out-of-scope`
 - `cross-references`

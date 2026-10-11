@@ -4,7 +4,7 @@ A source is the **membrane between Reality and the agent**. Reality is
 unknowable in itself; the agent only ever sees what a source surfaces.
 This is the *only* path by which Reality enters the wheel.
 
-Receipt-backed Facts trace to a source identity. Receiptless Fact writes are valid membrane admissions without source-batch receipt metadata; they remain Facts, but are not source-batch eligible.
+Receipt-backed Facts trace to a source identity. Receiptless Fact writes are valid membrane admissions without receipt metadata; they remain Facts.
 
 ## Owner — scoping primitive
 
@@ -19,17 +19,17 @@ enum OwnerRef {
 ```
 
 **Organizations are not an ontology concept** (renegotiated
-2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
-previously `Owner` was a `{ principal, org_id }` record). The Owner=OwnerRef
+2026-06-11, org out of the kernel; previously `Owner` was a
+`{ principal, org_id }` record). The Owner=OwnerRef
 collapse removed the tenant field from Core entirely: `OwnerRef` is the row-scoping
 handle. Tenancy / billing attribution is a flavor/app concern, not part
 of Core access, **identity**, or storage. Operator gates, edge scoping,
 and dedup keys compare owner handles; the same user under two tenants is
 one identity, not two.
 
-Used identically across components 01 / 02 / 05 / 06. Storage: two
-identity columns (`owner_kind`, `owner_id`); there is
-no org/tenant column in Core. `owner_kind` is a SQL enum.
+Used identically across components 01 / 02 / 05 / 06. Storage: Memory and
+Goal rows carry one identity column, `owner_id`; the kind is `owners.kind`, a
+SQL enum on the owner row. There is no org/tenant column in Core.
 Schemas ([03](03-schema-registry.md)) are binary-scoped (per
 [03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
 
@@ -62,8 +62,8 @@ Owner remains the storage and graph isolation primitive. Access is server-resolv
 ### Owner resolution — the host's trust boundary
 
 `Owner` is a **host-resolved capability, never client-supplied.** Core
-trusts the `Owner` it is handed and filters every read and write by it
-(`owner_kind`, `owner_id`); it runs no membership
+trusts the `Owner` it is handed and filters every read and write by its
+`owner_id`; it runs no membership
 check of its own. The `requester ∈ members(g)` clause in the access rule
 above is the **host's** obligation, not Core's — Core has no org column
 to cross-check against and cannot catch a mis-resolved owner.
@@ -98,15 +98,10 @@ payload in the schema's sidecar table.
 The source carries no interpretation; performs no abstraction; does not look
 across other sources.
 
-```
-trait FactSource {
-    fn source_id(&self) -> SourceId;             // stable identifier
-
-    // Pull mode: engine asks for events since cursor.
-    // Push mode: source emits to a queue the engine subscribes to.
-    // A given source implements one or the other, not both.
-}
-```
+There is no `FactSource` trait. A source is host or flavor code that builds
+a `FactWrite` — `FactWrite::new(owner, source_id, &payload)`, with a stable
+`source_id` — and hands it to `Engine::ingest_fact`. A pull source keeps its
+position through `SourceCursorPort`; a push source forwards what it receives.
 
 A source emits a **heterogeneous stream**: each event carries its own
 `(schema_id, schema_version)` (see "Properties of an Event" below), and a
@@ -133,7 +128,7 @@ reads any set of Facts the operator names, whenever they were written
 (see [04 §F->A input admission](04-consolidation.md#f-a-input-admission)).
 
 Where a Fact's own observation came from is recorded by what it cites
-(`citation_mapping_id` → `cited_object_id`, see [11](11-citations.md)),
+(`memory.blob_id` → `cited_object_id`, see [11](11-citations.md)),
 not by an ingestion-time grouping.
 
 ## Compliance metadata
@@ -244,7 +239,8 @@ Different Realities, identical contract:
 | Jurisdiction | Court calendar | Hearing-scheduled events |
 
 The list is open-ended. Each new domain (or each new source within a domain)
-adds a new `FactSource` impl. Nothing in the engine changes.
+adds a new source adapter over `Engine::ingest_fact`. Nothing in the engine
+changes.
 
 ## Push vs pull
 
@@ -278,11 +274,11 @@ bootstrap mechanism (see [06](06-goals-and-self.md)): the flavor's signup flow a
 flavor-specific founding-letter questions and writes Goals + Facts
 under that user's `Owner`.
 
-Engine-level config registers source *instances* with their default
-owner. Source-instance shape lives here; the broader runtime config
-surface (LLM endpoint, embedding model, credential resolution)
-extends the same `proxima.config.toml` and is specified in
-[10](10-configuration.md).
+Source *instances* and their default owner are configured by the host that
+runs the source; Proxima reads no `proxima.config.toml`. The runtime
+configuration it does read is environment-based and specified in
+[10](10-configuration.md). The TOML below illustrates the shape a host carries
+for a source instance.
 
 For example, a shared Forgejo crawler for org-AQS emits with
 `owner = Group(org_AQS_everyone)` (billing annotation `org_AQS`,
@@ -291,7 +287,7 @@ derived from the group's org); a personal Telegram source emits with
 override owner per-event when the observation context demands it.
 
 ```toml
-# proxima.config.toml
+# host-owned source config (illustrative)
 [[sources]]
 id          = "forgejo-aquilo"
 type        = "forgejo-webhook"
@@ -338,7 +334,7 @@ to make.
 A clean separation: anyone can write a source adapter for any Reality without
 touching the engine. The engine is fully domain-agnostic at the input
 boundary, and the cost of supporting a new Reality is exactly one
-`FactSource` implementation plus a `Citation` URI scheme.
+source adapter plus a `Citation` URI scheme.
 
 ## Anchors
 
@@ -346,7 +342,7 @@ boundary, and the cost of supporting a new Reality is exactly one
 - `the-contract`
 - `compliance-metadata`
 - `properties-of-an-event`
-- `what-the-event-source-must-not-do`
+- `what-the-source-must-not-do`
 - `domain-examples`
 - `push-vs-pull`
 - `schema-evolution`

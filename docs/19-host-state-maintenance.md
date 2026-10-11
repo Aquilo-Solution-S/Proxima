@@ -32,10 +32,11 @@ participant serving several command types dispatches with
 request unchanged on a mismatch, or is a `PgCommandDispatcher` (below).
 
 Evidence: `BuiltProxima` already holds `SystemAuthority`
-(`crates/proxima/src/runtime.rs:464`), but the existing owner-write gate still
-requires resolved roles (`crates/core/src/engine/pipeline.rs:306`). The existing
-host-state dispatch checks its registered participant and declared tables
-(`crates/storage-pg/src/ports/write_session.rs:284`). The kernel adds a separate
+(`BuiltProxima::system_authority` in `crates/proxima/src/runtime.rs`), but the
+existing owner-write gate still requires resolved roles (`Engine::authorize_write`
+in `crates/core/src/engine/pipeline.rs`). The existing host-state dispatch checks
+its registered participant and declared tables (`WriteSession::apply_host_state`
+in `crates/storage-pg/src/ports/write_session.rs`). The kernel adds a separate
 authority domain; it does not weaken `Authorization.may_write`.
 
 Rejected alternatives: a fixed deployment Group misses other owners; service

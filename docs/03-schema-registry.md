@@ -19,8 +19,7 @@ Same registry, separate owner docs:
 | Family | Entity row | Doc |
 |---|---|---|
 | `GoalPayload` | `proxima_core.goal` | [06](06-goals-and-self.md#goal-entity) |
-| `CitedObjectPayload` | `proxima_core.blob` | [11](11-citations.md#trait-families) |
-| `CitationMappingPayload` | optional sidecar on `memory.blob_id` | [11](11-citations.md#trait-families) |
+| `CitedObjectPayload` | `proxima_core.blob` | [11](11-citations.md#payload-trait) |
 
 Registry rules:
 
@@ -31,10 +30,11 @@ Registry rules:
 | every sidecar-backed write inserts the entity row and sidecar row atomically | no orphan typed storage |
 | registry freezes at startup from core plus linked flavors | no runtime schema registration |
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
-| `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal are never opaque |
+| `CitedObject` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal are never opaque |
 
 An opaque citation schema is registered through
-`FlavorRegistry::try_add_opaque_schema` and carries no protocol ingress
+`FlavorRegistry::add_opaque_cited_object_schema`, which takes no kind (a
+cited object is the only kind that may be opaque), and carries no protocol ingress
 parser, JSON schema, or sidecar table. Its payload enters only through the
 explicit citation APIs; protocol payload ingress rejects it.
 `FlavorRegistry::try_freeze` defensively rejects an opaque F/A/P/Goal
@@ -49,9 +49,7 @@ Optional typed-sidecar exceptions:
 | Abstraction | required |
 | Perspective | required |
 | Goal | optional |
-| CitedObject | required for typed cited-object schemas |
-| CitationMapping | optional; pure links need no sidecar |
-| Opaque citation schemas | none |
+| CitedObject | none, typed or opaque: the `proxima_core.blob` row is the whole record |
 
 Typed sidecars are what make A/P queryable beyond embeddings. Vector
 similarity is a query aid, not the schema surface (see
@@ -172,11 +170,11 @@ fn references(&self) -> Vec<PayloadReference> {
 }
 ```
 
-The substrate edge row that results carries only source, target, kind, owner
-and `created_at` — no relation, no class, no payload, no authorship column,
-no id. Domain detail stays in the payload that declared the reference: ten
-call sites from chunk A to chunk B are **one** index row and ten entries in
-A's payload.
+The pin that results is the target's id in the declaring row's `refs[]`
+(`goal_refs[]` for a Goal) — no relation, no class, no payload, no
+authorship, no id of its own; there is no edge table (docs/16). Domain detail
+stays in the payload that declared the reference: ten call sites from chunk A
+to chunk B are ten entries in A's payload, not ten edges.
 
 Constructors and what they bind to:
 
@@ -190,11 +188,11 @@ Rules:
 | Rule | Consequence |
 |---|---|
 | the declaration is the only source of `reference` rows | the edge set is a function of node content, and re-deriving it from payloads reproduces it exactly |
-| the primary key is `(source, target, kind)` | replaying a write re-asserts the row; no duplicate, no id to reconcile |
+| the pin is its own identity | replaying a write re-asserts the same `refs[]` values; no duplicate, no id to reconcile |
 | kind is never a parameter | a schema cannot invent a third kind; a feature that seems to need one is missing a node |
 
-Edges are immutable. Rewrites produce new memories and new index rows; the
-rows attached to old observations stay attached to them.
+Pins are immutable. Rewrites produce new memories with their own `refs[]`;
+the pins on old observations stay attached to them.
 
 ### Selective extraction — design intent
 
@@ -225,13 +223,16 @@ this does not relax the A/P escape-hatch rule.
 
 ## Special-category declaration
 
-There isn't one. `SchemaContract::special_category` was a per-schema `bool`
-every schema declared and nothing read: no verb branched on it, no erase or
-export leg consulted it, and the kernel deliberately does not reason over
-special-category at all (`docs/lean/COVERAGE.md`, SR-30..33, D16). It is
-deleted, not demoted to a marker — see
+There isn't one in the contract. `SchemaContract::special_category` was a
+per-schema `bool` every schema declared and nothing read: no verb branched on
+it, no erase or export leg consulted it, and the kernel deliberately does not
+reason over special-category at all (`docs/lean/COVERAGE.md`, SR-30..33, D16).
+It is deleted from the contract, not demoted to a marker there — see
 [13 §Declared metadata](13-compliance.md#declared-metadata) for what a host
 with Art. 9 obligations does instead.
+
+The payload traits' `SPECIAL_CATEGORY` constant, which nothing read either,
+went the same way in v0.0.26.
 
 The scoping rule it carried survives it, because it was never about the flag:
 a schema is per-schema, not per-row, so rows needing different handling belong
@@ -248,8 +249,10 @@ Sidecar table contract, when a sidecar exists:
 | Abstraction | `t` | `proxima_core.memory(t)` |
 | Perspective | `t` | `proxima_core.memory(t)` |
 | Goal | `t` | `proxima_core.goal(t)` |
-| CitedObject | `blob_id` | `proxima_core.blob(blob_id)` |
-| CitationMapping | optional sidecar | `memory.blob_id` is the link |
+
+The primary key holds the referenced id. `t` is the conventional column name;
+a sidecar may declare another (`KeyShape::MemoryT { column }`,
+`pg_sidecar!(key: …)`), and the generated statements use the declared name.
 
 Rules:
 
@@ -286,7 +289,6 @@ Examples:
 | Schema | Natural key |
 |---|---|
 | `proxima-code/file-revision-v1` | `(repo_id, file_path)` |
-| `proxima-code/code-chunk-v1` | `(repo_id, file_path, chunk_index)` |
 | `ci/build-status-v1` | `(pipeline_id, ref)` |
 
 Rules:
@@ -405,7 +407,7 @@ needs a new schema id and new admissions; a storage-only backfill may preserve
 an admitted `t` only when the logical schema contract is unchanged.
 
 For Facts, schema migration never rewrites Fact `MemoryId`, optional receipt
-metadata, or citation mapping.
+metadata, or citation (`memory.blob_id`).
 
 ## Schema evolution: code + migration
 
@@ -565,9 +567,9 @@ follow from what those nodes declare (see
 - `registration`
 - `how-memories-reference-schemas`
 - `schema-evolution-code--migration`
-- `streaming-migration-discipline`
+- `streaming-storage-backfill-discipline`
 - `properties-of-the-migration-function`
-- `why-migration-over-additive`
+- `why-a-storage-backfill-over-permanent-query-unions`
 - `renderer-facts-only`
 - `what-this-gives-us`
 - `what-this-does-not-do`

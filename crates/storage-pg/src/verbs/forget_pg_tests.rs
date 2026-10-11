@@ -3949,14 +3949,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let mut sourced = draft(Some(("src/webhook", "delivery-cooled")));
-        sourced.citation = Some(
-            CitationSpec::v1(
-                "core/test-cited-object-v1",
-                [7_u8; 32],
-                "core/test-citation-mapping-v1",
-            )
-            .into(),
-        );
+        sourced.citation = Some(CitationSpec::v1("core/test-cited-object-v1", [7_u8; 32]).into());
         let written = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
         let cited_object_id = written
@@ -4573,14 +4566,8 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
         let mut cited_draft = draft(None);
-        cited_draft.citation = Some(
-            CitationSpec::v1(
-                "core/test-cited-object-v1",
-                [0xA7; 32],
-                "core/test-citation-mapping-v1",
-            )
-            .into(),
-        );
+        cited_draft.citation =
+            Some(CitationSpec::v1("core/test-cited-object-v1", [0xA7; 32]).into());
         let first = pg.ingest_fact_atomic(&permit, &cited_draft, None).await?;
         let mut second_draft = cited_draft.clone();
         second_draft.handle = Some(first.handle);

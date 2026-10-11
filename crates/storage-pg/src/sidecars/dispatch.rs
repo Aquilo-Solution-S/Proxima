@@ -1,8 +1,7 @@
 use super::{
-    GoalId, MemoryId, PayloadKind, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection,
-    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
-    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit,
-    SidecarPayload, StorageError, Transaction,
+    GoalId, MemoryId, PayloadKind, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres,
+    SidecarInsertPermit, SidecarPayload, StorageError, Transaction,
 };
 
 pub(super) fn insert_memory_sidecar<'t, P>(
@@ -46,50 +45,6 @@ where
     P: PgMemoryPayload,
 {
     P::load_batch(ctx, kind, memory_ids)
-}
-
-pub(super) fn insert_cited_object_sidecar<'t, P>(
-    tx: &'t mut PgConnection,
-    cited_object_id: uuid::Uuid,
-    payload: &'t SidecarPayload,
-) -> PgSidecarFuture<'t>
-where
-    P: PgCitedObjectSidecar,
-{
-    Box::pin(async move {
-        let typed = payload.downcast_ref::<P>().ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "sidecar payload type mismatch for {} v{} {:?}",
-                payload.schema_id.as_str(),
-                payload.schema_version.into_inner(),
-                payload.kind,
-            ))
-        })?;
-        typed.insert_cited_object_sidecar(tx, cited_object_id).await
-    })
-}
-
-pub(super) fn insert_citation_mapping_sidecar<'t, P>(
-    tx: &'t mut PgConnection,
-    citation_mapping_id: uuid::Uuid,
-    payload: &'t SidecarPayload,
-) -> PgSidecarFuture<'t>
-where
-    P: PgCitationMappingSidecar,
-{
-    Box::pin(async move {
-        let typed = payload.downcast_ref::<P>().ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "sidecar payload type mismatch for {} v{} {:?}",
-                payload.schema_id.as_str(),
-                payload.schema_version.into_inner(),
-                payload.kind,
-            ))
-        })?;
-        typed
-            .insert_citation_mapping_sidecar(tx, citation_mapping_id)
-            .await
-    })
 }
 
 pub(super) fn insert_goal_sidecar<'t, P>(
