@@ -30,10 +30,10 @@ Goal series and version fields:
 | Surface | Fields |
 |---|---|
 | `goal_head` | stable `handle`, registered `schema_id`, frozen `owner`, current `t` |
-| Goal version | `handle`, UUIDv7 `t`, `owner`, `title`, `state`, Owner-scoped `request_id` |
+| Goal version | `handle`, UUIDv7 `t`, `owner`, `title`, nullable `text`, `state`, Owner-scoped `request_id` |
 | Topology | `assignment_t`, `dependency_t[]`, `evidence_t[]` |
 | Lifecycle/write | `close_fact_t`, optional `wake_id`, optional `write_act_t` |
-| Body | optional schema-specific typed sidecar keyed by `t`; no `text` or payload bytes on the Goal row |
+| Body | optional schema-specific typed sidecar keyed by `t`; no payload bytes on the Goal row. The prompt `text` is the one body field the row keeps (below) |
 
 States:
 
@@ -71,6 +71,46 @@ G_active(owner) =
   current Goal heads
   where state = Active
 ```
+
+### Goal text
+
+`goal.text` is the prompt of that version, so a read returns it
+without the sidecar. `NULL` means unknown, never empty: a version no replay
+declaration can speak for (written before v0.0.13) stays `NULL`.
+
+*Blank* has one definition, in the database: nothing is left after removing
+ASCII whitespace (space, tab, line feed, carriage return, vertical tab, form
+feed). The check `goal_text_nonblank_chk` refuses a blank text, and the
+migration's backfill uses the same expression. The write spring
+(`check_trimmed_len`: trim Unicode `White_Space`, then refuse empty) is
+stricter and trims, so Rust never writes a text the database refuses. A text
+the database admits but Rust would call blank, such as `U+00A0` alone, can only
+come from input that skipped the spring (a hand-built `GoalPayloadWrite`, or a
+row written outside the Goal write verbs); it is stored and read as it is.
+
+Create, modify and each decomposed child store the text they were given, as
+given: a hand-built draft with a blank text is refused by the check with a
+`ConstraintViolation`, never stored as `NULL`. A transition (pause, resume,
+abandon) and an achievement store exactly the prior version's stored text,
+byte for byte and `NULL` included, with no judgement of it in Rust, so the text
+of a series changes only at a modify.
+
+The Goal write verbs carry the prior text by construction: the row they build
+for a transition or an achievement takes its `text` from the prior version, and
+the database does not check the carry. `write_goal`, the low-level writer,
+stores the `text` of the `GoalWriteCommand` it is given and has no production
+caller: it is a test fixture, available with the `test-fixtures` feature. The
+foreign key `goal_owner_matches_head_fk`, from `goal (handle, owner_id)` to
+`goal_head (handle, owner_id)`, keeps every new version in a series of its own
+owner. Referential checks do not go through row-level security, so no scope can
+add a version to another owner's series. The key is `NOT VALID`: a row an
+earlier raw insert put into another owner's series stays, and every new row is
+checked.
+
+A read also returns `set_at`, the time of the series' first version, and
+`changed_at`, the time of the version read; a first version has
+`set_at == changed_at`. Both come from the UUIDv7 `t`, not from a column.
+`set_by` and per-version authors are not part of the row.
 
 <a id="goal-write-api"></a>
 

@@ -64,6 +64,12 @@ pub(super) async fn query_goals_on_connection(
     Ok((goals, next_cursor))
 }
 
+/// The time a Goal `t` was minted at: the timestamp inside the `UUIDv7`, or the
+/// epoch for a `t` that carries none.
+fn t_timestamp_sql(t: &str) -> String {
+    format!("COALESCE(uuid_extract_timestamp({t}), TIMESTAMPTZ '1970-01-01')")
+}
+
 fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     let has_goal_ids = !req.goal_ids.is_empty();
     let has_cursor = matches!(&req.page.after, Some(QueryCursor::Goal { .. }));
@@ -80,12 +86,21 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
         "FROM proxima_core.goal g \
          JOIN proxima_core.goal_head h ON h.handle = g.handle"
     };
+    // `created_at` is this version's time (the keyset position and
+    // `changed_at`); `set_at` is the time of the series' first version, the
+    // least `t` among its rows. Both come from the same `t` derivation.
+    let created_at = t_timestamp_sql("g.t");
+    let set_at = t_timestamp_sql(
+        "(SELECT series.t FROM proxima_core.goal series \
+           WHERE series.handle = g.handle ORDER BY series.t LIMIT 1)",
+    );
     let mut sql = format!(
         "SELECT g.handle, g.t AS goal_id, \
-                COALESCE(uuid_extract_timestamp(g.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
+                {created_at} AS created_at, \
+                {set_at} AS set_at, \
                 h.schema_id, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
-                g.owner_id, g.title, g.state, \
+                g.owner_id, g.title, g.text, g.state, \
                 g.dependency_t AS dependency_goal_ids, \
                 g.assignment_t AS assignment, \
                 g.evidence_t AS evidence \

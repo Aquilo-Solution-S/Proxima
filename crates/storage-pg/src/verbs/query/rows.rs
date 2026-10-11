@@ -35,10 +35,13 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         schema_id: SchemaId::new(r.schema_id),
         owner: owner_from_parts(r.owner_kind, r.owner_id)?,
         title: r.title,
+        text: r.text,
         state: r.state,
         dependency_goal_ids: r.dependency_goal_ids.into_iter().map(GoalId::new).collect(),
         assignment: r.assignment.map(MemoryId::new),
         evidence: r.evidence.into_iter().map(MemoryId::new).collect(),
+        set_at: r.set_at,
+        changed_at: r.created_at,
     })
 }
 
@@ -71,11 +74,15 @@ fn owner_from_parts(
 pub(super) struct GoalRowDb {
     pub(super) handle: uuid::Uuid,
     pub(super) goal_id: uuid::Uuid,
+    /// This version's time: the keyset position, and the row's `changed_at`.
     pub(super) created_at: time::OffsetDateTime,
+    /// The time of the series' first version.
+    set_at: time::OffsetDateTime,
     schema_id: String,
     owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     title: String,
+    text: Option<String>,
     state: GoalState,
     dependency_goal_ids: Vec<uuid::Uuid>,
     assignment: Option<uuid::Uuid>,

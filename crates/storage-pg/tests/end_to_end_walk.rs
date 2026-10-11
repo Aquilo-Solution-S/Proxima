@@ -145,6 +145,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 handle: None,
                 schema_id: "task".into(),
                 title: "review".into(),
+                text: None,
                 state: GoalState::Active,
                 request_id: "walk-g".into(),
                 close_fact_t: None,

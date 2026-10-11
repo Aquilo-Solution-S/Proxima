@@ -458,6 +458,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
                     handle: None,
                     schema_id: "core/task-v1".into(),
                     title: "kind conflict".into(),
+                    text: None,
                     state: GoalState::Active,
                     request_id: "kind-conflict".into(),
                     close_fact_t: None,

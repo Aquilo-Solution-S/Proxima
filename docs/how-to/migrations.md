@@ -13,6 +13,85 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.27
+
+Existing v0.0.26 databases upgrade in place, in version order. The release
+ships one additive core migration and no flavor migration.
+
+The file is labelled `_v031_`: the label counts merged migrations, and `_v030_`
+is `0024` ([v0.0.26](#v0026)).
+
+| Lane | Migration |
+|---|---|
+| Core | `0025_v031_goal_text.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`) |
+
+**Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
+unknown, never empty: a version that no declaration can speak for (written
+before v0.0.13 recorded declarations, or a row written outside the Goal write
+verbs) stays `NULL`, and the database refuses a blank text ([06 §Goal
+text](../06-goals-and-self.md#goal-text) defines blank). Create, modify and
+decompose store the text they were given. Transition and achieve store exactly
+their prior version's text, `NULL` included: the Goal write verbs carry it, and
+the database does not check the carry. The foreign key
+`goal_owner_matches_head_fk` keeps every new version in a series of its own
+owner ([06 §Goal text](../06-goals-and-self.md#goal-text)). The table stays
+append-only, so a stored text never changes.
+
+**Backfill.** For every `goal` row, `text` is the text of the latest
+declaration among the rows of the same `handle` and the same `owner_id` with
+`t` at or before the row's own that carries a string text that is not blank
+(the same expression as the check). The text sits at a fixed place of the
+declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
+
+| `declaration ->> 'verb'` | JSON path |
+|---|---|
+| `create` | `#>> '{draft,text}'` |
+| `modify` | `#>> '{replacement,text}'` |
+| `decompose_child` | `#>> '{payload,text}'` |
+
+`transition` and `achieve` declare no text, so their versions inherit the
+text of the version before. A modify never reaches back to an earlier version,
+a blank or non-string text declares nothing, and a row with no declaration
+before it in its series stays `NULL`: the text is never guessed from the title.
+The Goal writers keep a series to its head's owner, but before 0025 the
+database did not, and a raw insert could add a row of another owner to a
+series. Such a row takes only its own owner's texts, so the upgrade never
+shows one owner's text in another owner's reads or export.
+Re-running the file changes nothing: `ADD COLUMN IF NOT EXISTS` skips the
+column and its check together, and only rows whose text is still `NULL` are
+written. An empty database has no rows to visit.
+
+**Locks.** The migration takes `ACCESS EXCLUSIVE` on `proxima_core.goal` for
+its transaction: a validating scan for the check, then one `UPDATE` that writes
+a new row version for every Goal version it can give a text (the old versions
+are left for autovacuum). The append-only trigger `goal_append_only` is
+disabled for that one statement and enabled again before the transaction
+commits, so no concurrent write sees the gap. The unique constraint builds its
+index on `proxima_core.goal_head` (one scan of the heads), and the foreign key
+is added `NOT VALID`, so it scans no existing row; a row an earlier raw insert
+put into another owner's series stays, and every new insert is checked against
+`goal_head`. No other table is touched.
+
+**Operator action.** None when boot applies migrations. A deployment with
+`PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
+binary starts: boot checks for the column, its constraint and the foreign key
+`goal_owner_matches_head_fk` and refuses a database without them ("apply
+migrations before boot").
+
+**Stop v0.0.26 processes before the upgrade.** A v0.0.26 binary cannot start
+against the upgraded database, with or without `PROXIMA_SKIP_MIGRATIONS`: both
+boot paths run `ensure_core_ledger_compatible` first, the ledger records core
+version 25 and a v0.0.26 binary does not embed it, so boot fails with `core
+migration preflight failed: internal storage error: database core-migration
+ledger does not reconcile with this binary: core versions [25] are recorded as
+applied but this binary does not embed them (...)`. A v0.0.26 process that is
+already running keeps serving, but its Goal inserts name no `text` column, so
+every version it writes stores a `NULL` text: after it pauses, resumes,
+abandons or achieves a Goal, the Goal's text is unknown from that version on,
+until a modify by a current binary declares one again. Stop every v0.0.26
+process sharing the database before the migration step, and do not leave one
+running through the rollout.
+
 ## v0.0.26
 
 Existing v0.0.25 databases upgrade in place, in version order. The release

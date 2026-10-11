@@ -18,6 +18,10 @@ pub struct GoalWriteCommand {
     pub handle: Option<Uuid>,
     pub schema_id: String,
     pub title: String,
+    /// This version's prompt text; `None` is unknown. Never blank: the column
+    /// refuses it. The Goal write verbs fill it, and on a lifecycle write
+    /// (transition, achieve) they carry the prior version's text.
+    pub text: Option<String>,
     pub state: GoalState,
     pub request_id: String,
     pub close_fact_t: Option<Uuid>,
@@ -221,6 +225,9 @@ pub(crate) async fn ingest_write_act_at(
     ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t)).await
 }
 
+/// Test-fixtures only: it writes `draft.text` as given and carries nothing.
+/// Production writes go through the Goal write verbs (`goal_write`).
+#[cfg(any(test, feature = "test-fixtures"))]
 pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -561,14 +568,15 @@ async fn insert_goal_revision(
 ) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.goal
-            (handle, t, owner_id, title, state, request_id, close_fact_t,
+            (handle, t, owner_id, title, text, state, request_id, close_fact_t,
              assignment_t, dependency_t, evidence_t, wake_id, write_act_t)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
     .bind(prepared.owner_id)
     .bind(&prepared.command.title)
+    .bind(prepared.command.text.as_deref())
     .bind(prepared.command.state)
     .bind(&prepared.command.request_id)
     .bind(prepared.command.close_fact_t)

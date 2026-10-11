@@ -89,6 +89,7 @@ async fn seed(pg: &PgStorage, owner: OwnerRef, extra_facts: u64) -> TestResult<S
         handle,
         schema_id: "core/task-v1".into(),
         title: request_id.into(),
+        text: None,
         state,
         request_id: request_id.into(),
         close_fact_t: matches!(state, GoalState::Achieved).then(|| series.memory_id.into_inner()),

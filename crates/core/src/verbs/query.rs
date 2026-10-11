@@ -454,6 +454,12 @@ pub struct GoalRow {
     pub schema_id: SchemaId,
     pub owner: Owner,
     pub title: String,
+    /// The Goal's prompt text as of this version (`goal.text`); `None` when
+    /// unknown: a version written before the text was stored whose replay
+    /// declaration was never recorded (before v0.0.13), or a row written
+    /// outside the Goal write verbs. Never blank.
+    #[serde(default)]
+    pub text: Option<String>,
     pub state: GoalState,
     pub dependency_goal_ids: Vec<GoalId>,
     /// Assigned Perspective (`goal.assignment_t`).
@@ -462,6 +468,14 @@ pub struct GoalRow {
     /// Evidence pins (`goal.evidence_t`).
     #[serde(default)]
     pub evidence: Vec<MemoryId>,
+    /// When the series was set: the time of its first version (the least `t`
+    /// of its `handle`), the same on every version of the series.
+    #[serde(with = "time::serde::rfc3339")]
+    pub set_at: time::OffsetDateTime,
+    /// When this version was written: the time of `id`. Equal to
+    /// [`Self::set_at`] on the first version, never earlier on a later one.
+    #[serde(with = "time::serde::rfc3339")]
+    pub changed_at: time::OffsetDateTime,
 }
 
 /// Scalar bind for a sidecar-column series-handle lookup.

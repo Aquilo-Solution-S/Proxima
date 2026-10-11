@@ -171,6 +171,7 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | GO-14 | Goal assignment/evidence scope | live carrier: `Goal.assignment_t` / `evidence_t`; `GoalEvidenceValid` resolves evidence to hot/cooled non-Perspective and `goal_evidence_not_perspective`; retained carrier: `RetainedGoalAssignmentValid` and `RetainedGoalEvidenceValid` admit only recorded Perspective or Fact\|Abstraction kinds, with no erased owner claim. Operator-must-have-evidence RETIRED with authorship |
 | GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: least-tick version on a handle is Active only |
 | GO-18 | Terminal close Fact table validity | live carrier: `GoalTerminalCloseFactValid` requires a hot/cooled same-owner Fact; retained carrier: `RetainedGoalTerminalCloseFactValid` also permits an erased Fact witness but reconstructs no owner; `goal_terminal_close_valid_retained_empty` embeds live stores |
+| GO-19 | Goal text is the version's prompt on the row: `none` when unknown, never blank; a state change keeps the predecessor's text | structure field `Goal.text : Option Text` + `Goal.text_nonblank` (`GoalTextNonblank` over `goalTextBlankChar`, the trim set of `goal_text_nonblank_chk`); table validity `GoalTransitionValid` + THEOREM `goal_transition_keeps_text`, enforced by the Goal write verbs' structural carry (`RowColumns` in `goal_write/types.rs`; transition and achieve pass the prior row's text in `goal_write/commands.rs`); `write_goal` is test-fixtures only; `closeGoal_keeps_text`. The backfill from replay declarations is migration mechanics, excluded |
 
 ## 03 — Schema Registry (SR) — in-kernel rows
 
@@ -254,7 +255,7 @@ instead of every reader re-deriving it (E1, E7, E-SPINE below).
 | ID | Invariant | Carrier |
 |---|---|---|
 | GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | REBASED: head is `GoalHead.t`. `GoalTerminalClosed` forbids later `t` after terminal. `GoalRequestUnique` is replay |
-| GO-15 | Goal title/text core retrieval text | REBASED: `goal_title` stays on the row; body text is sidecar (no `goal_text`) |
+| GO-15 | Goal title/text core retrieval text | REBASED: `goal_title` stays on the row; the body text is `goal_text` on the row too (GO-19) |
 | GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence; authorship blob RETIRED; write-act is `Goal.write_act_t` |
 | CI-17 | Cited objects schema-registered | structure field `Blob.schema : SchemaRef` (schema-typed cited object); a citation is the `Memory.blob_id` link and carries no schema of its own; registration is engine admission (D16) |
 | ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 | RETIRED with the column it constrained. There is no edge id: `EdgeId`, `ContentHash`, `EdgeUuid`, `EdgeIdAuthorshipValid` and `edge_id_authorship_split` are all deleted, and the E5 theorem that stood in for it (`edge_key_determines_row`) no longer exists. The row that carried this cell also carried the only reference to a numbered "AGENTS.md invariant 17" — no such numbered ledger exists there, so the anchor is dropped rather than repointed |

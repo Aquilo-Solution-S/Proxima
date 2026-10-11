@@ -720,6 +720,14 @@ pub async fn dump_database(
                 object.remove("refs");
                 object.insert("goal_refs".to_owned(), Value::Null);
             }
+            if table == "goal"
+                && let Some(object) = row.as_object_mut()
+            {
+                // 0025 added the Goal prompt text after the pinned baseline.
+                // `goal_text.rs` and `migrations/goal_text.rs` assert the
+                // column; this differential compares transfer behaviour.
+                object.remove("text");
+            }
             if table == "blob_uploads"
                 && let Some(object) = row.as_object_mut()
             {

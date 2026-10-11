@@ -333,6 +333,115 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
+/// A Goal read returns the prompt text, when the series was set and when this
+/// version changed, over the wire a client sees: `text` is a string when the
+/// version knows it and JSON `null` (the key present) when it does not, and
+/// both times are RFC 3339.
+#[tokio::test]
+async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db_name = create_core_db().await?;
+    let pg = PgStorage::connect(&db_url(&db_name)).await?;
+    pg.run_before_owner_rls_migrations().await?;
+
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    // Unknown text: a version no declaration can speak for.
+    let unknown = insert_active_goal(&pg, &owner, None).await?;
+    // A series set at 22:13:20Z and paused a minute later; the head is the
+    // second version, which keeps the first one's text.
+    let set = goal_t_at(1_700_000_000_000);
+    let paused = goal_t_at(1_700_000_060_000);
+    let handle =
+        insert_goal_version(&pg, &owner, None, set, "Active", Some("write the report")).await?;
+    insert_goal_version(
+        &pg,
+        &owner,
+        Some(handle),
+        paused,
+        "Paused",
+        Some("write the report"),
+    )
+    .await?;
+
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let engine = Arc::new(
+        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+    );
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let auth = McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+    };
+
+    let listing = server
+        .read_resource("proxima://goals", author_ctx(), Some(auth.clone()))
+        .await?;
+    let listed = |goal: uuid::Uuid| {
+        listing["goals"]
+            .as_array()
+            .expect("goals array")
+            .iter()
+            .find(|row| row["goal"] == format!("G:{goal}"))
+            .unwrap_or_else(|| panic!("goal {goal} is listed: {listing}"))
+            .clone()
+    };
+
+    // The listing returns the full text and both times.
+    let series = listed(paused);
+    assert_eq!(series["state"], "Paused");
+    assert_eq!(series["text"], "write the report");
+    assert_eq!(series["set_at"], "2023-11-14T22:13:20Z");
+    assert_eq!(series["changed_at"], "2023-11-14T22:14:20Z");
+
+    // Unknown is explicit: the key is there and it is JSON null.
+    let unlisted = listed(unknown);
+    assert_eq!(
+        unlisted.get("text"),
+        Some(&serde_json::Value::Null),
+        "an unknown text serialises as null, not as an absent key: {unlisted}"
+    );
+    assert_eq!(unlisted["set_at"], unlisted["changed_at"]);
+    let set_at = unlisted["set_at"].as_str().expect("set_at is a string");
+    time::OffsetDateTime::parse(set_at, &time::format_description::well_known::Rfc3339)
+        .expect("set_at is RFC 3339");
+
+    // The single read says the same, for the head and for the first version.
+    let single = server
+        .read_resource(
+            &format!("proxima://goal/G:{paused}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(single, series, "the single read and the listing agree");
+    let first = server
+        .read_resource(
+            &format!("proxima://goal/G:{set}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(first["state"], "Active");
+    assert_eq!(first["text"], "write the report");
+    assert_eq!(first["set_at"], "2023-11-14T22:13:20Z");
+    assert_eq!(first["changed_at"], "2023-11-14T22:13:20Z");
+    let single_unknown = server
+        .read_resource(
+            &format!("proxima://goal/G:{unknown}"),
+            author_ctx(),
+            Some(auth),
+        )
+        .await?;
+    assert_eq!(single_unknown.get("text"), Some(&serde_json::Value::Null));
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 /// An interpretation Perspective's implied connections show up as
 /// `reference` `neighbor_edges` on `proxima://memory`. There is no
 /// `proxima://edges` resource.
@@ -604,6 +713,61 @@ async fn insert_active_goal(
     .execute(pg.pool_for_tests())
     .await?;
     Ok(t)
+}
+
+/// A `UUIDv7` minted at an exact millisecond.
+fn goal_t_at(millis: u64) -> uuid::Uuid {
+    uuid::Uuid::new_v7(uuid::Timestamp::from_unix(
+        uuid::NoContext,
+        millis / 1000,
+        u32::try_from(millis % 1000).expect("below 1000") * 1_000_000,
+    ))
+}
+
+/// One version of a Goal series with its text, written straight to the
+/// tables: `handle` `None` starts a new series. Returns the series handle.
+async fn insert_goal_version(
+    pg: &PgStorage,
+    owner: &Owner,
+    handle: Option<uuid::Uuid>,
+    t: uuid::Uuid,
+    state: &str,
+    text: Option<&str>,
+) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    let owner_id = owner.stored_owner_id();
+    let handle = if let Some(handle) = handle {
+        sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(t)
+            .execute(pg.pool_for_tests())
+            .await?;
+        handle
+    } else {
+        let handle = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'core/simple-text-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(t)
+        .execute(pg.pool_for_tests())
+        .await?;
+        handle
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+         VALUES ($1, $2, $3, 'report', $4, $5::proxima_core.goal_state, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(text)
+    .bind(state)
+    .bind(format!("text-read:{t}"))
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(handle)
 }
 
 async fn arm_goal_for_fact(

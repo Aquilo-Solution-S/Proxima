@@ -7,6 +7,7 @@ use super::{
 type PriorRow = (
     String,
     String,
+    Option<String>,
     GoalState,
     Option<uuid::Uuid>,
     Vec<uuid::Uuid>,
@@ -19,7 +20,7 @@ pub(super) async fn load_prior_goal(
 ) -> Result<StoredGoal, StorageError> {
     let owner_id = owner.stored_owner_id();
     let row: Option<PriorRow> = sqlx::query_as(
-        "SELECT h.schema_id, g.title, g.state, g.assignment_t, g.dependency_t
+        "SELECT h.schema_id, g.title, g.text, g.state, g.assignment_t, g.dependency_t
                FROM proxima_core.goal g
                JOIN proxima_core.goal_head h ON h.handle = g.handle
               WHERE g.t = $1 AND g.owner_id = $2",
@@ -29,7 +30,7 @@ pub(super) async fn load_prior_goal(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    let Some((schema_id, title, state, assignment, dependency_t)) = row else {
+    let Some((schema_id, title, text, state, assignment, dependency_t)) = row else {
         return Err(StorageError::NotFound);
     };
     let assignment = assignment.ok_or_else(|| {
@@ -39,7 +40,7 @@ pub(super) async fn load_prior_goal(
         schema_id: SchemaId::new(schema_id),
         schema_version: SchemaVersion::new(1),
         title,
-        text: String::new(),
+        text,
         payload: Vec::new(),
         state,
         assignment: MemoryId::new(assignment),
@@ -131,7 +132,10 @@ pub(super) fn draft_from_stored(
         schema_id: stored.schema_id.clone(),
         schema_version: stored.schema_version,
         title: stored.title.clone(),
-        text: stored.text.clone(),
+        // Not the row's text: a lifecycle write passes the stored text to the
+        // insert as its `RowColumns`, and nothing reads this field for it (its
+        // replay declaration is built from the request).
+        text: String::new(),
         payload: stored.payload.clone(),
         sidecar_payload: None,
         state,

@@ -6,7 +6,10 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
-use crate::verbs::goal_timeseries::{GoalWriteCommand, ingest_write_act, write_goal};
+use crate::verbs::goal_timeseries::ingest_write_act;
+#[cfg(any(test, feature = "test-fixtures"))]
+use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+#[cfg(any(test, feature = "test-fixtures"))]
 use proxima_core::verbs::goal_write::GoalState;
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]
@@ -151,7 +154,8 @@ pub async fn fire_wake(
     Ok(outcome.memory_id.into_inner())
 }
 
-/// Helper so a Goal can be created already armed (used by tests).
+/// Helper so a Goal can be created already armed (test-fixtures only).
+#[cfg(any(test, feature = "test-fixtures"))]
 pub async fn write_armed_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -166,6 +170,7 @@ pub async fn write_armed_goal(
             handle: None,
             schema_id: "core/task-v1".into(),
             title: title.into(),
+            text: None,
             state: GoalState::Active,
             request_id: request_id.into(),
             close_fact_t: None,

@@ -47,8 +47,19 @@ pub struct GoalItem {
     /// Goal reference (`G:<uuid>`), as accepted by `core_goal`.
     pub goal: String,
     pub title: String,
+    /// The goal's prompt text as of this version; `null` when unknown (a
+    /// version written before the text was stored, with no recorded
+    /// declaration to recover it from).
+    pub text: Option<String>,
     pub state: String,
     pub schema_id: String,
+    /// When the goal was set: the time of its first version (RFC 3339).
+    #[serde(with = "time::serde::rfc3339")]
+    pub set_at: time::OffsetDateTime,
+    /// When this version was written (RFC 3339); equal to `set_at` on the
+    /// first version.
+    #[serde(with = "time::serde::rfc3339")]
+    pub changed_at: time::OffsetDateTime,
     /// Goals this one depends on (`G:<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
     /// Stored wake configuration; absent when the goal is not armed.
@@ -174,8 +185,11 @@ fn project_goals(
             GoalItem {
                 goal: format_prefixed_uuid(row.id.into_inner(), PrefixedUuidClass::Goal),
                 title: row.title,
+                text: row.text,
                 state: state_str(row.state).to_string(),
                 schema_id: row.schema_id.as_str().to_string(),
+                set_at: row.set_at,
+                changed_at: row.changed_at,
                 dependencies: row
                     .dependency_goal_ids
                     .into_iter()

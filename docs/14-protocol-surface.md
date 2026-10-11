@@ -117,8 +117,8 @@ Canonical substrate resources:
 | `proxima://memories/counts` | current memories the caller can read, by kind: `{"counts": {"Fact": n, "Abstraction": n, "Perspective": n, "Goal": n}}`. All four keys always present, zero when none. One per series head (`proxima_core.memory_head`) for Fact, Abstraction and Perspective, one per Goal head (`goal_head`); never one per version, and a forgotten memory is not counted. Same owner set and kind-scoped row security as `Engine::query`; a caller who reads nothing gets `Forbidden`. Parameterless; a read writes no call-ledger row |
 | `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
 | `proxima://change-events{?since,limit}` | forward `announce` poll, ascending, with `next_since` and `has_more` |
-| `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
-| `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
+| `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal. Each goal carries `text` (the full prompt text of that version, in the listing too; JSON `null`, key present, when unknown), `set_at` (the series' first version) and `changed_at` (this version), both RFC 3339 |
+| `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration and the same `text`, `set_at` and `changed_at` as the listing ([06 §Goal Entity](06-goals-and-self.md#goal-entity)) |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
 | neighbors / lineage | walk `memory.origins` / `memory.refs`. No `proxima://edges` |
 

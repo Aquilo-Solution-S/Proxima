@@ -214,6 +214,7 @@ def closeGoal (goal : Goal) (closeFact : Memory) (_hk : memory_kind closeFact = 
   t := newId
   owner := goal_owner goal
   title := goal_title goal
+  text := goal_text goal
   state := .Achieved
   request_id := goal_request_id goal
   close_fact_t := some (memory_t closeFact)
@@ -224,6 +225,7 @@ def closeGoal (goal : Goal) (closeFact : Memory) (_hk : memory_kind closeFact = 
   write_act_t := none
   tick := newTick
   terminal_close_fact := fun _ => rfl
+  text_nonblank := goal.text_nonblank
 
 theorem closeGoal_terminal (goal : Goal) (closeFact : Memory)
     (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
@@ -236,6 +238,10 @@ theorem closeGoal_same_handle (goal : Goal) (closeFact : Memory)
 theorem closeGoal_same_owner (goal : Goal) (closeFact : Memory)
     (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
     goal_owner (closeGoal goal closeFact hk newId newTick) = goal_owner goal := rfl
+
+theorem closeGoal_keeps_text (goal : Goal) (closeFact : Memory)
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
+    goal_text (closeGoal goal closeFact hk newId newTick) = goal_text goal := rfl
 
 theorem closeGoal_admitted (goal : Goal) (closeFact : Memory)
     (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant)
