@@ -103,6 +103,21 @@ pub trait HostStateCommand: Send + 'static {
     fn owner(&self) -> Owner;
 }
 
+/// The owners a [`HostStateCommand`] payload names, stated by the command
+/// author.
+///
+/// Lean `PayloadAllowed` (`HostStateMaintenance.lean`): command authorization
+/// does not establish payload agreement, so the participant must compare every
+/// owner the payload names with the permit's owner. A separate trait keeps
+/// [`HostStateCommand`] unchanged for existing implementors; the method is
+/// required, so a command that is dispatched by `PgCommandDispatcher` states
+/// its answer and the dispatcher makes the comparison once, before any
+/// handler runs.
+pub trait HostStatePayloadOwners: HostStateCommand {
+    /// Every owner the payload names. Empty when it names none.
+    fn payload_owners(&self) -> Vec<Owner>;
+}
+
 /// Result of a host-state command that ran (or was refused) without a
 /// storage fault.
 ///

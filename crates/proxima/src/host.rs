@@ -110,6 +110,10 @@ pub use proxima_core::owner_inverse::{
     OwnerExportBundle, OwnerExportRequest, OwnerExportTarget,
 };
 pub use proxima_core::read_models::MemorySnapshot;
+/// The owners a [`HostStateCommand`] payload names. [`PgCommandDispatcher`]
+/// compares them with the engine-stamped permit before any handler runs.
+/// Host API only; Flavor SDK does not export it.
+pub use proxima_core::storage_ports::HostStatePayloadOwners;
 /// Cited-blob verified-read and reconciliation surfaces.
 ///
 /// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's
@@ -162,6 +166,14 @@ pub use proxima_core::{
 /// depending only on `proxima` cannot write a typed signature or match
 /// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
 pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
+/// Typed dispatch for the host's one [`PgHostStateParticipant`]:
+/// [`PgCommandDispatcher`] routes each command type to its
+/// [`HostStateHandler`], which only receives an [`AgreedCommand`] (owners
+/// agreed with the permit); a bad `register` is a [`CommandRegistrationError`]
+/// at boot. Host API only; Flavor SDK does not export them.
+pub use proxima_storage_pg::{
+    AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
+};
 /// The Postgres pool and query-tuning blocks.
 ///
 /// Both are nameable from the host facade and have programmatic builder

@@ -29,7 +29,7 @@ scope does not distinguish command types within that participant: a host
 registers exactly one participant (a second registration refuses boot), and a
 participant serving several command types dispatches with
 `HostStateRequest::is::<C>()` / `try_downcast::<C>()`, which returns the
-request unchanged on a mismatch.
+request unchanged on a mismatch, or is a `PgCommandDispatcher` (below).
 
 Evidence: `BuiltProxima` already holds `SystemAuthority`
 (`crates/proxima/src/runtime.rs:464`), but the existing owner-write gate still
@@ -58,6 +58,36 @@ or shared owner lifecycle locking against exclusive erasure. It does not sandbox
 trusted participant SQL: the participant must respect its declared tables and
 stamped owner. These obligations require code review and runtime tests. The model
 does not claim liveness or refine arbitrary SQL into its host-only transition.
+
+## Typed command dispatch
+
+`PgCommandDispatcher` (Host API, `proxima::host`) is the host's one
+`PgHostStateParticipant` for several command types. It adds no per-command
+authority: scope stays the participant and its declared tables.
+
+```rust
+PgCommandDispatcher::new(participant_id, declared_tables)
+    .register::<C, _>(handler)?          // C: HostStatePayloadOwners
+    .with_lifecycle_port(port)           // optional, as for any participant
+```
+
+| Piece | Contract |
+|---|---|
+| `HostStatePayloadOwners: HostStateCommand` | `payload_owners() -> Vec<Owner>`: every owner the payload names, empty when none. A separate trait, so `HostStateCommand` and its implementors are unchanged; the method is required, so the command author states the answer |
+| `HostStateHandler<C: HostStateCommand>` | `handle(tx, permit, command: AgreedCommand<C>) -> Result<HostStateOutcome<C::Outcome>, StorageError>`. The dispatcher builds the `HostStateReply` from the typed outcome, so the reply cannot disagree with `C::Outcome` (a `compile_fail` doctest holds it). The handler gets the typed command, never the `HostStateRequest` |
+| `AgreedCommand<C>` | `Deref<Target = C>` and `into_inner()`. Built only by the dispatcher, after the owner comparison below succeeded: no public constructor, `Clone` or `Default` (a `compile_fail` doctest holds it). Every command a handler receives had its owners compared with a permit, and the dispatcher passes that permit. Not bound to a permit: host code that keeps one and calls `handle` itself with another permit is outside the guarantee |
+| `register` | Boot-time `CommandRegistrationError`: `ForeignParticipant` (`C::PARTICIPANT_ID` is not the dispatcher's), `UndeclaredTable` (`C::TABLES` outside `declared_tables`), `DuplicateCommand` (type already registered). A command that implements no `HostStatePayloadOwners` does not compile (`compile_fail` doctest) |
+| `apply` | Tries each handler with `try_downcast::<C>()` in registration order. A request no handler accepts is a `ConstraintViolation` naming the participant; no SQL runs |
+
+`PayloadAllowed` (`HostStateMaintenance.lean`) is enforced once, in the
+dispatcher, before the matching handler runs: `command.owner()` and every
+`payload_owners()` entry must equal `permit.owner()`. A difference is a
+`ConstraintViolation` ("host-state command owner does not match write permit"),
+which poisons the unit as any participant error does. The engine's permit
+machinery is unchanged: participant, tables and owner are stamped and checked
+before the dispatcher is reached. The kernel does not sandbox participant SQL,
+and this does not change that: a handler still stamps the permit's owner and
+touches only its command's declared tables.
 
 ## Transaction-bound lifecycle callbacks
 

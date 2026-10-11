@@ -90,7 +90,10 @@ pub use delegated_authority::PgDelegationStore;
 pub use owner_scope::{begin_compatible_owner_transaction, begin_owner_transaction};
 pub use platform_scope::{PgPlatformScope, begin_migration_transaction};
 pub use pool_config::PgPoolConfig;
-pub use ports::{PgHostStateLifecyclePort, PgHostStateParticipant};
+pub use ports::{
+    AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
+    PgHostStateLifecyclePort, PgHostStateParticipant,
+};
 pub use rls_guard::{assert_runtime_rls, owner_rls_enforced};
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,

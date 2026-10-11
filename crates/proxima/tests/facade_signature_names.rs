@@ -272,6 +272,12 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Needed by `PgCommandDispatcher::register` and the `HostStateHandler` it routes to.
+    host_state_command_dispatch {
+        host_only: [AgreedCommand, CommandRegistrationError, HostStateHandler, HostStatePayloadOwners, PgCommandDispatcher],
+        both_tiers: [],
+    }
+
     // Needed by `pending_migrations`, the read-only plan beside the runner.
     pending_migrations {
         host_only: [PendingMigration, pending_migrations],
