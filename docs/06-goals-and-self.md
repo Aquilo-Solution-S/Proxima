@@ -44,18 +44,6 @@ States:
 | `Achieved` | no | yes | Positive close |
 | `Abandoned` | no | yes | Post-active negative close |
 
-**Goal text.** `goal.text` is the prompt of that version, so a read returns it
-without the sidecar. `NULL` means unknown, never empty: a version no replay
-declaration can speak for (written before v0.0.13) stays `NULL`, and a check
-(`goal_text_nonblank_chk`) refuses a blank. Create, modify and each decomposed
-child store the text they were given. A transition (pause, resume, abandon) and
-an achievement store exactly the prior version's text, `NULL` included, so the
-text of a series changes only at a modify. A read also returns `set_at`, the
-time of the series' first version, and `changed_at`, the time of the version
-read; a first version has `set_at == changed_at`. Both come from the UUIDv7
-`t`, not from a column. `set_by` and per-version authors are not part of the
-row.
-
 Goal-to-Goal decomposition, dependency, and inspiration are **Goal row
 fields**: `dependency_t`, `evidence_t`, and `assignment_t`. The Goal owns the
 statement, so those columns are its pins, written in its transaction; the Goal
@@ -83,6 +71,32 @@ G_active(owner) =
   current Goal heads
   where state = Active
 ```
+
+### Goal text
+
+`goal.text` is the prompt of that version, so a read returns it
+without the sidecar. `NULL` means unknown, never empty: a version no replay
+declaration can speak for (written before v0.0.13) stays `NULL`.
+
+*Blank* has one definition, in the database: nothing is left after removing
+ASCII whitespace (space, tab, line feed, carriage return, vertical tab, form
+feed). The check `goal_text_nonblank_chk` refuses a blank text, and the
+migration's backfill uses the same expression. The write spring
+(`check_trimmed_len`: trim Unicode `White_Space`, then refuse empty) is
+stricter and trims, so Rust never writes a text the database refuses. A text
+the database admits but Rust would call blank, such as `U+00A0` alone, can only
+come from input that skipped the spring (a hand-built `GoalPayloadWrite`, or a
+row written outside the Goal write verbs); it is stored and read as it is.
+
+Create, modify and each decomposed child store the text they were given, as
+given: a hand-built draft with a blank text is refused by the check with a
+`ConstraintViolation`, never stored as `NULL`. A transition (pause, resume,
+abandon) and an achievement store exactly the prior version's stored text,
+byte for byte and `NULL` included, with no check of their own, so the text of a
+series changes only at a modify. A read also returns `set_at`, the time of the
+series' first version, and `changed_at`, the time of the version read; a first
+version has `set_at == changed_at`. Both come from the UUIDv7 `t`, not from a
+column. `set_by` and per-version authors are not part of the row.
 
 <a id="goal-write-api"></a>
 

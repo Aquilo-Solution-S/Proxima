@@ -1,8 +1,8 @@
 use super::wake::prepare_goal_wake_plan;
 use super::{
     GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
-    PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, StorageError, Transaction,
-    WakeWrite, column_text, lock_prepared_goal_write, persist_prepared_goal_write,
+    PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, RowColumns, StorageError,
+    Transaction, WakeWrite, lock_prepared_goal_write, persist_prepared_goal_write,
     prepare_goal_write,
 };
 use crate::verbs::goal_timeseries::{
@@ -24,10 +24,10 @@ pub(super) async fn insert_or_replay_goal(
     expected_prior: Option<GoalId>,
     context: GoalAtomicContext<'_>,
     wake_write: WakeWrite<'_>,
-    write_act_t: Option<uuid::Uuid>,
+    columns: RowColumns<'_>,
 ) -> Result<InsertedGoal, StorageError> {
     let prepared =
-        prepare_goal_insert(tx, draft, expected_prior, context, wake_write, write_act_t).await?;
+        prepare_goal_insert(tx, draft, expected_prior, context, wake_write, columns).await?;
     if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
         lock_prepared_goal_write(tx, prepared_write).await?;
     }
@@ -40,7 +40,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     expected_prior: Option<GoalId>,
     context: GoalAtomicContext<'a>,
     wake_write: WakeWrite<'_>,
-    write_act_t: Option<uuid::Uuid>,
+    columns: RowColumns<'_>,
 ) -> Result<PreparedGoalInsert<'a>, StorageError> {
     let owner = draft.owner();
 
@@ -87,7 +87,7 @@ pub(super) async fn prepare_goal_insert<'a>(
         handle,
         schema_id: draft.schema_id.as_str().to_string(),
         title: draft.title.clone(),
-        text: column_text(&draft.text),
+        text: columns.text.map(str::to_owned),
         state: draft.state,
         request_id: draft.request_id.clone(),
         close_fact_t: None,
@@ -106,7 +106,7 @@ pub(super) async fn prepare_goal_insert<'a>(
             .collect(),
         wake_id: None,
         mint_write_act: false,
-        write_act_t,
+        write_act_t: columns.write_act_t,
     };
     let wake = prepare_goal_wake_plan(tx, context, &owner, wake_write).await?;
     let preparation = prepare_goal_write(

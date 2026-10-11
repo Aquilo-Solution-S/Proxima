@@ -3,7 +3,6 @@
 //!
 //! Every write goes through the real Goal write verbs on a real Postgres; the
 //! reads are `Engine::query`'s storage leg.
-#![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -935,74 +934,199 @@ goal_test!(
     }
 );
 
-goal_test!(the_database_refuses_a_blank_text, |h| async {
-    let pool = h.pg.pool_for_tests();
-    let insert = |text: Option<&'static str>, request_id: String| async move {
-        let handle = Uuid::now_v7();
-        let t = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
-             VALUES ($1, 'core/simple-text-v1', $2, $3)",
-        )
-        .bind(handle)
-        .bind(h.owner.stored_owner_id())
-        .bind(t)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
-             VALUES ($1, $2, $3, 'check', $4, 'Active', $5)",
-        )
-        .bind(handle)
-        .bind(t)
-        .bind(h.owner.stored_owner_id())
-        .bind(text)
-        .bind(request_id)
-        .execute(pool)
-        .await
-    };
+/// The six ASCII whitespace characters: space, tab, line feed, carriage
+/// return, vertical tab, form feed. The database counts a text made only of
+/// these as blank; it has no other definition of blank.
+const ASCII_WHITESPACE: [char; 6] = [' ', '\t', '\n', '\r', '\u{b}', '\u{c}'];
 
-    for blank in ["", " ", "     "] {
-        let refused = insert(Some(blank), format!("blank-{}", blank.len()))
+/// One Goal row written straight to the tables with `text` as given.
+async fn insert_goal_row(
+    h: &Harness,
+    text: Option<&str>,
+    request_id: &str,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    let pool = h.pg.pool_for_tests();
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, 'core/simple-text-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(h.owner.stored_owner_id())
+    .bind(t)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+         VALUES ($1, $2, $3, 'check', $4, 'Active', $5)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(h.owner.stored_owner_id())
+    .bind(text)
+    .bind(request_id)
+    .execute(pool)
+    .await
+}
+
+fn refused_by_the_text_check(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.to_string().contains("goal_text_nonblank_chk")
+}
+
+goal_test!(the_database_refuses_a_blank_text, |h| async {
+    // Every one of the six alone, all of them together, and the empty string.
+    let mut blanks: Vec<String> = ASCII_WHITESPACE.iter().map(char::to_string).collect();
+    blanks.push(String::new());
+    blanks.push(" \t\x0b\x0c\r\n".to_owned());
+    blanks.push(ASCII_WHITESPACE.iter().collect::<String>().repeat(3));
+    for (index, blank) in blanks.iter().enumerate() {
+        let refused = insert_goal_row(&h, Some(blank), &format!("blank-{index}"))
             .await
             .expect_err("a blank text must be refused");
-        assert!(
-            refused.to_string().contains("goal_text_nonblank_chk"),
-            "{blank:?}: {refused}"
-        );
+        assert!(refused_by_the_text_check(&refused), "{blank:?}: {refused}");
     }
-    insert(None, "unknown".into()).await?;
-    insert(Some("a text"), "known".into()).await?;
+
+    // One character that is not ASCII whitespace, anywhere, is enough.
+    for (index, whitespace) in ASCII_WHITESPACE.into_iter().enumerate() {
+        let padded = format!("{whitespace}x{whitespace}");
+        insert_goal_row(&h, Some(&padded), &format!("padded-{index}")).await?;
+    }
+    for (index, text) in ["\u{a0}", "\u{2003}", "a text"].into_iter().enumerate() {
+        insert_goal_row(&h, Some(text), &format!("admitted-{index}")).await?;
+    }
+    insert_goal_row(&h, None, "unknown").await?;
 
     // The low-level writer cannot get a blank past it either.
-    let mut tx = pool.begin().await?;
-    let refused = write_goal(
-        &mut tx,
-        &h.owner,
-        &GoalWriteCommand {
-            handle: None,
-            schema_id: SimpleTextGoalV1::SCHEMA_ID.into(),
-            title: "low level".into(),
-            text: Some(String::new()),
-            state: GoalState::Active,
-            request_id: "low-level-blank".into(),
-            close_fact_t: None,
-            assignment_t: None,
-            dependency_t: vec![],
-            evidence_t: vec![],
-            wake_id: None,
-            mint_write_act: false,
-            write_act_t: None,
-        },
-    )
-    .await
-    .expect_err("a blank text must be refused");
-    assert!(
-        refused.to_string().contains("goal_text_nonblank_chk"),
-        "{refused}"
+    let pool = h.pg.pool_for_tests();
+    for (index, blank) in ["", "\t"].into_iter().enumerate() {
+        let mut tx = pool.begin().await?;
+        let refused = write_goal(
+            &mut tx,
+            &h.owner,
+            &admitted_text_command(&h, blank, &format!("low-level-blank-{index}")),
+        )
+        .await
+        .expect_err("a blank text must be refused");
+        assert!(refused_by_the_text_check(&refused), "{blank:?}: {refused}");
+    }
+
+    // The Goal write verbs store the text they are given, so a hand-built
+    // draft with a blank one is refused with a typed error and not turned into
+    // an unknown text.
+    let before = goal_count(&h.pg).await?;
+    let parent = h.create("blank-parent", "parent", "a parent").await?;
+    let refusals = [
+        h.create("blank-create", "title", " \t ").await,
+        h.modify(parent.goal_id, "blank-modify", "title", "\n")
+            .await,
+        h.decompose(parent.goal_id, "blank-child", &[("child", "\u{b}")])
+            .await
+            .map(|_| parent),
+    ];
+    for refused in refusals {
+        let error = refused.expect_err("a blank text must be refused by the database");
+        assert!(
+            matches!(
+                error.downcast_ref::<StorageError>(),
+                Some(StorageError::ConstraintViolation(message))
+                    if message.contains("goal_text_nonblank_chk")
+            ),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        goal_count(&h.pg).await?,
+        before + 1,
+        "only the parent was written"
     );
     Ok(())
 });
+
+async fn goal_count(pg: &PgStorage) -> TestResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal")
+            .fetch_one(pg.pool_for_tests())
+            .await?,
+    )
+}
+
+/// A first Goal version for the low-level writer, with `text` stored as is.
+fn admitted_text_command(h: &Harness, text: &str, request_id: &str) -> GoalWriteCommand {
+    GoalWriteCommand {
+        handle: None,
+        schema_id: SimpleTextGoalV1::SCHEMA_ID.into(),
+        title: "low level".into(),
+        text: Some(text.to_owned()),
+        state: GoalState::Active,
+        request_id: request_id.into(),
+        close_fact_t: None,
+        assignment_t: Some(h.assignment.into_inner()),
+        dependency_t: vec![],
+        evidence_t: vec![],
+        wake_id: None,
+        mint_write_act: false,
+        write_act_t: None,
+    }
+}
+
+goal_test!(
+    a_text_the_database_admits_is_carried_forward_byte_for_byte,
+    |h| async {
+        // Texts the database admits but the Rust spring would call blank or
+        // trim: they are in the table, and moving the Goal on must not judge
+        // them again.
+        let texts = [
+            "\u{a0}",
+            "\u{2003}",
+            " padded\t",
+            "\u{a0}\t",
+            "\n\u{3000}\n",
+        ];
+        let pool = h.pg.pool_for_tests();
+        for (index, text) in texts.into_iter().enumerate() {
+            for closing in [GoalState::Abandoned, GoalState::Achieved] {
+                let request = format!("admitted-{index}-{closing:?}");
+                let mut tx = pool.begin().await?;
+                let written = write_goal(
+                    &mut tx,
+                    &h.owner,
+                    &admitted_text_command(&h, text, &request),
+                )
+                .await?;
+                tx.commit().await?;
+                let first = GoalId::new(written.t);
+
+                let paused = h
+                    .transition(first, GoalState::Paused, &format!("{request}-pause"))
+                    .await?;
+                let resumed = h
+                    .transition(
+                        paused.goal_id,
+                        GoalState::Active,
+                        &format!("{request}-resume"),
+                    )
+                    .await?;
+                let closed = if closing == GoalState::Achieved {
+                    h.achieve(resumed.goal_id, &format!("{request}-close"))
+                        .await?
+                } else {
+                    h.transition(resumed.goal_id, closing, &format!("{request}-close"))
+                        .await?
+                };
+                for id in [first, paused.goal_id, resumed.goal_id, closed.goal_id] {
+                    assert_eq!(
+                        stored_text(&h.pg, id).await?.as_deref(),
+                        Some(text),
+                        "{text:?} must come through {closing:?} byte for byte"
+                    );
+                    assert_eq!(h.read(id).await?.text.as_deref(), Some(text));
+                }
+            }
+        }
+        Ok(())
+    }
+);
 
 goal_test!(
     export_carries_the_text_and_erase_takes_it_with_the_row,

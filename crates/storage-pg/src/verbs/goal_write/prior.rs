@@ -1,7 +1,7 @@
 use super::{
     ChildGoalDraft, EvidenceTarget, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState,
     MemoryId, Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, Transaction,
-    draft_text, map_err,
+    map_err,
 };
 
 type PriorRow = (
@@ -132,7 +132,10 @@ pub(super) fn draft_from_stored(
         schema_id: stored.schema_id.clone(),
         schema_version: stored.schema_version,
         title: stored.title.clone(),
-        text: draft_text(stored.text.as_deref()),
+        // Not the row's text: a lifecycle write passes the stored text to the
+        // insert as its `RowColumns`, and nothing reads this field for it (its
+        // replay declaration is built from the request).
+        text: String::new(),
         payload: stored.payload.clone(),
         sidecar_payload: None,
         state,

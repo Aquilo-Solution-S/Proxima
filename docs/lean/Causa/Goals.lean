@@ -9,8 +9,10 @@ id, not columns on the row and not an inline `WakeConfig` value.
   later t on the same handle is the new head
   terminal state admits no later t
 
-No `supersedes`. No authorship blob. No `text` on the row (body is sidecar).
-Title stays. `close_fact_t` pins an existing Fact `t`.
+No `supersedes`. No authorship blob. Title stays. `text` is on the row: the
+version's prompt, `none` when unknown, never blank (`goal_text_nonblank_chk`,
+migration 0025); the rest of the body is the sidecar. A version that changes
+the state keeps its predecessor's text. `close_fact_t` pins an existing Fact `t`.
 -/
 
 import Causa.Prelude
@@ -87,11 +89,22 @@ def WakeConfigIdUnique (configs : Set WakeConfig) : Prop :=
 -- The Goal entity
 -- ============================================================
 
+/-- The characters `goal_text_nonblank_chk` trims: ASCII whitespace (space,
+tab, line feed, carriage return, vertical tab, form feed). -/
+def goalTextBlankChar (c : Char) : Bool :=
+  c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
+
+/-- `goal_text_nonblank_chk`: a stored text keeps a character the check does
+not trim. -/
+def GoalTextNonblank (s : Text) : Prop :=
+  s.any (fun c => !goalTextBlankChar c) = true
+
 structure Goal where
   handle        : Handle
   t             : GoalId
   owner         : Owner
   title         : Text
+  text          : Option Text
   state         : GoalState
   request_id    : Text
   close_fact_t  : Option MemoryId
@@ -103,6 +116,8 @@ structure Goal where
   tick          : Instant
   terminal_close_fact :
     state.terminal = true → close_fact_t.isSome = true
+  text_nonblank :
+    ∀ s, text = some s → GoalTextNonblank s
 
 structure GoalHead where
   handle : Handle
@@ -115,6 +130,7 @@ def goal_t : Goal → GoalId := Goal.t
 def goal_id : Goal → GoalId := Goal.t
 def goal_owner : Goal → Owner := Goal.owner
 def goal_title : Goal → Text := Goal.title
+def goal_text : Goal → Option Text := Goal.text
 def goal_state : Goal → GoalState := Goal.state
 def goal_request_id : Goal → Text := Goal.request_id
 def goal_close_fact_t : Goal → Option MemoryId := Goal.close_fact_t
@@ -194,7 +210,8 @@ def GoalTransitionValid (goals : Set Goal) : Prop :=
   ∀ new old : Goal,
     goalImmediatelySucceeds goals new old →
     goal_owner new = goal_owner old ∧
-    goalTransitionAdmitted (goal_state old) (goal_state new)
+    goalTransitionAdmitted (goal_state old) (goal_state new) ∧
+    (goal_state new ≠ goal_state old → goal_text new = goal_text old)
 
 theorem goal_transition_same_owner :
     ∀ (goals : Set Goal),
@@ -212,7 +229,19 @@ theorem goal_transition_admitted :
         goalImmediatelySucceeds goals new old →
         goalTransitionAdmitted (goal_state old) (goal_state new) := by
   intro goals hvalid new old h
-  exact (hvalid new old h).2
+  exact (hvalid new old h).2.1
+
+/-- Only a modify (Active to Active) gives a series a new text; a pause,
+resume, abandon or achievement keeps the predecessor's, `none` included. -/
+theorem goal_transition_keeps_text :
+    ∀ (goals : Set Goal),
+      GoalTransitionValid goals →
+      ∀ new old : Goal,
+        goalImmediatelySucceeds goals new old →
+        goal_state new ≠ goal_state old →
+        goal_text new = goal_text old := by
+  intro goals hvalid new old h
+  exact (hvalid new old h).2.2
 
 /-- Root = least tick on the handle. Creation is Active only. -/
 def GoalRootValid (goals : Set Goal) : Prop :=

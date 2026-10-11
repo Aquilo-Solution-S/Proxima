@@ -8,6 +8,13 @@
 -- never blank, and the column never changes after the row is written (the
 -- table is append-only).
 --
+-- Blank has one definition here: nothing is left after removing ASCII
+-- whitespace, that is space, tab, line feed, carriage return, vertical tab
+-- (0x0B) and form feed. E-strings have no \v escape, so 0x0B is written \x0b.
+-- The CHECK and the backfill below use the same expression. The Rust side
+-- (`check_trimmed_len`, Unicode White_Space) refuses a superset of it, so
+-- Rust never writes a text the CHECK refuses.
+--
 -- A write that gives a text (create, modify, a decomposed child) stores it. A
 -- write that only moves the lifecycle (transition, achieve) stores exactly its
 -- prior version's text, NULL included.
@@ -19,7 +26,7 @@
 ALTER TABLE proxima_core.goal
     ADD COLUMN IF NOT EXISTS text text
         CONSTRAINT goal_text_nonblank_chk
-            CHECK (text IS NULL OR length(btrim(text)) > 0);
+            CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0);
 
 -- Backfill. A version's text is the text of the latest declaration among the
 -- rows of its own series at or before it that carries a non-blank one: a
@@ -47,7 +54,7 @@ WITH declared AS (
            g.t,
            CASE
                WHEN jsonb_typeof(d.declaration #> p.path) = 'string'
-                AND length(btrim(d.declaration #>> p.path)) > 0
+                AND length(btrim(d.declaration #>> p.path, E' \t\n\r\x0b\f')) > 0
                THEN d.declaration #>> p.path
            END AS text
       FROM proxima_core.goal g

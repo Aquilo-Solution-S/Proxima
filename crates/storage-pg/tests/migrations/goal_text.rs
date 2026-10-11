@@ -351,6 +351,88 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
     result
 }
 
+/// Blank is one definition in the CHECK and in the backfill: nothing left after
+/// removing the six ASCII whitespace characters. A declaration whose text is
+/// blank in that sense declares nothing, so its version inherits the text
+/// declared before it, or stays unknown when there is none. A text with any
+/// other character in it, `U+00A0` and the other Unicode spaces included, is
+/// not blank to the database and is stored as declared.
+#[tokio::test]
+async fn an_ascii_whitespace_declaration_declares_nothing() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let result: TestResult = async {
+        let pg = database_at_0024(&db_name).await?;
+        let pool = pg.pool_for_tests();
+        let owner = seed_owner(pool).await?;
+        let base = 1_700_000_000_000;
+        let every_kind = " \t\n\r\x0b\x0c";
+
+        let mut expected: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
+        let mut seed = async |offset: u64, versions: Vec<Version>, texts: Vec<Option<&str>>| {
+            assert_eq!(versions.len(), texts.len(), "the fixture is complete");
+            let ts = seed_series(pool, owner, base + offset, &versions).await?;
+            expected.extend(
+                ts.into_iter()
+                    .zip(texts.into_iter().map(|text| text.map(str::to_owned))),
+            );
+            Ok::<(), sqlx::Error>(())
+        };
+
+        // Earlier text stands under a tab, a newline, a vertical tab, a form
+        // feed and all six together.
+        seed(
+            0,
+            vec![
+                version("Active", Some(create("alpha"))),
+                version("Active", Some(modify("\t"))),
+                version("Active", Some(modify("\n"))),
+                version("Active", Some(modify("\u{b}"))),
+                version("Active", Some(modify("\u{c}"))),
+                version("Active", Some(modify(every_kind))),
+                version("Paused", Some(transition("Paused"))),
+            ],
+            vec![Some("alpha"); 7],
+        )
+        .await?;
+
+        // Nothing declared before a blank one: unknown, until a real text.
+        seed(
+            10,
+            vec![
+                version("Active", Some(create("\t"))),
+                version("Paused", Some(transition("Paused"))),
+                version("Active", Some(modify("\r\n"))),
+                version("Active", Some(modify("real"))),
+                version("Paused", Some(transition("Paused"))),
+            ],
+            vec![None, None, None, Some("real"), Some("real")],
+        )
+        .await?;
+
+        // Not ASCII whitespace, so not blank: kept as declared, padding and
+        // all.
+        seed(
+            15,
+            vec![
+                version("Active", Some(create("\u{a0}"))),
+                version("Active", Some(modify(" \u{2003}\t"))),
+                version("Paused", Some(transition("Paused"))),
+            ],
+            vec![Some("\u{a0}"), Some(" \u{2003}\t"), Some(" \u{2003}\t")],
+        )
+        .await?;
+
+        super::apply_current_migrations(&pg).await?;
+        assert_eq!(stored_texts(pool).await?, expected);
+        super::assert_current_markers(pool).await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 /// The upgrade of a database with no Goal at all (a fresh install runs the
 /// same file) and its repeat.
 #[tokio::test]
@@ -373,6 +455,46 @@ async fn an_empty_database_takes_the_migration_and_a_repeat()
     result
 }
 
+/// Migration 0025's column and constraint, as the file writes them.
+const RESTORE: &str = r"
+    ALTER TABLE proxima_core.goal ALTER COLUMN text DROP NOT NULL;
+    ALTER TABLE proxima_core.goal DROP CONSTRAINT IF EXISTS goal_text_nonblank_chk;
+    ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
+        CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)";
+
+const MISSING_OR_INCORRECT: &str = "goal.text non-blank check is missing or incorrect";
+
+/// Each damage and the marker message it must produce.
+const DAMAGE: [(&str, &str); 5] = [
+    (
+        "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
+        MISSING_OR_INCORRECT,
+    ),
+    (
+        r"ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
+          ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
+              CHECK (text IS NULL OR length(text) > 0)",
+        MISSING_OR_INCORRECT,
+    ),
+    // The spaces-only `btrim(text)` is not the one definition of blank.
+    (
+        r"ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
+          ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
+              CHECK (text IS NULL OR length(btrim(text)) > 0)",
+        MISSING_OR_INCORRECT,
+    ),
+    (
+        r"ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
+          ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
+              CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0) NOT VALID",
+        MISSING_OR_INCORRECT,
+    ),
+    (
+        "ALTER TABLE proxima_core.goal ALTER COLUMN text SET NOT NULL",
+        "goal.text must be a nullable text column",
+    ),
+];
+
 /// The boot guardrail names a database whose `goal.text` was damaged after
 /// the ledger said 0025 was applied.
 #[tokio::test]
@@ -386,30 +508,7 @@ async fn the_boot_guardrail_rejects_a_damaged_goal_text_column()
         super::assert_current_markers(admin).await?;
         let platform = super::marker_platform_pool(admin).await?;
 
-        let damage = [
-            (
-                "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
-                "goal.text non-blank check is missing or incorrect",
-            ),
-            (
-                "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
-                 ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
-                     CHECK (text IS NULL OR length(text) > 0)",
-                "goal.text non-blank check is missing or incorrect",
-            ),
-            (
-                "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
-                 ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
-                     CHECK (text IS NULL OR length(btrim(text)) > 0) NOT VALID",
-                "goal.text non-blank check is missing or incorrect",
-            ),
-            (
-                "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk;
-                 ALTER TABLE proxima_core.goal ALTER COLUMN text SET NOT NULL",
-                "goal.text must be a nullable text column",
-            ),
-        ];
-        for (sql, message) in damage {
+        for (sql, message) in DAMAGE {
             let mut tx = platform.begin().await?;
             sqlx::raw_sql(sql).execute(&mut *tx).await?;
             tx.commit().await?;
@@ -419,14 +518,7 @@ async fn the_boot_guardrail_rejects_a_damaged_goal_text_column()
             assert!(error.to_string().contains(message), "{sql}: {error}");
             // Put the schema back for the next damage.
             let mut tx = platform.begin().await?;
-            sqlx::raw_sql(
-                "ALTER TABLE proxima_core.goal ALTER COLUMN text DROP NOT NULL;
-                 ALTER TABLE proxima_core.goal DROP CONSTRAINT IF EXISTS goal_text_nonblank_chk;
-                 ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_text_nonblank_chk
-                     CHECK (text IS NULL OR length(btrim(text)) > 0)",
-            )
-            .execute(&mut *tx)
-            .await?;
+            sqlx::raw_sql(RESTORE).execute(&mut *tx).await?;
             tx.commit().await?;
             super::assert_current_markers(admin).await?;
         }

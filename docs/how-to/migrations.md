@@ -28,14 +28,16 @@ is `0024` ([v0.0.26](#v0026)).
 **Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
 unknown, never empty: a version that no declaration can speak for (written
 before v0.0.13 recorded declarations, or a row written outside the Goal write
-verbs) stays `NULL`, and the database refuses a blank text. Create, modify and
+verbs) stays `NULL`, and the database refuses a blank text ([06 §Goal
+text](../06-goals-and-self.md#goal-text) defines blank). Create, modify and
 decompose store the text they were given. Transition and achieve store exactly
 their prior version's text, `NULL` included. The table stays append-only, so a
 stored text never changes.
 
 **Backfill.** For every `goal` row, `text` is the text of the latest
 declaration among the rows of the same `handle` with `t` at or before the
-row's own that carries a non-blank string text. The text sits at a fixed place
+row's own that carries a string text that is not blank (the same expression as
+the check). The text sits at a fixed place
 of the declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
 
 | `declaration ->> 'verb'` | JSON path |
@@ -62,9 +64,21 @@ commits, so no concurrent write sees the gap. No other table is touched.
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
 binary starts: boot checks for the column and its constraint and refuses a
-database without them ("apply migrations before boot"). A v0.0.26 binary run
-against the upgraded database keeps working and writes `NULL` text, which reads
-as unknown.
+database without them ("apply migrations before boot").
+
+**Stop v0.0.26 processes before the upgrade.** A v0.0.26 binary cannot start
+against the upgraded database, with or without `PROXIMA_SKIP_MIGRATIONS`: both
+boot paths run `ensure_core_ledger_compatible` first, the ledger records core
+version 25 and a v0.0.26 binary does not embed it, so boot fails with `core
+migration preflight failed: internal storage error: database core-migration
+ledger does not reconcile with this binary: core versions [25] are recorded as
+applied but this binary does not embed them (...)`. A v0.0.26 process that is already running keeps
+serving, and that is the danger: it knows nothing of `goal.text`, so every Goal
+it writes stores `NULL`, including a transition of a goal that had a text. The
+new version is then unknown, and every later transition and achievement carries
+that `NULL` forward, because they keep the prior version's text; only a modify
+declares a text again. Stop every v0.0.26 process sharing the database before
+the migration step, and do not leave one running through the rollout.
 
 ## v0.0.26
 

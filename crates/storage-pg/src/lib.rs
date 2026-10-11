@@ -440,7 +440,11 @@ async fn ensure_core_schema_markers_on_connection(
         sqlx::query_scalar(OWNER_RLS_TABLE_INSTALLER_MARKERS),
     )
     .await?;
-    probe_marker_group(connection, sqlx::query_scalar(GOAL_TEXT_MARKERS)).await?;
+    probe_marker_group(
+        connection,
+        sqlx::query_scalar(GOAL_TEXT_MARKERS).bind(GOAL_TEXT_CHECK_DEFINITION),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1489,8 +1493,17 @@ const OWNER_RLS_TABLE_INSTALLER_MARKERS: &str = r"SELECT CASE
          ELSE NULL
        END";
 
+/// `pg_get_constraintdef(oid, true)` of `goal_text_nonblank_chk` as Postgres
+/// prints it for migration 0025: blank is what is left after removing ASCII
+/// whitespace (space, tab, line feed, carriage return, vertical tab, form
+/// feed). Copied from Postgres output, not written by hand; the control
+/// characters are the escapes below.
+const GOAL_TEXT_CHECK_DEFINITION: &str =
+    "CHECK (text IS NULL OR length(btrim(text, ' \t\n\r\x0b\x0c'::text)) > 0)";
+
 /// v0.0.31: the Goal version's prompt text, nullable and never blank
-/// (migration 0025). `goal` is proven present by `CORE_RELATION_MARKERS`.
+/// (migration 0025). `goal` is proven present by `CORE_RELATION_MARKERS`;
+/// `$1` is [`GOAL_TEXT_CHECK_DEFINITION`].
 const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
@@ -1507,8 +1520,7 @@ const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
                      AND c.conname = 'goal_text_nonblank_chk'
                      AND c.contype = 'c'
                      AND c.convalidated
-                     AND pg_get_constraintdef(c.oid, true)
-                         = 'CHECK (text IS NULL OR length(btrim(text)) > 0)'
+                     AND pg_get_constraintdef(c.oid, true) = $1
                 )
            THEN 'goal.text non-blank check is missing or incorrect'
          ELSE NULL

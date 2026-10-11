@@ -2,7 +2,7 @@ use super::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalId,
     GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit, PgPool,
-    PgSidecarRegistryFrozen, PreparedGoalInsert, StorageError, SystemOrigin,
+    PgSidecarRegistryFrozen, PreparedGoalInsert, RowColumns, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, WakeWrite, achieve_replay_declaration, child_draft,
     create_replay_declaration, decompose_replay_declarations, draft_from_payload,
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
@@ -115,7 +115,10 @@ pub(crate) async fn create_goal_in_tx(
         None,
         req.context,
         WakeWrite::Explicit(req.draft.wake.as_ref()),
-        req.write_act_t.map(proxima_core::MemoryId::into_inner),
+        RowColumns {
+            text: Some(&req.draft.text),
+            write_act_t: req.write_act_t.map(proxima_core::MemoryId::into_inner),
+        },
     )
     .await?;
     if inserted.idempotent_replay {
@@ -193,7 +196,12 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
-        None,
+        // A lifecycle write declares no text: the version keeps the prior
+        // one's, as stored, unknown included.
+        RowColumns {
+            text: prior.text.as_deref(),
+            write_act_t: None,
+        },
     )
     .await?;
     if inserted.idempotent_replay {
@@ -269,7 +277,12 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
-        None,
+        // A lifecycle write declares no text: the version keeps the prior
+        // one's, as stored, unknown included.
+        RowColumns {
+            text: prior.text.as_deref(),
+            write_act_t: None,
+        },
     )
     .await?;
     if inserted.idempotent_replay {
@@ -365,7 +378,10 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         wake_write,
-        None,
+        RowColumns {
+            text: Some(&draft.text),
+            write_act_t: None,
+        },
     )
     .await?;
     if inserted.idempotent_replay {
@@ -432,7 +448,10 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             None,
             req.context,
             WakeWrite::Explicit(child.wake.as_ref()),
-            None,
+            RowColumns {
+                text: Some(&draft.text),
+                write_act_t: None,
+            },
         )
         .await?;
         prepared_children.push((prepared, evidence, declaration));
@@ -496,7 +515,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
 #[cfg(test)]
 mod lifecycle_lock_tests {
     use super::super::insert::prepare_goal_insert;
-    use super::super::types::WakeWrite;
+    use super::super::types::{RowColumns, WakeWrite};
     use super::super::{
         GoalWritePreparation, lock_prepared_goal_write, lock_prepared_goal_writes,
         persist_prepared_goal_write, prepare_goal_write,
@@ -987,7 +1006,10 @@ mod lifecycle_lock_tests {
                     author_self_perspective_id: None,
                 },
                 WakeWrite::Explicit(None),
-                None,
+                RowColumns {
+                    text: Some(&draft.text),
+                    write_act_t: None,
+                },
             )
             .await?;
             let GoalWritePreparation::New(prepared_write) = &prepared.preparation else {
