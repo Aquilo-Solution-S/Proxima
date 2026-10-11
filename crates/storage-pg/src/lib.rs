@@ -415,6 +415,11 @@ async fn ensure_core_schema_markers_on_connection(
     probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_SPACE_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(EMBEDDING_CHUNK_MARKERS)).await?;
     probe_marker_group(connection, sqlx::query_scalar(OWNER_RLS_INSTALLER_MARKERS)).await?;
+    probe_marker_group(
+        connection,
+        sqlx::query_scalar(OWNER_RLS_TABLE_INSTALLER_MARKERS),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1440,6 +1445,26 @@ const EMBEDDING_CHUNK_MARKERS: &str = r"SELECT CASE
 const OWNER_RLS_INSTALLER_MARKERS: &str = r"SELECT CASE
          WHEN to_regprocedure('proxima_core.install_owner_rls(text,text[],text[],text[],text[])') IS NULL
            THEN 'missing function proxima_core.install_owner_rls'
+         ELSE NULL
+       END";
+
+/// v0.0.30: the per-table owner-RLS installer, its census and the class code
+/// both installers share (migration 0024).
+const OWNER_RLS_TABLE_INSTALLER_MARKERS: &str = r"SELECT CASE
+         WHEN to_regtype('proxima_core.owner_rls_class') IS NULL
+           THEN 'missing type proxima_core.owner_rls_class'
+         WHEN to_regprocedure('proxima_core.install_owner_rls_table(text,text,proxima_core.owner_rls_class,text)') IS NULL
+           THEN 'missing function proxima_core.install_owner_rls_table'
+         WHEN to_regprocedure('proxima_core.assert_owner_rls_census(text)') IS NULL
+           THEN 'missing function proxima_core.assert_owner_rls_census'
+         WHEN to_regprocedure('proxima_core.owner_rls_apply_class(text,text,text,text,proxima_core.owner_rls_class,text)') IS NULL
+           THEN 'missing function proxima_core.owner_rls_apply_class'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM pg_proc AS p
+                   WHERE p.oid = to_regprocedure('proxima_core.install_owner_rls(text,text[],text[],text[],text[])')
+                     AND strpos(p.prosrc, 'owner_rls_apply_class') > 0
+                )
+           THEN 'proxima_core.install_owner_rls must build its policies through owner_rls_apply_class'
          ELSE NULL
        END";
 
@@ -2472,6 +2497,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2485,8 +2511,9 @@ mod tests {
              0015_v016_embedding_spaces.sql, 0016_v016_embedding_claim_order.sql, \
              0017_v016_metadata_write_scope.sql, 0018_v020_owner_rls_installer.sql and
              0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql, \
-             0021_v027_query_stopwords.sql, 0022_v028_coarse_pin_lock.sql and \
-             0023_v029_kind_scoped_owner_rls.sql"
+             0021_v027_query_stopwords.sql, 0022_v028_coarse_pin_lock.sql, \
+             0023_v029_kind_scoped_owner_rls.sql and \
+             0024_v030_owner_rls_table_installer.sql"
         );
     }
 

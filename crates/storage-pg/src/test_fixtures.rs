@@ -22,11 +22,12 @@ pub fn core_template_name() -> String {
 }
 
 /// Owner-RLS activation (0014), narrowed policies (0017), hardened definer
-/// search paths (0019), the coarse pin-lock mode (0022) and kind-scoped
-/// policies (0023). The enforced fixtures stage exactly these, in order. 0019,
-/// 0022 and 0023 rewrite 0014's routines and policies; applied before it, 0014
-/// would undo them.
-pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 5] = [14, 17, 19, 22, 23];
+/// search paths (0019), the coarse pin-lock mode (0022), kind-scoped policies
+/// (0023) and the per-table installer (0024). The enforced fixtures stage
+/// exactly these, in order. 0019, 0022 and 0023 rewrite 0014's routines and
+/// policies; applied before it, 0014 would undo them. 0024 redefines the
+/// installer 0023 redefined; applied before it, 0023 would undo that.
+pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 6] = [14, 17, 19, 22, 23, 24];
 
 /// Core migration lane used by historical domain fixtures.
 ///

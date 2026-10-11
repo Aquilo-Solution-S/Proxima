@@ -882,6 +882,20 @@ mod tests {
             sqlx::raw_sql(coarse_pin_lock)
                 .execute(pg.pool_for_tests())
                 .await?;
+            // The schema markers also probe 0024's per-table installer, which
+            // the fixture lane stages after 0023. Apply it unrecorded the same
+            // way and remove it again before the migrations below record it:
+            // it creates a type and functions that `CREATE OR REPLACE` cannot
+            // re-create.
+            let table_installer = proxima_storage_pg::core_migrator()
+                .iter()
+                .find(|migration| migration.version == 24)
+                .ok_or("0024 is embedded")?
+                .sql
+                .clone();
+            sqlx::raw_sql(table_installer)
+                .execute(pg.pool_for_tests())
+                .await?;
 
             let ledger = || async {
                 sqlx::query_as::<_, (i64, Vec<u8>)>(
@@ -905,6 +919,15 @@ mod tests {
                 "refusal must leave the ledger unchanged"
             );
 
+            sqlx::raw_sql(
+                "DROP TYPE proxima_core.owner_rls_class CASCADE;
+                 DROP FUNCTION proxima_core.owner_rls_find_parent_fk(text, text),
+                               proxima_core.owner_rls_parent_fk(text, text, text),
+                               proxima_core.owner_rls_census_table(text, text),
+                               proxima_core.assert_owner_rls_census(text)",
+            )
+            .execute(pg.pool_for_tests())
+            .await?;
             run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
             stamp_squashed_lane(&pg).await?;
 
