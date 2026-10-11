@@ -45,6 +45,7 @@ pub mod resource {
     pub const MEMORY: &str = "resource:memory";
     pub const MEMORIES: &str = "resource:memories";
     pub const MEMORY_LINEAGE: &str = "resource:memory-lineage";
+    pub const MEMORY_COUNTS: &str = "resource:memory-counts";
     pub const TOOLS: &str = "resource:tools";
     pub const GRAPH: &str = "resource:graph";
     pub const CHANGE_EVENTS: &str = "resource:change-events";

@@ -172,6 +172,14 @@ impl MemoryReadPort for MembershipStorage {
         })
     }
 
+    async fn count_memories(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerRef],
+    ) -> Result<crate::read_models::MemoryCounts, StorageError> {
+        Ok(crate::read_models::MemoryCounts::default())
+    }
+
     async fn search_memories(
         &self,
         _scope: Option<&crate::OwnerScope>,

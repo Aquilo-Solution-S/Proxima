@@ -1,6 +1,6 @@
 //! Flavor #0 — core, as a declaration.
 //!
-//! Core registers 12 schemas, 15 MCP tools and 11 `proxima://` resources
+//! Core registers 12 schemas, 15 MCP tools and 12 `proxima://` resources
 //! across five sites, and this module is the `FlavorDescriptor` that makes
 //! them visible to the registry that is meant to be the single source of
 //! truth.
@@ -1076,10 +1076,10 @@ const TOOLS: &[ToolContract] = &[
     },
 ];
 
-/// The eleven `proxima://` resources. Ten handler modules; `goal_reads`
-/// backs two. A palette built from tools alone denies every one of these
-/// reads, which is why they are contract entries rather than a separate
-/// const.
+/// The twelve `proxima://` resources. Ten handler modules; `list_schemas`
+/// and `goal_reads` back two each. A palette built from tools alone denies
+/// every one of these reads, which is why they are contract entries rather
+/// than a separate const.
 const RESOURCES: &[ResourceContract] = &[
     ResourceContract {
         uri_template: "proxima://schemas{?kind}",
@@ -1231,6 +1231,17 @@ const RESOURCES: &[ResourceContract] = &[
             "proxima_core.wake_config",
         ],
     },
+    ResourceContract {
+        uri_template: "proxima://memories/counts",
+        path: "memories",
+        name: "proxima-memory-counts",
+        title: "Proxima Memory Counts",
+        description: "Current memories the caller can read, counted by kind: one per series head, one per goal.",
+        scope_key: scope::MEMORY_COUNTS,
+        is_template: false,
+        read_only: true,
+        reads: &["proxima_core.memory_head", "proxima_core.goal_head"],
+    },
 ];
 
 /// The kernel surfaces the owner erase reaches with a hand-written
@@ -1315,7 +1326,7 @@ const BESPOKE_TRANSFER_LEGS: &[&str] = &[
 
 /// Core's contract. Twelve schema registrations over eleven distinct schema
 /// ids (`core/agent-derivation-v1` registers as both Abstraction and
-/// Perspective), fifteen tools, eleven resources.
+/// Perspective), fifteen tools, twelve resources.
 pub const FLAVOR_0: FlavorContract = FlavorContract {
     flavor_id: FLAVOR_ID,
     ordinal: CORE_ORDINAL,

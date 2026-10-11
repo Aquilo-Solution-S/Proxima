@@ -12,6 +12,7 @@ use proxima_core::mcp::core_tools::{
     list_schemas::{ListSchemasArgs, get_schema, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
+    memory_counts::memory_counts,
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
     },
@@ -652,6 +653,7 @@ async fn dispatch_resource(
         ParsedResource::Graph(args) => resource_output_value(get_graph(ctx, args).await?),
         ParsedResource::Memory(args) => resource_output_value(get_memory(ctx, args).await?),
         ParsedResource::Memories(args) => resource_output_value(get_memories(ctx, args).await?),
+        ParsedResource::MemoryCounts => resource_output_value(memory_counts(ctx).await?),
         ParsedResource::MemoryLineage(args) => {
             resource_output_value(walk_memory_lineage(ctx, args).await?)
         }
@@ -751,6 +753,7 @@ enum ParsedResource {
     Graph(GetGraphArgs),
     Memory(GetMemoryArgs),
     Memories(GetMemoriesArgs),
+    MemoryCounts,
     MemoryLineage(WalkMemoryLineageArgs),
     ChangeEvents(ListChangeEventsArgs),
     WakeCandidates(ListWakeCandidatesArgs),
@@ -767,6 +770,7 @@ impl ParsedResource {
             Self::Graph(_) => protocol_resource::GRAPH,
             Self::Memory(_) => protocol_resource::MEMORY,
             Self::Memories(_) => protocol_resource::MEMORIES,
+            Self::MemoryCounts => protocol_resource::MEMORY_COUNTS,
             Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
             Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
             Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
@@ -792,6 +796,10 @@ mod resource_path {
     pub const CHANGE_EVENTS: &str = core_resource(protocol_resource::CHANGE_EVENTS).path;
     pub const WAKE_CANDIDATES: &str = core_resource(protocol_resource::WAKE_CANDIDATES).path;
     pub const MEMORIES: &str = core_resource(protocol_resource::MEMORIES).path;
+    /// The segment after [`MEMORIES`] that names the counts resource, which
+    /// shares its path key; pinned to the contract's template by
+    /// `memory_counts_tail_is_the_contract_template`.
+    pub const MEMORY_COUNTS_TAIL: &str = "counts";
     pub const MEMORY: &str = core_resource(protocol_resource::MEMORY).path;
     pub const GOALS: &str = core_resource(protocol_resource::GOALS).path;
     pub const GOAL: &str = core_resource(protocol_resource::GOAL).path;
@@ -841,6 +849,11 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
             Ok(ParsedResource::Memories(GetMemoriesArgs {
                 memories: ids.split(',').map(ToOwned::to_owned).collect(),
             }))
+        }
+        path if resource_path::tail(path, resource_path::MEMORIES)
+            == Some(resource_path::MEMORY_COUNTS_TAIL) =>
+        {
+            Ok(ParsedResource::MemoryCounts)
         }
         resource_path::GOALS => Ok(ParsedResource::Goals(ListGoalsArgs {
             state: query_value(&query, "state").map(ToOwned::to_owned),
@@ -1450,6 +1463,64 @@ mod tests {
                 value: "not-a-number".into(),
                 expected: "a non-negative integer",
             }
+        );
+    }
+
+    /// `proxima://memories/counts` shares the `memories` path key with the
+    /// batch read and is the only tail under it; the batch read keeps its
+    /// exact path, its required `ids` and its own scope key.
+    #[test]
+    fn parse_resource_uri_serves_memories_batch_and_counts() {
+        let counts = parse_resource_uri("proxima://memories/counts").expect("counts resource");
+        assert!(matches!(counts, ParsedResource::MemoryCounts));
+        assert_eq!(counts.scope_key(), protocol_resource::MEMORY_COUNTS);
+
+        // Parameterless like `proxima://tools`: a query is not read, and a
+        // malformed one is still refused by the shared query parser.
+        assert!(matches!(
+            parse_resource_uri("proxima://memories/counts?ids=F:one"),
+            Ok(ParsedResource::MemoryCounts)
+        ));
+        assert_eq!(
+            parse_resource_uri("proxima://memories/counts?ids").unwrap_err(),
+            ResourceUriError::MalformedQueryPair { pair: "ids".into() }
+        );
+
+        for other in [
+            "proxima://memories/other",
+            "proxima://memories/",
+            "proxima://memories/counts/",
+            "proxima://memories/counts/more",
+            "proxima://memories/Counts",
+        ] {
+            assert_eq!(
+                parse_resource_uri(other).unwrap_err(),
+                ResourceUriError::UnknownPath,
+                "{other}"
+            );
+        }
+
+        let batch = parse_resource_uri("proxima://memories?ids=F:one,A:two").expect("batch read");
+        assert_eq!(batch.scope_key(), protocol_resource::MEMORIES);
+        assert!(matches!(
+            batch,
+            ParsedResource::Memories(GetMemoriesArgs { memories }) if memories == ["F:one", "A:two"]
+        ));
+        assert_eq!(
+            parse_resource_uri("proxima://memories").unwrap_err(),
+            ResourceUriError::MissingParam { param: "ids" }
+        );
+    }
+
+    #[test]
+    fn memory_counts_tail_is_the_contract_template() {
+        assert_eq!(
+            core_resource(protocol_resource::MEMORY_COUNTS).uri_template,
+            format!(
+                "proxima://{}/{}",
+                resource_path::MEMORIES,
+                resource_path::MEMORY_COUNTS_TAIL
+            )
         );
     }
 

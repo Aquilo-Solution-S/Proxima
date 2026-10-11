@@ -114,6 +114,7 @@ Canonical substrate resources:
 | `proxima://graph` | graph snapshot and status fields |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memories{?ids}` | batch memory read by comma-separated prefixed ids, at most 100 per call; returns found memories in request order plus a `missing` list (not-exists and not-visible are deliberately indistinguishable) |
+| `proxima://memories/counts` | current memories the caller can read, by kind: `{"counts": {"Fact": n, "Abstraction": n, "Perspective": n, "Goal": n}}`. All four keys always present, zero when none. One per series head (`proxima_core.memory_head`) for Fact, Abstraction and Perspective, one per Goal head (`goal_head`); never one per version, and a forgotten memory is not counted. Same owner set and kind-scoped row security as `Engine::query`; a caller who reads nothing gets `Forbidden`. Parameterless; a read writes no call-ledger row |
 | `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
 | `proxima://change-events{?since,limit}` | forward `announce` poll, ascending, with `next_since` and `has_more` |
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
@@ -121,7 +122,7 @@ Canonical substrate resources:
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
 | neighbors / lineage | walk `memory.origins` / `memory.refs`. No `proxima://edges` |
 
-`proxima://how-to` is an instructional MCP resource outside the 11-resource
+`proxima://how-to` is an instructional MCP resource outside the 12-resource
 protocol count.
 
 ### Resource errors

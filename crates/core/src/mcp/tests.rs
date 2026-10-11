@@ -19,6 +19,7 @@ mod manifest_tests {
             protocol_resource::GRAPH,
             protocol_resource::MEMORY,
             protocol_resource::MEMORIES,
+            protocol_resource::MEMORY_COUNTS,
             protocol_resource::MEMORY_LINEAGE,
             protocol_resource::CHANGE_EVENTS,
             protocol_resource::WAKE_CANDIDATES,

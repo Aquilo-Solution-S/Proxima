@@ -157,7 +157,7 @@ facade_names! {
     // Needed by the arguments and results of the Engine verbs a host calls (`get_graph`,
     // `list_members`, ...).
     engine_verbs {
-        host_only: [EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationPage, FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow, GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts, StoragePortsBuilder],
+        host_only: [EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationPage, FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow, GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts, StoragePortsBuilder],
         both_tiers: [EmbeddingMode, UploadCompleted, UploadCompletionExpectation],
     }
 

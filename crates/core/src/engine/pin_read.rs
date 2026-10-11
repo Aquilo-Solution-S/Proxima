@@ -606,6 +606,14 @@ mod tests {
             Err(StorageError::Internal("unused".into()))
         }
 
+        async fn count_memories(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _read_owners: &[OwnerRef],
+        ) -> Result<crate::read_models::MemoryCounts, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
         async fn search_memories(
             &self,
             _scope: Option<&crate::OwnerScope>,

@@ -379,6 +379,7 @@ mod tests {
         let resources = [
             resource::MEMORY,
             resource::MEMORIES,
+            resource::MEMORY_COUNTS,
             resource::MEMORY_LINEAGE,
             resource::TOOLS,
             resource::GRAPH,

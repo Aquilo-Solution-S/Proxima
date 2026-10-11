@@ -395,6 +395,18 @@ impl MemoryReadPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, result).await
     }
 
+    async fn count_memories(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        read_owners: &[OwnerRef],
+    ) -> Result<proxima_core::read_models::MemoryCounts, StorageError> {
+        let mut tx =
+            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let result =
+            async { verbs::query::count_memories_on_connection(&mut tx, read_owners).await }.await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
     async fn search_memories(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,

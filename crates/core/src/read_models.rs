@@ -14,6 +14,36 @@ pub struct MemorySketch {
     pub text: String,
 }
 
+/// How many current memories a read set holds, by kind: one per series head
+/// for the three memory kinds, one per Goal in any state. A stateful series
+/// counts once however many versions it has. Serialized as the body of
+/// `proxima://memories/counts`; every kind is always present, zero when the
+/// read set holds none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct MemoryCounts {
+    #[serde(rename = "Fact")]
+    pub fact: u64,
+    #[serde(rename = "Abstraction")]
+    pub abstraction: u64,
+    #[serde(rename = "Perspective")]
+    pub perspective: u64,
+    #[serde(rename = "Goal")]
+    pub goal: u64,
+}
+
+impl MemoryCounts {
+    /// The count of `kind`. Exhaustive over [`EntityKind`]: a new kind is a
+    /// compile error here, never a row that goes uncounted.
+    pub fn slot(&mut self, kind: EntityKind) -> &mut u64 {
+        match kind {
+            EntityKind::Fact => &mut self.fact,
+            EntityKind::Abstraction => &mut self.abstraction,
+            EntityKind::Perspective => &mut self.perspective,
+            EntityKind::Goal => &mut self.goal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySnapshot {
     pub memory_id: MemoryId,
@@ -68,8 +98,33 @@ pub fn resolve_memory_schema<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{MemorySchemaSpec, resolve_memory_schema};
+    use super::{MemoryCounts, MemorySchemaSpec, resolve_memory_schema};
     use crate::{EntityKind, SchemaId, SchemaVersion, StorageError};
+
+    /// The wire keys are `EntityKind::as_str`, every one is present when
+    /// zero, and `slot` reaches the field the key names.
+    #[test]
+    fn memory_counts_serialize_every_kind_under_its_entity_kind_name() {
+        let zero = serde_json::to_value(MemoryCounts::default()).expect("serializes");
+        assert_eq!(
+            zero,
+            serde_json::json!({"Fact": 0, "Abstraction": 0, "Perspective": 0, "Goal": 0})
+        );
+        for (kind, amount) in [
+            (EntityKind::Fact, 1_u64),
+            (EntityKind::Abstraction, 2),
+            (EntityKind::Perspective, 3),
+            (EntityKind::Goal, 4),
+        ] {
+            let mut counts = MemoryCounts::default();
+            *counts.slot(kind) += amount;
+            let wire = serde_json::to_value(counts).expect("serializes");
+            for (key, value) in wire.as_object().expect("an object") {
+                let expected = if key == kind.as_str() { amount } else { 0 };
+                assert_eq!(value, expected, "{key} after counting a {kind:?}");
+            }
+        }
+    }
 
     fn spec(kind: EntityKind, id: &str, version: u32) -> MemorySchemaSpec {
         MemorySchemaSpec {

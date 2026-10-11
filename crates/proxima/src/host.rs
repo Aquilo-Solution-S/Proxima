@@ -486,8 +486,8 @@ pub use proxima_core::{
 /// `get_graph`, `list_change_events`, `read_fact_citation`, `facts_citing_object`,
 /// `list_members`, `drain_embedding_jobs`, `reconcile_embeddings`,
 /// `embedding_coverage`, `purge_embedding_spaces`, `complete_upload_as_fact`,
-/// `inbound_pin_nodes`, `load_sketches`, `read_goal_wake_configs`, `try_compose`
-/// and `with_mcp_listener`. Without them a host can call each verb and cannot
+/// `inbound_pin_nodes`, `load_sketches`, `memory_counts`, `read_goal_wake_configs`,
+/// `try_compose` and `with_mcp_listener`. Without them a host can call each verb and cannot
 /// write its argument or result in a signature.
 pub use proxima_core::{
     EmbeddingDrainOutcome, EmbeddingMode, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
@@ -495,7 +495,7 @@ pub use proxima_core::{
     EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationReadRequest,
     FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow,
     GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse,
-    MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts,
+    MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts,
     UploadCompleted, UploadCompletionExpectation, query::FactCitationPage,
     storage_ports::StoragePortsBuilder,
 };
