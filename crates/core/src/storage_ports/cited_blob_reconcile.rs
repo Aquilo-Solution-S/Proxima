@@ -1,8 +1,8 @@
 //! Does the corpus still hold what it says it holds?
 //!
 //! The blob lane is content-addressed across two systems that can drift.
-//! `cited_uploaded_blob_v1` names a bucket and an object key; the object
-//! store holds bytes. Nothing keeps them in step, and since the held-blob
+//! A completed `blob_uploads` row names a bucket and an object key; the
+//! object store holds bytes. Nothing keeps them in step, and since the held-blob
 //! check (`CitedBlobPort::find_held_blobs`) an upload is SKIPPED when the
 //! row says the artefact is present — so a row that outlives its object
 //! makes a citation unresolvable until the object is restored or the content

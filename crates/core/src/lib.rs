@@ -6,7 +6,7 @@ extern crate self as proxima_core;
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.25";
+pub const RELEASE_VERSION: &str = "0.0.26";
 
 pub mod access;
 pub mod auth;
@@ -35,7 +35,6 @@ pub mod owner;
 pub mod owner_inverse;
 pub mod owner_scope;
 pub mod payload;
-pub mod payload_contract;
 pub mod protocol;
 pub mod publication;
 pub mod quiesce;
@@ -90,7 +89,6 @@ pub use owner_inverse::{
 };
 pub use owner_scope::OwnerScope;
 pub use payload::*;
-pub use payload_contract::assert_no_serde_json_value_fields;
 pub use publication::{
     CLOUDEVENTS_DATA_CONTENT_TYPE, CLOUDEVENTS_SPEC_VERSION, DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_MAX_PENDING, ExtensionValue, MAX_EXTENSION_NAME_CHARS, MAX_EXTENSION_VALUE_BYTES,
@@ -107,7 +105,7 @@ pub use tool::*;
 
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    CitationAttachmentRequest, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
+    FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
@@ -136,8 +134,7 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `goal_schemas`, `cited_object_schemas`, `citation_mapping_schemas`,
-/// `opaque_cited_object_schemas`, `opaque_citation_mapping_schemas`,
+/// `goal_schemas`, `cited_object_schemas`, `opaque_cited_object_schemas`,
 /// `schema_capability_tags`, `mcp_tools`.
 /// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>`
@@ -163,9 +160,7 @@ macro_rules! proxima_schema_id {
 ///     name = "proxima-code",
 ///     fact_schemas = [ CommitV1, FileChangeV1 ],
 ///     cited_object_schemas = [ SourceFileV1 ],
-///     citation_mapping_schemas = [ SourceFileSpanV1 ],
 ///     opaque_cited_object_schemas = [ "proxima-code/code-blob-v1" ],
-///     opaque_citation_mapping_schemas = [ "proxima-code/code-blob-whole-v1" ],
 ///     mcp_tools = [ MyTool ],
 /// }
 /// ```
@@ -192,9 +187,9 @@ macro_rules! proxima_flavor {
             $registry.$add::<$ty>()?;
         )*
     };
-    // Internal: register opaque cited-object / citation-mapping schemas
-    // that intentionally have no Rust payload type or sidecar table.
-    (@opaque_schemas $registry:ident $name:literal $kind:ident [ $($schema_id:expr),* $(,)? ]) => {
+    // Internal: register opaque cited-object schemas that intentionally
+    // have no Rust payload type or sidecar table.
+    (@opaque_schemas $registry:ident $name:literal [ $($schema_id:expr),* $(,)? ]) => {
         $(
             {
                 let schema_id: &str = $schema_id;
@@ -203,14 +198,13 @@ macro_rules! proxima_flavor {
                     return ::std::result::Result::Err($crate::FlavorRegistryError::SchemaIngressMismatch {
                         schema_id,
                         schema_version: $crate::SchemaVersion::new(1),
-                        kind: $crate::verbs::schema::PayloadKind::$kind,
+                        kind: $crate::verbs::schema::PayloadKind::CitedObject,
                     });
                 }
-                $registry.try_add_opaque_schema(
+                $registry.add_opaque_cited_object_schema(
                     schema_id,
                     $crate::SchemaVersion::new(1),
-                    $crate::verbs::schema::PayloadKind::$kind,
-                )?;
+                );
             }
         )*
     };
@@ -303,9 +297,7 @@ macro_rules! proxima_flavor {
         $(, perspective_schemas = [ $($persp:ty),* $(,)? ])?
         $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
         $(, cited_object_schemas = [ $($cited:ty),* $(,)? ])?
-        $(, citation_mapping_schemas = [ $($citemap:ty),* $(,)? ])?
         $(, opaque_cited_object_schemas = [ $($opaque_cited:expr),* $(,)? ])?
-        $(, opaque_citation_mapping_schemas = [ $($opaque_citemap:expr),* $(,)? ])?
         $(, schema_capability_tags = [ $(($cap_kind:ident, $cap_ty:ty) => [ $($cap_tag:expr),* $(,)? ]),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, contract = $contract:expr)?
@@ -342,12 +334,8 @@ macro_rules! proxima_flavor {
                 GoalPayload try_add_goal_schema [ $($goal),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
                 CitedObjectPayload try_add_cited_object_schema [ $($cited),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
-                CitationMappingPayload try_add_citation_mapping_schema [ $($citemap),* ]);)?
             $($crate::proxima_flavor!(@opaque_schemas registry $name
-                CitedObject [ $($opaque_cited),* ]);)?
-            $($crate::proxima_flavor!(@opaque_schemas registry $name
-                CitationMapping [ $($opaque_citemap),* ]);)?
+                [ $($opaque_cited),* ]);)?
             $($crate::proxima_flavor!(@schema_capability_tags registry $name [
                 $(($cap_kind, $cap_ty) => [ $($cap_tag),* ]),*
             ]);)?
@@ -396,5 +384,5 @@ pub use storage_ports::{
     HostStateWritePermit, InboundPinQuery, McpCallReadPort, MemoryAuthoringPort, MemoryInspectPort,
     MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort,
     OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort,
-    RegistryProjectionPort, SourceCursorPort, StateSurfaceName, StoragePorts,
+    SourceCursorPort, StateSurfaceName, StoragePorts,
 };

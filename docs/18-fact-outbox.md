@@ -68,18 +68,23 @@ Capture is **mandatory** while a listenable type is registered. There is no
 
 | Error | Raised when | MCP tool class | JSON-RPC | REST |
 |---|---|---|---|---|
-| `PayloadTooLarge` | serialized export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | `InvalidArgument` | `-32602` | 400 `invalid-argument` |
+| `PayloadTooLarge` | serialized export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | `InvalidInput` | `-32602` | 400 `invalid-argument` |
 | `CapacityExhausted` | unpublished record count is at `PROXIMA_OUTBOX_MAX_PENDING` — explicit backpressure, never silent eviction | `CapacityExhausted` | `-32000`, `data.code = "capacity_exhausted"` | **503** `capacity-exhausted` |
-| `UntypedListenableWrite` | a listenable series reached the chokepoint without its registered typed export | `InvalidArgument` | `-32602` | 400 `invalid-argument` |
+| `UntypedListenableWrite` | a listenable series reached the chokepoint without its registered typed export | `InvalidInput` | `-32602` | 400 `invalid-argument` |
 | `SourceUnbound` | a listenable schema reached the chokepoint with no configured publication source | `Internal` | `-32603` | 500 `internal` |
-| `ExportFailed` | the envelope would not serialize, or `t` carries no UUIDv7 timestamp | `Internal` | `-32603` | 500 `internal` |
+| `ExportFailed` | the envelope would not serialize, or `t` carries no UUIDv7 timestamp | `InvalidInput` | `-32602` | 400 `invalid-argument` |
+
+The REST slugs are those of a write through `Engine` or `UnitOfWork`, which
+every shipped tool uses (`ProtocolError`). A tool that returns the raw
+`StorageError::PublicationRefused` gets the same statuses with
+`invalid-input` in place of `invalid-argument`.
 
 `CapacityExhausted` is its own class on every surface, and deliberately not the
 class of a permanent precondition failure. It says *retry later*: the write was
 refused because a **transient** backlog is at its ceiling, and a caller that
 sees 503 knows to back off where a 400 would have told it to change its
 request and a 500 would have told it to open an incident. See
-[17 §Error surface](17-rest-surface.md).
+[17 §Errors](17-rest-surface.md#errors).
 
 **The pending ceiling is a SOFT bound.** The capacity check counts unpublished
 records inside the write's own transaction under `READ COMMITTED`, so N

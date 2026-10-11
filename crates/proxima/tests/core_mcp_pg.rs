@@ -5,23 +5,18 @@ use proxima_core::storage_ports::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
+use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{
     AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo, FlavorApp,
-    FlavorServiceError, FlavorServices, Proxima, S3RuntimeConfig, StorageError, ToolScope,
-    company_owner,
+    FlavorServiceError, FlavorServices, Proxima, S3RuntimeConfig, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthPath, CitationMappingPayload, CitedObjectPayload, ColdObjectStore, FlavorRegistry,
-    FlavorRegistryFrozen, GroupId, MemoryId, Owner, OwnerRef, Relation, Replay, Role, SchemaId,
-    ToolEffect, UserId, provider_safe_tool_name,
+    AuthPath, CitedObjectPayload, ColdObjectStore, FlavorRegistry, FlavorRegistryFrozen, GroupId,
+    MemoryId, Owner, OwnerRef, Relation, Replay, Role, ToolEffect, UserId, provider_safe_tool_name,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::sidecars::{
-    PgCitationMappingSidecar, PgCitedObjectSidecar, PgSidecarFuture,
-};
 use split_core_db::clone_split_core_db;
 use uuid::Uuid;
 
@@ -334,77 +329,12 @@ impl CitedObjectPayload for TestCitedObject {
     const SCHEMA_ID: &'static str = "test/facade-cited-object-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "public.facade_cited_object_v1"
-    }
-
     fn idempotency_key(&self) -> [u8; 32] {
         let mut out = [0; 32];
         let bytes = self.locator.as_bytes();
         let len = bytes.len().min(out.len());
         out[..len].copy_from_slice(&bytes[..len]);
         out
-    }
-}
-
-impl PgCitedObjectSidecar for TestCitedObject {
-    fn insert_cited_object_sidecar<'t>(
-        &'t self,
-        tx: &'t mut sqlx::PgConnection,
-        cited_object_id: Uuid,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO public.facade_cited_object_v1 (cited_object_id, locator)
-                 VALUES ($1, $2)
-                 ON CONFLICT (cited_object_id) DO NOTHING",
-            )
-            .bind(cited_object_id)
-            .bind(&self.locator)
-            .execute(tx)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct TestCitationMapping {
-    section: String,
-}
-
-impl CitationMappingPayload for TestCitationMapping {
-    const SCHEMA_ID: &'static str = "test/facade-citation-mapping-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn sidecar_table() -> Option<&'static str> {
-        Some("public.facade_citation_mapping_v1")
-    }
-
-    fn cited_object_schema() -> SchemaId {
-        TestCitedObject::schema_id()
-    }
-}
-
-impl PgCitationMappingSidecar for TestCitationMapping {
-    fn insert_citation_mapping_sidecar<'t>(
-        &'t self,
-        tx: &'t mut sqlx::PgConnection,
-        citation_mapping_id: Uuid,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO public.facade_citation_mapping_v1 (citation_mapping_id, section)
-                 VALUES ($1, $2)",
-            )
-            .bind(citation_mapping_id)
-            .bind(&self.section)
-            .execute(tx)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Ok(())
-        })
     }
 }
 
@@ -462,13 +392,7 @@ impl FlavorApp for MarkApp {
 impl FlavorBundle for AgentMemoryApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
         registry.try_add_cited_object_schema::<TestCitedObject>()?;
-        registry.try_add_citation_mapping_schema::<TestCitationMapping>()?;
         Ok(())
-    }
-
-    fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
-        registry.add_cited_object::<TestCitedObject>();
-        registry.add_citation_mapping::<TestCitationMapping>();
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -2106,7 +2030,6 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .build()
             .await?;
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
-        create_citation_sidecars(&admin_pool).await?;
         let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
@@ -2123,10 +2046,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
                 "citation": {
                     "object_schema_id": TestCitedObject::SCHEMA_ID,
                     "object_schema_version": TestCitedObject::SCHEMA_VERSION,
-                    "object_payload": { "locator": "artifact://facade/core-citation" },
-                    "mapping_schema_id": TestCitationMapping::SCHEMA_ID,
-                    "mapping_schema_version": TestCitationMapping::SCHEMA_VERSION,
-                    "mapping_payload": { "section": "body" }
+                    "object_payload": { "locator": "artifact://facade/core-citation" }
                 }
             }),
         )
@@ -2171,10 +2091,16 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             citation["citation"]["cited_object_schema_id"],
             TestCitedObject::SCHEMA_ID
         );
-        assert_eq!(
-            citation["citation"]["mapping_schema_id"],
-            TestCitedObject::SCHEMA_ID
-        );
+        // A citation is exactly the cited object and its schema; nothing
+        // else rides on the wire.
+        let mut citation_keys: Vec<&str> = citation["citation"]
+            .as_object()
+            .expect("citation object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        citation_keys.sort_unstable();
+        assert_eq!(citation_keys, ["cited_object_id", "cited_object_schema_id"]);
 
         let cross_owner = call_test_model_tool(
             &tools,
@@ -2192,26 +2118,6 @@ async fn facade_core_citation_readback_is_owner_scoped() {
     .await;
 
     result.expect("core citation MCP facade integration test failed");
-}
-
-async fn create_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "CREATE TABLE public.facade_cited_object_v1 (
-            cited_object_id uuid PRIMARY KEY,
-            locator text NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE TABLE public.facade_citation_mapping_v1 (
-            citation_mapping_id uuid PRIMARY KEY,
-            section text NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 async fn ensure_fact_embedding_for_handle(

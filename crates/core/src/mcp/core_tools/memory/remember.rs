@@ -2,9 +2,7 @@ use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
-use crate::verbs::fact_ingest::{
-    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
-};
+use crate::verbs::fact_ingest::{FactWriteCommand, InlineCitedObjectDraft};
 use crate::{SchemaId, SchemaVersion, canonical_json_bytes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,7 +40,7 @@ pub struct RememberArgs {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional typed citation linking this Fact to an external artifact. Either inline (object_schema_id + object_schema_version + object_payload describing the artifact) or by reference (cited_object_id of an already-stored object, e.g. from core_upload's complete action). The object/mapping schemas must be registered (`CitedObject`/`CitationMapping` kinds — discover them via the `proxima://schemas{?kind}` resource)."
+        description = "Optional typed citation linking this Fact to an external artifact. Either inline (object_schema_id + object_schema_version + object_payload describing the artifact) or by reference (cited_object_id of an already-stored object, e.g. from core_upload's complete action). The object schema must be registered (`CitedObject` kind — discover it via the `proxima://schemas{?kind}` resource)."
     )]
     pub citation: Option<RememberCitation>,
     #[serde(default)]
@@ -64,7 +62,7 @@ pub struct RememberArgs {
 pub struct RememberCitation {
     #[serde(default)]
     #[schemars(
-        description = "Id of an ALREADY-STORED cited object to cite by reference (e.g. from core_upload's complete action or a citation read-back), optionally prefixed `C:`. Mutually exclusive with the three object_* fields; the mapping fields stay required. The object must belong to the Fact's owner and carry the schema the mapping targets."
+        description = "Id of an ALREADY-STORED cited object to cite by reference (e.g. from core_upload's complete action or a citation read-back), optionally prefixed `C:`. Mutually exclusive with the three object_* fields. The object must belong to the Fact's owner."
     )]
     pub cited_object_id: Option<String>,
     #[serde(default)]
@@ -80,16 +78,6 @@ pub struct RememberCitation {
         description = "The cited object payload as JSON, conforming to its schema (inline citation only)."
     )]
     pub object_payload: Option<serde_json::Value>,
-    #[schemars(
-        description = "Schema id of the citation mapping (a registered `CitationMapping` schema — discover via `proxima://schemas{?kind}`)."
-    )]
-    pub mapping_schema_id: String,
-    #[schemars(description = "Version of the citation-mapping schema.")]
-    pub mapping_schema_version: u32,
-    #[schemars(
-        description = "The citation mapping payload as JSON (e.g. a locator within the cited object), conforming to its schema."
-    )]
-    pub mapping_payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -180,29 +168,17 @@ async fn ingest_cited_fact(
     sidecars: &[SidecarPayload],
 ) -> Result<crate::FactIngestOutcome, McpToolError> {
     match drafts {
-        RememberCitationDrafts::Inline {
-            cited_object,
-            mapping,
-        } => {
+        RememberCitationDrafts::Inline { cited_object } => {
             let authorized = engine
-                .authorize_fact_with_citation(authz, draft, cited_object, mapping, sidecars)
+                .authorize_fact_with_citation(authz, draft, cited_object, sidecars)
                 .await?;
             Ok(engine
                 .ingest_fact_with_citation_and_typed_sidecar(&authorized)
                 .await?)
         }
-        RememberCitationDrafts::ByRef {
-            cited_object_id,
-            mapping,
-        } => {
+        RememberCitationDrafts::ByRef { cited_object_id } => {
             let authorized = engine
-                .authorize_fact_with_citation_by_ref(
-                    authz,
-                    draft,
-                    cited_object_id,
-                    mapping,
-                    sidecars,
-                )
+                .authorize_fact_with_citation_by_ref(authz, draft, cited_object_id, sidecars)
                 .await?;
             Ok(engine
                 .ingest_fact_with_citation_ref_and_typed_sidecar(&authorized)
@@ -217,26 +193,18 @@ async fn ingest_cited_fact(
 enum RememberCitationDrafts {
     Inline {
         cited_object: InlineCitedObjectDraft,
-        mapping: InlineCitationMappingDraft,
     },
     ByRef {
         cited_object_id: uuid::Uuid,
-        mapping: InlineCitationMappingDraft,
     },
 }
 
 /// Enforce the citation arity: exactly one of `cited_object_id` XOR the
 /// full inline triple (`object_schema_id` + `object_schema_version` +
-/// `object_payload`); the mapping fields are always required (by the
-/// struct) and shared by both shapes.
+/// `object_payload`).
 fn remember_citation_drafts(
     citation: RememberCitation,
 ) -> Result<RememberCitationDrafts, McpToolError> {
-    let mapping = InlineCitationMappingDraft {
-        schema_id: SchemaId::new(citation.mapping_schema_id),
-        schema_version: SchemaVersion::new(citation.mapping_schema_version),
-        payload_bytes: encode_json_payload(&citation.mapping_payload),
-    };
     let has_inline_field = citation.object_schema_id.is_some()
         || citation.object_schema_version.is_some()
         || citation.object_payload.is_some();
@@ -244,10 +212,7 @@ fn remember_citation_drafts(
         (Some(reference), false) => {
             let cited_object_id =
                 super::super::facts_citing_object::parse_cited_object_id(&reference)?;
-            Ok(RememberCitationDrafts::ByRef {
-                cited_object_id,
-                mapping,
-            })
+            Ok(RememberCitationDrafts::ByRef { cited_object_id })
         }
         (None, true) => {
             let (Some(schema_id), Some(schema_version), Some(payload)) = (
@@ -267,7 +232,6 @@ fn remember_citation_drafts(
                     schema_version: SchemaVersion::new(schema_version),
                     payload_bytes: encode_json_payload(&payload),
                 },
-                mapping,
             })
         }
         (Some(_), true) => Err(McpToolError::InvalidInput(

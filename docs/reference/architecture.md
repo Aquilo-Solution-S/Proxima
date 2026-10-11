@@ -32,3 +32,9 @@ core engine (`crates/core`)
 | `crates/mcp-server` | MCP transport/self-doc | MCP integrators |
 | `crates/outbox-nats` | optional Fact-outbox JetStream publisher | hosts publishing declared Facts |
 | `flavors/code` | code-memory flavor | code-agent deployments |
+| `crates/llm-openai-compat` | OpenAI-compatible HTTP `EmbeddingClient`, the reference embedding adapter | hosts that embed for retrieval |
+| `crates/blob-s3` | S3-backed cited-blob service (presigned upload, confirm, read) | hosts storing cited blobs |
+| `crates/auth-oidc` | OIDC bearer-JWT host authenticator | hosts authenticating MCP callers |
+| `crates/pg-testkit` | Postgres clone-per-test harness | maintainers |
+| `tools/dev-migrate` | bootstraps a blank Postgres with the substrate and in-repo flavor migrations | developers |
+| `tools/dev-idp` | loopback OIDC issuer for self-hosted Proxima | developers |

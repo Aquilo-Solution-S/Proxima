@@ -27,9 +27,8 @@ pub use code_chunk_vectors::{
 pub use code_series_heads::file_revision_heads_sql_for_tests;
 pub use code_series_heads::{
     ChunkHeadClass, ChunkSeriesHead, FileRevisionHeadRow, owned_chunk_head_classes,
-    owned_chunk_series_heads, owned_file_revision_heads, owned_present_chunk_indexes,
-    owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
-    readable_file_revision_head_ts,
+    owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -38,12 +37,7 @@ pub(crate) use edges::{
     load_inbound_pin_nodes_on_connection, load_pin_nodes_on_connection,
     load_visible_goal_ids_on_connection,
 };
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use goals::goal_page_sql_for_tests;
-pub use goals::{
-    ActiveGoalTargetRow, active_goals_for_memory_targets,
-    active_goals_for_memory_targets_on_connection,
-};
+pub use goals::{ActiveGoalTargetRow, active_goals_for_memory_targets_on_connection};
 pub(crate) use lineage::walk_memory_lineage_on_connection;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
@@ -51,8 +45,6 @@ pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
 pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories_on_connection;
 pub(crate) use rows::read_seq_high_water_on_connection;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories_on_connection;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{

@@ -189,6 +189,14 @@ pub use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// `proxima::host::testkit` kept as a path to [`crate::testkit`].
 #[cfg(feature = "testkit")]
 pub use crate::testkit;
+/// The citation schema id [`CitationSpec`] is written with:
+/// `UPLOADED_BLOB_SCHEMA_ID` names the cited object a Fact cites.
+///
+/// `CitationSpec::v1` takes `impl Into<String>`, so leaving the constant
+/// off the facade would not block anything — it would silently push
+/// flavors onto bare string literals that no compiler could check against
+/// a rename of the constant they duplicate.
+pub use proxima_core::UPLOADED_BLOB_SCHEMA_ID;
 /// The publication half of the engine configuration (docs/18).
 ///
 /// A host that registers a listenable schema must bind a
@@ -245,19 +253,6 @@ pub use proxima_core::{
     Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, SourceId, StorageError,
     ToolName, ToolScope, UserId, canonical_json_bytes, env_value, parse_external_key,
     provider_safe_tool_name,
-};
-/// The three citation schema ids [`CitationSpec`] is written with:
-/// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two
-/// name the locator mapping through which a Fact cites it — the whole
-/// object, or a page span within it.
-///
-/// A flavor citing an uploaded blob names a mapping id in every
-/// `CitationSpec::v1` call. `CitationSpec::v1` takes `impl Into<String>`,
-/// so leaving two of the three off the facade did not block anything —
-/// it silently pushed flavors onto bare string literals that no compiler
-/// could check against a rename of the constant they duplicate.
-pub use proxima_core::{
-    UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID, UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
@@ -415,9 +410,9 @@ pub use proxima_core::publication::{
 /// Flavor SDK names some of them under `proxima::flavor` too; these are the
 /// host tier's names for them.
 pub use proxima_core::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EntityId, FactPayload,
-    FactReceiptId, FactTombstone, GoalId, GoalPayload, InputContractId, ModelId, OperatorId,
-    PayloadReference, PerspectivePayload, PromptVersion, ReferenceBinding, SchemaVersion, ScopeRef,
+    AbstractionPayload, CitedObjectPayload, EntityId, FactPayload, FactReceiptId, FactTombstone,
+    GoalId, GoalPayload, InputContractId, ModelId, OperatorId, PayloadReference,
+    PerspectivePayload, PromptVersion, ReferenceBinding, SchemaVersion, ScopeRef,
     SearchProjectionColumnKind, SidecarPayload, ToolId,
 };
 /// Request, row and outcome types the storage-port methods take and return
@@ -425,15 +420,15 @@ pub use proxima_core::{
 /// [`EmbeddingJobPort`] and the other `*Port` traits), so a host or backend that
 /// implements a port can write its signatures.
 pub use proxima_core::{
-    AbstractionRow, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest,
-    DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts,
-    EmbeddingWriteOutcome, FactRow, GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity,
-    MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, OperatorPhase,
-    goal_write::AchieveGoalAtomicRequest, goal_write::CreateGoalAtomicRequest,
-    goal_write::DecomposeGoalAtomicRequest, goal_write::GoalAtomicContext, goal_write::GoalDraft,
-    goal_write::GoalReplayOutcome, goal_write::GoalReplayRequest,
-    goal_write::ModifyGoalAtomicRequest, goal_write::TransitionGoalAtomicRequest,
-    own_erase::SeriesEraseOutcome, own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
+    ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding,
+    EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome,
+    GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow,
+    MemoryOperatorKind, MemorySchemaSpec, OperatorPhase, goal_write::AchieveGoalAtomicRequest,
+    goal_write::CreateGoalAtomicRequest, goal_write::DecomposeGoalAtomicRequest,
+    goal_write::GoalAtomicContext, goal_write::GoalDraft, goal_write::GoalReplayOutcome,
+    goal_write::GoalReplayRequest, goal_write::ModifyGoalAtomicRequest,
+    goal_write::TransitionGoalAtomicRequest, own_erase::SeriesEraseOutcome,
+    own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
 };
 /// Host authentication: the argument and error types of
 /// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the
@@ -447,8 +442,7 @@ pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
 /// no authority.
 pub use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    OperatorMaintenanceProof, WritePermit, fact_ingest::AuthorizedCitationAttachment,
-    fact_ingest::AuthorizedInlineCitationMapping, fact_ingest::AuthorizedInlineCitedObject,
+    OperatorMaintenanceProof, WritePermit, fact_ingest::AuthorizedInlineCitedObject,
     fact_ingest::AuthorizedNodeLinks, owner_inverse::EraseAuthorization,
     owner_inverse::ExportAuthorization, owner_inverse::OwnerEraseContext,
     owner_inverse::OwnerExportContext, storage_ports::EmbeddingWriteProof,
@@ -460,9 +454,8 @@ pub use proxima_core::{
 /// pages a query, reads the change history or follows an edge names them.
 pub use proxima_core::{
     ChangeEvent, ChangeEventForWake, ChangeEventKind, Edge, EdgeEndpoint, EdgeKind,
-    EdgeTargetProjection, EntityRef, UploadedBlobPageSpanV1, query::FactCitationCursor,
-    query::GoalRow, query::MemoryLineageCursor, query::QueryCursor, query::QueryPage,
-    query::UploadedBlobRef,
+    EdgeTargetProjection, EntityRef, query::FactCitationCursor, query::GoalRow,
+    query::MemoryLineageCursor, query::QueryCursor, query::QueryPage,
 };
 /// The storage ports and their handles. [`StoragePortsBuilder`]'s setters take the
 /// `*Handle` aliases (`Arc<dyn ...Port>`), [`StoragePortsBuilder::try_build`]
@@ -474,7 +467,7 @@ pub use proxima_core::{
     EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, McpCallReadPort,
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
     OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort,
-    OwnerTransferPort, RegistryProjectionPort, SourceCursorPort, storage_ports::ChangeEventHandle,
+    OwnerTransferPort, SourceCursorPort, storage_ports::ChangeEventHandle,
     storage_ports::CitationHandle, storage_ports::EmbeddingJobHandle,
     storage_ports::EmbeddingMaintenanceHandle, storage_ports::EmbeddingTextHandle,
     storage_ports::EmbeddingWriteHandle, storage_ports::FactIngestHandle,
@@ -485,21 +478,9 @@ pub use proxima_core::{
     storage_ports::OwnerAccessReadHandle, storage_ports::OwnerDropProofHandle,
     storage_ports::OwnerEraseAuthorityHandle, storage_ports::OwnerInverseHandle,
     storage_ports::OwnerMembershipAdminHandle, storage_ports::OwnerTransferHandle,
-    storage_ports::RegistryProjectionHandle, storage_ports::SourceCursorHandle,
-    storage_ports::StoragePortsBuildError, storage_ports::WriteSession,
-    storage_ports::WriteSessionFactory, storage_ports::WriteSessionFactoryHandle,
-};
-/// The Fact-with-citation write path: [`FactWriteCommand`],
-/// [`Engine::authorize_fact_with_citation`],
-/// [`Engine::authorize_fact_with_citation_by_ref`],
-/// [`Engine::authorize_citation_attachment`], [`UnitOfWork::read_own_sidecar`]
-/// and [`Engine::decompose_goal`] take these drafts and requests and return
-/// these outcomes.
-pub use proxima_core::{
-    CitationAttachmentRequest, fact_ingest::Citation, fact_ingest::CitationMappingHint,
-    fact_ingest::CitedObjectHint, fact_ingest::InlineCitationMappingDraft,
-    fact_ingest::InlineCitedObjectDraft, goal_write::DecomposedGoalOutcome,
-    storage_ports::SidecarSessionRead,
+    storage_ports::SourceCursorHandle, storage_ports::StoragePortsBuildError,
+    storage_ports::WriteSession, storage_ports::WriteSessionFactory,
+    storage_ports::WriteSessionFactoryHandle,
 };
 /// Request, response and outcome types of the [`Engine`] verbs a host calls:
 /// `get_graph`, `list_change_events`, `read_fact_citation`, `facts_citing_object`,
@@ -553,6 +534,15 @@ pub use proxima_core::{
     storage_ports::CitedBlobStaged, storage_ports::CitedBlobUploadAborted,
     storage_ports::CitedBlobUploadCompleted, storage_ports::CitedBlobUploadHeader,
     storage_ports::CitedBlobUploadPrepared,
+};
+/// The Fact-with-citation write path: [`FactWriteCommand`],
+/// [`Engine::authorize_fact_with_citation`],
+/// [`Engine::authorize_fact_with_citation_by_ref`],
+/// [`UnitOfWork::read_own_sidecar`] and [`Engine::decompose_goal`] take
+/// these drafts and requests and return these outcomes.
+pub use proxima_core::{
+    fact_ingest::Citation, fact_ingest::CitedObjectHint, fact_ingest::InlineCitedObjectDraft,
+    goal_write::DecomposedGoalOutcome, storage_ports::SidecarSessionRead,
 };
 /// The native MCP handler: what [`CoreMcpTools::into_dynamic_handler`]
 /// returns and what [`McpStreamableService`] serves. A host implements
@@ -641,10 +631,10 @@ pub use {
     proxima_storage_pg::{
         PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, integrity::IntegrityFinding,
         integrity::IntegrityReport, integrity::IntegrityViolation, integrity::ProjectedSchema,
-        projection::Artifact, sidecars::PgCitationMappingSidecar, sidecars::PgCitedObjectSidecar,
-        sidecars::PgGoalSidecar, sidecars::PgMemoryPayload, sidecars::PgMemoryPayloadBatchFuture,
-        sidecars::PgMemoryPayloadFuture, sidecars::PgMemorySidecar, sidecars::PgSidecarFuture,
-        sidecars::PgSidecarReadCtx, sidecars::SidecarInsertPermit,
+        projection::Artifact, sidecars::PgGoalSidecar, sidecars::PgMemoryPayload,
+        sidecars::PgMemoryPayloadBatchFuture, sidecars::PgMemoryPayloadFuture,
+        sidecars::PgMemorySidecar, sidecars::PgSidecarFuture, sidecars::PgSidecarReadCtx,
+        sidecars::SidecarInsertPermit,
     },
 };
 /// What [`PgStorage`]'s public methods take and return beyond the migration

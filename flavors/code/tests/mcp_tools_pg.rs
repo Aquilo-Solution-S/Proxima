@@ -2463,20 +2463,10 @@ fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     proxima_code::register(&mut registry).expect("code schema registration");
     registry.add_fact_schema_or_panic_for_tests::<GoalActivationFixture>();
-    registry
-        .try_add_opaque_schema(
-            proxima_core::SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
-            proxima_core::SchemaVersion::new(1),
-            proxima_core::verbs::schema::PayloadKind::CitedObject,
-        )
-        .expect("test cited-object registration");
-    registry
-        .try_add_opaque_schema(
-            proxima_core::SchemaId::new(common::TEST_CITATION_BLOB_SCHEMA_ID.into()),
-            proxima_core::SchemaVersion::new(1),
-            proxima_core::verbs::schema::PayloadKind::CitationMapping,
-        )
-        .expect("test citation-mapping registration");
+    registry.add_opaque_cited_object_schema(
+        proxima_core::SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
+        proxima_core::SchemaVersion::new(1),
+    );
     registry.freeze_or_panic_for_tests()
 }
 
@@ -3178,7 +3168,6 @@ async fn ingest_code_chunk_with_type(
         None,
     )
     .await?;
-    insert_origin_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
 }
 
@@ -3266,24 +3255,6 @@ async fn code_chunk_memory_in_tx(
     )
     .await?;
     Ok(t)
-}
-
-#[allow(clippy::unused_async)]
-async fn insert_origin_edge(
-    _pool: &PgPool,
-    _owner: &Owner,
-    _chunk_memory_id: Uuid,
-    _file_revision_memory_id: Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
-}
-
-#[allow(dead_code, clippy::unused_async)]
-async fn force_same_memory_created_at(
-    _pool: &PgPool,
-    _memory_ids: &[Uuid],
-) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
 }
 
 async fn ingest_commit(

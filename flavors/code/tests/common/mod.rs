@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process::Command;
 
 use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner,
     OwnerRef, Role, SchemaId, SchemaVersion, UserId,
@@ -71,25 +70,14 @@ fn pre_owner_rls_code_migrator() -> Migrator {
 }
 
 pub const TEST_CITED_BLOB_SCHEMA_ID: &str = "test/cited_blob";
-pub const TEST_CITATION_BLOB_SCHEMA_ID: &str = "test/citation_blob";
 
 pub fn code_registry_with_test_citations() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     proxima_code::register(&mut registry).expect("code schema registration");
-    registry
-        .try_add_opaque_schema(
-            SchemaId::new(TEST_CITED_BLOB_SCHEMA_ID.into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        )
-        .expect("opaque cited-object registration");
-    registry
-        .try_add_opaque_schema(
-            SchemaId::new(TEST_CITATION_BLOB_SCHEMA_ID.into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        )
-        .expect("opaque citation-mapping registration");
+    registry.add_opaque_cited_object_schema(
+        SchemaId::new(TEST_CITED_BLOB_SCHEMA_ID.into()),
+        SchemaVersion::new(1),
+    );
     registry.freeze_or_panic_for_tests()
 }
 
@@ -156,19 +144,6 @@ pub async fn owner_write_permit(
     };
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     Ok(engine.authorize_owner_write(&authz, owner, kind).await?)
-}
-
-pub async fn insert_home(
-    pool: &sqlx::PgPool,
-    entity_id: Uuid,
-    owner: &Owner,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
-        .bind(entity_id)
-        .bind(owner.stored_owner_id())
-        .execute(pool)
-        .await
-        .map(|_| ())
 }
 
 /// Insert one timeseries Memory row. Returns `(handle, t)`.
@@ -447,7 +422,7 @@ pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: 
 }
 
 /// This flavor's frozen PG sidecar registry — the same handle production
-/// composes, and the one [`assert_no_declaration_drift`] asks.
+/// composes.
 pub fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
     let registry = proxima_code::schema_registry();
     let mut sidecars = PgSidecarRegistry::new();
@@ -456,25 +431,6 @@ pub fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
     sidecars
         .freeze_against(&registry)
         .expect("code test PG sidecars match code schema registry")
-}
-
-/// Zero declaration drift over everything this flavor's suite just wrote.
-///
-/// The downstream half of `PgSidecarRegistryFrozen::integrity_check`: a
-/// flavor's own ingest tests are the only place its own write paths are
-/// exercised, so they are the only place that can tell whether those paths
-/// left a searchable row unsearchable or a sidecar row no memory declares.
-/// Call it at the end of an ingest test; it is one statement per registered
-/// surface and reads nothing else.
-///
-/// # Panics
-///
-/// Panics with the finding list when the check refuses.
-pub async fn assert_no_declaration_drift(pg: &PgStorage) {
-    code_pg_sidecars()
-        .integrity_check(pg.pool_for_tests())
-        .await
-        .unwrap_or_else(|err| panic!("this flavor's ingest left declaration drift: {err}"));
 }
 
 /// Current production migrations, with the caller's admin pool retained only

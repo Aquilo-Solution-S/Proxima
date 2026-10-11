@@ -62,6 +62,7 @@ impl McpToolError {
                 crate::error::ErrorCode::InvalidArgument => McpToolErrorKind::InvalidInput,
                 crate::error::ErrorCode::NotFound => McpToolErrorKind::NotFound,
                 crate::error::ErrorCode::Internal => McpToolErrorKind::Internal,
+                crate::error::ErrorCode::CapacityExhausted => McpToolErrorKind::CapacityExhausted,
                 crate::error::ErrorCode::AuthRequired
                 | crate::error::ErrorCode::Forbidden
                 | crate::error::ErrorCode::UnknownSchema

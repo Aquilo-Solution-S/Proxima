@@ -2,10 +2,11 @@
 
 > **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
 
-Containerized Code-flavor server, authenticated exclusively via Zitadel
-bearer JWT, with two unauthenticated routes: the RFC 9728 documents
-`GET /.well-known/oauth-protected-resource` (origin) and
-`GET /.well-known/oauth-protected-resource/mcp` (`/mcp`). The binary is
+Containerized Code-flavor server, authenticated by an OIDC bearer JWT
+(Zitadel in this guide's setup), with two unauthenticated routes: the RFC 9728
+documents `GET /.well-known/oauth-protected-resource` (origin) and
+`GET /.well-known/oauth-protected-resource/mcp` (`/mcp`), plus the optional
+`/healthz` and `/readyz` probes (`PROXIMA_HEALTH_ENDPOINTS=true`). The binary is
 `apps/proxima-mcp` (code flavor default-on); add the `rest` feature and
 set `PROXIMA_REST_ENABLED=true` to serve `/v1` beside `/mcp`.
 
@@ -24,14 +25,15 @@ without it, capture still runs and records accumulate as `pending`.
 ## PostgreSQL extensions and search performance
 
 What actually moves retrieval quality and speed on the database side, in
-descending order of leverage. Only the first row is required.
+descending order of leverage. Only the first row is required, plus `pg_trgm`
+when the code flavor is installed.
 
 | Piece | Required | What it does for Proxima |
 |---|---|---|
 | `pgvector >= 0.8.0` | **yes** | The semantic arm: HNSW index + `hnsw.iterative_scan` for filtered vector search. Without it the server refuses to boot. |
 | Snowball configurations (built in) | shipped | Lexical stemming. 30 configurations in `pg_catalog`. |
 | hunspell dictionaries | no | Compound splitting for compounding languages: `german` alone never matches `Tür` in `Türbreite`. Requires the `.dict`/`.affix` files in the server's `$SHAREDIR/tsearch_data` and a `CREATE TEXT SEARCH CONFIGURATION` on top — a server-filesystem operation, not a migration. Stamp rows with the custom configuration via the `language` argument. |
-| `pg_trgm` | no | Trigram GIN indexes can serve `LIKE '%…%'` substring predicates. Since v0.0.8 the ranked arms scan `<flavor>.projection` and the substring arm is a separate statement against the sidecars, with no index of its own. That is a **cost** decision, not an impossibility: the predicate is `lower(concat_ws(…))` over a schema's declared search fields, and every shipped sidecar already carries a `STORED GENERATED embed_text` column built from the same fields — proof that a migration can name such an expression, and a column a `gin (… gin_trgm_ops)` index could name directly. None ships because the arm is already narrow: it is opt-in per schema (`SubstringArm::Off` is the default) and runs only over the schemas whose ranked arm returned zero rows, so an always-on write cost would buy an index most statements never reach. Measure before adding one — every write pays for it. |
+| `pg_trgm` | with the code flavor | Trigram GIN indexes can serve `LIKE '%…%'` substring predicates. Since v0.0.8 the ranked arms scan `<flavor>.projection` and the substring arm is a separate statement against the sidecars, with no index of its own. That is a **cost** decision, not an impossibility: the predicate is `lower(concat_ws(…))` over a schema's declared search fields, and every shipped sidecar already carries a `STORED GENERATED embed_text` column built from the same fields — proof that a migration can name such an expression, and a column a `gin (… gin_trgm_ops)` index could name directly. The core ships none (the code flavor's baseline migration runs `CREATE EXTENSION pg_trgm` and ships two on `proxima_code.code_chunk_v1`, over `lower(file_path)` and `lower(text)`), because the arm is already narrow: it is opt-in per schema (`SubstringArm::Off` is the default) and runs only over the schemas whose ranked arm returned zero rows, so an always-on write cost would buy an index most statements never reach. Measure before adding one — every write pays for it. |
 | `pg_stat_statements` | no | The profiling loop: find the queries that actually cost, before tuning anything. |
 
 Two operational notes that repeatedly matter:
@@ -195,10 +197,12 @@ layer as a short-lived, audited host credential, never as a standing token on
 
 ## Security guarantee
 
-Only the two protected-resource documents are bearer-anonymous; they remain
-behind the listener-wide Host and body-limit gates. All `/mcp` endpoints, and
-all `/v1` endpoints when enabled, require the same `aud`-bound Zitadel JWT
-validated in-process.
+Only the two protected-resource documents, and the `/healthz` / `/readyz`
+probes when `PROXIMA_HEALTH_ENDPOINTS=true`, are bearer-anonymous. The
+documents remain behind the listener-wide Host and body-limit gates; the probes
+sit outside the Host guard, inside the body limit, and disclose only liveness
+and readiness. All `/mcp` endpoints, and all `/v1` endpoints when enabled,
+require the same `aud`-bound OIDC JWT validated in-process.
 
 | Resource | Document | `resource` |
 |---|---|---|
@@ -297,7 +301,7 @@ embedded `CoreMcpTools` host API (whose arguments pass no edge at all), and
 any future tool that accepts a `model_id` argument. A flavor tool that takes
 one must call `ToolCtx::operator_label` (or `proxima::host::operator_label`
 for an `McpTool`) rather than reading the caller's label — see
-[09 §Trusted model provenance](09-developing-flavors.md).
+[09 §MCP Tools](09-developing-flavors.md#mcp-tools).
 
 ### Delegated worker phases carry no trusted id
 

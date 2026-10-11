@@ -13,14 +13,13 @@ use super::memory::{
 };
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
-use super::registry::RegistryProjectionPort;
 use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
 use crate::owner_inverse::OwnerEraseTarget;
 use crate::read_models::{
-    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
-    GoalWakeCandidateRequest, MemorySchemaSpec, MemorySnapshot,
+    ActiveGoalSummary, ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest,
+    MemorySchemaSpec, MemorySnapshot,
 };
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
@@ -849,29 +848,6 @@ impl OwnerDropProofPort for RejectingStorage {
         Err(AccessError::Resolution(
             "RejectingStorage rejects all auth".into(),
         ))
-    }
-}
-
-#[async_trait::async_trait]
-impl RegistryProjectionPort for RejectingStorage {
-    async fn load_memory_batch_facts(
-        &self,
-        _owner_scope: Option<&crate::OwnerScope>,
-        _owner: &Owner,
-        _memory_id: crate::MemoryId,
-        _schemas: &[MemorySchemaSpec],
-    ) -> Result<Vec<FactRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_abstraction_heads(
-        &self,
-        _owner_scope: Option<&crate::OwnerScope>,
-        _owner: &Owner,
-        _schemas: &[MemorySchemaSpec],
-        _limit: usize,
-    ) -> Result<Vec<AbstractionRow>, StorageError> {
-        Ok(Vec::new())
     }
 }
 

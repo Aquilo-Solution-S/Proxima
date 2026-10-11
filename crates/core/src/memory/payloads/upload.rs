@@ -10,7 +10,7 @@
 //! guarantee — true in the flavors that bothered, absent everywhere else.
 //!
 //! This schema makes it a substrate guarantee. The Fact cites the artefact
-//! through `core/uploaded-blob-whole-v1`, so the event and the bytes are one
+//! through `memory.blob_id`, so the event and the bytes are one
 //! hop apart in both directions — and, since the citation is what persists
 //! the artefact, they are written together or not at all
 //! ([`crate::engine::UploadCompleted`]).
@@ -66,10 +66,10 @@ impl FactPayload for UploadV1 {
         )
     }
 
-    // `sidecar_table` stays at its `None` default. The typed description of
-    // the artefact is already stored, once, in
-    // `proxima_core.cited_uploaded_blob_v1`, and the citation this Fact
-    // carries is how a reader reaches it. A sidecar here would be a second
+    // `sidecar_table` stays at its `None` default. The description of the
+    // artefact is already stored, once, on its completed
+    // `proxima_core.blob_uploads` row, and the citation this Fact carries is
+    // how a reader reaches it. A sidecar here would be a second
     // copy of that row under a second identity, and the two would disagree
     // the first time one of them was corrected.
 }

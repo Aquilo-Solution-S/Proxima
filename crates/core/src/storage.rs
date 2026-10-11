@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::edge::EdgeEndpoint;
 use crate::scope::ScopeRef;
 use crate::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
-    PayloadReference, PerspectivePayload,
+    AbstractionPayload, CitedObjectPayload, FactPayload, GoalPayload, PayloadReference,
+    PerspectivePayload,
 };
 use crate::{EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId, SchemaVersion};
 
@@ -176,7 +176,7 @@ pub struct SidecarPayload {
     /// through the erased value. Same mechanism as `references`, and for
     /// the same reason: the admission fences the scope without knowing
     /// which concrete payload type it is writing. `None` for the payload
-    /// kinds that are not memories (cited objects, citation mappings) and
+    /// kinds that are not memories (cited objects) and
     /// for every schema that declares no `SCOPE_KIND`.
     scope: fn(&dyn Any) -> Option<ScopeRef>,
 }
@@ -303,21 +303,6 @@ impl SidecarPayload {
     }
 
     #[must_use]
-    pub fn citation_mapping<T>(value: T) -> Self
-    where
-        T: CitationMappingPayload,
-    {
-        Self::new(
-            crate::verbs::schema::PayloadKind::CitationMapping,
-            T::schema_id(),
-            SchemaVersion::new(T::SCHEMA_VERSION),
-            value,
-            no_references,
-            no_scope,
-        )
-    }
-
-    #[must_use]
     pub fn downcast_ref<T>(&self) -> Option<&T>
     where
         T: Send + Sync + 'static,
@@ -421,8 +406,8 @@ fn goal_references<T: GoalPayload>(value: &dyn Any) -> Vec<PayloadReference> {
         .unwrap_or_default()
 }
 
-/// Cited objects and citation mappings are not nodes in the F/A/P graph,
-/// so they have no reference fields to declare.
+/// Cited objects are not nodes in the F/A/P graph, so they have no
+/// reference fields to declare.
 fn no_references(_value: &dyn Any) -> Vec<PayloadReference> {
     Vec::new()
 }

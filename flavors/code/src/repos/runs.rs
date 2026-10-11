@@ -124,59 +124,6 @@ pub async fn start_run_with_created(
     Ok((run, false))
 }
 
-/// Return the active queued/running run for `(owner, repo_id)`.
-///
-/// # Errors
-/// Returns `RepoRegistryError::Database` on database failures.
-pub async fn get_active_run(
-    pool: &PgPool,
-    owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
-    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
-    let row = sqlx::query_as::<_, RunRow>(
-        "SELECT run_id, repo_id, status, stage, \
-                commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
-                chunks_tombstoned, ast_edges_emitted, abstractions_emitted, \
-                embeddings_landed, citations_emitted, \
-                   files_source, files_generated, files_vendored, files_lockfile, \
-                   chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
-                error_message, started_at, updated_at, finished_at \
-         FROM proxima_code.repo_ingestion_runs \
-         WHERE owner_kind = $1 AND owner_id = $2 \
-           AND repo_id = $3 \
-           AND status IN ('queued', 'running') \
-         ORDER BY started_at DESC \
-         LIMIT 1",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(row.map(Into::into))
-}
-
-/// Retire `owner`'s queued or running runs of `repo_id` whose driver has
-/// not touched them for `RUN_STALE_AFTER` (5 min). Returns how many it retired.
-///
-/// # Errors
-/// Returns `RepoRegistryError::Database` on database failures.
-pub async fn retire_stale_runs(
-    pool: &PgPool,
-    owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<u64, RepoRegistryError> {
-    let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
-    let retired = retire_stale_runs_on(&mut tx, owner, repo_id).await?;
-    tx.commit().await?;
-    Ok(retired)
-}
-
 async fn retire_stale_runs_on(
     conn: &mut sqlx::PgConnection,
     owner: &Owner,

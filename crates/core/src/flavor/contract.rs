@@ -613,13 +613,12 @@ pub enum TransferRule {
     /// Move, or — when the destination already owns an identical row —
     /// remap the referring columns and GC the orphan.
     ///
-    /// `remaps` names the referring columns this crate can see. Columns
-    /// that point at the row by convention rather than by constraint —
-    /// every flavor's cited-object and citation-mapping sidecars point at
-    /// a `blob_id` with no SQL FK — cannot be listed here, because the
-    /// flavor declaring them is not the flavor declaring this surface.
-    /// The transfer walks the frozen registry for those, exactly as
-    /// owner erase does.
+    /// `remaps` names the referring columns this crate can see. A column
+    /// that points at the row by convention rather than by constraint
+    /// cannot be listed here, because the flavor declaring it is not the
+    /// flavor declaring this surface. Freeze refuses the one way such a
+    /// column could arise, a cited-object schema declaring a sidecar table
+    /// (`FlavorRegistryError::CitationSidecarNotRemappable`).
     FollowOrDedupe {
         dedupe_key: &'static [&'static str],
         remaps: &'static [&'static str],
@@ -670,8 +669,8 @@ impl TransferRule {
 pub enum Provenance {
     /// Writes `origins[]` pins; the lineage walk traverses them.
     OriginEdges,
-    /// Grounds only through payload columns; the lineage walk will NOT
-    /// reach the subjects.
+    /// Grounds only through payload columns: the ancestor walk follows the
+    /// references in these columns; the descendant walk does not.
     PayloadOnly {
         subject_columns: &'static [&'static str],
     },
@@ -698,12 +697,11 @@ pub enum KeyShape {
     /// consume this field have no other way to learn which one carries the
     /// id: the owner erase reaches keyed sidecars through a selection set,
     /// and the owner export joins the key's home table to find the owner.
-    /// A citation sidecar calls its blob `cited_object_id`, a mapping
-    /// sidecar `citation_mapping_id`, `blob` itself `blob_id`; a code
-    /// detail table calls its memory `plan_memory_id` or
-    /// `caller_memory_id`. A table declaring `Custom(&["memory_id"])` over a
-    /// column it does not have goes undetected for as long as nothing reads
-    /// the field for a `Cascade` surface.
+    /// `blob` calls its key `blob_id`; a code detail table calls its
+    /// memory `plan_memory_id` or `caller_memory_id`. A table declaring
+    /// `Custom(&["memory_id"])` over a column it does not have goes
+    /// undetected for as long as nothing reads the field for a `Cascade`
+    /// surface.
     BlobId {
         column: &'static str,
     },

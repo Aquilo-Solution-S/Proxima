@@ -75,25 +75,8 @@ pub(crate) async fn citation_of_fact_on_connection(
     Ok(row.map(|(blob_id, schema_id)| {
         let schema_id = SchemaId::new(schema_id);
         FactCitationReadback {
-            citation_mapping_id: blob_id,
-            mapping_schema_id: schema_id.clone(),
             cited_object_id: blob_id,
             cited_object_schema_id: schema_id,
-            page_span: None,
-            uploaded_blob: None,
         }
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn citation_sql_does_not_select_dropped_mapping_columns() {
-        let src = include_str!("citations.rs");
-        let needle = format!("{}{}", "NULL::int AS ", "page_from");
-        assert!(
-            !src.contains(&needle),
-            "v008 has no citation_mappings table; do not fabricate mapping columns"
-        );
-    }
 }

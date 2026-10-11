@@ -68,7 +68,6 @@ fn memory_keep_set() -> Vec<&'static str> {
         SearchMemoriesTool, ThinkTool,
     };
 
-    #[allow(unused_mut)]
     let mut ids = vec![
         // authoring
         RememberTool::NAME,

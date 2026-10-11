@@ -1,6 +1,6 @@
 //! Flavor #0 — core, as a declaration.
 //!
-//! Core registers 15 schemas, 15 MCP tools and 10 `proxima://` resources
+//! Core registers 12 schemas, 15 MCP tools and 11 `proxima://` resources
 //! across five sites, and this module is the `FlavorDescriptor` that makes
 //! them visible to the registry that is meant to be the single source of
 //! truth.
@@ -438,17 +438,13 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
     natural_key_columns: &[],
 };
 
-/// Cited objects and citation mappings carry no sidecar of their own in
-/// core: the whole mapping is `memory.blob_id`, and the artefact's typed
-/// description lives on the blob row.
-const fn citation_schema(
-    name: &'static str,
-    kind: PayloadKind,
-    why: &'static str,
-) -> SchemaContract {
+/// Cited objects carry no sidecar of their own in core: the citation is
+/// `memory.blob_id`, and the artefact's typed description lives on the
+/// blob row.
+const fn citation_schema(name: &'static str, why: &'static str) -> SchemaContract {
     SchemaContract {
         id: SchemaRef::new(FLAVOR_ID, name, 1),
-        kind,
+        kind: PayloadKind::CitedObject,
         sidecar_table: None,
         search: SearchProjectionDecl::None { why },
         embedding: EmbeddingRecipe::Never { why },
@@ -461,28 +457,11 @@ const fn citation_schema(
 
 const UPLOADED_BLOB_V1: SchemaContract = citation_schema(
     "uploaded-blob",
-    PayloadKind::CitedObject,
     "a cited object is not a memory; it carries no embed or search surface",
-);
-const UPLOADED_BLOB_WHOLE_V1: SchemaContract = citation_schema(
-    "uploaded-blob-whole",
-    PayloadKind::CitationMapping,
-    "a pure link: the whole mapping is memory.blob_id",
-);
-const UPLOADED_BLOB_PAGE_SPAN_V1: SchemaContract = citation_schema(
-    "uploaded-blob-page-span",
-    PayloadKind::CitationMapping,
-    "a pure link: the whole mapping is memory.blob_id",
 );
 const MCP_CALL_IO_V1: SchemaContract = citation_schema(
     "mcp-call-io",
-    PayloadKind::CitedObject,
     "call payload bytes are evidence, not retrievable content",
-);
-const MCP_CALL_IO_CITATION_V1: SchemaContract = citation_schema(
-    "mcp-call-io-citation",
-    PayloadKind::CitationMapping,
-    "a pure link: the whole mapping is memory.blob_id",
 );
 
 // ── Flavor-#0 state surfaces (not memory sidecars) ──────────────────────
@@ -979,7 +958,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Never {
-            why: "erase never deletes the owners row: 17 FKs point at it and the \
+            why: "erase never deletes the owners row: 20 core FKs point at it and the \
                   destination owner's row is minted inside the transfer transaction",
         },
         export: ExportRule::Excluded {
@@ -1334,9 +1313,9 @@ const BESPOKE_TRANSFER_LEGS: &[&str] = &[
     "proxima_core.memory_head",
 ];
 
-/// Core's contract. Fifteen schema registrations over fourteen distinct
-/// schema ids (`core/agent-derivation-v1` registers as both Abstraction and
-/// Perspective), fifteen tools, ten resources.
+/// Core's contract. Twelve schema registrations over eleven distinct schema
+/// ids (`core/agent-derivation-v1` registers as both Abstraction and
+/// Perspective), fifteen tools, eleven resources.
 pub const FLAVOR_0: FlavorContract = FlavorContract {
     flavor_id: FLAVOR_ID,
     ordinal: CORE_ORDINAL,
@@ -1352,10 +1331,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
         SIMPLE_TEXT_GOAL_V1,
         TASK_GOAL_V1,
         UPLOADED_BLOB_V1,
-        UPLOADED_BLOB_WHOLE_V1,
-        UPLOADED_BLOB_PAGE_SPAN_V1,
         MCP_CALL_IO_V1,
-        MCP_CALL_IO_CITATION_V1,
     ],
     state_surfaces: STATE_SURFACES,
     scopes: &[],

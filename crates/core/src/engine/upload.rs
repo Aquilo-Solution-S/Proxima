@@ -10,8 +10,7 @@
 //!
 //! The shape follows from where the transaction has to be. Persisting a
 //! cited object is a Fact write with an inline citation — storage already
-//! upserts the object on `(owner, schema, content_hash)` and inserts its
-//! typed row through the registered cited-object sidecar — so once the
+//! upserts the object on `(owner, schema, content_hash)` — so once the
 //! Fact carries the artefact as its citation, the two cannot come apart.
 //! What could not be in that transaction is the object-store work:
 //! streaming, hashing, and copying an S3 object is not a database
@@ -27,18 +26,13 @@
 use super::Engine;
 use super::errors::map_write_storage_error;
 use crate::authz::EngineAuthority;
-use crate::citations::{
-    UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID, UploadedBlobPayload,
-    UploadedBlobWholeV1,
-};
+use crate::citations::{UPLOADED_BLOB_SCHEMA_ID, UploadedBlobPayload};
 use crate::error::ProtocolError;
 use crate::storage_ports::{CitedBlobService, CitedBlobStaged, CitedBlobUploadCompleted};
-use crate::verbs::fact_ingest::{
-    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
-};
+use crate::verbs::fact_ingest::{FactWriteCommand, InlineCitedObjectDraft};
 use crate::{
-    CitationMappingPayload, CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId,
-    SchemaVersion, SidecarPayload, UploadV1,
+    CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    UploadV1,
 };
 
 /// Provenance of every upload Fact. Constant, not per-call: the source is
@@ -125,9 +119,9 @@ impl Engine {
     ///
     /// # What is atomic
     ///
-    /// The cited object, its typed `cited_uploaded_blob_v1` row, the
-    /// citation, the Fact, its receipt, its embedding job, and every
-    /// extension row are one transaction. Nothing a reader can observe
+    /// The cited object (its `proxima_core.blob` row), the Fact that cites
+    /// it, its receipt, its embedding job, and every extension row are one
+    /// transaction. Nothing a reader can observe
     /// survives a failure partway: an artefact with no recorded arrival is
     /// not a state this verb can leave behind.
     ///
@@ -268,11 +262,10 @@ impl Engine {
 
         // Inline, carrying the artefact's full typed payload. Storage
         // upserts the cited object on `(owner, schema, content_hash)` —
-        // the same key the blob lane deduplicates on — inserts its
-        // `cited_uploaded_blob_v1` row through the registered cited-object
-        // sidecar, and writes the citation and the Fact, all in the one
-        // transaction. That is the point of the split: the artefact and
-        // the record of its arrival are now the same write.
+        // the same key the blob lane deduplicates on — and writes the Fact
+        // that cites it, all in the one transaction. That is the point of
+        // the split: the artefact and the record of its arrival are now the
+        // same write.
         let cited_object = InlineCitedObjectDraft {
             schema_id: SchemaId::new(UPLOADED_BLOB_SCHEMA_ID.to_string()),
             schema_version: SchemaVersion::new(UploadedBlobPayload::SCHEMA_VERSION),
@@ -281,13 +274,7 @@ impl Engine {
             })?,
         };
         let authorized = self
-            .authorize_fact_with_citation(
-                authority,
-                draft,
-                cited_object,
-                whole_blob_mapping(),
-                extensions,
-            )
+            .authorize_fact_with_citation(authority, draft, cited_object, extensions)
             .await?;
 
         let resolved = *authorized.owner_write_permit().owner();
@@ -367,19 +354,6 @@ fn validate_staged_payload(
         ));
     }
     Ok(())
-}
-
-/// "This Fact came from that artefact", with no locator — the mapping is
-/// the whole citation. `UploadedBlobWholeV1` is a braced empty struct, so
-/// its wire form is `{}`; it is serialized rather than hardcoded so the
-/// two cannot drift.
-fn whole_blob_mapping() -> InlineCitationMappingDraft {
-    InlineCitationMappingDraft {
-        schema_id: SchemaId::new(UPLOADED_BLOB_WHOLE_SCHEMA_ID.to_string()),
-        schema_version: SchemaVersion::new(UploadedBlobWholeV1::SCHEMA_VERSION),
-        payload_bytes: serde_json::to_vec(&UploadedBlobWholeV1 {})
-            .expect("UploadedBlobWholeV1 is an empty struct and always serializes"),
-    }
 }
 
 #[cfg(test)]

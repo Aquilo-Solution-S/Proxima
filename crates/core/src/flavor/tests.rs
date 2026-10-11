@@ -39,16 +39,8 @@ fn freeze_rejects_duplicate_tool_names() {
 fn freeze_rejects_duplicate_schema_keys() {
     let mut registry = FlavorRegistry::new();
     let schema_id = SchemaId::new("proxima-test/duplicate".to_string());
-    registry.add_opaque_schema_or_panic_for_tests(
-        schema_id.clone(),
-        SchemaVersion::new(1),
-        PayloadKind::CitedObject,
-    );
-    registry.add_opaque_schema_or_panic_for_tests(
-        schema_id,
-        SchemaVersion::new(1),
-        PayloadKind::CitedObject,
-    );
+    registry.add_opaque_cited_object_schema(schema_id.clone(), SchemaVersion::new(1));
+    registry.add_opaque_cited_object_schema(schema_id, SchemaVersion::new(1));
     let err = registry
         .try_freeze()
         .expect_err("duplicate schema must fail");
@@ -89,32 +81,6 @@ fn freeze_rejects_two_memory_versions_under_one_selector() {
             ..
         }
     ));
-}
-
-#[test]
-fn opaque_registration_rejects_memory_and_goal_kinds() {
-    for kind in [
-        PayloadKind::Fact,
-        PayloadKind::Abstraction,
-        PayloadKind::Perspective,
-        PayloadKind::Goal,
-    ] {
-        let mut registry = FlavorRegistry::new();
-        let schema_id = SchemaId::new(format!("proxima-test/opaque-{kind:?}"));
-        let err = registry
-            .try_add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), kind)
-            .expect_err("memory and Goal schemas require typed ingress");
-        assert!(matches!(
-            err,
-            FlavorRegistryError::OpaqueSchemaKind {
-                schema_id: ref actual_id,
-                schema_version,
-                kind: actual_kind,
-            } if actual_id == &schema_id
-                && schema_version == SchemaVersion::new(1)
-                && actual_kind == kind
-        ));
-    }
 }
 
 #[test]

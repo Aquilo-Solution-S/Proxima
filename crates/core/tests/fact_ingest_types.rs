@@ -1,7 +1,7 @@
 //! Unit smoke for Fact ingest types.
 
 use proxima_core::verbs::fact_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
+    Citation, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SourceId, UserId};
 use uuid::Uuid;
@@ -27,10 +27,6 @@ fn fresh_command() -> FactWriteCommand {
                 schema_id: SchemaId::new("test/cited_blob".to_string()),
                 schema_version: SchemaVersion::new(1),
                 content_hash: [0u8; 32],
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new("test/citation_blob".to_string()),
-                schema_version: SchemaVersion::new(1),
             },
         }),
         additional_references: Vec::new(),

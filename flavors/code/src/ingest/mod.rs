@@ -1,9 +1,4 @@
-#![allow(
-    dead_code,
-    unused_imports,
-    clippy::missing_errors_doc,
-    clippy::doc_markdown
-)]
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
 //! Fact ingest goes through `Engine::ingest_fact` (UoW of one).
@@ -21,21 +16,16 @@ pub(crate) use blobs::{
     ChunkInfo, ingest_current_file_revision, plan_file_chunks, resolve_intra_file_calls,
     tombstone_chunk,
 };
-pub use blobs::{
-    append_code_slice, append_code_slices, append_code_slices_with_handles,
-    assign_code_chunk_handles, code_slice_memory_id_for, existing_code_chunk_handle, ingest_commit,
-    ingest_file_revision, resolve_code_chunk_handles,
-};
-pub use engine::{build_engine, build_engine_with};
+pub use blobs::{append_code_slices_with_handles, ingest_commit, ingest_file_revision};
+// Reached only through the debug-only `testkit` re-export.
+#[allow(unused_imports)]
+pub use engine::build_engine;
 pub use heads::FileRevisionHead;
 pub use schemas::{
-    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
-    ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,
-    CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
-    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
-    EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID,
-    TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA, TEST_RESULT_OBJECT_SCHEMA,
-    TEST_RESULT_WHOLE_SCHEMA, schema_registry, schema_registry_with,
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, CODE_BLOB_SCHEMA,
+    CODE_COMMIT_OBJECT_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_RESULT_OBJECT_SCHEMA,
+    LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_RESULT_OBJECT_SCHEMA, schema_registry,
+    schema_registry_with,
 };
 
 use proxima_core::error::ProtocolError;

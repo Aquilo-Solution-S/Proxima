@@ -1,116 +1,15 @@
 use std::collections::HashMap;
 
-use proxima_core::read_models::{
-    AbstractionRow, FactRow, MemorySchemaSpec, MemorySnapshot, resolve_memory_schema,
-};
+use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
 use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EntityKind, MemoryId, Owner, OwnerRef, OwnerRefKind, SchemaId, SidecarPayload, StorageError,
+    EntityKind, MemoryId, OwnerRef, OwnerRefKind, SchemaId, SidecarPayload, StorageError,
 };
 use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
-
-/// # Errors
-///
-/// Returns a storage error when the backend or schema resolver rejects a
-/// requested row.
-pub async fn load_memory_batch_facts(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    memory_id: MemoryId,
-    schemas: &[MemorySchemaSpec],
-) -> Result<Vec<FactRow>, StorageError> {
-    let _ = (pool, pg_sidecars, owner, memory_id, schemas);
-    Ok(Vec::new())
-}
-
-/// # Errors
-///
-/// Returns a storage error when the backend or schema resolver rejects a
-/// requested row.
-pub async fn load_abstraction_heads(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    schemas: &[MemorySchemaSpec],
-    limit: usize,
-) -> Result<Vec<AbstractionRow>, StorageError> {
-    let mut tx = crate::begin_compatible_owner_transaction(pool, None).await?;
-    let result =
-        load_abstraction_heads_on_connection(tx.as_mut(), pg_sidecars, owner, schemas, limit).await;
-    crate::owner_scope::finish_transaction(tx, result).await
-}
-
-/// # Errors
-/// Returns storage errors from query execution or invalid stored data.
-pub async fn load_abstraction_heads_on_connection(
-    pool: &mut PgConnection,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    schemas: &[MemorySchemaSpec],
-    limit: usize,
-) -> Result<Vec<AbstractionRow>, StorageError> {
-    let mut rows_all = Vec::new();
-    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
-    for spec in schemas {
-        if spec.kind != EntityKind::Abstraction {
-            continue;
-        }
-        let rows: Vec<(uuid::Uuid, Vec<String>, time::OffsetDateTime)> = sqlx::query_as(
-            "SELECT m.t, m.sidecar_tables,
-                    COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01')
-               FROM proxima_core.memory_head h
-               JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-              WHERE h.owner_id = $1
-                AND m.kind = 'abstraction'
-                AND h.schema_id = $2
-              ORDER BY m.t DESC
-              LIMIT $3",
-        )
-        .bind(owner.stored_owner_id())
-        .bind(spec.schema_id.as_str())
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&mut *pool)
-        .await
-        .map_err(map_err)?;
-        for (memory_id, sidecar_tables, created_at) in rows {
-            let id = MemoryId::new(memory_id);
-            validate_and_queue_payload(&mut ids_by_key, pg_sidecars, spec, &sidecar_tables, id)?;
-            rows_all.push((created_at, memory_id, id, spec.schema_id.clone()));
-        }
-    }
-    let mut payloads =
-        load_memory_sidecar_payloads_batch_on_connection(pool, pg_sidecars, ids_by_key).await?;
-    rows_all.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    let mut out = Vec::new();
-    for (_, _, memory_id, schema_id) in rows_all.into_iter().take(limit) {
-        let payload = payloads.remove(&memory_id);
-        let spec = resolve_memory_schema(schemas, EntityKind::Abstraction, &schema_id)?;
-        if spec.sidecar_table.as_deref().is_some_and(|table| {
-            payload.is_none() && !pg_sidecars.is_owner_pinned_memory_sidecar_table(table)
-        }) {
-            return Err(StorageError::ConstraintViolation(format!(
-                "required sidecar payload missing for memory {memory_id:?}"
-            )));
-        }
-        let text = payload
-            .as_ref()
-            .and_then(SidecarPayload::graph_body)
-            .unwrap_or_default();
-        out.push(AbstractionRow {
-            memory_id,
-            schema_id,
-            schema_version: spec.schema_version,
-            text,
-            payload,
-        });
-    }
-    Ok(out)
-}
 
 /// # Errors
 ///

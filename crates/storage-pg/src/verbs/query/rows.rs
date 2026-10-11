@@ -124,11 +124,3 @@ fn read_seq_high_water_sql() -> String {
      ORDER BY seq DESC LIMIT 1"
         .into()
 }
-
-/// Emit the exact high-water statement [`read_seq_high_water`] would run.
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-#[doc(hidden)]
-#[must_use]
-pub fn read_seq_high_water_sql_for_tests() -> String {
-    read_seq_high_water_sql()
-}

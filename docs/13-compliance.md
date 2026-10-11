@@ -46,9 +46,9 @@ host's.
 
 ## Operations
 
-Two verbs, each in a four-cell grid of owner kind × scope, plus one
-flavor-scoped lane. The names carry no adjectives, because a name is not the
-place to promise a check.
+Erase is a four-cell grid of owner kind × scope; export is one operation over
+either owner kind; the flavor-scoped erase lane is separate. The names carry no
+adjectives, because a name is not the place to promise a check.
 
 | Operation | Scope | Contract |
 |---|---|---|
@@ -179,7 +179,7 @@ is generated from the declarations:
 | `ByKey` | deleted through the selection set for its key — memory `t`, goal `t`, or blob id, under the column the key names |
 | `ByOwner` | deleted by the surface's own `owner_id`; reached by source scope only when it both retains at source and keys on a memory |
 | `Cascade { via }` | no statement at all; the named constraint is the proof, and a test asks the `pg_constraint` catalog whether it exists |
-| `Never { why }` | never deleted, with the reason in the declaration — `owners` because seventeen FKs point at it, `cold_purge_pending` because it is the erase's own outbox |
+| `Never { why }` | never deleted, with the reason in the declaration — `owners` because twenty FKs point at it, `cold_purge_pending` because it is the erase's own outbox |
 
 `proxima_core.publication_outbox` (the Fact outbox, [18](18-fact-outbox.md))
 registers here like any other surface, and its rule is **`ByOwner`, not
@@ -354,15 +354,16 @@ The inverses are substrate-local.
 
 ## Declared metadata
 
-There is none. Lawful basis, collection purpose, retention policy, data
-residency and recipient inventories were a vocabulary no code path read, and
-so was the last survivor: `SchemaContract::special_category` was a per-schema
-`bool` that every schema declared, nothing branched on, and no verb, erase
-leg, export leg or projection consulted. It is deleted rather than kept as a
-marker "a host may key off", because a declaration a host cannot see the
-substrate honour is a claim about behaviour that does not exist — and the
-kernel deliberately never reasons over special-category
-(`docs/lean/COVERAGE.md`, SR-30..33, D16).
+The substrate reads none. Lawful basis, collection purpose, retention policy,
+data residency and recipient inventories were a vocabulary no code path read,
+and so was the last survivor: `SchemaContract::special_category` was a
+per-schema `bool` that every schema declared, nothing branched on, and no verb,
+erase leg, export leg or projection consulted. It is deleted from the contract
+rather than kept as a marker "a host may key off", because a declaration a host
+cannot see the substrate honour is a claim about behaviour that does not exist
+— and the kernel deliberately never reasons over special-category
+(`docs/lean/COVERAGE.md`, SR-30..33, D16). The payload traits' unread
+`SPECIAL_CATEGORY` constant was deleted for the same reason in v0.0.26.
 
 A host with Art. 9 obligations keeps the classification where it keeps its
 other obligations, and enforces it where it can act on it: at its own ingress

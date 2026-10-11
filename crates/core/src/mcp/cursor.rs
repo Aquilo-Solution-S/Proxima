@@ -45,7 +45,7 @@ impl From<CursorError> for crate::ToolError {
 
 /// A syntactically broken token: bad base64, bad JSON, or a version this
 /// build does not speak. `source` completes the sentence — e.g.
-/// `"proxima://edges page"` or `"core_search_memories response"`.
+/// `"proxima://goals page"` or `"core_search_memories response"`.
 #[must_use]
 pub fn malformed_cursor(source: &str) -> CursorError {
     CursorError(format!(

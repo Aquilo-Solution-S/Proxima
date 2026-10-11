@@ -69,8 +69,9 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 | Boot error | Meaning | Action |
 |---|---|---|
 | `ProximaError::SchemaResetRequired` | ledger checksum or schema objects do not match `0001_v008.sql` | export if needed, then reset the DB. Never in-place ALTER |
-| `ProximaError::Storage(String)` containing `VersionMismatch` | a migration file changed after it was applied | reset. Not retryable |
-| `ProximaError::Storage(String)` containing `missing schema markers` | schema objects missing | apply the pending migrations (a fresh DB starts at `0001_v008.sql`; an existing one appends) |
+| `ProximaError::Storage(String)` containing `does not reconcile with this binary` (`core versions … were amended`) | a core migration file changed after this database applied it | follow the message: `proxima-dev-migrate --stamp` if the catalog still matches, else restore or reset. Not retryable |
+| `ProximaError::Storage(String)` containing `was previously applied but has been modified` | a flavor migration file changed after it was applied | restore or reset. Not retryable |
+| `ProximaError::Storage(String)` containing `missing or has an incorrect current schema marker` | schema objects missing | apply the pending migrations (a fresh DB starts at `0001_v008.sql`; an existing one appends) |
 | `ProximaError::Storage(String)` | connection / preflight | fix connectivity or pgvector, restart |
 
 ## Signal → action
@@ -79,7 +80,7 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 
 | Signal | Condition | Action |
 |---|---|---|
-| `embeddings_client_configured` | `false` | no embedding route for this Owner; its search is lexical-only (`degraded_to_lexical=true`). Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL`, or route the Owner in the host's router, if semantic recall is expected (see [10-configuration.md](../10-configuration.md#per-owner-embedding-routing)) |
+| `embeddings_client_configured` | `false` | no embedding route for this Owner; hybrid search (the default) falls back to lexical with `degraded_to_lexical=true`, and `mode=semantic` fails as unavailable. Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL`, or route the Owner in the host's router, if semantic recall is expected (see [10-configuration.md](../10-configuration.md#per-owner-embedding-routing)) |
 | `pending_embedding_jobs` | `> 0`, trending down | normal in-process catch-up; no action |
 | `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled, the Owner's client unreachable, or its route refused (log: `embedding route refused`); the drain backs such an Owner off for up to 15 minutes per retry. Check the Owner's endpoint and route — during a model move, the `next` endpoint too |
 | `Engine::embedding_coverage(owner)` | an `Unrouted` space with rows | a finished move or offboarding left vectors behind; run `Engine::purge_embedding_spaces(owner)` (see [10-configuration.md](../10-configuration.md#moving-an-owner-to-a-new-model)) |

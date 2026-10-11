@@ -88,9 +88,8 @@ pub trait FactIngestPort: Send + Sync {
 
     /// The by-ref twin of
     /// [`Self::ingest_fact_with_citation_and_typed_sidecar`]: the cited
-    /// object already exists; storage must verify it (existence, owner,
-    /// schema against `expected_object_schema`) in the same transaction
-    /// that writes the citation mapping.
+    /// object already exists; storage must verify it (existence, owner)
+    /// in the same transaction that writes the Fact.
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,

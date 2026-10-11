@@ -24,6 +24,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | Variable | Scope | Default | Required when | Notes |
 |---|---|---|---|---|
 | `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima` |
+| `PROXIMA_PLATFORM_DATABASE_URL` | storage | unset | owner-RLS deployments with a separate migration role; `proxima-mcp` maintenance passes | DSN of the platform role that migrates and maintains; validated before use and never exposed through flavor or request APIs. `proxima-mcp` maintenance refuses without it. `DATABASE_URL` stays the nonowner serving DSN ([15](../15-deployment.md#owner-rls-rollout)) |
 | `PROXIMA_MCP_BIND` | MCP server | `127.0.0.1:31415` for `proxima-mcp` | custom listener / deployment | non-loopback requires `PROXIMA_EXPOSE_NETWORK=true` |
 | `PROXIMA_EXPOSE_NETWORK` | MCP server | unset/false | non-loopback bind | fail-closed exposure gate |
 | `PROXIMA_ALLOWED_ORIGINS` | MCP HTTP | unset/deployment-specific | browser/front-door exposure | listener-wide CORS allowlist; comma-separated; never wildcard |
@@ -40,6 +41,16 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_STREAM_MAX_LIFETIME` | MCP stream auth | source default | long-lived Streamable HTTP responses | max seconds before re-validation |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | MCP stream auth | source default | open response stream auth checks | auth-epoch re-check seconds |
 | `PROXIMA_REST_ENABLED` | REST surface | `false` | serving `/v1` beside `/mcp` | renders the tool manifest as REST ([17](../17-rest-surface.md)); also needs the `rest` cargo feature at build time |
+| `PROXIMA_REQUEST_HEADERS` | MCP/REST | unset (publishes nothing) | tools that read inbound headers | comma-separated header names, or `prefix*`, copied to tools as opaque `RequestHeaders` on `/mcp` and `/v1`; `authorization`, `proxy-authorization` and `cookie` are refused, directly or by prefix ([10](../10-configuration.md)) |
+| `PROXIMA_FORWARDER_SUBJECTS` | MCP owner access | unset | one authenticated subject serves many parties | comma-separated user UUIDs trusted to act for any Group they select; requires `PROXIMA_FORWARDER_ROLE`, and either one set alone fails boot |
+| `PROXIMA_FORWARDER_ROLE` | MCP owner access | unset | with `PROXIMA_FORWARDER_SUBJECTS` | fixed role a forwarder holds in the Group it selects: `viewer`, `ingest` or `editor`; `admin` is refused |
+| `PROXIMA_HEALTH_ENDPOINTS` | MCP HTTP | `false` | load-balancer or orchestrator probes | serves anonymous `GET /healthz` and `GET /readyz` on the MCP listener, outside the Host guard and bearer auth ([15](../15-deployment.md)) |
+| `PROXIMA_MAX_REQUEST_BODY_BYTES` | MCP HTTP | `4194304` (4 MiB) | larger or smaller request bodies | largest accepted body, enforced before auth and again by rmcp; `0` is a boot error |
+| `PROXIMA_MCP_SSE_KEEP_ALIVE_SECS` | MCP HTTP | `15` | proxies that drop idle streams | SSE ping interval in seconds; `0` disables pings |
+| `PROXIMA_MCP_SESSION_IDLE_SECS` | MCP HTTP | `300` | long synchronous tool calls | closes an MCP session after this long without session traffic; `0` never closes one; SSE pings and a running call are not traffic ([10](../10-configuration.md)) |
+| `PROXIMA_MCP_SSE_RETRY_SECS` | MCP HTTP | `3` | client reconnect tuning | SSE priming-event retry hint in seconds; `0` sends none |
+| `PROXIMA_MCP_SESSIONS` | MCP HTTP | `true` | stateless serving | keeps a server-side MCP session per client that opens with `initialize`; per-request (`_meta`-versioned) calls are always stateless |
+| `PROXIMA_MCP_JSON_RESPONSE` | MCP HTTP | `false` | sessions off | answers simple calls as `application/json` rather than SSE |
 | `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface, or narrowing to code search | `full` is opt-in and adds `core_membership`/`core_transfer`; `code` is the code flavor's search and read tools only, no memory tools |
 | `PROXIMA_TOOL_ALLOW` | MCP tool surface | unset | profile extension | comma-separated canonical scope keys unioned into profile |
 | `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow |
@@ -57,6 +68,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | embedding runtime | `5` | worker cadence tuning | idle poll seconds; range `1..=3600`; invalid values fail boot |
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | embedding runtime | `900` | crash-reclaim tuning | range `1..=86400`; must be strictly greater than request timeout and cover the longest honest drain interval between successful claim renewals |
 | `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
+| `PROXIMA_RUNTIME_GRANTS` | boot | `false` | owner-RLS deployments where boot owns the grants | issues the runtime role's DML grants as the platform role, after migrating and before the runtime pool connects ([15](../15-deployment.md#owner-rls-rollout)) |
 | `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1; invalid values fail config resolution |
 | `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables by omitting the Postgres option; migrations and bulk erase opt out separately |
 | `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds; `0` is passed to SQLx unchanged |
@@ -79,8 +91,10 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_NATS_POLL_MS` | Fact outbox | `500` | tuning idle latency | idle poll interval |
 | `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | Fact outbox | `5000` | tuning PubAck wait | timeout releases the claim and republishes the same bytes |
 | `PROXIMA_NATS_PUBLISHER_ID` | Fact outbox | `<HOSTNAME>-<pid>` | naming a publisher in incident logs | recorded as `claimed_by` on every claim; operator-facing, not a credential. `HOSTNAME` is read through the injected lookup, never the process environment |
+| `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX` | Fact outbox | unset (async-nats `_INBOX`) | publisher reply subscribe permissions split from the consumer's | validated reply-inbox prefix: nonempty, dot-separated tokens of ASCII letters, digits, `_` or `-`. Routes client replies only; it grants no broker permission ([18](../18-fact-outbox.md)) |
 | `PROXIMA_NATS_CONSUMER_STREAM` | Fact outbox | `PROXIMA_FACTS` | binding the reference consumer | deployment-provided stream name; the consumer binds an existing durable and never creates topology |
 | `PROXIMA_NATS_CONSUMER_NAME` | Fact outbox | `proxima-reference` | binding the reference consumer | deployment-provided durable name; filter, ACK policy, redelivery and flow control remain broker configuration |
+| `PROXIMA_NATS_CONSUMER_INBOX_PREFIX` | Fact outbox | unset (async-nats `_INBOX`) | consumer reply subscribe permissions split from the publisher's | same validation as `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX`, for the reference consumer's client |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the publisher runs; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
 | `PROXIMA_COPY_CLEANER_URL` | Fact outbox | unset (cleaner off) | starting the retained-copy cleaner | set ⇒ cleaner starts; needs the `outbox-nats` cargo feature, a build without it refuses boot; any other `PROXIMA_COPY_CLEANER_*` key without it refuses boot ([18](../18-fact-outbox.md#retained-copy-cleanup)) |
 | `PROXIMA_COPY_CLEANER_CREDS_FILE` | Fact outbox | unset | cleaner credentials-file auth | the cleaner's own role, never the publisher's `PROXIMA_NATS_*` credential; mutually exclusive with user/password and token |
@@ -165,12 +179,10 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 | `PROXIMA_TEST_NATS_PUBLISHER_URL` | tests | publish-only NATS URL | publisher acceptance path; CI grants publish and reply-inbox access but no stream-management rights |
 | `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
 | `PROXIMA_INTAKE_DATABASE_URL` | example | PostgreSQL connection for the reference consumer; required by `crates/outbox-nats/examples/durable_intake.rs`. Provision its example schema first. Not read by any shipped binary |
-| `PROXIMA_ENV_RS_PROCESS_ENV_UNSET` | tests | a name `crates/core/src/env.rs` asserts is absent, to prove the process-env lookup returns `None` rather than an empty string |
 | `PROXIMA_PG_TESTKIT_CHILD`, `PROXIMA_PG_TESTKIT_TEMPLATE` | tests | mark the re-executed child process in the `proxima-pg-testkit` admin-URL and split-template tests (the child's mode, and the template it clones); unset in every normal run |
-| `PROXIMA_RECONCILE_SHARED_KEYS_CHILD` | tests | marks the re-executed child process in the blob-s3 shared-key reconciliation test |
-| `PROXIMA_S1B_TEST_PRESENT`, `PROXIMA_S1B_TEST_ABSENT`, `PROXIMA_S1B_TEST_REG` | tests | fixture names for the env-lookup unit tests |
 | `PROXIMA_SCHEMA_PG_URL` | `scripts/regen-schema-sql.sh` | admin URL used to create and drop the scratch database the schema dump is taken from. Falls back to `PROXIMA_TEST_PG_URL` |
 | `PROXIMA_PG_DUMP` | `scripts/regen-schema-sql.sh` | `pg_dump` command to run; its major version must be at least the server's. Default `pg_dump` |
+| `PROXIMA_RESET_CONFIRM` | `proxima-dev-migrate --reset` | must equal `reset-my-dev-db` for the destructive drop-and-recreate of every `proxima_*` schema to run; non-local hosts and protected database names are refused regardless. The earlier `PROXIMA_V004_RESET_CONFIRM` is still accepted |
 | `PROXIMA_EMBED_`, `PROXIMA_NATS_`, `PROXIMA_PG_`, `PROXIMA_S3_` | prefix forms | the wildcard spellings the tables above and [15](../15-deployment.md) use to name a family of keys. Not variables themselves — every member is listed individually in this file |
 
 ## Source Inventory Reconciliation

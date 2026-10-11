@@ -32,15 +32,24 @@ minimization discipline) — a failing build is drift.
 | `Causa/Edges.lean` | pins on the node (no Edge table): two closed kinds, OriginKindValid, derivePins identity, interpretation-as-node |
 | `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, personal/group access theorems |
 | `Causa/HostStateMaintenance.lean` | engine/participant-bound host-state capability, fixed transaction owner, ordinary authority separation ([doc 19](../19-host-state-maintenance.md)); guarded theorem audit in `HostStateMaintenanceAudit.lean` |
+| `Causa/HostStateMaintenanceAudit.lean` | axiom-surface guards (`#print axioms` under `#guard_msgs`) for the `HostStateMaintenance` registration theorems |
+| `Causa/HostStateWriteAttribution.lean` | write-attribution label (owner-authorized principal or maintenance) carried alongside the existing host-state permit; does not alter its authorization relation |
+| `Causa/HostStateWriteAttributionAudit.lean` | axiom-surface guards for the `HostStateWriteAttribution` theorems |
 | `Causa/EdgeAuthorization.lean` | source-owned index reads and the uniform source-write + target-read admission rule |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal phase contracts, no downward writes, invocation-ledger completeness (docs 02, 04) |
 | `Causa/Provenance.lean` | admitted graph validity, grounding, table-scoped provenance/uniqueness witnesses |
 | `Causa/Wake.lean` | Goal-armed wake firing, no-escalation, tool bounds, autonomy/termination theorems |
-| `Causa/Citations.lean` | Fact ∪ Abstraction bibliography, 0..1 mapping, owner match (docs 11, 16) |
+| `Causa/Citations.lean` | Fact ∪ Abstraction bibliography, 0..1 citation, owner match (docs 11, 16) |
 | `Causa/Compliance.lean` | abandonment-gated erasure, source cascade, target projection redaction (doc 13) |
+| `Causa/HostStateLifecycle.lean` | host-state lifecycle inverse inside an already-selected core erase: exact coverage, receipt shape, atomic commit choice, owner-bound export snapshot; adds no erase authority |
+| `Causa/HostStateLifecycleAudit.lean` | axiom-surface guards for the `HostStateLifecycle` theorems |
 | `Causa/Principles.lean` | named principle rollups over lower-level theorems |
 | `Causa/Flavor.lean` | core independence, optional Memory/Goal sidecars and receipts, payload opacity (docs 03, 08) |
 | `Causa/Publication.lean` | Fact outbox: listenable series, immutable captured event, closed delivery state machine, erasure-only removal (doc 18) |
+| `Causa/PublicationOrigin.lean` | payload-free allowlist keyed by Fact `t`: the immutable typed publication owner and optional source, preserved through transfer and outbox pruning; fresh capture is distinct from replay |
+| `Causa/PublicationOriginAudit.lean` | axiom-surface guards for the `PublicationOrigin` theorems |
+| `Causa/HostStateFactCopyErase.lean` | selection law for copied Fact payload rows: physical-Fact and original-publication owner/source selections as separate typed sets, plus the identity projection between lifecycle and publication-origin source tokens |
+| `Causa/HostStateFactCopyEraseAudit.lean` | axiom-surface guards for the `HostStateFactCopyErase` theorems |
 
 ## Coverage
 

@@ -11,9 +11,8 @@ use std::sync::Arc;
 
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalId,
-    GoalPayload, MemoryId, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload,
-    StorageError,
+    AbstractionPayload, FactPayload, GoalId, GoalPayload, MemoryId, PerspectivePayload, SchemaId,
+    SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, PgPool, Postgres, Transaction};
@@ -48,9 +47,7 @@ pub use sql::{
     bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_owner_pinned_sql,
     memory_select_batch_sql,
 };
-pub use traits::{
-    PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload, PgMemorySidecar,
-};
+pub use traits::{PgGoalSidecar, PgMemoryPayload, PgMemorySidecar};
 
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 pub type PgMemoryPayloadFuture<'t> =

@@ -331,7 +331,6 @@ fn replay_outcome(
     Ok(GoalWriteOutcome {
         goal_id: GoalId::new(goal_t),
         change_event_seq: goal_t,
-        lifecycle_memory_id: None,
         edge_count,
         idempotent_replay: true,
     })

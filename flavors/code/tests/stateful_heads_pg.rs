@@ -19,10 +19,10 @@ use common::{migrated_db, seed_memory_with_sidecars_in_tx};
 use proxima_code::{FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
+    Citation, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind};
+use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{
     FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion,
     SourceId, UserId,
@@ -41,20 +41,10 @@ fn registry_for_test() -> FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     proxima_code::register(&mut registry).expect("code schema registration");
     registry.add_fact_schema_or_panic_for_tests::<StatelessFactV1>();
-    registry
-        .try_add_opaque_schema(
-            SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        )
-        .expect("test cited-object registration");
-    registry
-        .try_add_opaque_schema(
-            SchemaId::new(common::TEST_CITATION_BLOB_SCHEMA_ID.into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        )
-        .expect("test citation-mapping registration");
+    registry.add_opaque_cited_object_schema(
+        SchemaId::new(common::TEST_CITED_BLOB_SCHEMA_ID.into()),
+        SchemaVersion::new(1),
+    );
     registry.freeze_or_panic_for_tests()
 }
 
@@ -99,10 +89,6 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
                 schema_id: SchemaId::new("test/cited_blob".into()),
                 schema_version: SchemaVersion::new(1),
                 content_hash: blake3::hash(payload).into(),
-            },
-            mapping: CitationMappingHint {
-                schema_id: SchemaId::new("test/citation_blob".into()),
-                schema_version: SchemaVersion::new(1),
             },
         }),
         additional_references: Vec::new(),

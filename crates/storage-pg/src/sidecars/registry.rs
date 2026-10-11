@@ -1,10 +1,9 @@
 use super::dispatch::{
-    copy_goal_sidecar, insert_citation_mapping_sidecar, insert_cited_object_sidecar,
-    insert_goal_sidecar, insert_memory_sidecar, load_memory_payload, load_memory_payload_batch,
+    copy_goal_sidecar, insert_goal_sidecar, insert_memory_sidecar, load_memory_payload,
+    load_memory_payload_batch,
 };
 use super::{
-    AbstractionPayload, Arc, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
-    HashMap, PayloadKind, PerspectivePayload, PgCitationMappingSidecar, PgCitedObjectSidecar,
+    AbstractionPayload, Arc, FactPayload, GoalPayload, HashMap, PayloadKind, PerspectivePayload,
     PgGoalSidecar, PgMemoryPayload, PgMemorySidecar, PgSidecarEntry, PgSidecarKey,
     PgSidecarRegistryFrozen, SchemaId, SchemaVersion, StorageError,
 };
@@ -42,8 +41,6 @@ impl PgSidecarRegistry {
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
-                    cited_object_insert: None,
-                    citation_mapping_insert: None,
                     goal_insert: None,
                     goal_copy: None,
                     projection_insert: None,
@@ -109,89 +106,8 @@ impl PgSidecarRegistry {
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
-                    cited_object_insert: None,
-                    citation_mapping_insert: None,
                     goal_insert: Some(insert_goal_sidecar::<P>),
                     goal_copy: Some(copy_goal_sidecar::<P>),
-                    projection_insert: None,
-                    projection_table: None,
-                    projection_language: None,
-                },
-            );
-            assert!(
-                prior.is_none(),
-                "duplicate PG sidecar registration for {:?}",
-                prior.map(|entry| entry.key),
-            );
-        }
-    }
-
-    /// Register one `CitedObject` sidecar with a typed inserter.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the same `CitedObject` schema/version is registered twice.
-    pub fn add_cited_object<P: CitedObjectPayload + PgCitedObjectSidecar>(&mut self) {
-        let key = PgSidecarKey::new(
-            PayloadKind::CitedObject,
-            P::schema_id(),
-            SchemaVersion::new(P::SCHEMA_VERSION),
-        );
-        let prior = self.entries.insert(
-            key.clone(),
-            PgSidecarEntry {
-                key,
-                sidecar_table: P::sidecar_table().to_string(),
-                owner_pinned: false,
-                memory_key_column: None,
-                memory_insert: None,
-                memory_load: None,
-                memory_load_batch: None,
-                cited_object_insert: Some(insert_cited_object_sidecar::<P>),
-                citation_mapping_insert: None,
-                goal_insert: None,
-                goal_copy: None,
-                projection_insert: None,
-                projection_table: None,
-                projection_language: None,
-            },
-        );
-        assert!(
-            prior.is_none(),
-            "duplicate PG sidecar registration for {:?}",
-            prior.map(|entry| entry.key),
-        );
-    }
-
-    /// Register one `CitationMapping` sidecar with a typed inserter.
-    /// Pure-link mapping payloads with no sidecar table are intentionally
-    /// skipped.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the same sidecar-bearing `CitationMapping` schema/version is
-    /// registered twice.
-    pub fn add_citation_mapping<P: CitationMappingPayload + PgCitationMappingSidecar>(&mut self) {
-        if let Some(table) = P::sidecar_table() {
-            let key = PgSidecarKey::new(
-                PayloadKind::CitationMapping,
-                P::schema_id(),
-                SchemaVersion::new(P::SCHEMA_VERSION),
-            );
-            let prior = self.entries.insert(
-                key.clone(),
-                PgSidecarEntry {
-                    key,
-                    sidecar_table: table.to_string(),
-                    owner_pinned: false,
-                    memory_key_column: None,
-                    memory_insert: None,
-                    memory_load: None,
-                    memory_load_batch: None,
-                    cited_object_insert: None,
-                    citation_mapping_insert: Some(insert_citation_mapping_sidecar::<P>),
-                    goal_insert: None,
-                    goal_copy: None,
                     projection_insert: None,
                     projection_table: None,
                     projection_language: None,
@@ -225,8 +141,6 @@ impl PgSidecarRegistry {
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),
-                cited_object_insert: None,
-                citation_mapping_insert: None,
                 goal_insert: None,
                 goal_copy: None,
                 projection_insert: None,
@@ -303,9 +217,12 @@ impl PgSidecarRegistry {
                         && entry.memory_load.is_some()
                         && entry.memory_load_batch.is_some()
                 }
-                PayloadKind::CitedObject => entry.cited_object_insert.is_some(),
-                PayloadKind::CitationMapping => entry.citation_mapping_insert.is_some(),
                 PayloadKind::Goal => entry.goal_insert.is_some() && entry.goal_copy.is_some(),
+                // Citation schemas, typed or opaque, have no sidecar: core
+                // records no sidecar table for them, so no schema reaches
+                // this loop under this kind and no PG registration can
+                // serve one.
+                PayloadKind::CitedObject => false,
             };
             if !has_inserter {
                 return Err(StorageError::ConstraintViolation(format!(
@@ -318,12 +235,6 @@ impl PgSidecarRegistry {
         }
 
         for entry in self.entries.values() {
-            if matches!(
-                entry.key.kind,
-                PayloadKind::CitedObject | PayloadKind::CitationMapping
-            ) {
-                continue;
-            }
             let Some(schema_table) = schema_keys.get(&entry.key) else {
                 return Err(StorageError::ConstraintViolation(format!(
                     "PG sidecar registration references unregistered schema {} v{} {:?}",
@@ -621,8 +532,6 @@ mod memory_key_agreement_tests {
             memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
             memory_load: None,
             memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
-            cited_object_insert: None,
-            citation_mapping_insert: None,
             goal_insert: None,
             goal_copy: None,
             projection_insert: None,

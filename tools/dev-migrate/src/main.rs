@@ -1,9 +1,9 @@
 //! Bootstrap a blank Postgres with the substrate schema and every in-repo
 //! flavor sidecar, in the same order a composite host boots them.
 //!
-//! `sqlx migrate run` cannot do this: the substrate and flavor migrators
-//! share one `_sqlx_migrations` table, so the CLI fails with
-//! `VersionMissing` on the second source. This bin delegates to the same
+//! `sqlx migrate run` cannot do this: it records every source into one
+//! `_sqlx_migrations` table, while core and each flavor keep their own ledger
+//! (`public._sqlx_migrations_<flavor>` for a flavor). This bin delegates to the same
 //! framework facade used by embedded hosts: core first, then flavors in
 //! composition order, with duplicate migration versions rejected up front.
 //!

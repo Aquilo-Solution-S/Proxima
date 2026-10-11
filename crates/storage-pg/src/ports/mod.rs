@@ -11,7 +11,6 @@ mod memory;
 mod owner_inverse;
 mod owners;
 mod read;
-mod registry;
 mod write_session;
 
 pub use host_state::PgHostStateParticipant;

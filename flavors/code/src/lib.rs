@@ -16,13 +16,10 @@ mod store;
 
 pub use file_class::{FileClass, FileClassCounts, FileClassifier};
 pub use ingest::{
-    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
-    ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA, CODE_BLOB_SCHEMA,
-    CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
-    EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA,
-    EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, IngestError,
-    LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_WHOLE_SCHEMA,
-    TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA, schema_registry, schema_registry_with,
+    ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA, CODE_BLOB_SCHEMA,
+    CODE_COMMIT_OBJECT_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_RESULT_OBJECT_SCHEMA,
+    IngestError, LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA, TEST_RESULT_OBJECT_SCHEMA,
+    schema_registry, schema_registry_with,
 };
 pub use local_git_source::{
     CodeIngestContext, HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
@@ -50,11 +47,9 @@ pub use repos::{
 pub mod testkit {
     use crate::CodeFlavorStore;
 
-    pub use crate::ingest::{
-        append_code_slice, build_engine, build_engine_with, ingest_commit, ingest_file_revision,
-    };
+    pub use crate::ingest::{build_engine, ingest_commit, ingest_file_revision};
     pub use crate::repos::runs::{
-        advance_stage, begin_run, get_active_run, get_run, mark_failed, mark_succeeded, start_run,
+        advance_stage, begin_run, get_run, mark_failed, mark_succeeded, start_run,
         start_run_with_created, sweep_orphaned_runs,
     };
     pub use crate::repos::{
@@ -117,16 +112,6 @@ proxima::flavor_bundle! {
         EXECUTION_RESULT_OBJECT_SCHEMA,
         TEST_RESULT_OBJECT_SCHEMA,
         ACCEPTANCE_VERIFICATION_OBJECT_SCHEMA,
-    ],
-    opaque_citation_mapping_schemas = [
-        CODE_BLOB_WHOLE_SCHEMA,
-        CODE_COMMIT_WHOLE_SCHEMA,
-        EXECUTION_REQUEST_WHOLE_SCHEMA,
-        ACCEPTANCE_CRITERIA_WHOLE_SCHEMA,
-        TEST_REQUEST_WHOLE_SCHEMA,
-        EXECUTION_RESULT_WHOLE_SCHEMA,
-        TEST_RESULT_WHOLE_SCHEMA,
-        ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA,
     ],
     mcp_tools = [
         mcp::CodeListReposTool,

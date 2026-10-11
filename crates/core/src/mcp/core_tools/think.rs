@@ -313,12 +313,12 @@ fn page_complete(ordered_len: usize, start: usize, limit: u32) -> bool {
 /// nobody wrote is a smaller wrong than hiding one.
 ///
 /// `Descendants` is deliberately NOT symmetric under the gate. Its inverse
-/// question — "which nodes name me in a declared subject column" — has no
-/// index to answer it: `_references` is discarded at ingest
-/// (`storage-pg/src/verbs/fact_ingest.rs`), so there is no reference table,
-/// and `interpretation_v1.subject_memory_ids` carries no GIN index. It
-/// would be a sequential scan per hop. The asymmetry is stated here rather
-/// than hidden: descendants find what pinned you, not what named you.
+/// question — "which nodes name me in a declared subject column" — is not
+/// one `refs[]` answers: an inbound `Reference` pin says a node names me in
+/// some declared field, not which one, and picking out the subject columns
+/// would load every such node's payload per hop. The asymmetry is stated
+/// here rather than hidden: descendants find what pinned you, not what named
+/// you.
 async fn next_hop(
     engine: &crate::Engine,
     ctx: &McpToolCtx,

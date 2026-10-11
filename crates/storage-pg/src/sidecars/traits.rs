@@ -1,5 +1,5 @@
 use super::{
-    GoalId, MemoryId, PayloadKind, PgConnection, PgFactSidecar, PgMemoryPayloadBatchFuture,
+    GoalId, MemoryId, PayloadKind, PgFactSidecar, PgMemoryPayloadBatchFuture,
     PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit,
     StorageError, Transaction,
 };
@@ -90,22 +90,6 @@ pub trait PgMemoryPayload: Send + Sync + 'static {
             ))
         })
     }
-}
-
-pub trait PgCitedObjectSidecar: Send + Sync + 'static {
-    fn insert_cited_object_sidecar<'t>(
-        &'t self,
-        tx: &'t mut PgConnection,
-        cited_object_id: uuid::Uuid,
-    ) -> PgSidecarFuture<'t>;
-}
-
-pub trait PgCitationMappingSidecar: Send + Sync + 'static {
-    fn insert_citation_mapping_sidecar<'t>(
-        &'t self,
-        tx: &'t mut PgConnection,
-        citation_mapping_id: uuid::Uuid,
-    ) -> PgSidecarFuture<'t>;
 }
 
 pub trait PgGoalSidecar: Send + Sync + 'static {

@@ -74,15 +74,13 @@ impl CitedBlobStore {
             .map_err(|err| BlobError::State(err.to_string()))?;
         let row = load_blob_location_on_connection(tx.as_mut(), &owner, cited_object_id).await?;
         tx.commit().await.map_err(BlobError::Db)?;
-        // The locator columns are client-writable: `core/uploaded-blob-v1`
-        // is a registered cited-object schema, so an inline citation can
-        // persist an arbitrary bucket/object_key row under the caller's own
-        // owner — and SigV4 presigning is offline, with no S3 existence
-        // check. Owning the row is therefore NOT enough to be allowed to
-        // presign its key: a forged row is owned by the forger. Presign
-        // only locators this store itself minted, and answer anything else
-        // exactly like a missing row so a probe cannot learn whether the
-        // forged row exists.
+        // Only the upload lane writes locator rows, but SigV4 presigning is
+        // offline, with no S3 existence check: a row this store did not
+        // mint (another deployment's bucket, a hand-written row) would sign
+        // a working GET for any object the substrate's role can read.
+        // Presign only locators this store itself minted, and answer
+        // anything else exactly like a missing row so a probe cannot learn
+        // whether such a row exists.
         if row.bucket != self.config.bucket
             || !locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
         {

@@ -237,6 +237,12 @@ const fn protocol_status(code: ErrorCode) -> (StatusCode, &'static str, &'static
         // 409, not 451. Suppression is a erasure primitive (13) and is not
         // necessarily a legal hold; 451 would overclaim.
         ErrorCode::Suppressed => (StatusCode::CONFLICT, "suppressed", "Suppressed"),
+        // 503, as for the storage-level refusal below: retry later.
+        ErrorCode::CapacityExhausted => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capacity-exhausted",
+            "Capacity exhausted",
+        ),
         ErrorCode::Internal => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -319,6 +325,30 @@ mod tests {
     }
 
     #[test]
+    fn protocol_codes_match_the_documented_table() {
+        for (code, expected) in [
+            (ErrorCode::AuthRequired, StatusCode::UNAUTHORIZED),
+            (ErrorCode::Forbidden, StatusCode::FORBIDDEN),
+            (ErrorCode::UnknownSchema, StatusCode::BAD_REQUEST),
+            (ErrorCode::InvalidArgument, StatusCode::BAD_REQUEST),
+            (ErrorCode::NotFound, StatusCode::NOT_FOUND),
+            (ErrorCode::ToolNotRegistered, StatusCode::NOT_FOUND),
+            (ErrorCode::AlreadyIngested, StatusCode::CONFLICT),
+            (ErrorCode::IdempotencyConflict, StatusCode::CONFLICT),
+            (ErrorCode::TriggerConflict, StatusCode::CONFLICT),
+            (ErrorCode::DuplicateTriggerInRequest, StatusCode::CONFLICT),
+            (ErrorCode::Suppressed, StatusCode::CONFLICT),
+            (
+                ErrorCode::CapacityExhausted,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (ErrorCode::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            assert_eq!(status_of(&protocol(code)), expected, "protocol {code:?}");
+        }
+    }
+
+    #[test]
     fn variant_map_matches_the_documented_table() {
         assert_eq!(
             status_of(&ToolInvocationError::ToolNotFound("core_nope".into())),
@@ -364,23 +394,6 @@ mod tests {
                 expected,
                 "variant map drifted"
             );
-        }
-
-        for (code, expected) in [
-            (ErrorCode::AuthRequired, StatusCode::UNAUTHORIZED),
-            (ErrorCode::Forbidden, StatusCode::FORBIDDEN),
-            (ErrorCode::UnknownSchema, StatusCode::BAD_REQUEST),
-            (ErrorCode::InvalidArgument, StatusCode::BAD_REQUEST),
-            (ErrorCode::NotFound, StatusCode::NOT_FOUND),
-            (ErrorCode::ToolNotRegistered, StatusCode::NOT_FOUND),
-            (ErrorCode::AlreadyIngested, StatusCode::CONFLICT),
-            (ErrorCode::IdempotencyConflict, StatusCode::CONFLICT),
-            (ErrorCode::TriggerConflict, StatusCode::CONFLICT),
-            (ErrorCode::DuplicateTriggerInRequest, StatusCode::CONFLICT),
-            (ErrorCode::Suppressed, StatusCode::CONFLICT),
-            (ErrorCode::Internal, StatusCode::INTERNAL_SERVER_ERROR),
-        ] {
-            assert_eq!(status_of(&protocol(code)), expected, "protocol {code:?}");
         }
 
         for (err, expected) in [

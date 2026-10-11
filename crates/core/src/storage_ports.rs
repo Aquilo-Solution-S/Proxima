@@ -22,7 +22,6 @@ mod memory;
 mod owner_inverse;
 mod proof;
 pub mod publication;
-mod registry;
 mod rejecting;
 mod write_session;
 
@@ -68,7 +67,7 @@ pub use handles::{
     GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
+    SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use host_state::{
     HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateParticipantId,
@@ -92,7 +91,6 @@ pub use publication::{
     AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,
 };
-pub use registry::RegistryProjectionPort;
 pub use write_session::{
     SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };

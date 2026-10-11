@@ -2420,13 +2420,11 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "blake3",
- "hex",
  "proxima-core",
  "proxima-pg-testkit",
  "proxima-storage-pg",
  "reqwest",
  "serde",
- "serde_json",
  "sha2 0.11.0",
  "sqlx",
  "thiserror",
@@ -2444,11 +2442,9 @@ dependencies = [
  "blake3",
  "futures",
  "globset",
- "hex",
  "pgvector",
  "proxima",
  "proxima-core",
- "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",
  "schemars",
@@ -2460,7 +2456,6 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
- "tokio-stream",
  "tracing",
  "tree-sitter",
  "tree-sitter-go",
@@ -2533,7 +2528,6 @@ dependencies = [
 name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
- "async-nats",
  "async-trait",
  "aws-lc-rs",
  "base64 0.23.1",
@@ -2630,7 +2624,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
- "futures-util",
  "pgvector",
  "proxima-core",
  "proxima-pg-testkit",
@@ -2643,7 +2636,6 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
- "tokio-stream",
  "tracing",
  "uuid",
 ]
@@ -3855,7 +3847,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

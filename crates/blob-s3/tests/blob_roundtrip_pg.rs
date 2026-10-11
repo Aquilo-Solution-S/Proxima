@@ -1331,13 +1331,11 @@ async fn complete_upload_fixture(
     Ok((completed.cited_object_id, stored.0))
 }
 
-/// `read_url` presigns only locators the store itself wrote. The locator
-/// columns are client-writable (an inline `core/uploaded-blob-v1` citation
-/// stores the caller's `bucket`/`object_key` verbatim) and presigning is
-/// offline — without the gate, a forged row for the caller's own owner
-/// yields a working GET, signed with the substrate's credentials, for any
-/// object the substrate's role can read. Forged rows must answer exactly
-/// like missing ones.
+/// `read_url` presigns only locators the store itself wrote. Presigning is
+/// offline — without the gate, a locator row the store did not mint (here
+/// written by hand) yields a working GET, signed with the substrate's
+/// credentials, for any object the substrate's role can read. Forged rows
+/// must answer exactly like missing ones.
 #[tokio::test]
 async fn read_url_refuses_locators_the_store_did_not_write() {
     if !S3RuntimeConfig::present_in_env() {

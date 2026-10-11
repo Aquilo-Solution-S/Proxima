@@ -43,7 +43,7 @@ docker compose -f docker-compose.dev.yml up -d --wait postgres
 docker compose -f docker-compose.dev.yml exec -T postgres \
   psql -U proxima -d proxima -v ON_ERROR_STOP=1 < scripts/pg-init.sql
 
-# 2. A local OIDC issuer. One auth path: RS256 bearer vs JWKS.
+# 2. A local OIDC issuer (signs RS256). One auth path: bearer vs JWKS.
 #    Local means a local issuer, not a bypass. Prints env + client config.
 cargo run -p proxima-dev-idp
 
@@ -145,7 +145,8 @@ writes a pin. See [docs/16-edges.md](docs/16-edges.md).
 Engine contract to clients: Query / ChangeHistory / GoalWrite /
 FactIngest / Schema. Owner-scoped, transport-agnostic
 ([docs/14-protocol-surface.md](docs/14-protocol-surface.md)). MCP tools
-are thin callers of those verbs. Forget cools; erase is abandonment-only.
+are thin callers of those verbs. Forget cools; erase runs only through the
+named compliance operations ([docs/13-compliance.md](docs/13-compliance.md)).
 
 Reads are Tesla-valve: sidecar / index → admit → project in Rust. No
 raw flavor SQL against `proxima_core.*`.

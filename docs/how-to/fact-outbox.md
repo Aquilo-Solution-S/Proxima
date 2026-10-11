@@ -9,7 +9,7 @@ Contract: [18-fact-outbox.md](../18-fact-outbox.md). Env reference:
 
 ```rust
 impl FactPayload for BuildFinished {
-    const SCHEMA_ID: &'static str = "acme.build_finished";
+    const SCHEMA_ID: &'static str = "acme/build-finished-v1";
     const SCHEMA_VERSION: u32 = 1;
     const LISTENABLE: bool = true;   // opt in; default false
     // json_schema() is REQUIRED once LISTENABLE is true — boot refuses otherwise
@@ -85,7 +85,9 @@ psql "$DATABASE_URL" -c \
 Without the `nats` CLI, run the broker-backed suite instead:
 
 ```sh
-PROXIMA_TEST_NATS_URL=nats://127.0.0.1:4224 cargo nextest run -p proxima-outbox-nats
+PROXIMA_TEST_PG_URL=postgres://proxima:proxima@127.0.0.1:5434/proxima \
+PROXIMA_TEST_NATS_URL=nats://127.0.0.1:4224 \
+  cargo nextest run -p proxima-outbox-nats
 ```
 
 Run the reference intake's PostgreSQL and broker recovery tests explicitly:

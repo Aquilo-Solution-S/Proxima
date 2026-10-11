@@ -2,7 +2,8 @@ use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
 use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
 use uuid::Uuid;
 
-/// A live v0.0.26 database keeps its function identity, authority and data.
+/// A live database at migration 0020 (`_v026_`) keeps its function identity,
+/// authority and data through 0021.
 #[tokio::test]
 async fn query_stopwords_upgrade_preserves_identity_and_runtime_authority()
 -> Result<(), Box<dyn std::error::Error>> {

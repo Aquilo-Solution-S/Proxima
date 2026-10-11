@@ -7,7 +7,6 @@
 use crate::verbs::query::SidecarAtom;
 use uuid::Uuid;
 
-use crate::EntityKind;
 use crate::edge::EdgeEndpoint;
 use crate::engine::WritePermit;
 use crate::storage_ports::OwnerWritePermit;
@@ -24,42 +23,27 @@ pub struct CitedObjectHint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct CitationMappingHint {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Citation {
     pub object: CitedObjectHint,
-    pub mapping: CitationMappingHint,
 }
 
-/// Compact citation input for the common opaque-object / pure-link
-/// mapping path used by Fact membrane ingest.
+/// Compact citation input for the common opaque-object path used by Fact
+/// membrane ingest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CitationSpec {
     pub cited_object_schema_id: SchemaId,
     pub cited_object_schema_version: SchemaVersion,
     pub content_hash: [u8; 32],
-    pub mapping_schema_id: SchemaId,
-    pub mapping_schema_version: SchemaVersion,
 }
 
 impl CitationSpec {
-    /// Build a v1 opaque cited-object / citation-mapping spec.
+    /// Build a v1 opaque cited-object spec.
     #[must_use]
-    pub fn v1(
-        cited_object_schema_id: impl Into<String>,
-        content_hash: [u8; 32],
-        mapping_schema_id: impl Into<String>,
-    ) -> Self {
+    pub fn v1(cited_object_schema_id: impl Into<String>, content_hash: [u8; 32]) -> Self {
         Self {
             cited_object_schema_id: SchemaId::new(cited_object_schema_id.into()),
             cited_object_schema_version: SchemaVersion::new(1),
             content_hash,
-            mapping_schema_id: SchemaId::new(mapping_schema_id.into()),
-            mapping_schema_version: SchemaVersion::new(1),
         }
     }
 
@@ -69,14 +53,9 @@ impl CitationSpec {
     pub fn v1_for_payload<P: FactPayload>(
         cited_object_schema_id: impl Into<String>,
         payload: &P,
-        mapping_schema_id: impl Into<String>,
     ) -> Self {
         let payload = payload.receipt_key();
-        Self::v1(
-            cited_object_schema_id,
-            *blake3::hash(&payload).as_bytes(),
-            mapping_schema_id,
-        )
+        Self::v1(cited_object_schema_id, *blake3::hash(&payload).as_bytes())
     }
 }
 
@@ -88,10 +67,6 @@ impl From<CitationSpec> for Citation {
                 schema_version: spec.cited_object_schema_version,
                 content_hash: spec.content_hash,
             },
-            mapping: CitationMappingHint {
-                schema_id: spec.mapping_schema_id,
-                schema_version: spec.mapping_schema_version,
-            },
         }
     }
 }
@@ -101,28 +76,6 @@ pub struct InlineCitedObjectDraft {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub payload_bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InlineCitationMappingDraft {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub payload_bytes: Vec<u8>,
-}
-
-/// What a citation attachment asks for: which memory it attaches to, the
-/// kind the caller declares that memory is, and the two typed payloads.
-///
-/// A request, not a witness — it carries no permit and proves nothing. The
-/// authorization triple (`authz`, `relation`, `requested_owner`) stays
-/// outside it, because that is what the engine checks and this is what it
-/// checks the request against.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CitationAttachmentRequest {
-    pub memory_id: MemoryId,
-    pub memory_kind: EntityKind,
-    pub cited_object: InlineCitedObjectDraft,
-    pub mapping: InlineCitationMappingDraft,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -365,7 +318,7 @@ impl AuthorizedFactWrite {
             .refs
             .iter()
             .copied()
-            .map(|id| EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id)))
+            .map(|id| EdgeEndpoint::memory(crate::EntityKind::Fact, MemoryId::new(id)))
             .collect();
         Self::new_with_links_for_tests(
             owner_write,
@@ -549,134 +502,20 @@ impl AuthorizedInlineCitedObject {
     }
 }
 
-#[derive(Debug)]
-pub struct AuthorizedInlineCitationMapping {
-    schema_id: SchemaId,
-    schema_version: SchemaVersion,
-    sidecar_payload: Option<SidecarPayload>,
-}
-
-impl AuthorizedInlineCitationMapping {
-    pub(crate) fn new(
-        schema_id: SchemaId,
-        schema_version: SchemaVersion,
-        sidecar_payload: Option<SidecarPayload>,
-    ) -> Self {
-        Self {
-            schema_id,
-            schema_version,
-            sidecar_payload,
-        }
-    }
-
-    #[must_use]
-    pub fn schema_id(&self) -> &SchemaId {
-        &self.schema_id
-    }
-
-    #[must_use]
-    pub const fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
-    }
-
-    #[must_use]
-    pub const fn sidecar_payload(&self) -> Option<&SidecarPayload> {
-        self.sidecar_payload.as_ref()
-    }
-}
-
-/// Proof that an existing Fact memory and inline citation payloads
-/// passed authorization, kind-specific schema validation, and citation
-/// mapping target validation.
-#[derive(Debug)]
-pub struct AuthorizedCitationAttachment {
-    permit: WritePermit,
-    memory_id: MemoryId,
-    memory_kind: crate::EntityKind,
-    owner: Owner,
-    cited_object: AuthorizedInlineCitedObject,
-    mapping: AuthorizedInlineCitationMapping,
-}
-
-impl AuthorizedCitationAttachment {
-    pub(crate) fn new(
-        permit: WritePermit,
-        memory_id: MemoryId,
-        memory_kind: crate::EntityKind,
-        owner: Owner,
-        cited_object: AuthorizedInlineCitedObject,
-        mapping: AuthorizedInlineCitationMapping,
-    ) -> Self {
-        Self {
-            permit,
-            memory_id,
-            memory_kind,
-            owner,
-            cited_object,
-            mapping,
-        }
-    }
-
-    /// Kind the caller declared for the target memory, already checked
-    /// against [`crate::citations::kind_may_cite_directly`]. Storage must
-    /// reject the write when the stored row disagrees.
-    #[must_use]
-    pub const fn memory_kind(&self) -> crate::EntityKind {
-        self.memory_kind
-    }
-
-    #[must_use]
-    pub fn permit(&self) -> &WritePermit {
-        &self.permit
-    }
-
-    #[must_use]
-    pub fn owner_write_permit(&self) -> &OwnerWritePermit {
-        self.permit.owner_write_permit()
-    }
-
-    #[must_use]
-    pub const fn memory_id(&self) -> MemoryId {
-        self.memory_id
-    }
-
-    #[must_use]
-    pub const fn owner(&self) -> &Owner {
-        &self.owner
-    }
-
-    #[must_use]
-    pub const fn cited_object(&self) -> &AuthorizedInlineCitedObject {
-        &self.cited_object
-    }
-
-    #[must_use]
-    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
-        &self.mapping
-    }
-}
-
-/// Proof that a Fact ingest and its inline citation payloads passed
-/// authorization, kind-specific schema validation, and citation
-/// mapping target validation.
+/// Proof that a Fact ingest and its inline cited object passed
+/// authorization and kind-specific schema validation.
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitation {
     core: AuthorizedFactCore,
     cited_object: AuthorizedInlineCitedObject,
-    mapping: AuthorizedInlineCitationMapping,
 }
 
 impl AuthorizedFactWithCitation {
     pub(crate) const fn new(
         core: AuthorizedFactCore,
         cited_object: AuthorizedInlineCitedObject,
-        mapping: AuthorizedInlineCitationMapping,
     ) -> Self {
-        Self {
-            core,
-            cited_object,
-            mapping,
-        }
+        Self { core, cited_object }
     }
 
     /// Index rows storage must assert alongside the Fact row.
@@ -717,11 +556,6 @@ impl AuthorizedFactWithCitation {
     }
 
     #[must_use]
-    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
-        &self.mapping
-    }
-
-    #[must_use]
     pub fn fact_sidecar_table(&self) -> Option<&str> {
         self.core.fact_sidecar_table()
     }
@@ -753,36 +587,26 @@ impl AuthorizedFactWithCitation {
 }
 
 /// Proof that a Fact ingest citing an EXISTING cited object by id passed
-/// authorization, kind-specific schema validation, and mapping-payload
-/// validation.
+/// authorization and kind-specific schema validation.
 ///
 /// The by-ref twin of [`AuthorizedFactWithCitation`]: it carries no
-/// inline cited-object payload — only the referenced id plus the object
-/// schema the mapping targets, which storage checks against the stored
-/// row (existence, owner, schema) before writing the mapping. Receipt
-/// and idempotency semantics are identical to the inline path: the
-/// citation is not part of the receipt key on either path, and a receipt
-/// replay short-circuits before any citation row is written.
+/// inline cited-object payload — only the referenced id, which storage
+/// checks against the stored row (existence, owner) before the Fact
+/// cites it. Receipt and idempotency semantics are identical to the
+/// inline path: the citation is not part of the receipt key on either
+/// path, and a receipt replay short-circuits before any citation is
+/// written.
 #[derive(Debug)]
 pub struct AuthorizedFactWithCitationRef {
     core: AuthorizedFactCore,
     cited_object_id: Uuid,
-    expected_object_schema: SchemaId,
-    mapping: AuthorizedInlineCitationMapping,
 }
 
 impl AuthorizedFactWithCitationRef {
-    pub(crate) const fn new(
-        core: AuthorizedFactCore,
-        cited_object_id: Uuid,
-        expected_object_schema: SchemaId,
-        mapping: AuthorizedInlineCitationMapping,
-    ) -> Self {
+    pub(crate) const fn new(core: AuthorizedFactCore, cited_object_id: Uuid) -> Self {
         Self {
             core,
             cited_object_id,
-            expected_object_schema,
-            mapping,
         }
     }
 
@@ -821,18 +645,6 @@ impl AuthorizedFactWithCitationRef {
     #[must_use]
     pub const fn cited_object_id(&self) -> Uuid {
         self.cited_object_id
-    }
-
-    /// The cited-object schema the mapping targets; storage rejects the
-    /// write when the referenced object's stored `schema_id` differs.
-    #[must_use]
-    pub fn expected_object_schema(&self) -> &SchemaId {
-        &self.expected_object_schema
-    }
-
-    #[must_use]
-    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
-        &self.mapping
     }
 
     #[must_use]
@@ -996,7 +808,7 @@ pub struct FactIngestOutcome {
     /// Server-generated inside the write transaction, so a caller that
     /// supplied the artefact rather than its id has no other way to learn
     /// it. Populated on replay too — reading it back from the existing
-    /// Fact's mapping — because the whole point of a content-addressed
+    /// Fact's citation — because the whole point of a content-addressed
     /// upload is that the second caller gets the first caller's object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_object_id: Option<Uuid>,

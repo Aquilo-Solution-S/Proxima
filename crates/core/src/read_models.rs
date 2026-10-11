@@ -5,14 +5,6 @@ use crate::{
     StorageError, ToolScope,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FactRow {
-    pub memory_id: MemoryId,
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub payload: Option<SidecarPayload>,
-}
-
 /// Persisted recall/think one-liner. Plumbing; not a kernel sort.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySketch {
@@ -30,15 +22,6 @@ pub struct MemorySnapshot {
     pub schema_version: SchemaVersion,
     pub owner: OwnerRef,
     pub text: Option<String>,
-    pub payload: Option<SidecarPayload>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbstractionRow {
-    pub memory_id: MemoryId,
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub text: String,
     pub payload: Option<SidecarPayload>,
 }
 

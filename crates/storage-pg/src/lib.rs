@@ -67,10 +67,9 @@ pub mod query {
     pub use crate::verbs::query::{
         ActiveGoalTargetRow, ChunkHeadClass, ChunkSeriesHead, CodeChunkVectorCandidate,
         CodeChunkVectorFilters, FileRevisionHeadRow, HeadChunkCallPair, MAX_SNAPSHOT_EDGES,
-        active_goals_for_memory_targets, active_goals_for_memory_targets_on_connection,
-        head_chunk_call_pairs, nearest_code_chunk_candidates,
-        nearest_code_chunk_candidates_on_connection, owned_chunk_head_classes,
-        owned_chunk_series_heads, owned_file_revision_heads, owned_present_chunk_indexes,
+        active_goals_for_memory_targets_on_connection, head_chunk_call_pairs,
+        nearest_code_chunk_candidates, nearest_code_chunk_candidates_on_connection,
+        owned_chunk_head_classes, owned_chunk_series_heads, owned_file_revision_heads,
         owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
         readable_file_revision_head_ts,
     };
@@ -2283,7 +2282,6 @@ impl PgStorage {
             .owner_transfer(self.clone())
             .source_cursor(self.clone())
             .owner_erase(self.clone())
-            .registry_projection(self.clone())
             .write_session(self)
             .build()
     }

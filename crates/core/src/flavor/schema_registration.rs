@@ -1,10 +1,10 @@
 use super::ingress::{
-    ingest_abstraction_payload, ingest_citation_mapping_payload, ingest_cited_object_payload,
-    ingest_fact_payload, ingest_goal_payload, ingest_perspective_payload,
+    ingest_abstraction_payload, ingest_cited_object_payload, ingest_fact_payload,
+    ingest_goal_payload, ingest_perspective_payload,
 };
 use super::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry,
-    FlavorRegistryError, GoalPayload, PayloadKind, PerspectivePayload, ProtocolPayloadIngress,
+    AbstractionPayload, CitedObjectPayload, FactPayload, FlavorRegistry, FlavorRegistryError,
+    GoalPayload, PayloadKind, PerspectivePayload, ProtocolPayloadIngress,
     ProtocolPayloadIngressEntry, SchemaId, SchemaInfo, SchemaVersion, ScopeKind,
 };
 
@@ -70,7 +70,6 @@ impl FlavorRegistry {
                     value: t.value.to_string(),
                 }),
                 has_typed_ingress: true,
-                cited_object_schema: None,
                 listenable: F::LISTENABLE,
             },
             ingest_fact_payload::<F>,
@@ -103,7 +102,6 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 has_typed_ingress: true,
-                cited_object_schema: None,
                 listenable: false,
             },
             ingest_abstraction_payload::<A>,
@@ -136,7 +134,6 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 has_typed_ingress: true,
-                cited_object_schema: None,
                 listenable: false,
             },
             ingest_perspective_payload::<P>,
@@ -167,7 +164,6 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 has_typed_ingress: true,
-                cited_object_schema: None,
                 listenable: false,
             },
             ingest_goal_payload::<G>,
@@ -199,7 +195,6 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 has_typed_ingress: true,
-                cited_object_schema: None,
                 listenable: false,
             },
             ingest_cited_object_payload::<C>,
@@ -214,82 +209,39 @@ impl FlavorRegistry {
             .expect("cited-object schema registration must be valid");
     }
 
-    /// # Errors
+    /// Register an *opaque* cited-object schema — one with no Rust payload
+    /// type, for a content-addressed blob. It carries no typed ingress
+    /// parser and no JSON schema. Opaque content enters through the explicit
+    /// citation APIs; `ingest_protocol_payload` rejects it.
     ///
-    /// Currently infallible; returns a registry error if schema admission adds
-    /// validation.
-    pub fn try_add_citation_mapping_schema<M: CitationMappingPayload>(
-        &mut self,
-    ) -> Result<(), FlavorRegistryError> {
-        self.register_schema(
-            SchemaInfo {
-                schema_id: M::schema_id(),
-                schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
-                kind: PayloadKind::CitationMapping,
-                filter_keys: vec![],
-                sidecar_table: M::sidecar_table().map(std::string::ToString::to_string),
-                natural_key_columns: vec![],
-                tombstone: None,
-                has_typed_ingress: true,
-                cited_object_schema: Some(M::cited_object_schema()),
-                listenable: false,
-            },
-            ingest_citation_mapping_payload::<M>,
-            M::json_schema(),
-        );
-        Ok(())
-    }
-
-    #[doc(hidden)]
-    pub fn add_citation_mapping_schema_or_panic_for_tests<M: CitationMappingPayload>(&mut self) {
-        self.try_add_citation_mapping_schema::<M>()
-            .expect("citation-mapping schema registration must be valid");
-    }
-
-    /// Register an *opaque* schema — one with no Rust payload type.
-    /// The blessed path for content-addressed `CitedObject`s and
-    /// structural `CitationMapping`s whose payload is an opaque blob;
-    /// it carries no typed ingress parser and no JSON schema. Opaque
-    /// content enters through the explicit citation APIs;
-    /// `ingest_protocol_payload` rejects it.
+    /// A cited object is the only kind that may be opaque, so the function
+    /// takes no kind: naming another one does not compile.
     ///
-    /// This is the *only* sanctioned way to register an untyped schema.
+    /// ```compile_fail,E0061
+    /// use proxima_core::verbs::schema::PayloadKind;
+    /// use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
+    ///
+    /// let mut registry = FlavorRegistry::new();
+    /// registry.add_opaque_cited_object_schema(
+    ///     SchemaId::new("acme/blob-v1".to_string()),
+    ///     SchemaVersion::new(1),
+    ///     PayloadKind::Fact,
+    /// );
+    /// ```
+    ///
     /// `try_freeze()` asserts every other schema has a typed ingress parser,
     /// so a dropped parser fails the build rather than silently disabling
-    /// validation and typed sidecar construction.
-    /// # Errors
-    ///
-    /// Returns [`FlavorRegistryError::OpaqueSchemaKind`] for an opaque
-    /// Fact, Abstraction, Perspective, or Goal schema.
-    pub fn try_add_opaque_schema(
+    /// validation and typed sidecar construction. A duplicate registration
+    /// is refused there too, as [`FlavorRegistryError::DuplicateSchema`].
+    pub fn add_opaque_cited_object_schema(
         &mut self,
         schema_id: SchemaId,
         schema_version: SchemaVersion,
-        kind: PayloadKind,
-    ) -> Result<(), FlavorRegistryError> {
-        if !matches!(
-            kind,
-            PayloadKind::CitedObject | PayloadKind::CitationMapping
-        ) {
-            return Err(FlavorRegistryError::OpaqueSchemaKind {
-                schema_id,
-                schema_version,
-                kind,
-            });
-        }
-        self.schemas
-            .push(SchemaInfo::opaque(schema_id, schema_version, kind));
-        Ok(())
-    }
-
-    #[doc(hidden)]
-    pub fn add_opaque_schema_or_panic_for_tests(
-        &mut self,
-        schema_id: SchemaId,
-        schema_version: SchemaVersion,
-        kind: PayloadKind,
     ) {
-        self.try_add_opaque_schema(schema_id, schema_version, kind)
-            .expect("opaque schema registration must be valid");
+        self.schemas.push(SchemaInfo::opaque(
+            schema_id,
+            schema_version,
+            PayloadKind::CitedObject,
+        ));
     }
 }

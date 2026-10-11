@@ -122,8 +122,8 @@ the edge vocabulary can be closed at two mechanical kinds (`origin`,
 source of an interpretation, because the layering rule refuses it. Cosine
 similarity is observer-independent and so cannot encode an observer-relative
 claim; a similarity worth persisting is an Abstraction citing its computation
-record, not an edge property. This grounds invariants 6 and 20, the
-directionality rule of `02-memory.md`, and the thesis of `16-edges.md`.
+record, not an edge property. This grounds the layering principle of
+`02-memory.md` and the thesis of `16-edges.md`.
 
 ### "Causa proxima" as abductive inference, not legal proximity
 
@@ -141,8 +141,8 @@ of perspectivism, not a bug.
 These positions are not original to Proxima. The contribution is **treating
 them as load-bearing engineering invariants in a running system**:
 append-only storage that cannot overwrite a Perspective, build-time-typed
-payloads that force operators to commit to a causal interpretation, an edge
-table that can carry no claim at all. Cognitive architectures (SOAR, ACT-R,
+payloads that force operators to commit to a causal interpretation, pins that
+carry no claim at all. Cognitive architectures (SOAR, ACT-R,
 LIDA) and philosophy of science have articulated the shape for decades;
 what was missing was the operational discipline to ship it on top of LLMs
 that can finally serve as F→A and A→P operators.

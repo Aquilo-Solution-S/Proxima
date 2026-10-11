@@ -1,7 +1,7 @@
 use proxima_core::flavor::LanguagePolicy;
 
 use super::{
-    GoalId, MemoryId, PayloadKind, PgConnection, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
+    GoalId, MemoryId, PayloadKind, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
     PgSidecarFuture, PgSidecarReadCtx, Postgres, SchemaId, SchemaVersion, SidecarInsertPermit,
     SidecarPayload, Transaction,
 };
@@ -17,10 +17,6 @@ type PgMemoryPayloadLoader =
 type PgMemoryPayloadBatchLoader =
     for<'t> fn(PgSidecarReadCtx<'t>, PayloadKind, &'t [MemoryId]) -> PgMemoryPayloadBatchFuture<'t>;
 
-type PgCitedObjectSidecarInserter =
-    for<'t> fn(&'t mut PgConnection, uuid::Uuid, &'t SidecarPayload) -> PgSidecarFuture<'t>;
-type PgCitationMappingSidecarInserter =
-    for<'t> fn(&'t mut PgConnection, uuid::Uuid, &'t SidecarPayload) -> PgSidecarFuture<'t>;
 type PgGoalSidecarInserter = for<'t> fn(
     &'t mut Transaction<'_, Postgres>,
     GoalId,
@@ -55,9 +51,8 @@ pub struct PgSidecarEntry {
     /// erase and export can find owner-pinned tables without knowing which
     /// payload types they belong to.
     pub owner_pinned: bool,
-    /// See [`super::PgMemoryPayload::MEMORY_KEY_COLUMN`]. `None` for a Goal,
-    /// `CitedObject` or `CitationMapping` registration, which hangs off no
-    /// memory.
+    /// See [`super::PgMemoryPayload::MEMORY_KEY_COLUMN`]. `None` for a Goal
+    /// registration, which hangs off no memory.
     ///
     /// Carried for the same reason `owner_pinned` is: the series-head
     /// lookup joins a sidecar back to `proxima_core.memory` and knows only
@@ -68,8 +63,6 @@ pub struct PgSidecarEntry {
     pub(super) memory_insert: Option<PgMemorySidecarInserter>,
     pub(super) memory_load: Option<PgMemoryPayloadLoader>,
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,
-    pub(super) cited_object_insert: Option<PgCitedObjectSidecarInserter>,
-    pub(super) citation_mapping_insert: Option<PgCitationMappingSidecarInserter>,
     pub(super) goal_insert: Option<PgGoalSidecarInserter>,
     pub(super) goal_copy: Option<PgGoalSidecarCopier>,
     /// The generated `INSERT INTO <flavor>.projection … FROM <sidecar>`

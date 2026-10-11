@@ -7,7 +7,7 @@ use super::handles::{
     GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
+    SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -35,7 +35,6 @@ pub struct StoragePorts {
     owner_erase: OwnerInverseHandle,
     erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
-    registry_projection: RegistryProjectionHandle,
     write_session: WriteSessionFactoryHandle,
 }
 
@@ -95,7 +94,6 @@ pub(crate) struct ReadVerbStoragePorts {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct OwnerInverseStoragePorts {
     pub owner_erase: OwnerInverseHandle,
     pub erase_authority: Option<OwnerEraseAuthorityHandle>,
@@ -140,7 +138,6 @@ pub struct StoragePortsBuilder {
     owner_erase: Option<OwnerInverseHandle>,
     erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
-    registry_projection: Option<RegistryProjectionHandle>,
     write_session: Option<WriteSessionFactoryHandle>,
 }
 
@@ -188,7 +185,6 @@ impl StoragePorts {
             owner_erase: rejecting.clone(),
             erase_authority: None,
             owner_drop_proof: None,
-            registry_projection: rejecting.clone(),
             write_session: rejecting,
         }
     }
@@ -418,12 +414,6 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn registry_projection(mut self, handle: RegistryProjectionHandle) -> Self {
-        self.registry_projection = Some(handle);
-        self
-    }
-
-    #[must_use]
     pub fn write_session(mut self, handle: WriteSessionFactoryHandle) -> Self {
         self.write_session = Some(handle);
         self
@@ -480,7 +470,6 @@ impl StoragePortsBuilder {
             owner_transfer,
             source_cursor,
             owner_erase,
-            registry_projection,
             write_session,
         ))
     }
@@ -525,7 +514,7 @@ mod tests {
 
         // Names are surfaced both structurally and in the Display message.
         assert!(err.missing().contains(&"fact_ingest"));
-        assert!(err.missing().contains(&"registry_projection"));
+        assert!(err.missing().contains(&"write_session"));
         assert!(err.to_string().contains("fact_ingest"));
 
         // Optional ports are never reported as missing.

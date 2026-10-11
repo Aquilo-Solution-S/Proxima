@@ -137,7 +137,6 @@ pub struct GoalWakeArgs {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GoalWriteOutput {
     pub handle: String,
-    pub lifecycle_memory: Option<String>,
     /// Index rows the write asserted. Not handles: an edge has no id.
     pub edge_count: usize,
     pub idempotent_replay: bool,
@@ -785,9 +784,6 @@ pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str)
 fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> GoalWriteOutput {
     GoalWriteOutput {
         handle: ctx.format_goal(outcome.goal_id),
-        lifecycle_memory: outcome
-            .lifecycle_memory_id
-            .map(|memory_id| ctx.format_fact_memory(memory_id)),
         edge_count: outcome.edge_count,
         idempotent_replay: outcome.idempotent_replay,
     }

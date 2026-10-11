@@ -46,7 +46,7 @@ async fn pending_debts(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
 }
 
 const CITED_TABLE: &str = "proxima_core.test_cited_object_v1";
-const MAPPING_TABLE: &str = "proxima_core.test_citation_mapping_v1";
+const SPAN_TABLE: &str = "proxima_core.test_cited_span_v1";
 
 #[derive(Default)]
 struct RefusingDeleteCold {
@@ -129,7 +129,7 @@ fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     }
     proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(vec![
         citation(CITED_TABLE, "cited_object_id"),
-        citation(MAPPING_TABLE, "citation_mapping_id"),
+        citation(SPAN_TABLE, "span_blob_id"),
     ])
 }
 
@@ -146,8 +146,8 @@ async fn create_citation_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx:
     .execute(pool)
     .await?;
     sqlx::query(
-        "CREATE TABLE proxima_core.test_citation_mapping_v1 (
-             citation_mapping_id uuid PRIMARY KEY REFERENCES proxima_core.blob (blob_id),
+        "CREATE TABLE proxima_core.test_cited_span_v1 (
+             span_blob_id uuid PRIMARY KEY REFERENCES proxima_core.blob (blob_id),
              page_from integer NOT NULL
          )",
     )
@@ -203,7 +203,7 @@ async fn cite_blob(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.test_citation_mapping_v1 (citation_mapping_id, page_from)
+        "INSERT INTO proxima_core.test_cited_span_v1 (span_blob_id, page_from)
          VALUES ($1, 4)",
     )
     .bind(blob_id)
@@ -250,7 +250,7 @@ async fn completed_blob_upload(
 }
 
 /// Every row keyed on one blob: the blob itself, its upload record, and both
-/// citation sidecar rows. `(blob, upload, cited_object, citation_mapping)`.
+/// citation sidecar rows. `(blob, upload, cited_object, cited_span)`.
 async fn rows_for_blob(
     pool: &sqlx::PgPool,
     blob_id: Uuid,
@@ -263,8 +263,8 @@ async fn rows_for_blob(
                WHERE blob_id = $1),
              (SELECT count(*)::bigint FROM proxima_core.test_cited_object_v1
                WHERE cited_object_id = $1),
-             (SELECT count(*)::bigint FROM proxima_core.test_citation_mapping_v1
-               WHERE citation_mapping_id = $1)",
+             (SELECT count(*)::bigint FROM proxima_core.test_cited_span_v1
+               WHERE span_blob_id = $1)",
     )
     .bind(blob_id)
     .fetch_one(pool)

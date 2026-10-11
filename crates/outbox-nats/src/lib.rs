@@ -23,8 +23,9 @@
 //! - **The bytes are never rebuilt.** The publisher ships
 //!   [`ClaimedPublication::envelope`] verbatim, so an upgraded flavor
 //!   cannot reinterpret an event captured by an older one.
-//! - **Nothing deletes.** Claims lease, leases expire, releases return.
-//!   Compliance erasure is the only path a record leaves the outbox by.
+//! - **Delivery never deletes.** Claims lease, leases expire, releases return.
+//!   A record leaves the outbox by compliance erasure, or by the opt-in
+//!   retention horizon, which reaches only `published` rows.
 //! - **Both sides are at-least-once.** `Nats-Msg-Id` deduplicates inside
 //!   the broker's window; the sink deduplicates on the `CloudEvents` id
 //!   beyond it.

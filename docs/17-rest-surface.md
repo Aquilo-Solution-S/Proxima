@@ -140,15 +140,17 @@ Two implementation constraints, both small and both worth recording
 because they are the sort of thing rediscovered painfully:
 
 - `http` 1.5.0 carries `Method::QUERY` as a first-class constant with
-  `is_idempotent()` true. The workspace pins `http = "1"` and resolves
-  to 1.5.0, so no dependency change is needed.
+  `is_idempotent()` true. The workspace pins `http = "1.5"`, so no
+  dependency change is needed.
 - `axum` 0.8.9 — the pinned `axum = "0.8"` resolution, and the latest
   published release — has a `MethodFilter` closed over the nine classic
   methods, with `TryFrom<Method>` rejecting `QUERY`. Generated routes
   therefore cannot use `on(MethodFilter::…)`. They use a catch-all
   handler that matches on `Method` directly and emits `405` with an
-  explicit `Allow: QUERY, POST` header, since `any()` calls
-  `skip_allow_header()` and suppresses axum's own `Allow` generation.
+  explicit `Allow` header, since `any()` calls `skip_allow_header()` and
+  suppresses axum's own `Allow` generation. The header is `GET, POST, QUERY`
+  or `GET, POST` on `/v1/tools/{tool}` (read-only or write), and `POST, QUERY`
+  or `POST` on `/v1/tools/{tool}/{action}`.
   This is one shared handler, not per-route code.
 
 The axum gap is lag, not design: 0.8.9 predates `http` 1.5.0 by about
@@ -355,17 +357,22 @@ map therefore matches on **variants**, not kinds.
 | `McpToolError::NotAuthorized` | 403 |
 | `McpToolError::LayeringViolation` | 422 |
 | `McpToolError::Unavailable` | 503 |
-| `Storage(PublicationRefused(CapacityExhausted))` | 503, `type` slug `capacity-exhausted` |
+| `Protocol(CapacityExhausted)`, `Storage(PublicationRefused(CapacityExhausted))` | 503, `type` slug `capacity-exhausted` |
 | `Storage(PublicationRefused(PayloadTooLarge \| ExportFailed \| UntypedListenableWrite))` | 400 |
 | `Storage(PublicationRefused(SourceUnbound))` | 500 — a deployment fault, not a caller's ([18](18-fact-outbox.md#capture)) |
 | `Protocol(AuthRequired)` | 401 |
 | `Protocol(Forbidden)` | 403 |
 | `Protocol(UnknownSchema)` | 400 |
+| `Protocol(InvalidArgument)` | 400, `type` slug `invalid-argument` |
+| `Protocol(NotFound)` | 404 |
 | `Protocol(ToolNotRegistered)` | 404 |
 | `Protocol(AlreadyIngested)` | 409 |
 | `Protocol(IdempotencyConflict)`, `Storage(IdempotencyConflict)` | 409 |
 | `Protocol(TriggerConflict)`, `Protocol(DuplicateTriggerInRequest)` | 409 |
 | `Storage(Conflict)` | 409 |
+| `Storage(ConstraintViolation)` | 400, `type` slug `invalid-input` |
+| `Storage(NotFound)` | 404 |
+| `Storage(ScopeMissing)` | 404, `type` slug `scope-not-registered` |
 | `Protocol(Suppressed)`, `Storage(Suppressed)` | 409 |
 | kind `Internal` (storage retryable/unavailable/internal, `Other`) | 500 |
 
@@ -496,9 +503,9 @@ as the authorization server does not stamp RFC 8707 `resource` into `aud`
   wildcard arm.
 - **Reserved fields.** Each of the four reserved argument names is
   rejected `400` in a request body, with a `detail` naming its header.
-- **Method gating.** `QUERY` on a write tool or a write dispatcher
-  action is `405` with `Allow: POST`; `QUERY` and `POST` on a read-only
-  tool produce byte-identical responses.
+- **Method gating.** `QUERY` on a write tool is `405` with `Allow: GET, POST`,
+  and on a write dispatcher action route with `Allow: POST`; `QUERY` and
+  `POST` on a read-only tool produce byte-identical responses.
 - **Action injection.** A narrowed route with a conflicting body
   `action` is rejected `400`; an unknown action is `404`.
 - **Resource passthrough.** Malformed resource query parameters

@@ -34,8 +34,7 @@ formal kernel in `docs/lean/`. This guide covers how to contribute.
 - `cargo clippy --workspace --all-targets` and `cargo test` must be clean
 - New entities ship their schema migrations; respect the load-bearing
   invariants in [`AGENTS.md`](AGENTS.md)
-- Doc fixes (typos, broken links, inconsistencies) and answers to open
-  `Q1-Qx` questions are welcome as PRs
+- Doc fixes (typos, broken links, inconsistencies) are welcome as PRs
 - New public how-to/tutorial/reference pages belong under `docs/getting-started/`,
   `docs/tutorials/`, `docs/how-to/`, or `docs/reference/`.
 - New invariant/design changes belong in the numbered docs and, when domainless,
@@ -83,7 +82,7 @@ security audit remains independent of changed paths.
 3. Make your changes
 4. Ensure all documentation cross-references are accurate
 5. Open a PR with:
-   - Clear title prefixed with doc number or component: `docs(02): ...` or `core: ...`
+   - Clear Conventional Commit title: `docs(02): ...` or `feat(core): ...`
    - Description explaining the *why*, not just the *what*
    - References to any relevant issues
 6. Wait for maintainer review and address feedback
@@ -91,7 +90,7 @@ security audit remains independent of changed paths.
 ## Commit Conventions
 
 - Subject: `docs(<scope>): <summary>` for documentation changes (e.g., `docs(02): close Q3 strict layering`)
-- Subject: `<component>: <summary>` for code changes (e.g., `core: add FactPayload trait`)
+- Subject: `feat(<component>): <summary>` / `fix(<component>): <summary>` / `refactor(<component>): <summary>` for code changes (e.g., `feat(core): add FactPayload trait`); release notes list only Conventional Commit types
 - Body: bulleted list of concrete changes; preserve the *why* when the change is a decision, not a fix
 - Trailer: Include CLA sign-off (see below)
 

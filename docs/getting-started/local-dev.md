@@ -65,8 +65,9 @@ export AWS_DEFAULT_REGION=us-east-1
 
 ## Start A Local OIDC Issuer
 
-Proxima authenticates MCP callers exactly one way: an RS256 bearer, verified
-against a JWKS discovered from the configured issuer, with `(iss, sub)`
+Proxima authenticates MCP callers exactly one way: a signed bearer
+(RS256/384/512, ES256 or EdDSA; this issuer signs RS256), verified against a
+JWKS discovered from the configured issuer, with `(iss, sub)`
 mapped to a user through an explicit subject map. There is no dev bypass —
 adding one would mean the path you test locally is not the path you deploy.
 

@@ -21,7 +21,7 @@
 //!   up the MCP server needs nothing below this line.
 //! - **Flavor SDK:** import from `proxima::flavor`, not the root facade. The
 //!   SDK exposes payload traits, ids, `proxima_flavor!`, `Tool`/`ToolCtx`,
-//!   relation descriptors, sidecar macros/traits, and registry types. It does
+//!   payload reference declarations, sidecar macros/traits, and registry types. It does
 //!   not expose raw `PgPool`, raw storage verbs, or proofless append helpers.
 //!   Host extra-table wiring uses [`ProximaHost::clone_pool_for_host`] plus
 //!   [`ProximaHost::pg_tuning_for_host`] (via [`AppContext::host`]) inside

@@ -9,16 +9,13 @@ use crate::publication::PublicationError;
 
 /// Map a refused publication capture onto the public protocol surface.
 ///
-/// `ErrorCode` is deliberately exhaustive at every transport, so a new code
-/// would cost every adapter a rendering decision this refusal does not
-/// need. The split that matters is caller-fixable versus deployment fault:
-///
 /// - an oversized export, a failed export and a listenable write on the
 ///   receipt-only route are things the CALLER (or the flavor author) can
 ///   fix, and read as `invalid_argument`;
-/// - an unbound source and an exhausted outbox are the deployment's, and
-///   read as `internal` — the message names which, so backpressure is not
-///   mistaken for a bug in the request.
+/// - an exhausted outbox is backpressure on a legal write, and reads as
+///   `capacity_exhausted` (MCP `-32000`, REST 503) so a caller backs off
+///   instead of opening an incident (docs/18);
+/// - an unbound source is the deployment's, and reads as `internal`.
 #[must_use]
 pub(crate) fn map_publication_error(err: &PublicationError) -> ProtocolError {
     match err {
@@ -27,9 +24,10 @@ pub(crate) fn map_publication_error(err: &PublicationError) -> ProtocolError {
         | PublicationError::UntypedListenableWrite { .. } => {
             ProtocolError::invalid_argument("publication", err.to_string())
         }
-        PublicationError::SourceUnbound { .. } | PublicationError::CapacityExhausted { .. } => {
-            ProtocolError::internal(err.to_string())
+        PublicationError::CapacityExhausted { .. } => {
+            ProtocolError::capacity_exhausted(err.to_string())
         }
+        PublicationError::SourceUnbound { .. } => ProtocolError::internal(err.to_string()),
     }
 }
 
@@ -71,4 +69,46 @@ pub(in crate::engine) fn internal_storage_error(
     err: &StorageError,
 ) -> ProtocolError {
     ProtocolError::internal(format!("{context}: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorCode;
+    use crate::mcp::{McpToolError, McpToolErrorKind};
+
+    /// Every shipped write reaches the client through `Engine`, so a
+    /// refusal must read the same there as on the direct storage path:
+    /// one class per refusal, whichever channel carries it.
+    #[test]
+    fn engine_and_storage_paths_classify_each_publication_refusal_alike() {
+        for refusal in [
+            PublicationError::PayloadTooLarge { bytes: 9, max: 8 },
+            PublicationError::CapacityExhausted { pending: 3, max: 3 },
+            PublicationError::ExportFailed("nope".into()),
+            PublicationError::UntypedListenableWrite {
+                schema_id: "x/y-v1".into(),
+            },
+            PublicationError::SourceUnbound {
+                schema_id: "x/y-v1".into(),
+            },
+        ] {
+            let engine = McpToolError::Protocol(map_publication_error(&refusal));
+            let storage = McpToolError::Storage(StorageError::PublicationRefused(refusal));
+            assert_eq!(engine.kind(), storage.kind(), "for {storage}");
+        }
+    }
+
+    /// Backpressure is retry-later, not an incident, and the caller keeps
+    /// the backlog depth it needs to decide how long to wait.
+    #[test]
+    fn exhausted_outbox_reads_as_capacity_exhausted_with_its_depth() {
+        let err =
+            map_publication_error(&PublicationError::CapacityExhausted { pending: 3, max: 3 });
+        assert_eq!(err.code, ErrorCode::CapacityExhausted);
+
+        let err = McpToolError::Protocol(err);
+        assert_eq!(err.kind(), McpToolErrorKind::CapacityExhausted);
+        assert!(err.client_message().contains("3 pending, limit 3"), "{err}");
+    }
 }

@@ -31,10 +31,11 @@ pub struct GetGraphOutput {
     /// means no retryable/in-flight backlog remains (not a proof that every
     /// memory embedded successfully).
     pub pending_embedding_jobs: u64,
-    /// Counts the owner's embedding jobs in the terminal `failed` state (retries
-    /// exhausted). A non-zero value means some Facts are stuck without an
-    /// embedding until a `reconcile` requeues them — an operator signal on this
-    /// readiness resource.
+    /// Counts the owner's embedding jobs in a terminal state: `failed` (retries
+    /// exhausted) and `failed_permanent` (the provider refuses the input). A
+    /// non-zero value means some Facts are stuck without an embedding — an
+    /// operator signal on this readiness resource. A `reconcile` requeues the
+    /// `failed` ones; it does not requeue `failed_permanent` ones.
     pub failed_embedding_jobs: u64,
     /// Static schema catalog from the frozen `FlavorRegistry`.
     pub schemas: Vec<SchemaItem>,
@@ -49,7 +50,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Perspective => "Perspective",
         PayloadKind::Goal => "Goal",
         PayloadKind::CitedObject => "CitedObject",
-        PayloadKind::CitationMapping => "CitationMapping",
     }
 }
 

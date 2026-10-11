@@ -51,19 +51,18 @@ pub enum PayloadKind {
     Perspective,
     Goal,
     CitedObject,
-    CitationMapping,
 }
 
 /// The memory kind a payload layer writes, or `None` for the layers that
-/// are not memories at all (a Goal is its own spine; a cited object and a
-/// citation mapping are blob-side).
+/// are not memories at all (a Goal is its own spine; a cited object is
+/// blob-side).
 #[must_use]
 pub const fn payload_entity_kind(kind: PayloadKind) -> Option<crate::EntityKind> {
     match kind {
         PayloadKind::Fact => Some(crate::EntityKind::Fact),
         PayloadKind::Abstraction => Some(crate::EntityKind::Abstraction),
         PayloadKind::Perspective => Some(crate::EntityKind::Perspective),
-        PayloadKind::Goal | PayloadKind::CitedObject | PayloadKind::CitationMapping => None,
+        PayloadKind::Goal | PayloadKind::CitedObject => None,
     }
 }
 
@@ -80,10 +79,9 @@ pub struct SchemaInfo {
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
     /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
-    /// when the payload trait declares one, including typed `CitedObject` and
-    /// `CitationMapping` sidecars. `None` is valid for typed Fact and Goal
-    /// schemas whose payload needs no schema-owned columns, and for opaque
-    /// citation schemas.
+    /// when the payload trait declares one. `None` is valid for typed Fact
+    /// and Goal schemas whose payload needs no schema-owned columns, and is
+    /// the only value for citation schemas, typed or opaque.
     pub sidecar_table: Option<String>,
     /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
     /// Fact schemas). Empty for stateless / non-Fact schemas. Decides
@@ -96,9 +94,6 @@ pub struct SchemaInfo {
     /// Typed/opaque discriminant. The frozen registry owns the actual
     /// process-local protocol-ingress function pointers.
     pub has_typed_ingress: bool,
-    /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
-    /// Populated only for citation-mapping schemas.
-    pub cited_object_schema: Option<SchemaId>,
     /// `FactPayload::LISTENABLE`, carried past the Rust type so the write
     /// path can ask a registered SCHEMA ID whether its admissions capture a
     /// publication record — exactly how `sidecar_table` and
@@ -109,15 +104,14 @@ pub struct SchemaInfo {
 
 impl SchemaInfo {
     /// Construct an *opaque* schema — one with no Rust payload type.
-    /// Used for content-addressed `CitedObject`s and structural
-    /// `CitationMapping`s whose payload is an opaque blob addressed by
-    /// content hash. An opaque schema carries no validator, no JSON
+    /// Used for content-addressed `CitedObject`s whose payload is an
+    /// opaque blob addressed by content hash. An opaque schema carries no validator, no JSON
     /// ingress parser, no JSON schema, and no sidecar table.
     ///
     /// `has_typed_ingress == false` is the typed/opaque discriminant the
     /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
-    /// either has a protocol-ingress parser or is an opaque `CitedObject` /
-    /// `CitationMapping` schema.
+    /// either has a protocol-ingress parser or is an opaque `CitedObject`
+    /// schema.
     /// See docs/03-schema-registry.md.
     #[must_use]
     pub(crate) fn opaque(
@@ -134,7 +128,6 @@ impl SchemaInfo {
             natural_key_columns: Vec::new(),
             tombstone: None,
             has_typed_ingress: false,
-            cited_object_schema: None,
             listenable: false,
         }
     }

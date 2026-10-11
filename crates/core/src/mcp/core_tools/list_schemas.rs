@@ -10,8 +10,7 @@ use crate::{SchemaId, SchemaVersion};
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSchemasArgs {
     /// Optional filter. One of "Fact", "Abstraction", "Perspective",
-    /// "Goal", "`CitedObject`", "`CitationMapping`"
-    /// (case-insensitive). Omit to return all kinds.
+    /// "Goal", "`CitedObject`" (case-insensitive). Omit to return all kinds.
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -42,7 +41,6 @@ fn parse_kind(s: &str) -> Option<PayloadKind> {
         "perspective" => Some(PayloadKind::Perspective),
         "goal" => Some(PayloadKind::Goal),
         "citedobject" => Some(PayloadKind::CitedObject),
-        "citationmapping" => Some(PayloadKind::CitationMapping),
         _ => None,
     }
 }
@@ -54,7 +52,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Perspective => "Perspective",
         PayloadKind::Goal => "Goal",
         PayloadKind::CitedObject => "CitedObject",
-        PayloadKind::CitationMapping => "CitationMapping",
     }
 }
 
@@ -72,7 +69,7 @@ pub async fn list_schemas(
         Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
             McpToolError::InvalidInput(format!(
                 "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
-                         Perspective, Goal, CitedObject, CitationMapping"
+                         Perspective, Goal, CitedObject"
             ))
         })?),
         None => None,
@@ -108,7 +105,7 @@ pub struct GetSchemaOutput {
 /// Read one registered schema, backing `proxima://schema/{id}/{version}`.
 ///
 /// A registered schema with no `json_schema()` — the opaque
-/// cited-object/citation-mapping lane — is reported as missing rather
+/// cited-object lane — is reported as missing rather
 /// than as an empty document: there is nothing to validate against, and a
 /// consumer resolving a `dataschema` must not mistake silence for a
 /// permissive schema. A listenable schema can never land here, because

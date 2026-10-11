@@ -281,26 +281,16 @@ fn host_api_can_ask_for_and_hold_an_owner_export() {
 }
 
 #[test]
-fn host_api_names_every_citation_schema_id() {
+fn host_api_names_the_citation_schema_id() {
     // `CitationSpec::v1` takes `impl Into<String>`, so a missing constant
     // never fails at the call site — it just pushes the caller onto a
     // bare literal that silently stops matching when the constant it
-    // duplicates is renamed. Both locator mappings are named here so a
+    // duplicates is renamed. The cited-object id is named here so a
     // rename breaks this test instead of a flavor's citations.
-    let whole = proxima::CitationSpec::v1(
-        proxima::UPLOADED_BLOB_SCHEMA_ID,
-        [0u8; 32],
-        proxima::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
-    );
-    let page_span = proxima::CitationSpec::v1(
-        proxima::UPLOADED_BLOB_SCHEMA_ID,
-        [0u8; 32],
-        proxima::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
-    );
-    assert_ne!(whole.mapping_schema_id, page_span.mapping_schema_id);
+    let spec = proxima::CitationSpec::v1(proxima::UPLOADED_BLOB_SCHEMA_ID, [0u8; 32]);
     assert_eq!(
-        whole.cited_object_schema_id,
-        page_span.cited_object_schema_id
+        spec.cited_object_schema_id.as_str(),
+        proxima::UPLOADED_BLOB_SCHEMA_ID
     );
 }
 
@@ -1428,7 +1418,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         .expect("one resolver");
 
     let _ = proxima::flavor::SidecarAtom::I32(0);
-    let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1");
+    let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32]);
     let fact = TierStatefulFact {
         slot: "a".into(),
         state: "Present".into(),
@@ -1438,11 +1428,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         "test/src",
         &fact,
     )
-    .citation(proxima::flavor::CitationSpec::v1(
-        "core/upload-v1",
-        [0; 32],
-        "core/upload-whole-v1",
-    ));
+    .citation(proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32]));
     let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
     assert!(proxima::flavor::hybrid_degraded_to_lexical(
         proxima::flavor::SearchMode::Hybrid,
@@ -1468,25 +1454,6 @@ fn flavor_sdk_names_query_and_ingest_types() {
         schema_id: proxima::flavor::SchemaId::new("core/upload-v1".into()),
         schema_version: proxima::flavor::SchemaVersion::new(1),
         payload_bytes: Vec::new(),
-    };
-    let _mapping = proxima::flavor::InlineCitationMappingDraft {
-        schema_id: proxima::flavor::SchemaId::new("core/upload-whole-v1".into()),
-        schema_version: proxima::flavor::SchemaVersion::new(1),
-        payload_bytes: Vec::new(),
-    };
-    let _attachment = proxima::flavor::CitationAttachmentRequest {
-        memory_id: proxima::MemoryId::new(uuid::Uuid::nil()),
-        memory_kind: proxima::EntityKind::Fact,
-        cited_object: proxima::flavor::InlineCitedObjectDraft {
-            schema_id: proxima::flavor::SchemaId::new("core/upload-v1".into()),
-            schema_version: proxima::flavor::SchemaVersion::new(1),
-            payload_bytes: Vec::new(),
-        },
-        mapping: proxima::flavor::InlineCitationMappingDraft {
-            schema_id: proxima::flavor::SchemaId::new("core/upload-whole-v1".into()),
-            schema_version: proxima::flavor::SchemaVersion::new(1),
-            payload_bytes: Vec::new(),
-        },
     };
 }
 

@@ -16,18 +16,3 @@ pub fn build_engine(storage: PgStorage) -> Engine {
     Engine::new(schema_registry_with_config(|_| {}))
         .with_storage_ports(Arc::new(storage).storage_ports())
 }
-
-/// Build an `Engine` whose schema registry layers `extra` flavor
-/// registrations *before* `proxima_code::register`. Tauri Shell uses
-/// this to add substrate memory tooling so the
-/// engine's snapshot path joins agent-note sidecars; headless code
-/// callers keep using `build_engine` to stay substrate-free.
-/// Authentication lives at the transport edge.
-#[must_use]
-pub fn build_engine_with(
-    storage: PgStorage,
-    extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
-) -> Engine {
-    Engine::new(schema_registry_with_config(extra))
-        .with_storage_ports(Arc::new(storage).storage_ports())
-}

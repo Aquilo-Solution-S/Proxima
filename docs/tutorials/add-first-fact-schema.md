@@ -58,6 +58,10 @@ search: SearchProjectionDecl::Projected {
 },
 ```
 
+`BANDS` is a `&[Band]` the flavor declares. To stay comparable with core
+scores, build it from `proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE,
+BAND_SUBSTRING}`; `proxima::flavor` does not re-export them.
+
 The declared `fields` are copied into `<flavor>.projection` on write and
 ranked from there; the sidecar itself is read only to build the snippets of
 rows that made the page. A schema that is not a search surface says so —
@@ -114,7 +118,7 @@ proxima::flavor::pg_sidecar! {
     row: DocumentFiledRow,
     kinds: [Fact],
     table: "my_flavor.document_filed_v1",
-    key: memory_id,
+    key: t,
     fields: {
         source_path => source_path: (text),
         title => title: (text),
@@ -132,6 +136,10 @@ impl FlavorBundle for MyFlavor {
 
     fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
         registry.add_fact::<DocumentFiledV1>();
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        vec![NamedMigrator::flavor("my-flavor", sqlx::migrate!("./migrations"))]
     }
 }
 ```

@@ -30,7 +30,7 @@ explicit request.
 | `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-on `code` packaging feature |
 | `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
 | `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
-| `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, the Fact ∪ Abstraction citation rule |
+| `docs/11-citations.md` | `CitedObjectPayload` and `memory.blob_id`; bibliographic provenance, the Fact ∪ Abstraction citation rule |
 | `docs/12-tool-manifest.md` | Tool = build-time registered call surface; tool classes (core MCP / flavor MCP); no runtime tier |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
@@ -230,7 +230,7 @@ runtime checklist most likely to prevent regressions.
   the operation; no verb writes a pin. Rebuildability is identity
   (`derivePins`). Target render is hot / Cold / Unavailable. There is no
   `Edge` / `FactEntity` / relation registry / follow-at-read. See Lean
-  `Causa.Edges` and `.local/timeseries-core/03-signoff-uml.md`.
+  `Causa.Edges`.
 - **Content:** owner-scoped typed payload (`Content`); many admissions may
   share one `ContentId`. Admission identity stays `t`. Cross-owner hash
   equality is not identity.
@@ -264,7 +264,7 @@ runtime checklist most likely to prevent regressions.
   tables. One-line whys. No expository prose.
 - **No prose padding.** If a paragraph could be deleted without
   losing information, delete it.
-- **Cross-reference numbered docs** by section: "(see 06 §Bootstrap)"
+- **Cross-reference numbered docs** by section: "(see 06 §Goal Entity)"
   rather than restating.
 - **Diagrams in ASCII.** Match the existing tree / box style in
   README and 02.

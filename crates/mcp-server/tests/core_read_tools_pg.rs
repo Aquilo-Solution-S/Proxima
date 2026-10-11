@@ -779,49 +779,6 @@ async fn insert_memory(
     Ok(t)
 }
 
-/// Assert one `origin` row directly. Five columns is the whole insert —
-/// there is no id to mint and no relation to name.
-#[allow(dead_code)]
-async fn insert_origin_edge(
-    pg: &PgStorage,
-    owner: &Owner,
-    source: uuid::Uuid,
-    target: uuid::Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = owner;
-    let (handle, kind, owner_id, content_id): (Uuid, String, Uuid, Option<Uuid>) = sqlx::query_as(
-        "SELECT handle, kind::text, owner_id, content_id FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(source)
-    .fetch_one(pg.pool_for_tests())
-    .await?;
-    let schema_id: String =
-        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
-            .bind(source)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-    let t = uuid::Uuid::now_v7();
-    sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
-        .bind(handle)
-        .bind(t)
-        .execute(pg.pool_for_tests())
-        .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
-    )
-    .bind(handle)
-    .bind(t)
-    .bind(&kind)
-    .bind(owner_id)
-    .bind(&schema_id)
-    .bind([target])
-    .bind(content_id)
-    .execute(pg.pool_for_tests())
-    .await?;
-    Ok(())
-}
-
 fn author_ctx() -> McpAuthorContext {
     McpAuthorContext {
         model_id: "codex-test".into(),
