@@ -27,6 +27,9 @@ mod memory_paging;
 #[path = "rls_guard_pg/paging_work.rs"]
 mod paging_work;
 
+#[path = "rls_guard_pg/access_probes.rs"]
+mod access_probes;
+
 #[path = "rls_guard_pg/trigger_scope.rs"]
 mod trigger_scope;
 

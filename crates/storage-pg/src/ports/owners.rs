@@ -115,6 +115,46 @@ impl OwnerMembershipAdminPort for PgStorage {
         .await
     }
 
+    async fn remove_group_member_relation(
+        &self,
+        permit: &OwnerWritePermit,
+        group_id: GroupId,
+        member_user_id: UserId,
+        relation: Relation,
+    ) -> Result<(), StorageError> {
+        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        access::owner_columns::remove_group_member_relation(
+            &self.pool,
+            permit.owner_scope(),
+            group_id,
+            member_user_id,
+            relation,
+        )
+        .await
+    }
+
+    async fn replace_group_member_relation(
+        &self,
+        permit: &OwnerWritePermit,
+        group_id: GroupId,
+        member_user_id: UserId,
+        from: Relation,
+        to: Relation,
+        granted_by: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        access::owner_columns::replace_group_member_relation(
+            &self.pool,
+            permit.owner_scope(),
+            group_id,
+            member_user_id,
+            from,
+            to,
+            granted_by,
+        )
+        .await
+    }
+
     async fn list_group_members(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
