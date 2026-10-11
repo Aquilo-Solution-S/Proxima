@@ -1239,6 +1239,67 @@ goal_test!(a_state_change_must_carry_the_predecessors_text, |h| async {
     Ok(())
 });
 
+goal_test!(a_version_joins_its_series_only_at_the_end, |h| async {
+    // `Active "A"`, then `Paused "A"`. An `Active "B"` slipped between them
+    // passes the carry rule against the first version and leaves the paused
+    // one carrying a text its predecessor no longer has; one slipped before
+    // the first has no predecessor at all. Both are refused.
+    let series = start_series(&h, Some("A"), "order").await?;
+    let paused = append_version(&h, series, GoalState::Paused, Some("A"), "order-pause").await??;
+    let first: Uuid =
+        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1 ORDER BY t LIMIT 1")
+            .bind(series)
+            .fetch_one(h.pg.pool_for_tests())
+            .await?;
+    let between = Uuid::from_u128(first.as_u128() + 1);
+    let before_first = Uuid::from_u128(first.as_u128() - 1);
+    assert!(
+        first < between && between < paused.t,
+        "the fixture slips between the two versions"
+    );
+    let count = goal_count(&h.pg).await?;
+    for (index, t) in [between, before_first].into_iter().enumerate() {
+        let refused = sqlx::query(
+            "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+             VALUES ($1, $2, $3, 'slipped', 'B', 'Active', $4)",
+        )
+        .bind(series)
+        .bind(t)
+        .bind(h.owner.stored_owner_id())
+        .bind(format!("order-slipped-{index}"))
+        .execute(h.pg.pool_for_tests())
+        .await
+        .expect_err("a version joins its series after the last version");
+        assert!(
+            refused
+                .to_string()
+                .contains("a version joins its series after the last version"),
+            "{t}: {refused}"
+        );
+    }
+    // The last version's own `t` is a duplicate, and the primary key says so.
+    let duplicate = sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+         VALUES ($1, $2, $3, 'slipped', 'A', 'Paused', 'order-duplicate')",
+    )
+    .bind(series)
+    .bind(paused.t)
+    .bind(h.owner.stored_owner_id())
+    .execute(h.pg.pool_for_tests())
+    .await
+    .expect_err("a version's t is unique");
+    assert_eq!(
+        duplicate
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23505"),
+        "{duplicate}"
+    );
+    assert_eq!(goal_count(&h.pg).await?, count, "a refusal writes nothing");
+    Ok(())
+});
+
 goal_test!(
     an_unknown_text_stays_unknown_across_a_state_change,
     |h| async {

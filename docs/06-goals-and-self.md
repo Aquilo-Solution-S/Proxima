@@ -97,8 +97,10 @@ of a series changes only at a modify.
 
 The database enforces that carry rule for every writer, the Goal write verbs
 and the low-level `write_goal` alike. The `BEFORE INSERT` trigger
-`goal_text_carried` looks up the predecessor of the new version (the same
-`handle`, the greatest earlier `t`). When one exists, its `state` differs from
+`goal_text_carried` looks up the predecessor of the new version: the last
+version of the same `handle`. A new version joins its series after it, so a `t`
+before the last one is refused (the last one's own `t` is a duplicate, which
+the primary key refuses), and no version can be slipped between two others. When a predecessor exists, its `state` differs from
 the new version's, and the new version's text is not the predecessor's text
 (`NULL` equals only `NULL`), the insert is refused with SQLSTATE `23514`, a
 `ConstraintViolation` that names the rule. A version that keeps the state, which

@@ -93,10 +93,20 @@ UPDATE proxima_core.goal g
 
 ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only;
 
--- The carry rule. A version whose state differs from its predecessor's (the
--- same handle's greatest earlier t) keeps the predecessor's text exactly,
--- NULL included; a version that keeps the state (a modify) is free to change
--- it. The first version of a series has no predecessor and is free.
+-- The carry rule. A version whose state differs from its predecessor's keeps
+-- the predecessor's text exactly, NULL included; a version that keeps the
+-- state (a modify) is free to change it. The first version of a series has no
+-- predecessor and is free.
+--
+-- The predecessor is the series' last version, and a new version joins the
+-- series after it: a t before the last one is refused (the last one's own t
+-- is a duplicate, which the primary key refuses as one). Otherwise a
+-- version slipped between two others would pass against its own neighbour
+-- and leave the later one with a predecessor whose text it does not carry.
+-- A Goal verb names the version it succeeds, and the head compare-and-set
+-- refuses it when that is no longer the head, so a verb meets this only if the
+-- clock stepped back; a raw writer that names no prior (write_goal) or picks
+-- its own t is held to the series order here instead of misordering it.
 --
 -- Written the way `goal_no_later_after_terminal` guards the other series rule:
 -- a BEFORE INSERT row trigger on `goal` raising 23514, an invoker routine. The
@@ -111,16 +121,21 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, proxima_core, pg_temp
 AS $$
 DECLARE
+    prior_t uuid;
     prior_state proxima_core.goal_state;
     prior_text text;
 BEGIN
-    SELECT g.state, g.text
-      INTO prior_state, prior_text
+    SELECT g.t, g.state, g.text
+      INTO prior_t, prior_state, prior_text
       FROM proxima_core.goal g
      WHERE g.handle = NEW.handle
-       AND g.t < NEW.t
      ORDER BY g.t DESC
      LIMIT 1;
+    IF FOUND AND prior_t > NEW.t THEN
+        RAISE EXCEPTION
+            'goal_text_carried: a version joins its series after the last version'
+            USING ERRCODE = '23514';
+    END IF;
     IF FOUND
        AND prior_state IS DISTINCT FROM NEW.state
        AND NEW.text IS DISTINCT FROM prior_text

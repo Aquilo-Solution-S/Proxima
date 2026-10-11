@@ -468,7 +468,7 @@ const TRIGGER_MISSING_OR_INCORRECT: &str =
     "goal.text carry-forward trigger goal_text_carried is missing or incorrect";
 
 /// Each damage and the marker message it must produce.
-const DAMAGE: [(&str, &str); 12] = [
+const DAMAGE: [(&str, &str); 13] = [
     (
         "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
         MISSING_OR_INCORRECT,
@@ -512,6 +512,32 @@ const DAMAGE: [(&str, &str); 12] = [
           RETURNS trigger LANGUAGE plpgsql
           SET search_path = pg_catalog, proxima_core, pg_temp
           AS $$ BEGIN RETURN NEW; END $$",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    // The carry check alone, against the version just before the new `t`: a
+    // version slipped between two others would pass it and leave the later one
+    // with a predecessor whose text it does not carry.
+    (
+        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
+          RETURNS trigger LANGUAGE plpgsql
+          SET search_path = pg_catalog, proxima_core, pg_temp
+          AS $$
+          DECLARE
+              prior_state proxima_core.goal_state;
+              prior_text text;
+          BEGIN
+              SELECT g.state, g.text INTO prior_state, prior_text
+                FROM proxima_core.goal g
+               WHERE g.handle = NEW.handle AND g.t < NEW.t
+               ORDER BY g.t DESC LIMIT 1;
+              IF FOUND
+                 AND prior_state IS DISTINCT FROM NEW.state
+                 AND NEW.text IS DISTINCT FROM prior_text
+              THEN
+                  RAISE EXCEPTION 'carry' USING ERRCODE = '23514';
+              END IF;
+              RETURN NEW;
+          END $$",
         TRIGGER_MISSING_OR_INCORRECT,
     ),
     (

@@ -33,8 +33,9 @@ text](../06-goals-and-self.md#goal-text) defines blank). Create, modify and
 decompose store the text they were given. Transition and achieve store exactly
 their prior version's text, `NULL` included, and the database enforces that for
 every writer: the trigger `goal_text_carried` refuses a version whose state
-differs from its predecessor's and whose text is not the predecessor's
-([06 §Goal text](../06-goals-and-self.md#goal-text)). The table stays
+differs from its predecessor's and whose text is not the predecessor's, and a
+version whose `t` is before the last one of its series ([06 §Goal
+text](../06-goals-and-self.md#goal-text)). The table stays
 append-only, so a stored text never changes.
 
 **Backfill.** For every `goal` row, `text` is the text of the latest
@@ -64,8 +65,8 @@ are left for autovacuum). The append-only trigger `goal_append_only` is
 disabled for that one statement and enabled again before the transaction
 commits, so no concurrent write sees the gap. The trigger function
 `goal_text_carried` (an invoker with a pinned `search_path`) and its trigger
-are created after the backfill; the trigger reads one row per insert, by the primary key
-`(handle, t)`. No other table is touched.
+are created after the backfill; the trigger reads one row per insert, the
+series' last version, by the primary key `(handle, t)`. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
