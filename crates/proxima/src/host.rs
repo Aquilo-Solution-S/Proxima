@@ -8,6 +8,7 @@ pub use proxima_core::operator_label;
 
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
+pub use crate::features::FeatureControl;
 pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
@@ -148,6 +149,7 @@ pub use proxima_core::verbs::own_erase::{
 pub use proxima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
+pub use proxima_core::{FeatureControlError, FeatureStatus};
 /// Typed result of the owner-authorized cold-memory hydration command. The
 /// facade exposes only ids and classifications; Postgres transactions,
 /// locators, and cold-store keys remain backend implementation details.

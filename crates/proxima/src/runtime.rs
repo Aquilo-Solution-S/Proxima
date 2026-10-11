@@ -27,7 +27,9 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use crate::boot::Booted;
-use crate::features::{BootReport, FeatureDecision, FeatureInputs, Features};
+use crate::features::{
+    BootReport, Feature, FeatureControl, FeatureDecision, FeatureInputs, Features,
+};
 use crate::owner_access::ForwarderPolicy;
 use crate::{AppContext, FlavorApp, ProximaError, ProximaHost, RuntimeBuilder};
 use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver};
@@ -682,6 +684,20 @@ macro_rules! runtime_handle_methods {
         #[must_use]
         pub const fn boot_report(&self) -> &BootReport {
             &self.runtime.features.report
+        }
+
+        /// The pause and resume handle of a started claim-based feature.
+        ///
+        /// `Some` for a started [`Feature::EmbeddingWorker`] or
+        /// [`Feature::OutboxPublisher`]. `None` for a feature that is off and
+        /// for [`Feature::Mcp`] (serving continues by definition),
+        /// [`Feature::FlavorWorkers`], [`Feature::PublishedRecordPrune`] and
+        /// [`Feature::CopyCleaner`]: the runtime has no gate for them. The
+        /// handle outlives `shutdown(self)`, after which every call on it
+        /// reports `Stopped`.
+        #[must_use]
+        pub fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
+            self.runtime.features.feature_control(feature)
         }
 
         /// The running outbox publisher's health; `None` when it is off.
