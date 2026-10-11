@@ -39,10 +39,10 @@ text](../06-goals-and-self.md#goal-text)). The table stays
 append-only, so a stored text never changes.
 
 **Backfill.** For every `goal` row, `text` is the text of the latest
-declaration among the rows of the same `handle` with `t` at or before the
-row's own that carries a string text that is not blank (the same expression as
-the check). The text sits at a fixed place
-of the declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
+declaration among the rows of the same `handle` and the same `owner_id` with
+`t` at or before the row's own that carries a string text that is not blank
+(the same expression as the check). The text sits at a fixed place of the
+declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
 
 | `declaration ->> 'verb'` | JSON path |
 |---|---|
@@ -54,6 +54,10 @@ of the declaration envelope (`goal_write/replay.rs`, `{version, verb, ...}`):
 text of the version before. A modify never reaches back to an earlier version,
 a blank or non-string text declares nothing, and a row with no declaration
 before it in its series stays `NULL`: the text is never guessed from the title.
+The Goal writers keep a series to its head's owner, but before 0025 the
+database did not, and a raw insert could add a row of another owner to a
+series. Such a row takes only its own owner's texts, so the upgrade never
+shows one owner's text in another owner's reads or export.
 Re-running the file changes nothing: `ADD COLUMN IF NOT EXISTS` skips the
 column and its check together, and only rows whose text is still `NULL` are
 written. An empty database has no rows to visit.

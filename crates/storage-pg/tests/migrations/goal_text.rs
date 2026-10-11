@@ -133,35 +133,7 @@ async fn seed_series(
     .execute(pool)
     .await?;
     for (version, t) in versions.iter().zip(&ts) {
-        // A closed Goal names the Fact that closed it.
-        let close_fact_t = if matches!(version.state, "Achieved" | "Abandoned") {
-            Some(seed_fact(pool, owner).await?)
-        } else {
-            None
-        };
-        sqlx::query(
-            "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id, close_fact_t)
-             VALUES ($1, $2, $3, 'fixture', $4::proxima_core.goal_state, $5, $6)",
-        )
-        .bind(handle)
-        .bind(t)
-        .bind(owner)
-        .bind(version.state)
-        .bind(Uuid::now_v7().to_string())
-        .bind(close_fact_t)
-        .execute(pool)
-        .await?;
-        if let Some(declaration) = &version.declaration {
-            sqlx::query(
-                "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-                 VALUES ($1, $2, 0)",
-            )
-            .bind(t)
-            .bind(declaration)
-            .execute(pool)
-            .await?;
-        }
+        insert_version(pool, handle, owner, *t, version).await?;
     }
     sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
         .bind(handle)
@@ -169,6 +141,48 @@ async fn seed_series(
         .execute(pool)
         .await?;
     Ok(ts)
+}
+
+/// One Goal row of `owner` at `t` in the series `handle`, with its
+/// declaration. The 0024 schema checks neither the row's place in the series
+/// nor that its owner is the head's.
+async fn insert_version(
+    pool: &sqlx::PgPool,
+    handle: Uuid,
+    owner: Uuid,
+    t: Uuid,
+    version: &Version,
+) -> Result<(), sqlx::Error> {
+    // A closed Goal names the Fact that closed it.
+    let close_fact_t = if matches!(version.state, "Achieved" | "Abandoned") {
+        Some(seed_fact(pool, owner).await?)
+    } else {
+        None
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.goal
+             (handle, t, owner_id, title, state, request_id, close_fact_t)
+         VALUES ($1, $2, $3, 'fixture', $4::proxima_core.goal_state, $5, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner)
+    .bind(version.state)
+    .bind(Uuid::now_v7().to_string())
+    .bind(close_fact_t)
+    .execute(pool)
+    .await?;
+    if let Some(declaration) = &version.declaration {
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, $2, 0)",
+        )
+        .bind(t)
+        .bind(declaration)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn seed_fact(pool: &sqlx::PgPool, owner: Uuid) -> Result<Uuid, sqlx::Error> {
@@ -344,6 +358,77 @@ async fn each_version_takes_the_latest_declared_text_of_its_own_series()
             .await
             .expect_err("the text must not be rewritable after the backfill");
         assert!(refused.to_string().contains("append-only"), "{refused}");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// Before 0025 a raw insert could put a row of owner B into owner A's series:
+/// the foreign key checks the handle only, and the row policy checks the row's
+/// own owner. The backfill reads each owner's declarations apart, so A's text
+/// never lands in B's row, where B's export and reads would show it, and B's
+/// text never lands in A's.
+#[tokio::test]
+async fn a_row_of_another_owner_in_the_series_never_takes_its_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let result: TestResult = async {
+        let pg = database_at_0024(&db_name).await?;
+        let pool = pg.pool_for_tests();
+        let owner_a = seed_owner(pool).await?;
+        let owner_b = seed_owner(pool).await?;
+        let base = 1_700_000_000_000;
+
+        let a_ts = seed_series(
+            pool,
+            owner_a,
+            base,
+            &[
+                version("Active", Some(create("secret"))),
+                version("Paused", Some(transition("Paused"))),
+            ],
+        )
+        .await?;
+        let handle: Uuid = sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
+            .bind(a_ts[0])
+            .fetch_one(pool)
+            .await?;
+        let mut expected: BTreeMap<Uuid, Option<String>> = a_ts
+            .into_iter()
+            .map(|t| (t, Some("secret".to_owned())))
+            .collect();
+
+        // B's rows interleave with A's later ones.
+        for (offset, owner, version, text) in [
+            (30, owner_b, version("Active", None), None),
+            (
+                40,
+                owner_b,
+                version("Active", Some(modify("bravo"))),
+                Some("bravo"),
+            ),
+            (
+                50,
+                owner_a,
+                version("Active", Some(transition("Active"))),
+                Some("secret"),
+            ),
+            (
+                60,
+                owner_b,
+                version("Paused", Some(transition("Paused"))),
+                Some("bravo"),
+            ),
+        ] {
+            let t = t_at(base + offset);
+            insert_version(pool, handle, owner, t, &version).await?;
+            expected.insert(t, text.map(str::to_owned));
+        }
+
+        super::apply_current_migrations(&pg).await?;
+        assert_eq!(stored_texts(pool).await?, expected);
         Ok(())
     }
     .await;

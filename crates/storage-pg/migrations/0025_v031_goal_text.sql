@@ -33,9 +33,10 @@ ALTER TABLE proxima_core.goal
             CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0);
 
 -- Backfill. A version's text is the text of the latest declaration among the
--- rows of its own series at or before it that carries a non-blank one: a
--- transition or an achievement declares no text, so its version inherits, and
--- a later modify never reaches back to an earlier version. The text sits at a
+-- rows of its own series and its own owner at or before it that carries a
+-- non-blank one: a transition or an achievement declares no text, so its
+-- version inherits, and a later modify never reaches back to an earlier
+-- version. The text sits at a
 -- fixed place of each declaration envelope (`command_declaration` in
 -- storage-pg `goal_write/replay.rs`: `{version, verb, ...body}`):
 --
@@ -46,6 +47,12 @@ ALTER TABLE proxima_core.goal
 -- 'transition' and 'achieve' have no text. A row with no such declaration
 -- before it stays NULL; nothing is guessed from the title.
 --
+-- The windows partition by owner as well as handle. A Proxima writer keeps a
+-- series to its head's owner, but before this version the database did not:
+-- a raw insert could join another owner's handle. Partitioning by owner keeps
+-- one owner's text out of another owner's row, so that row's export and read
+-- never show it.
+--
 -- `goal` is append-only, and `goal_append_only` refuses every UPDATE. The one
 -- statement that is allowed to fill the new column runs with that guard off.
 -- sqlx runs a migration in one transaction and DISABLE TRIGGER takes ACCESS
@@ -55,6 +62,7 @@ ALTER TABLE proxima_core.goal DISABLE TRIGGER goal_append_only;
 WITH declared AS (
     -- The text each version's own declaration carries, or NULL.
     SELECT g.handle,
+           g.owner_id,
            g.t,
            CASE
                WHEN jsonb_typeof(d.declaration #> p.path) = 'string'
@@ -73,15 +81,16 @@ WITH declared AS (
 ),
 runs AS (
     -- A run starts at each version that declares a text and lasts until the
-    -- next one in the same series; `run` counts the declared texts so far.
-    SELECT handle, t, text,
-           count(text) OVER (PARTITION BY handle ORDER BY t) AS run
+    -- next one in the same series and owner; `run` counts the declared texts
+    -- so far.
+    SELECT handle, owner_id, t, text,
+           count(text) OVER (PARTITION BY handle, owner_id ORDER BY t) AS run
       FROM declared
 ),
 inherited AS (
     -- The first row of a run is the one that declares the text.
     SELECT t,
-           first_value(text) OVER (PARTITION BY handle, run ORDER BY t) AS text
+           first_value(text) OVER (PARTITION BY handle, owner_id, run ORDER BY t) AS text
       FROM runs
 )
 UPDATE proxima_core.goal g
