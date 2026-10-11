@@ -1379,6 +1379,57 @@ goal_test!(two_concurrent_inserts_on_one_series_take_turns, |h| async {
     Ok(())
 });
 
+goal_test!(a_stale_snapshot_cannot_judge_a_state_change, |h| async {
+    // `Active "A"` is the last version. A REPEATABLE READ transaction takes its
+    // snapshot; another inserts `Active "B"` (without advancing the head, as a
+    // raw writer may) and commits. The first then inserts `Paused "A"`, which
+    // its snapshot would admit: the head the other insert wrote refuses it with
+    // a serialization failure instead.
+    let series = start_series(&h, Some("A"), "snapshot").await?;
+    let pool = h.pg.pool_for_tests().clone();
+    let owner_id = h.owner.stored_owner_id();
+    let insert = |text: &'static str, state: &'static str, request: &'static str| {
+        sqlx::query(
+            "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+             VALUES ($1, $2, $3, 'snapshot', $4, $5::proxima_core.goal_state, $6)",
+        )
+        .bind(series)
+        .bind(Uuid::now_v7())
+        .bind(owner_id)
+        .bind(text)
+        .bind(state)
+        .bind(request)
+    };
+
+    let mut stale = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *stale)
+        .await?;
+    let seen: i64 =
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal WHERE handle = $1")
+            .bind(series)
+            .fetch_one(&mut *stale)
+            .await?;
+    assert_eq!(seen, 1, "the snapshot holds the first version only");
+
+    insert("B", "Active", "snapshot-b").execute(&pool).await?;
+
+    let refused = insert("A", "Paused", "snapshot-paused")
+        .execute(&mut *stale)
+        .await
+        .expect_err("a stale snapshot must not judge the state change");
+    assert_eq!(
+        refused
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("40001"),
+        "{refused}"
+    );
+    stale.rollback().await?;
+    Ok(())
+});
+
 goal_test!(
     an_unknown_text_stays_unknown_across_a_state_change,
     |h| async {

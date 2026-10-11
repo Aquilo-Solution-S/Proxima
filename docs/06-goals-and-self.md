@@ -101,9 +101,14 @@ and the low-level `write_goal` alike. The `BEFORE INSERT` trigger
 version of the same `handle`. A new version joins its series after it, so a `t`
 before the last one is refused (the last one's own `t` is a duplicate, which
 the primary key refuses), and no version can be slipped between two others.
-The trigger first locks the series' `goal_head` row, the lock every Goal
-writer already holds, so concurrent inserts on one series take turns and each
-is judged against the version committed before it. When a predecessor exists, its `state` differs from
+The trigger first writes the series' `goal_head` row where its owner is the
+new version's owner (a no-op update, the row every Goal writer has already
+advanced and locked) and refuses the version when there is none: a series of
+another owner, or a head the writer's scope cannot write, fails closed.
+Concurrent inserts on one series take turns and each is judged against the
+version committed before it; a `REPEATABLE READ` or `SERIALIZABLE` writer whose
+snapshot predates another insert on the series gets a serialization failure
+(SQLSTATE `40001`) instead. When a predecessor exists, its `state` differs from
 the new version's, and the new version's text is not the predecessor's text
 (`NULL` equals only `NULL`), the insert is refused with SQLSTATE `23514`, a
 `ConstraintViolation` that names the rule. A version that keeps the state, which

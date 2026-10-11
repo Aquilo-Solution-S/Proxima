@@ -65,9 +65,10 @@ are left for autovacuum). The append-only trigger `goal_append_only` is
 disabled for that one statement and enabled again before the transaction
 commits, so no concurrent write sees the gap. The trigger function
 `goal_text_carried` (an invoker with a pinned `search_path`) and its trigger
-are created after the backfill; per insert the trigger locks the series'
-`goal_head` row (the lock the Goal writers already hold, so it costs them
-nothing and makes a concurrent raw insert on the same series wait) and reads
+are created after the backfill; per insert the trigger writes the series'
+`goal_head` row of the version's own owner (a no-op update of the row the Goal
+writers have already advanced and locked, so it costs them one extra row
+version and makes a concurrent raw insert on the same series wait) and reads
 one row, the series' last version, by the primary key `(handle, t)`. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with

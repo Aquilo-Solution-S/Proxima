@@ -1540,8 +1540,9 @@ const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
                      AND p.proname = 'goal_text_carried'
                      AND NOT p.prosecdef
                      AND p.proconfig = ARRAY['search_path=pg_catalog, proxima_core, pg_temp']
-                     AND strpos(p.prosrc, 'FROM proxima_core.goal_head h') > 0
-                     AND strpos(p.prosrc, 'FOR UPDATE') > 0
+                     AND strpos(p.prosrc, 'UPDATE proxima_core.goal_head h') > 0
+                     AND strpos(p.prosrc, 'h.owner_id = NEW.owner_id') > 0
+                     AND strpos(p.prosrc, 'IF NOT FOUND THEN') > 0
                      AND strpos(p.prosrc, 'ORDER BY g.t DESC') > 0
                      AND strpos(p.prosrc, 'prior_t > NEW.t') > 0
                      AND strpos(p.prosrc, 'prior_state IS DISTINCT FROM NEW.state') > 0

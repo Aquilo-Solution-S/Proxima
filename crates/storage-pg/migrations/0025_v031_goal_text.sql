@@ -115,14 +115,18 @@ ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only;
 -- row sees it; no platform bridge is needed. The search_path is pinned like
 -- the other routines since 0019.
 --
--- One insert per series at a time. The trigger first locks the series'
--- goal_head row (FOR UPDATE), the lock every Goal writer already holds before
--- it inserts, and which exists for every goal row (goal.handle references it).
--- A writer that holds it takes it again for free; a raw insert waits for the
--- other writers and they for it. The predecessor read that follows is a new
--- statement, so under READ COMMITTED it sees the version the previous holder
--- committed, and two concurrent inserts can no longer both judge themselves
--- against the same predecessor.
+-- One insert per series at a time, and only by the series' own owner. The
+-- trigger first writes the series' goal_head row (a no-op `t = t`) where the
+-- owner is the inserted row's owner, and refuses the version when there is no
+-- such row: a head of another owner, or one the writer's RLS scope cannot
+-- write, fails closed. Every goal row has a head (goal.handle references it),
+-- and every Goal writer advances that head before it inserts, so for them the
+-- row is theirs and already locked. A raw insert waits for the other writers
+-- and they for it. Under READ COMMITTED the predecessor read that follows is a
+-- new statement and sees the version the previous holder committed. Because
+-- every insert writes the head, a REPEATABLE READ or SERIALIZABLE writer whose
+-- snapshot predates another insert on the series fails with a serialization
+-- error (40001) here instead of judging itself against a stale predecessor.
 CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -133,10 +137,15 @@ DECLARE
     prior_state proxima_core.goal_state;
     prior_text text;
 BEGIN
-    PERFORM 1
-       FROM proxima_core.goal_head h
-      WHERE h.handle = NEW.handle
-        FOR UPDATE;
+    UPDATE proxima_core.goal_head h
+       SET t = h.t
+     WHERE h.handle = NEW.handle
+       AND h.owner_id = NEW.owner_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'goal_text_carried: a version joins a series whose head belongs to its own owner'
+            USING ERRCODE = '23514';
+    END IF;
     SELECT g.t, g.state, g.text
       INTO prior_t, prior_state, prior_text
       FROM proxima_core.goal g
