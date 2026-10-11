@@ -81,7 +81,7 @@ pub use config::{
 pub use consumer::{
     AckAction, AckAlwaysHook, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState,
     ConsumerError, ConsumerHealth, ConsumerHealthReader, ConsumerPassState, ConsumerTaskState,
-    DurableIntake, Intake, IntakeError, ReceivedEvent, ReferenceConsumer,
+    DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent, ReferenceConsumer,
 };
 pub use publisher::{
     CONTENT_TYPE_CLOUDEVENTS, ContinueHook, DrainReport, DrainSummary, HEADER_CONTENT_TYPE,
