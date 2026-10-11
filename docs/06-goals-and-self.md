@@ -100,7 +100,10 @@ and the low-level `write_goal` alike. The `BEFORE INSERT` trigger
 `goal_text_carried` looks up the predecessor of the new version: the last
 version of the same `handle`. A new version joins its series after it, so a `t`
 before the last one is refused (the last one's own `t` is a duplicate, which
-the primary key refuses), and no version can be slipped between two others. When a predecessor exists, its `state` differs from
+the primary key refuses), and no version can be slipped between two others.
+The trigger first locks the series' `goal_head` row, the lock every Goal
+writer already holds, so concurrent inserts on one series take turns and each
+is judged against the version committed before it. When a predecessor exists, its `state` differs from
 the new version's, and the new version's text is not the predecessor's text
 (`NULL` equals only `NULL`), the insert is refused with SQLSTATE `23514`, a
 `ConstraintViolation` that names the rule. A version that keeps the state, which

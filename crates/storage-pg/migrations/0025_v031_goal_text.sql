@@ -113,8 +113,16 @@ ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only;
 -- predecessor is a row of the inserted row's own owner, and the owner write
 -- policy covers SELECT as well (FOR ALL), so every scope that may insert the
 -- row sees it; no platform bridge is needed. The search_path is pinned like
--- the other routines since 0019. Two writers on one series are serialized by
--- the writer's goal_head compare-and-set, as for the terminal rule.
+-- the other routines since 0019.
+--
+-- One insert per series at a time. The trigger first locks the series'
+-- goal_head row (FOR UPDATE), the lock every Goal writer already holds before
+-- it inserts, and which exists for every goal row (goal.handle references it).
+-- A writer that holds it takes it again for free; a raw insert waits for the
+-- other writers and they for it. The predecessor read that follows is a new
+-- statement, so under READ COMMITTED it sees the version the previous holder
+-- committed, and two concurrent inserts can no longer both judge themselves
+-- against the same predecessor.
 CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -125,6 +133,10 @@ DECLARE
     prior_state proxima_core.goal_state;
     prior_text text;
 BEGIN
+    PERFORM 1
+       FROM proxima_core.goal_head h
+      WHERE h.handle = NEW.handle
+        FOR UPDATE;
     SELECT g.t, g.state, g.text
       INTO prior_t, prior_state, prior_text
       FROM proxima_core.goal g

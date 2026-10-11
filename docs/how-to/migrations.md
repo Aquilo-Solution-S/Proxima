@@ -65,8 +65,10 @@ are left for autovacuum). The append-only trigger `goal_append_only` is
 disabled for that one statement and enabled again before the transaction
 commits, so no concurrent write sees the gap. The trigger function
 `goal_text_carried` (an invoker with a pinned `search_path`) and its trigger
-are created after the backfill; the trigger reads one row per insert, the
-series' last version, by the primary key `(handle, t)`. No other table is touched.
+are created after the backfill; per insert the trigger locks the series'
+`goal_head` row (the lock the Goal writers already hold, so it costs them
+nothing and makes a concurrent raw insert on the same series wait) and reads
+one row, the series' last version, by the primary key `(handle, t)`. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27

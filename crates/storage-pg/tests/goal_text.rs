@@ -1300,6 +1300,85 @@ goal_test!(a_version_joins_its_series_only_at_the_end, |h| async {
     Ok(())
 });
 
+goal_test!(two_concurrent_inserts_on_one_series_take_turns, |h| async {
+    // `Active "A"` is the last version. One transaction inserts `Active "B"`
+    // and holds it open; a second inserts `Paused "A"`, which only the first
+    // version would admit. The series lock makes the second wait, and once the
+    // first commits it is judged against `Active "B"` and refused.
+    let series = start_series(&h, Some("A"), "turns").await?;
+    let pool = h.pg.pool_for_tests().clone();
+    let owner_id = h.owner.stored_owner_id();
+    let t_b = Uuid::now_v7();
+    let t_paused = Uuid::now_v7();
+    assert!(t_b < t_paused, "the fixture orders the two inserts");
+
+    let mut first = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+         VALUES ($1, $2, $3, 'turns', 'B', 'Active', 'turns-b')",
+    )
+    .bind(series)
+    .bind(t_b)
+    .bind(owner_id)
+    .execute(&mut *first)
+    .await?;
+
+    let second = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
+                 VALUES ($1, $2, $3, 'turns', 'A', 'Paused', 'turns-paused')",
+            )
+            .bind(series)
+            .bind(t_paused)
+            .bind(owner_id)
+            .execute(&pool)
+            .await
+        }
+    });
+    let waiting = async {
+        loop {
+            if second.is_finished() {
+                return Err("the second insert did not wait for the series lock");
+            }
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM pg_stat_activity
+                  WHERE datname = current_database() AND wait_event_type = 'Lock'",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| "pg_stat_activity is readable")?;
+            if waiting > 0 {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .map_err(|_| "the second insert never waited for the series lock")??;
+
+    first.commit().await?;
+    let refused = second
+        .await?
+        .expect_err("the second insert is judged against the version committed first");
+    assert!(
+        refused
+            .to_string()
+            .contains("keeps the predecessor text exactly"),
+        "{refused}"
+    );
+    let last: Option<String> = sqlx::query_scalar(
+        "SELECT text FROM proxima_core.goal WHERE handle = $1 ORDER BY t DESC LIMIT 1",
+    )
+    .bind(series)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(last.as_deref(), Some("B"));
+    Ok(())
+});
+
 goal_test!(
     an_unknown_text_stays_unknown_across_a_state_change,
     |h| async {

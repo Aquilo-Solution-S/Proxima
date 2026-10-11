@@ -468,7 +468,7 @@ const TRIGGER_MISSING_OR_INCORRECT: &str =
     "goal.text carry-forward trigger goal_text_carried is missing or incorrect";
 
 /// Each damage and the marker message it must produce.
-const DAMAGE: [(&str, &str); 13] = [
+const DAMAGE: [(&str, &str); 14] = [
     (
         "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
         MISSING_OR_INCORRECT,
@@ -530,6 +530,35 @@ const DAMAGE: [(&str, &str); 13] = [
                 FROM proxima_core.goal g
                WHERE g.handle = NEW.handle AND g.t < NEW.t
                ORDER BY g.t DESC LIMIT 1;
+              IF FOUND
+                 AND prior_state IS DISTINCT FROM NEW.state
+                 AND NEW.text IS DISTINCT FROM prior_text
+              THEN
+                  RAISE EXCEPTION 'carry' USING ERRCODE = '23514';
+              END IF;
+              RETURN NEW;
+          END $$",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    // Order and carry, but no series lock: two concurrent inserts on one
+    // series would both judge themselves against the same predecessor.
+    (
+        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
+          RETURNS trigger LANGUAGE plpgsql
+          SET search_path = pg_catalog, proxima_core, pg_temp
+          AS $$
+          DECLARE
+              prior_t uuid;
+              prior_state proxima_core.goal_state;
+              prior_text text;
+          BEGIN
+              SELECT g.t, g.state, g.text INTO prior_t, prior_state, prior_text
+                FROM proxima_core.goal g
+               WHERE g.handle = NEW.handle
+               ORDER BY g.t DESC LIMIT 1;
+              IF FOUND AND prior_t > NEW.t THEN
+                  RAISE EXCEPTION 'order' USING ERRCODE = '23514';
+              END IF;
               IF FOUND
                  AND prior_state IS DISTINCT FROM NEW.state
                  AND NEW.text IS DISTINCT FROM prior_text
