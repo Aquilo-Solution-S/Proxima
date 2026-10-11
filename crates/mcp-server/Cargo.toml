@@ -19,7 +19,7 @@ rest = []
 
 [dependencies]
 proxima-core = { path = "../core" }
-proxima-storage-pg = { path = "../storage-pg" }
+proxima-storage-pg = { path = "../storage-pg", features = ["backend-api"] }
 async-trait = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
