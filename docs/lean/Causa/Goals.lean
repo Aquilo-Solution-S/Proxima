@@ -12,7 +12,8 @@ id, not columns on the row and not an inline `WakeConfig` value.
 No `supersedes`. No authorship blob. Title stays. `text` is on the row: the
 version's prompt, `none` when unknown, never blank (`goal_text_nonblank_chk`,
 migration 0025); the rest of the body is the sidecar. A version that changes
-the state keeps its predecessor's text. `close_fact_t` pins an existing Fact `t`.
+the state keeps its predecessor's text (trigger `goal_text_carried`).
+`close_fact_t` pins an existing Fact `t`.
 -/
 
 import Causa.Prelude

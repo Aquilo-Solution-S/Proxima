@@ -31,7 +31,9 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use proxima_storage_pg::verbs::goal_timeseries::{
+    GoalWriteCommand, GoalWriteOutcome as RowWritten, write_goal,
+};
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -670,6 +672,10 @@ goal_test!(
         let source_two = h
             .create("replay-source-two", "replayable two", "also me")
             .await?;
+        // The series stood in the table before the upgrade, so its first
+        // version has no text either; the database refuses a version that
+        // changes the state and not the text.
+        as_written_before_the_column(&h.pg, source_two.goal_id).await?;
         let recorded = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.goal
@@ -781,11 +787,37 @@ goal_test!(
     }
 );
 
+/// Give one version the NULL text a row has when it was written before the
+/// column existed. `goal` is append-only, so this switches the guard off for
+/// the one statement, as the backfill of `0025` does.
+async fn as_written_before_the_column(pg: &PgStorage, id: GoalId) -> TestResult {
+    let mut tx = pg.pool_for_tests().begin().await?;
+    sqlx::query("ALTER TABLE proxima_core.goal DISABLE TRIGGER goal_append_only")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE proxima_core.goal SET text = NULL WHERE t = $1")
+        .bind(id.into_inner())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Re-apply `0025` to a database that already has it, as a restore of an
 /// older database followed by the upgrade would: drop what it adds first.
 async fn rewind_to_0024(pg: &PgStorage) -> TestResult {
+    let pool = pg.pool_for_tests();
+    sqlx::query("DROP TRIGGER goal_text_carried ON proxima_core.goal")
+        .execute(pool)
+        .await?;
+    sqlx::query("DROP FUNCTION proxima_core.goal_text_carried()")
+        .execute(pool)
+        .await?;
     sqlx::query("ALTER TABLE proxima_core.goal DROP COLUMN text")
-        .execute(pg.pool_for_tests())
+        .execute(pool)
         .await?;
     Ok(())
 }
@@ -1053,14 +1085,27 @@ async fn goal_count(pg: &PgStorage) -> TestResult<i64> {
 
 /// A first Goal version for the low-level writer, with `text` stored as is.
 fn admitted_text_command(h: &Harness, text: &str, request_id: &str) -> GoalWriteCommand {
+    version_command(h, None, GoalState::Active, Some(text), None, request_id)
+}
+
+/// One Goal version for the low-level writer: the first of a series when
+/// `series` is `None`, else its next version. `text` is stored as given.
+fn version_command(
+    h: &Harness,
+    series: Option<Uuid>,
+    state: GoalState,
+    text: Option<&str>,
+    close_fact_t: Option<Uuid>,
+    request_id: &str,
+) -> GoalWriteCommand {
     GoalWriteCommand {
-        handle: None,
+        handle: series,
         schema_id: SimpleTextGoalV1::SCHEMA_ID.into(),
         title: "low level".into(),
-        text: Some(text.to_owned()),
-        state: GoalState::Active,
+        text: text.map(str::to_owned),
+        state,
         request_id: request_id.into(),
-        close_fact_t: None,
+        close_fact_t,
         assignment_t: Some(h.assignment.into_inner()),
         dependency_t: vec![],
         evidence_t: vec![],
@@ -1069,6 +1114,240 @@ fn admitted_text_command(h: &Harness, text: &str, request_id: &str) -> GoalWrite
         write_act_t: None,
     }
 }
+
+/// The first version of a new series, through the public low-level writer,
+/// committed. Returns the series handle.
+async fn start_series(h: &Harness, text: Option<&str>, request_id: &str) -> TestResult<Uuid> {
+    let mut tx = h.pg.pool_for_tests().begin().await?;
+    let written = write_goal(
+        &mut tx,
+        &h.owner,
+        &version_command(h, None, GoalState::Active, text, None, request_id),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(written.handle)
+}
+
+/// The next version of `series` through the public low-level writer. The
+/// inner result is the write itself: a refused version is rolled back.
+async fn append_version(
+    h: &Harness,
+    series: Uuid,
+    state: GoalState,
+    text: Option<&str>,
+    request_id: &str,
+) -> TestResult<Result<RowWritten, StorageError>> {
+    let close_fact_t = match state {
+        GoalState::Achieved | GoalState::Abandoned => Some(h.evidence().await?.into_inner()),
+        _ => None,
+    };
+    let mut tx = h.pg.pool_for_tests().begin().await?;
+    let written = write_goal(
+        &mut tx,
+        &h.owner,
+        &version_command(h, Some(series), state, text, close_fact_t, request_id),
+    )
+    .await;
+    if written.is_ok() {
+        tx.commit().await?;
+    }
+    Ok(written)
+}
+
+/// The refusal the carry rule gives: a typed constraint violation that names
+/// the rule.
+fn carry_refused(error: &StorageError) -> bool {
+    matches!(error, StorageError::ConstraintViolation(message)
+        if message.contains("goal_text_carried"))
+}
+
+goal_test!(a_state_change_must_carry_the_predecessors_text, |h| async {
+    // Pause, abandon and achieve each move a Goal that has a text. Every text
+    // but the predecessor's own is refused, whatever it looks like.
+    for (index, next) in [GoalState::Paused, GoalState::Abandoned, GoalState::Achieved]
+        .into_iter()
+        .enumerate()
+    {
+        let series = start_series(&h, Some("the prompt"), &format!("carry-{index}")).await?;
+        let before = goal_count(&h.pg).await?;
+        let others = [
+            None,
+            Some("another prompt"),
+            Some("The prompt"),
+            Some("the prompt "),
+            Some("\u{a0}"),
+        ];
+        for (other, text) in others.into_iter().enumerate() {
+            let refused = append_version(
+                &h,
+                series,
+                next,
+                text,
+                &format!("carry-{index}-refused-{other}"),
+            )
+            .await?
+            .expect_err("a state change must carry the predecessor's text");
+            assert!(carry_refused(&refused), "{next:?} {text:?}: {refused}");
+        }
+        assert_eq!(goal_count(&h.pg).await?, before, "a refusal writes nothing");
+
+        let carried = append_version(
+            &h,
+            series,
+            next,
+            Some("the prompt"),
+            &format!("carry-{index}-same"),
+        )
+        .await??;
+        assert_eq!(
+            stored_text(&h.pg, GoalId::new(carried.t)).await?.as_deref(),
+            Some("the prompt")
+        );
+    }
+
+    // Resuming is a state change too.
+    let series = start_series(&h, Some("the prompt"), "carry-resume").await?;
+    append_version(
+        &h,
+        series,
+        GoalState::Paused,
+        Some("the prompt"),
+        "carry-resume-pause",
+    )
+    .await??;
+    for (other, text) in [None, Some("another prompt")].into_iter().enumerate() {
+        let refused = append_version(
+            &h,
+            series,
+            GoalState::Active,
+            text,
+            &format!("carry-resume-refused-{other}"),
+        )
+        .await?
+        .expect_err("resuming must carry the text");
+        assert!(carry_refused(&refused), "{text:?}: {refused}");
+    }
+    append_version(
+        &h,
+        series,
+        GoalState::Active,
+        Some("the prompt"),
+        "carry-resume-same",
+    )
+    .await??;
+    Ok(())
+});
+
+goal_test!(
+    an_unknown_text_stays_unknown_across_a_state_change,
+    |h| async {
+        let series = start_series(&h, None, "unknown-0").await?;
+        for (index, next) in [GoalState::Paused, GoalState::Active, GoalState::Abandoned]
+            .into_iter()
+            .enumerate()
+        {
+            let refused = append_version(
+                &h,
+                series,
+                next,
+                Some("a text out of nowhere"),
+                &format!("unknown-refused-{index}"),
+            )
+            .await?
+            .expect_err("a state change cannot make an unknown text known");
+            assert!(carry_refused(&refused), "{next:?}: {refused}");
+
+            let carried =
+                append_version(&h, series, next, None, &format!("unknown-same-{index}")).await??;
+            assert_eq!(stored_text(&h.pg, GoalId::new(carried.t)).await?, None);
+        }
+        Ok(())
+    }
+);
+
+goal_test!(
+    a_modify_may_change_the_text_and_the_next_state_change_carries_that_one,
+    |h| async {
+        let series = start_series(&h, Some("one"), "modify-0").await?;
+        let modified =
+            append_version(&h, series, GoalState::Active, Some("two"), "modify-1").await??;
+        assert_eq!(
+            stored_text(&h.pg, GoalId::new(modified.t))
+                .await?
+                .as_deref(),
+            Some("two"),
+            "Active to Active may change the text"
+        );
+
+        // The predecessor is the latest version, not the first.
+        let refused = append_version(&h, series, GoalState::Paused, Some("one"), "modify-2")
+            .await?
+            .expect_err("the text to carry is the modify's");
+        assert!(carry_refused(&refused), "{refused}");
+        let paused =
+            append_version(&h, series, GoalState::Paused, Some("two"), "modify-3").await??;
+        assert_eq!(
+            stored_text(&h.pg, GoalId::new(paused.t)).await?.as_deref(),
+            Some("two")
+        );
+        Ok(())
+    }
+);
+
+goal_test!(
+    a_version_written_by_the_v0_0_26_statement_cannot_move_a_goal_with_a_text,
+    |h| async {
+        // v0.0.26's `insert_goal_revision` names no `text` column, so a
+        // process still running that release writes every version with a NULL
+        // text. This is its statement, column list and all.
+        const V0_0_26_INSERT: &str = "INSERT INTO proxima_core.goal
+            (handle, t, owner_id, title, state, request_id, close_fact_t,
+             assignment_t, dependency_t, evidence_t, wake_id, write_act_t)
+         VALUES ($1, uuidv7(), $2, $3, $4::proxima_core.goal_state, $5, NULL,
+                 NULL, '{}', '{}', NULL, NULL)";
+        let pool = h.pg.pool_for_tests();
+        let created = h.create("old-0", "old process", "a prompt").await?;
+        let handle: Uuid = sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
+            .bind(created.goal_id.into_inner())
+            .fetch_one(pool)
+            .await?;
+        let write = |state: &'static str, request_id: &'static str| {
+            sqlx::query(V0_0_26_INSERT)
+                .bind(handle)
+                .bind(h.owner.stored_owner_id())
+                .bind("old process")
+                .bind(state)
+                .bind(request_id)
+                .execute(pool)
+        };
+
+        // Pause, which is what a v0.0.26 pause of this Goal would write.
+        let refused = write("Paused", "old-1")
+            .await
+            .expect_err("a NULL text cannot move a Goal that has a text");
+        assert!(
+            refused.to_string().contains("goal_text_carried"),
+            "{refused}"
+        );
+        assert_eq!(
+            stored_text(&h.pg, created.goal_id).await?.as_deref(),
+            Some("a prompt")
+        );
+
+        // A modify keeps the state, so the database lets it through: the text
+        // is lost, and every later version carries the NULL.
+        write("Active", "old-2").await?;
+        write("Paused", "old-3").await?;
+        let texts: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT text FROM proxima_core.goal WHERE handle = $1 ORDER BY t")
+                .bind(handle)
+                .fetch_all(pool)
+                .await?;
+        assert_eq!(texts, vec![Some("a prompt".to_owned()), None, None]);
+        Ok(())
+    }
+);
 
 goal_test!(
     a_text_the_database_admits_is_carried_forward_byte_for_byte,

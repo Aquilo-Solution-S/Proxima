@@ -1501,9 +1501,10 @@ const OWNER_RLS_TABLE_INSTALLER_MARKERS: &str = r"SELECT CASE
 const GOAL_TEXT_CHECK_DEFINITION: &str =
     "CHECK (text IS NULL OR length(btrim(text, ' \t\n\r\x0b\x0c'::text)) > 0)";
 
-/// v0.0.31: the Goal version's prompt text, nullable and never blank
-/// (migration 0025). `goal` is proven present by `CORE_RELATION_MARKERS`;
-/// `$1` is [`GOAL_TEXT_CHECK_DEFINITION`].
+/// v0.0.31: the Goal version's prompt text, nullable and never blank, and
+/// carried unchanged across a state change by `goal_text_carried` (migration
+/// 0025). `goal` is proven present by `CORE_RELATION_MARKERS`; `$1` is
+/// [`GOAL_TEXT_CHECK_DEFINITION`].
 const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
@@ -1523,6 +1524,28 @@ const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
                      AND pg_get_constraintdef(c.oid, true) = $1
                 )
            THEN 'goal.text non-blank check is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_trigger tr
+                    JOIN pg_class r ON r.oid = tr.tgrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                    JOIN pg_proc p ON p.oid = tr.tgfoid
+                    JOIN pg_namespace pn ON pn.oid = p.pronamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'goal'
+                     AND tr.tgname = 'goal_text_carried'
+                     AND tr.tgenabled = 'O'
+                     AND (tr.tgtype & 127) = 7
+                     AND pn.nspname = 'proxima_core'
+                     AND p.proname = 'goal_text_carried'
+                     AND NOT p.prosecdef
+                     AND p.proconfig = ARRAY['search_path=pg_catalog, proxima_core, pg_temp']
+                     AND strpos(p.prosrc, 'g.t < NEW.t') > 0
+                     AND strpos(p.prosrc, 'prior_state IS DISTINCT FROM NEW.state') > 0
+                     AND strpos(p.prosrc, 'NEW.text IS DISTINCT FROM prior_text') > 0
+                     AND strpos(p.prosrc, '23514') > 0
+                )
+           THEN 'goal.text carry-forward trigger goal_text_carried is missing or incorrect'
          ELSE NULL
        END";
 

@@ -19,7 +19,10 @@ pub struct GoalWriteCommand {
     pub schema_id: String,
     pub title: String,
     /// This version's prompt text; `None` is unknown. Never blank: the column
-    /// refuses it.
+    /// refuses it. A version whose state differs from its predecessor's must
+    /// carry the predecessor's text exactly, `None` included: the trigger
+    /// `goal_text_carried` refuses any other (`ConstraintViolation`). Only a
+    /// version that keeps the state may change the text.
     pub text: Option<String>,
     pub state: GoalState,
     pub request_id: String,

@@ -92,8 +92,20 @@ Create, modify and each decomposed child store the text they were given, as
 given: a hand-built draft with a blank text is refused by the check with a
 `ConstraintViolation`, never stored as `NULL`. A transition (pause, resume,
 abandon) and an achievement store exactly the prior version's stored text,
-byte for byte and `NULL` included, with no check of their own, so the text of a
-series changes only at a modify. A read also returns `set_at`, the time of the
+byte for byte and `NULL` included, with no judgement of it in Rust, so the text
+of a series changes only at a modify.
+
+The database enforces that carry rule for every writer, the Goal write verbs
+and the low-level `write_goal` alike. The `BEFORE INSERT` trigger
+`goal_text_carried` looks up the predecessor of the new version (the same
+`handle`, the greatest earlier `t`). When one exists, its `state` differs from
+the new version's, and the new version's text is not the predecessor's text
+(`NULL` equals only `NULL`), the insert is refused with SQLSTATE `23514`, a
+`ConstraintViolation` that names the rule. A version that keeps the state, which
+is a modify, may change the text, and the first version of a series has no
+predecessor. A writer that has to move a Goal on must therefore pass the prior
+version's text exactly; one that omits the text (an older binary) cannot drop
+it. A read also returns `set_at`, the time of the
 series' first version, and `changed_at`, the time of the version read; a first
 version has `set_at == changed_at`. Both come from the UUIDv7 `t`, not from a
 column. `set_by` and per-version authors are not part of the row.

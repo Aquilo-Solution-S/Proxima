@@ -464,8 +464,11 @@ const RESTORE: &str = r"
 
 const MISSING_OR_INCORRECT: &str = "goal.text non-blank check is missing or incorrect";
 
+const TRIGGER_MISSING_OR_INCORRECT: &str =
+    "goal.text carry-forward trigger goal_text_carried is missing or incorrect";
+
 /// Each damage and the marker message it must produce.
-const DAMAGE: [(&str, &str); 5] = [
+const DAMAGE: [(&str, &str); 12] = [
     (
         "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_text_nonblank_chk",
         MISSING_OR_INCORRECT,
@@ -493,6 +496,45 @@ const DAMAGE: [(&str, &str); 5] = [
         "ALTER TABLE proxima_core.goal ALTER COLUMN text SET NOT NULL",
         "goal.text must be a nullable text column",
     ),
+    // The carry-forward trigger: gone, switched off, with a body that carries
+    // nothing, a definer, an unpinned search_path, or wired to another event
+    // or time.
+    (
+        "DROP TRIGGER goal_text_carried ON proxima_core.goal",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        "ALTER TABLE proxima_core.goal DISABLE TRIGGER goal_text_carried",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        r"CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
+          RETURNS trigger LANGUAGE plpgsql
+          SET search_path = pg_catalog, proxima_core, pg_temp
+          AS $$ BEGIN RETURN NEW; END $$",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        "ALTER FUNCTION proxima_core.goal_text_carried() SECURITY DEFINER",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        "ALTER FUNCTION proxima_core.goal_text_carried()
+             SET search_path = pg_catalog, proxima_core",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        r"DROP TRIGGER goal_text_carried ON proxima_core.goal;
+          CREATE TRIGGER goal_text_carried AFTER INSERT ON proxima_core.goal
+              FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_text_carried()",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
+    (
+        r"DROP TRIGGER goal_text_carried ON proxima_core.goal;
+          CREATE TRIGGER goal_text_carried BEFORE INSERT OR UPDATE ON proxima_core.goal
+              FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_text_carried()",
+        TRIGGER_MISSING_OR_INCORRECT,
+    ),
 ];
 
 /// The boot guardrail names a database whose `goal.text` was damaged after
@@ -516,10 +558,13 @@ async fn the_boot_guardrail_rejects_a_damaged_goal_text_column()
                 .await
                 .expect_err("a damaged goal.text must fail the boot guardrail");
             assert!(error.to_string().contains(message), "{sql}: {error}");
-            // Put the schema back for the next damage.
+            // Put the schema back for the next damage: the constraint as the
+            // file writes it, then the file's own idempotent function and
+            // trigger (the repair a re-run of 0025 is).
             let mut tx = platform.begin().await?;
             sqlx::raw_sql(RESTORE).execute(&mut *tx).await?;
             tx.commit().await?;
+            super::apply_core_migrations(&platform, 25..=25).await?;
             super::assert_current_markers(admin).await?;
         }
         platform.close().await;

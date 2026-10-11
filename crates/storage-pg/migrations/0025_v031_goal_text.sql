@@ -17,11 +17,15 @@
 --
 -- A write that gives a text (create, modify, a decomposed child) stores it. A
 -- write that only moves the lifecycle (transition, achieve) stores exactly its
--- prior version's text, NULL included.
+-- prior version's text, NULL included. The database enforces that carry rule
+-- for every writer: `goal_text_carried` below refuses a version whose state
+-- differs from its predecessor's and whose text is not the predecessor's, so a
+-- writer that omits the column (an older process) cannot drop a text.
 --
 -- Additive and idempotent: ADD COLUMN IF NOT EXISTS skips the column and its
--- CHECK together on a second run, and the backfill only writes rows whose text
--- is still NULL. An empty database has no rows to visit.
+-- CHECK together on a second run, the backfill only writes rows whose text is
+-- still NULL, and the function and trigger are CREATE OR REPLACE. An empty
+-- database has no rows to visit.
 
 ALTER TABLE proxima_core.goal
     ADD COLUMN IF NOT EXISTS text text
@@ -88,3 +92,48 @@ UPDATE proxima_core.goal g
    AND g.text IS NULL;
 
 ALTER TABLE proxima_core.goal ENABLE TRIGGER goal_append_only;
+
+-- The carry rule. A version whose state differs from its predecessor's (the
+-- same handle's greatest earlier t) keeps the predecessor's text exactly,
+-- NULL included; a version that keeps the state (a modify) is free to change
+-- it. The first version of a series has no predecessor and is free.
+--
+-- Written the way `goal_no_later_after_terminal` guards the other series rule:
+-- a BEFORE INSERT row trigger on `goal` raising 23514, an invoker routine. The
+-- predecessor is a row of the inserted row's own owner, and the owner write
+-- policy covers SELECT as well (FOR ALL), so every scope that may insert the
+-- row sees it; no platform bridge is needed. The search_path is pinned like
+-- the other routines since 0019. Two writers on one series are serialized by
+-- the writer's goal_head compare-and-set, as for the terminal rule.
+CREATE OR REPLACE FUNCTION proxima_core.goal_text_carried()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, proxima_core, pg_temp
+AS $$
+DECLARE
+    prior_state proxima_core.goal_state;
+    prior_text text;
+BEGIN
+    SELECT g.state, g.text
+      INTO prior_state, prior_text
+      FROM proxima_core.goal g
+     WHERE g.handle = NEW.handle
+       AND g.t < NEW.t
+     ORDER BY g.t DESC
+     LIMIT 1;
+    IF FOUND
+       AND prior_state IS DISTINCT FROM NEW.state
+       AND NEW.text IS DISTINCT FROM prior_text
+    THEN
+        RAISE EXCEPTION
+            'goal_text_carried: a version whose state differs from its predecessor keeps the predecessor text exactly'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER goal_text_carried
+    BEFORE INSERT ON proxima_core.goal
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.goal_text_carried();
