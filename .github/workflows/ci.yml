@@ -307,8 +307,12 @@ jobs:
             --bucket proxima-cited-blobs \
             --versioning-configuration Status=Enabled
       - name: install nextest
-        # taiki-e/install-action@nextest
+        # taiki-e/install-action@v2. The tool is an input, not the `@nextest`
+        # tag: a pinned commit names no tool, and a dependabot bump of the pin
+        # then installs nothing.
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
+        with:
+          tool: nextest
       # One feature set, one build. Every feature-gated target (the REST
       # surface and mounted REST/OIDC e2e, the Fact-outbox host lane and
       # publisher supervision, the durable-intake example) compiles into this
