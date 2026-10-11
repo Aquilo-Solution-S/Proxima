@@ -228,7 +228,9 @@ pub struct SearchMemoryOutput {
     pub space: String,
     pub kind: String,
     pub schema_id: String,
-    pub created_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "String")]
+    pub created_at: time::OffsetDateTime,
     pub snippet: String,
     /// Mode score. Hybrid uses weighted reciprocal ranks (k=60), comparable
     /// within this result list; lexical and semantic retain their raw scores.
@@ -987,7 +989,7 @@ fn search_memory_output(
         space: space.to_string(),
         kind: row.kind.as_str().to_string(),
         schema_id: row.schema_id.as_str().to_string(),
-        created_at: format_rfc3339(row.created_at)?,
+        created_at: row.created_at,
         snippet: row.snippet,
         score: row.score,
         lexical_score: row.lexical_score,
@@ -1060,12 +1062,6 @@ fn parse_rfc3339(
         })
     })
     .transpose()
-}
-
-fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
-    value
-        .format(&Rfc3339)
-        .map_err(|err| McpToolError::Other(format!("format created_at: {err}")))
 }
 
 #[cfg(test)]
