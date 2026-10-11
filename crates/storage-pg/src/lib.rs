@@ -1531,6 +1531,20 @@ const GOAL_TEXT_MARKERS: &str = r"SELECT CASE
                      AND c.conname = 'goal_owner_matches_head_fk'
                      AND c.contype = 'f'
                      AND c.confrelid = to_regclass('proxima_core.goal_head')
+                     AND ARRAY(
+                           SELECT a.attname::text
+                             FROM unnest(c.conkey) WITH ORDINALITY k(attnum, n)
+                             JOIN pg_attribute a
+                               ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                            ORDER BY k.n
+                         ) = ARRAY['handle', 'owner_id']
+                     AND ARRAY(
+                           SELECT a.attname::text
+                             FROM unnest(c.confkey) WITH ORDINALITY k(attnum, n)
+                             JOIN pg_attribute a
+                               ON a.attrelid = c.confrelid AND a.attnum = k.attnum
+                            ORDER BY k.n
+                         ) = ARRAY['handle', 'owner_id']
                 )
            THEN 'goal series owner foreign key goal_owner_matches_head_fk is missing or incorrect'
          ELSE NULL

@@ -452,8 +452,11 @@ const DAMAGE: [(&str, &str); 6] = [
         "ALTER TABLE proxima_core.goal ALTER COLUMN text SET NOT NULL",
         "goal.text must be a nullable text column",
     ),
+    // Same name, handle only: it no longer keeps the series to its owner.
     (
-        "ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_owner_matches_head_fk",
+        r"ALTER TABLE proxima_core.goal DROP CONSTRAINT goal_owner_matches_head_fk;
+          ALTER TABLE proxima_core.goal ADD CONSTRAINT goal_owner_matches_head_fk
+              FOREIGN KEY (handle) REFERENCES proxima_core.goal_head (handle) NOT VALID",
         FOREIGN_KEY_MISSING,
     ),
 ];
