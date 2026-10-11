@@ -5,7 +5,7 @@
 //! authenticator built from the platform scope.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,9 +17,9 @@ use axum::routing::get;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthzContext, FlavorApp, McpHostTool, McpHostToolCall, McpHostTools, Next, Proxima,
-    QueryRequest, RequestBehavior, ToolCall, ToolScope,
+    QueryRequest, RequestBehavior, ToolCall, ToolContent, ToolReply, ToolScope,
 };
-use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
+use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallRecord};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, Credentials, McpToolError, OwnerRef, OwnerRoles,
     ToolEffect, UserId,
@@ -42,7 +42,7 @@ struct Seen;
 
 #[async_trait]
 impl RequestBehavior for Seen {
-    async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<Value, McpToolError> {
+    async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
         SEEN.lock().expect("seen").push(call.name.clone());
         next.run(call).await
     }
@@ -76,23 +76,30 @@ struct EchoTools;
 
 #[async_trait]
 impl McpHostTools for EchoTools {
-    fn list(&self, _auth: &proxima::McpAuthContext) -> Vec<McpHostTool> {
-        vec![McpHostTool {
-            name: HOST_TOOL.into(),
-            description: "Echo the call back.".into(),
-            args_schema: json!({"type": "object"}),
-            output_schema: json!({"type": "object"}),
-            effect: ToolEffect::ReadOnly,
-        }]
+    async fn list(
+        &self,
+        _auth: &proxima::McpAuthContext,
+    ) -> Result<Vec<McpHostTool>, McpToolError> {
+        Ok(vec![
+            McpHostTool::new(
+                HOST_TOOL,
+                "Echo the call back.",
+                json!({"type": "object"}),
+                ToolEffect::ReadOnly,
+            )
+            .with_output_schema(json!({"type": "object"})),
+        ])
     }
 
-    async fn call(&self, call: ToolCall) -> Result<Value, McpToolError> {
+    async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
         let marker = call
             .ctx
             .services
             .get::<McpHostToolCall>()
             .ok_or_else(|| McpToolError::Other("no host-call marker".into()))?;
-        Ok(json!({"tool": call.name, "marker": marker.name(), "args": call.args}))
+        Ok(ToolReply::Structured(
+            json!({"tool": call.name, "marker": marker.name(), "args": call.args}),
+        ))
     }
 }
 
@@ -325,6 +332,7 @@ async fn the_resolved_edge_puts_bearer_auth_on_mcp_only() -> TestResult {
                 owner: OwnerRef::Personal(subject),
                 authz: AuthzContext::for_subject(subject, AuthPath::HostBearer),
             })
+            .await?
             .iter()
             .any(|tool| tool.name == HOST_TOOL),
         "the edge's tool host carries the host tools"
@@ -427,6 +435,191 @@ async fn the_authenticator_is_built_after_the_platform_scope() -> TestResult {
     Ok(())
 }
 
+const FAILING_TOOL: &str = "host_fail";
+const CONTENT_TOOL: &str = "host_content";
+
+/// Two tools without an output schema: one answers content, one a tool
+/// failure. Counts how often a request reads the catalog.
+#[derive(Debug, Clone)]
+struct ReplyTools {
+    lists: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpHostTools for ReplyTools {
+    async fn list(
+        &self,
+        _auth: &proxima::McpAuthContext,
+    ) -> Result<Vec<McpHostTool>, McpToolError> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
+        Ok([FAILING_TOOL, CONTENT_TOOL]
+            .into_iter()
+            .map(|name| {
+                McpHostTool::new(
+                    name,
+                    "Answers a fixed reply.",
+                    json!({"type": "object"}),
+                    ToolEffect::ReadOnly,
+                )
+            })
+            .collect())
+    }
+
+    async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
+        match call.name.as_str() {
+            FAILING_TOOL => Ok(ToolReply::Failure(vec![ToolContent::text(
+                "upstream said no",
+            )])),
+            _ => Ok(ToolReply::Content(vec![
+                ToolContent::text("hello"),
+                ToolContent::image([0xfb, 0xff], "image/png"),
+            ])),
+        }
+    }
+}
+
+/// The owner's recorded calls once at least `count` have landed: recording
+/// runs off the request path.
+async fn recorded_calls(
+    engine: &proxima::Engine,
+    subject: UserId,
+    count: usize,
+) -> TestResult<Vec<McpCallRecord>> {
+    let reader = proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
+        subject,
+        AuthPath::HostBearer,
+    ));
+    let request = McpCallHistoryRequest {
+        owner: OwnerRef::Personal(subject),
+        actor_oid: Some(subject.into_inner().to_string()),
+        limit: 10,
+        include_body: true,
+        before: None,
+    };
+    let calls = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let calls = proxima::read_mcp_call_history(engine, &reader, &request)
+                .await
+                .expect("history read")
+                .calls;
+            if calls.len() >= count {
+                return calls;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?;
+    Ok(calls)
+}
+
+/// A host tool answers content blocks or a tool failure (`isError`, still a
+/// JSON-RPC result), a failure is recorded as not ok without its content,
+/// and no request reads the host catalog twice, the recorder included.
+#[tokio::test]
+async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catalog_read()
+-> TestResult {
+    let db = SplitRoleDb::create("proxima_host_replies", &[]).await?;
+    let subject = UserId::new(Uuid::now_v7());
+    let lists = Arc::new(AtomicUsize::new(0));
+    let running = Proxima::<HostApp>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .tool_scope(ToolScope::All)
+        .host_tools(Arc::new(ReplyTools {
+            lists: Arc::clone(&lists),
+        }))
+        .authenticator(Arc::new(StubAuth { subject }))
+        .record_mcp_calls(true)
+        .run()
+        .await?;
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
+    let client = reqwest::Client::new();
+    let session = open_session(&client, &base, subject).await?;
+    let call = |id: u64, name: &'static str| {
+        rpc(
+            &client,
+            &base,
+            subject,
+            &session,
+            json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                   "params": {"name": name, "arguments": {}}}),
+        )
+    };
+
+    let before = lists.load(Ordering::SeqCst);
+    let listed = rpc(
+        &client,
+        &base,
+        subject,
+        &session,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .await?;
+    assert_eq!(
+        lists.load(Ordering::SeqCst) - before,
+        1,
+        "one list per tools/list"
+    );
+    for name in [FAILING_TOOL, CONTENT_TOOL] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .and_then(|tools| tools.iter().find(|tool| tool["name"] == name))
+            .ok_or("host tool not listed")?;
+        assert!(tool.get("outputSchema").is_none(), "{tool}");
+    }
+
+    let failed = call(3, FAILING_TOOL).await?;
+    assert_eq!(failed["result"]["isError"], json!(true), "{failed}");
+    assert_eq!(
+        failed["result"]["content"],
+        json!([{"type": "text", "text": "upstream said no"}]),
+        "{failed}"
+    );
+    assert!(
+        failed["result"].get("structuredContent").is_none(),
+        "{failed}"
+    );
+
+    let content = call(4, CONTENT_TOOL).await?;
+    assert_ne!(content["result"]["isError"], json!(true), "{content}");
+    assert_eq!(
+        content["result"]["content"][0]["text"],
+        json!("hello"),
+        "{content}"
+    );
+    assert_eq!(
+        content["result"]["content"][1],
+        json!({"type": "image", "data": "+/8=", "mimeType": "image/png"}),
+        "{content}"
+    );
+    assert!(
+        content["result"].get("structuredContent").is_none(),
+        "{content}"
+    );
+
+    let recorded = recorded_calls(running.host().engine(), subject, 2).await?;
+    let failure = recorded
+        .iter()
+        .find(|call| call.tool_name == FAILING_TOOL)
+        .ok_or("failure not recorded")?;
+    assert!(!failure.ok, "{failure:?}");
+    assert_eq!(failure.error.as_deref(), Some("tool failure"));
+    assert_eq!(failure.io_body, None, "the failure's content is not stored");
+    let served = recorded
+        .iter()
+        .find(|call| call.tool_name == CONTENT_TOOL)
+        .ok_or("content call not recorded")?;
+    assert!(served.ok, "{served:?}");
+    assert_eq!(served.io_body, None, "no body is stored");
+    // The tools/list and the two calls read the catalog once each; the
+    // recorder, finished by now, read it zero times.
+    assert_eq!(lists.load(Ordering::SeqCst) - before, 3);
+
+    running.shutdown().await;
+    Ok(())
+}
+
 const SLEEP_TOOL: &str = "host_sleep";
 
 /// Sleeps `ms`, then answers — a tool call that sends nothing while it runs.
@@ -435,20 +628,25 @@ struct SleepTools;
 
 #[async_trait]
 impl McpHostTools for SleepTools {
-    fn list(&self, _auth: &proxima::McpAuthContext) -> Vec<McpHostTool> {
-        vec![McpHostTool {
-            name: SLEEP_TOOL.into(),
-            description: "Sleep, then answer.".into(),
-            args_schema: json!({"type": "object"}),
-            output_schema: json!({"type": "object"}),
-            effect: ToolEffect::ReadOnly,
-        }]
+    async fn list(
+        &self,
+        _auth: &proxima::McpAuthContext,
+    ) -> Result<Vec<McpHostTool>, McpToolError> {
+        Ok(vec![
+            McpHostTool::new(
+                SLEEP_TOOL,
+                "Sleep, then answer.",
+                json!({"type": "object"}),
+                ToolEffect::ReadOnly,
+            )
+            .with_output_schema(json!({"type": "object"})),
+        ])
     }
 
-    async fn call(&self, call: ToolCall) -> Result<Value, McpToolError> {
+    async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
         let ms = call.args["ms"].as_u64().unwrap_or(0);
         tokio::time::sleep(Duration::from_millis(ms)).await;
-        Ok(json!({"slept_ms": ms}))
+        Ok(ToolReply::Structured(json!({"slept_ms": ms})))
     }
 }
 

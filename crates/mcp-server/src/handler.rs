@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolEffect,
-    all_core_resources, mcp_wire_output_schema, normalize_mcp_output_schema,
-    provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolContent,
+    ToolDescriptorView, ToolEffect, ToolReply, all_core_resources, mcp_wire_output_schema,
+    normalize_mcp_output_schema, provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{
     AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
@@ -23,10 +23,11 @@ use rmcp::ServerHandler;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     DiscoverResult, ErrorData, Implementation, InitializeRequestParams, InitializeResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
-    ServerCapabilities, ServerConfig, SubscriptionFilter, Tool, ToolAnnotations,
+    JsonObject, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, MetaObject,
+    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer, SubscriptionContext};
 
@@ -86,33 +87,71 @@ impl DynamicHandler {
 
     /// [`ServerHandler::get_info`] plus `instructions` generated from the
     /// caller's *resolved* tool scope (deployment profile ∩ token
-    /// capabilities), the scope `list_tools` advertises. A `memory`-profile
-    /// deployment thus omits guidance for tools it does not expose.
-    fn info_for(&self, context: &RequestContext<RoleServer>) -> ServerConfig {
+    /// capabilities ∩ request behaviors' `visible`), the scope `list_tools`
+    /// advertises, followed by the host's own contribution
+    /// ([`McpHostTools::instructions`](crate::McpHostTools::instructions)). A
+    /// `memory`-profile deployment thus omits guidance for tools it does not
+    /// expose.
+    fn info_for<'a>(
+        &'a self,
+        context: &RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ServerConfig, ErrorData>> + MaybeSendFuture + use<'a> {
         let auth = auth_context(context);
-        let advertised_tools = self.advertised_tool_ids(auth.as_ref());
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
-        let advertised_resources = advertised_resource_scope_keys(scope);
-        let mut info = self.get_info();
-        let instructions = selfdoc::build_instructions(&advertised_tools, &advertised_resources);
-        if !instructions.is_empty() {
-            info.instructions = Some(instructions);
+        let listing = listing_ctx(&self.server, auth.as_ref(), context);
+        async move {
+            let generated = {
+                let ctx = listing?;
+                let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
+                let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
+                selfdoc::build_instructions(
+                    &advertised_tool_ids(self.server.registry(), caller),
+                    &advertised_resource_scope_keys(scope),
+                )
+            };
+            let host = match &auth {
+                Some(auth) => self.server.host_instructions(auth).await,
+                None => None,
+            };
+            let mut info = self.get_info();
+            info.instructions = selfdoc::compose_instructions(&generated, host.as_deref());
+            Ok(info)
         }
-        info
     }
+}
 
-    /// Canonical ids of the tools advertised to a caller with `scope`. Same
-    /// filter `list_tools` applies, so self-documentation never references a
-    /// tool the caller cannot see.
-    fn advertised_tool_ids(&self, auth: Option<&McpAuthContext>) -> BTreeSet<&'static str> {
-        self.server
-            .registry()
-            .list_mcp_tools()
-            .iter()
-            .filter(|descriptor| tool_allowed_for_auth(auth, descriptor))
-            .map(|descriptor| descriptor.name)
-            .collect()
-    }
+/// Canonical ids of the tools a listing shows `caller`. The filter
+/// `list_tools` applies, so self-documentation never references a tool the
+/// caller cannot see.
+pub(crate) fn advertised_tool_ids(
+    registry: &FlavorRegistryFrozen,
+    caller: Caller<'_>,
+) -> BTreeSet<&'static str> {
+    registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|descriptor| tool_allowed_for_auth(caller, descriptor))
+        .map(|descriptor| descriptor.name)
+        .collect()
+}
+
+/// The tool context request behaviors judge one listing with: the caller's
+/// own, built as [`McpToolHost::read_resource_in_request`] builds its. `None`
+/// without an authenticated caller, which a release build lists nothing to.
+fn listing_ctx(
+    server: &McpToolHost,
+    auth: Option<&McpAuthContext>,
+    context: &RequestContext<RoleServer>,
+) -> Result<Option<McpToolCtx>, ErrorData> {
+    let Some(auth) = auth else {
+        return Ok(None);
+    };
+    let (client_name, client_version) = peer_implementation(context);
+    let author = author_from_ctx(Some(auth), &client_name, &client_version);
+    let request = request_services(server, context)?;
+    server
+        .ctx_for_request(author, auth, request)
+        .map(Some)
+        .map_err(|err| mcp_tool_error_to_error_data(&err))
 }
 
 impl ServerHandler for DynamicHandler {
@@ -162,7 +201,7 @@ impl ServerHandler for DynamicHandler {
         {
             notifier.register_session(auth.owner, context.peer.clone());
         }
-        std::future::ready(Ok(self.info_for(&context)))
+        self.info_for(&context)
     }
 
     /// `server/discover`, which replaces the handshake from `2026-07-28`:
@@ -172,10 +211,13 @@ impl ServerHandler for DynamicHandler {
         &self,
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<DiscoverResult, ErrorData>> + MaybeSendFuture + '_ {
-        std::future::ready(Ok(DiscoverResult::from_server_info(
-            self.supported_protocol_versions().into_owned(),
-            self.info_for(&context),
-        )))
+        let info = self.info_for(&context);
+        async move {
+            Ok(DiscoverResult::from_server_info(
+                self.supported_protocol_versions().into_owned(),
+                info.await?,
+            ))
+        }
     }
 
     /// `subscriptions/listen` (`2026-07-28`) carries `toolsListChanged` and
@@ -273,17 +315,18 @@ impl ServerHandler for DynamicHandler {
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
         let request_services = request_services(&self.server, &context);
+        let how_to_ctx = if uri == selfdoc::HOW_TO_URI {
+            listing_ctx(&self.server, auth.as_ref(), &context)
+        } else {
+            Ok(None)
+        };
         let server = self.server.clone();
         async move {
             if uri == selfdoc::HOW_TO_URI {
                 let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
-                let advertised = server
-                    .registry()
-                    .list_mcp_tools()
-                    .iter()
-                    .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor))
-                    .map(|descriptor| descriptor.name)
-                    .collect();
+                let ctx = how_to_ctx?;
+                let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
+                let advertised = advertised_tool_ids(server.registry(), caller);
                 let advertised_resources = advertised_resource_scope_keys(scope);
                 let body = selfdoc::how_to_markdown(&advertised, &advertised_resources);
                 return Ok(ReadResourceResult::new(vec![
@@ -318,41 +361,49 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let tools: Vec<Tool> = self
-            .server
-            .registry()
-            .list_mcp_tools()
-            .iter()
-            .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor))
-            .map(|descriptor| {
-                let schema = project_dispatcher_actions_for_auth(descriptor, auth.as_ref());
-                let tool = Tool::new(
-                    Cow::Owned(provider_safe_tool_name(descriptor.name)),
-                    Cow::Borrowed(descriptor.description),
-                    Arc::new(rmcp::model::object(schema)),
-                )
-                .with_raw_output_schema(Arc::new(rmcp::model::object(
-                    mcp_wire_output_schema(&descriptor.output_schema),
-                )));
-                match annotations_for_auth(auth.as_ref(), descriptor) {
-                    Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
-                    None => tool,
-                }
-            })
-            .collect();
-        let host_tools = auth.as_ref().map_or_else(Vec::new, |ctx| {
-            self.server
-                .host_tools_for(ctx)
-                .into_iter()
-                .filter(|tool| host_tool_allowed_for_auth(Some(ctx), tool))
-                .filter_map(host_tool_metadata)
-                .collect()
-        });
-        let mut tools = tools;
-        tools.extend(host_tools);
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)
-            .with_ttl_ms(LIST_TTL_MS)
-            .with_cache_scope(LIST_CACHE_SCOPE)))
+        let listing = listing_ctx(&self.server, auth.as_ref(), &context);
+        async move {
+            let ctx = listing?;
+            let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
+            let mut tools: Vec<Tool> = self
+                .server
+                .registry()
+                .list_mcp_tools()
+                .iter()
+                .filter(|descriptor| tool_allowed_for_auth(caller, descriptor))
+                .map(|descriptor| {
+                    let schema = project_dispatcher_actions_for_auth(caller, descriptor);
+                    let tool = Tool::new(
+                        Cow::Owned(provider_safe_tool_name(descriptor.name)),
+                        Cow::Borrowed(descriptor.description),
+                        Arc::new(rmcp::model::object(schema)),
+                    )
+                    .with_raw_output_schema(Arc::new(rmcp::model::object(mcp_wire_output_schema(
+                        &descriptor.output_schema,
+                    ))));
+                    match annotations_for_auth(caller, descriptor) {
+                        Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
+                        None => tool,
+                    }
+                })
+                .collect();
+            if let Some(auth) = &auth {
+                let host_tools = self
+                    .server
+                    .host_tools_for(auth)
+                    .await
+                    .map_err(|err| mcp_tool_error_to_error_data(&err))?;
+                tools.extend(
+                    host_tools
+                        .into_iter()
+                        .filter(|tool| host_tool_allowed_for_auth(caller, tool))
+                        .filter_map(host_tool_metadata),
+                );
+            }
+            Ok(ListToolsResult::with_all_items(tools)
+                .with_ttl_ms(LIST_TTL_MS)
+                .with_cache_scope(LIST_CACHE_SCOPE))
+        }
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -370,7 +421,7 @@ impl ServerHandler for DynamicHandler {
                 .with_raw_output_schema(Arc::new(rmcp::model::object(
                     mcp_wire_output_schema(&descriptor.output_schema),
                 )));
-                match annotations_for_auth(None, descriptor) {
+                match annotations_for_auth(Caller::new(None), descriptor) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -409,34 +460,46 @@ impl ServerHandler for DynamicHandler {
         async move {
             let request_services = request_services?;
             let request_name = request.name.to_string();
-            let canonical_name =
-                canonical_tool_name(&server, &request_name).unwrap_or_else(|| request_name.clone());
             let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
-            let recording = server
-                .records_calls()
-                .then(|| served_tool_name(&server, auth.as_ref(), &request_name))
-                .flatten()
-                .map(|tool| CallRecording::start(tool, &args));
             let error_auth = auth.clone();
-            let call =
-                server.call_tool_in_request(&canonical_name, args, author, auth, request_services);
-            let outcome = with_progress_heartbeat(call, heartbeat)
-                .await
+            // The name resolves once: the catalog a host tool is found in is
+            // listed once per call, and the record carries the name it found.
+            let call = async {
+                let Some(auth) = auth else {
+                    let name = canonical_tool_name(&server, &request_name)
+                        .unwrap_or_else(|| request_name.clone());
+                    return (None, Err(ToolInvocationError::NotAuthorized(name)));
+                };
+                let target = match server.resolve_tool(&auth, &request_name).await {
+                    Ok(target) => target,
+                    Err(err) => return (None, Err(err)),
+                };
+                let recording = server
+                    .records_calls()
+                    .then(|| CallRecording::start(target.name().to_owned(), &args));
+                let reply = server
+                    .call_resolved(target, args, author, auth, request_services)
+                    .await;
+                (recording, reply)
+            };
+            let (recording, reply) = with_progress_heartbeat(call, heartbeat).await;
+            let outcome = reply
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
                 })
-                .and_then(|output| structured_tool_output(&canonical_name, output));
+                .and_then(|reply| wire_reply(&request_name, reply));
             if let Some(recording) = recording {
-                recording.finish(&server, error_auth.as_ref(), &outcome);
+                let recorded = match &outcome {
+                    Ok((_, recorded)) => *recorded,
+                    Err(err) => Recorded::Refused(err.code.0),
+                };
+                recording.finish(&server, error_auth.as_ref(), recorded);
             }
-            let (output, text) = outcome?;
-            let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
-            result.structured_content = Some(output);
-            Ok(result.into())
+            Ok(outcome?.0.into())
         }
     }
 }
@@ -518,7 +581,9 @@ fn not_authorized_message(
                 .iter()
                 .map(|spec| spec.action)
                 .chain(descriptor.argv_action_specs.iter().map(|spec| spec.action))
-                .filter(|action| action_allowed_for_auth(Some(auth), descriptor, action))
+                .filter(|action| {
+                    action_allowed_for_auth(Caller::new(Some(auth)), descriptor, action)
+                })
                 .collect()
         })
     });
@@ -604,6 +669,85 @@ fn structured_tool_output(
     Ok((output, text))
 }
 
+/// What a call record keeps of how a call ended: its shape, never its
+/// content.
+#[derive(Clone, Copy)]
+enum Recorded {
+    /// The tool answered; the reply's size in bytes.
+    Replied(u64),
+    /// The tool ran and answered [`ToolReply::Failure`].
+    ToolFailure,
+    /// The call was refused or failed with this JSON-RPC code.
+    Refused(i32),
+}
+
+/// A tool's reply as the wire carries it, with the shape a call record keeps.
+///
+/// `Structured` is `structuredContent` plus its text rendering; `Content` is
+/// content blocks alone; `Failure` is content blocks with `isError`.
+fn wire_reply(tool: &str, reply: ToolReply) -> Result<(CallToolResult, Recorded), ErrorData> {
+    match reply {
+        ToolReply::Structured(output) => {
+            let (output, text) = structured_tool_output(tool, output)?;
+            let recorded = Recorded::Replied(text.len() as u64);
+            let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+            result.structured_content = Some(output);
+            Ok((result, recorded))
+        }
+        ToolReply::Content(content) => {
+            let blocks: Vec<ContentBlock> = content.into_iter().map(content_block).collect();
+            let size = serde_json::to_vec(&blocks).map_or(0, |bytes| bytes.len() as u64);
+            Ok((CallToolResult::success(blocks), Recorded::Replied(size)))
+        }
+        ToolReply::Failure(content) => Ok((
+            CallToolResult::error(content.into_iter().map(content_block).collect()),
+            Recorded::ToolFailure,
+        )),
+    }
+}
+
+/// The MCP content block of the same name. Matched variant by variant, so a
+/// new [`ToolContent`] shape cannot ship without its wire form.
+fn content_block(content: ToolContent) -> ContentBlock {
+    match content {
+        ToolContent::Text(text) => ContentBlock::text(text),
+        ToolContent::Image { data, mime_type } => ContentBlock::image(data, mime_type),
+        ToolContent::Audio { data, mime_type } => ContentBlock::audio(data, mime_type),
+        ToolContent::ResourceLink {
+            uri,
+            name,
+            description,
+            mime_type,
+        } => {
+            let mut link = Resource::new(uri, name);
+            if let Some(description) = description {
+                link = link.with_description(description);
+            }
+            if let Some(mime_type) = mime_type {
+                link = link.with_mime_type(mime_type);
+            }
+            ContentBlock::resource_link(link)
+        }
+        ToolContent::TextResource {
+            uri,
+            mime_type,
+            text,
+        } => ContentBlock::resource(with_mime_type(ResourceContents::text(text, uri), mime_type)),
+        ToolContent::BlobResource {
+            uri,
+            mime_type,
+            blob,
+        } => ContentBlock::resource(with_mime_type(ResourceContents::blob(blob, uri), mime_type)),
+    }
+}
+
+fn with_mime_type(contents: ResourceContents, mime_type: Option<String>) -> ResourceContents {
+    match mime_type {
+        Some(mime_type) => contents.with_mime_type(mime_type),
+        None => contents,
+    }
+}
+
 /// A dispatcher's `inputSchema` over the actions a `Palette` scope permits,
 /// so `tools/list` never advertises an action the caller cannot invoke.
 /// `All` (or absent) scopes and flat tools get the full schema.
@@ -622,11 +766,12 @@ pub(crate) fn project_dispatcher_actions(
 /// leaves — their fields, their prose — without being shown write leaves it
 /// cannot invoke.
 pub(crate) fn project_dispatcher_actions_for_auth(
+    caller: Caller<'_>,
     descriptor: &McpToolDescriptor,
-    auth: Option<&McpAuthContext>,
 ) -> serde_json::Value {
-    descriptor
-        .input_schema(|action| auth.is_none() || action_allowed_for_auth(auth, descriptor, action))
+    descriptor.input_schema(|action| {
+        caller.auth.is_none() || action_allowed_for_auth(caller, descriptor, action)
+    })
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
@@ -792,16 +937,59 @@ fn scope_allows(scope: Option<&ToolScope>, descriptor: &McpToolDescriptor) -> bo
     }
 }
 
+/// Who a projection is for, and whether request behaviors may narrow it.
+///
+/// A listing (`tools/list`, the REST catalog, the `OpenAPI` document, the
+/// instructions) is built with [`Self::listing`] and also asks every request
+/// behavior's `visible`. The call path is built with [`Self::new`] and never
+/// does: there a behavior's `handle` decides, with the call in hand.
+#[derive(Clone, Copy)]
+pub(crate) struct Caller<'a> {
+    auth: Option<&'a McpAuthContext>,
+    behaviors: Option<&'a McpToolCtx>,
+}
+
+impl<'a> Caller<'a> {
+    /// Palette and owner role only.
+    pub(crate) const fn new(auth: Option<&'a McpAuthContext>) -> Self {
+        Self {
+            auth,
+            behaviors: None,
+        }
+    }
+
+    /// Palette, owner role and every request behavior's `visible`, judged
+    /// with `ctx` (see [`McpToolCtx::behaviors_show`]). `ctx` is `None` only
+    /// without an authenticated caller, which nothing is listed to outside
+    /// tests.
+    pub(crate) const fn listing(
+        auth: Option<&'a McpAuthContext>,
+        ctx: Option<&'a McpToolCtx>,
+    ) -> Self {
+        Self {
+            auth,
+            behaviors: ctx,
+        }
+    }
+
+    #[cfg(feature = "rest")]
+    pub(crate) const fn auth(&self) -> Option<&'a McpAuthContext> {
+        self.auth
+    }
+
+    fn behaviors_show(&self, tool: &ToolDescriptorView<'_>) -> bool {
+        self.behaviors.is_none_or(|ctx| ctx.behaviors_show(tool))
+    }
+}
+
 /// Whether this caller may see `descriptor` at all.
 ///
-/// A dispatcher is visible when at least one of its actions is both in scope
-/// and permitted by the caller's owner role. This keeps a mixed flavor
-/// dispatcher useful to a viewer without advertising its writes.
-pub(crate) fn tool_allowed_for_auth(
-    auth: Option<&McpAuthContext>,
-    descriptor: &McpToolDescriptor,
-) -> bool {
-    let scope = auth.map(|ctx| ctx.authz.tool_scope());
+/// A dispatcher is visible when at least one of its actions is in scope,
+/// permitted by the caller's owner role, and (in a listing) shown by every
+/// request behavior. This keeps a mixed flavor dispatcher useful to a viewer
+/// without advertising its writes.
+pub(crate) fn tool_allowed_for_auth(caller: Caller<'_>, descriptor: &McpToolDescriptor) -> bool {
+    let scope = caller.auth.map(|ctx| ctx.authz.tool_scope());
     if !scope_allows(scope, descriptor) {
         return false;
     }
@@ -809,29 +997,34 @@ pub(crate) fn tool_allowed_for_auth(
         descriptor
             .action_arg_specs
             .iter()
-            .any(|spec| action_allowed_for_auth(auth, descriptor, spec.action))
+            .any(|spec| action_allowed_for_auth(caller, descriptor, spec.action))
     } else if !descriptor.argv_action_specs.is_empty() {
         descriptor
             .argv_action_specs
             .iter()
-            .any(|spec| action_allowed_for_auth(auth, descriptor, spec.action))
+            .any(|spec| action_allowed_for_auth(caller, descriptor, spec.action))
     } else {
-        owner_role_allows(auth, descriptor.is_read_only())
+        owner_role_allows(caller.auth, descriptor.is_read_only())
+            && caller.behaviors_show(&ToolDescriptorView::registry(descriptor, None))
     }
 }
 
-/// Whether one dispatcher action is both in scope and owner-role authorized.
+/// Whether one dispatcher action is in scope, owner-role authorized and (in
+/// a listing) shown by every request behavior.
 pub(crate) fn action_allowed_for_auth(
-    auth: Option<&McpAuthContext>,
+    caller: Caller<'_>,
     descriptor: &McpToolDescriptor,
     action: &str,
 ) -> bool {
-    let scope_allowed = auth
+    let scope_allowed = caller
+        .auth
         .is_none_or(|ctx| scope_permits_action(ctx.authz.tool_scope(), descriptor.name, action));
     // One classification rule for both vocabularies, owned by the
     // descriptor, so this advertisement decision and the owner-role gate
     // `ScopeGateBehavior` runs at call time cannot answer differently.
-    scope_allowed && owner_role_allows(auth, descriptor.action_is_read_only(action))
+    scope_allowed
+        && owner_role_allows(caller.auth, descriptor.action_is_read_only(action))
+        && caller.behaviors_show(&ToolDescriptorView::registry(descriptor, Some(action)))
 }
 
 fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
@@ -850,7 +1043,7 @@ fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
 /// actions, so a caller who sees only a dispatcher's reads is told it reads.
 /// `None` when the caller sees no action at all.
 pub(crate) fn annotations_for_auth(
-    auth: Option<&McpAuthContext>,
+    caller: Caller<'_>,
     descriptor: &McpToolDescriptor,
 ) -> Option<McpToolAnnotations> {
     if descriptor.action_arg_specs.is_empty() && descriptor.argv_action_specs.is_empty() {
@@ -862,7 +1055,7 @@ pub(crate) fn annotations_for_auth(
         descriptor
             .actions()
             .filter(|(action, _)| {
-                auth.is_none() || action_allowed_for_auth(auth, descriptor, action)
+                caller.auth.is_none() || action_allowed_for_auth(caller, descriptor, action)
             })
             .map(|(_, effect)| effect),
     )
@@ -956,55 +1149,69 @@ pub fn strip_call_context_args(args: &mut serde_json::Value) {
 }
 
 /// Whether this caller may see one host tool: its name in the palette (a
-/// host tool is flat) and the owner role its declaration needs.
-fn host_tool_allowed_for_auth(auth: Option<&McpAuthContext>, tool: &McpHostTool) -> bool {
-    let in_scope = auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
+/// host tool is flat), the owner role its declaration needs and, in a
+/// listing, every request behavior's `visible`.
+fn host_tool_allowed_for_auth(caller: Caller<'_>, tool: &McpHostTool) -> bool {
+    let in_scope = caller.auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
         ctx.authz.tool_scope().allows(&tool.name)
     });
-    in_scope && owner_role_allows(auth, tool.effect.is_read_only())
+    in_scope
+        && owner_role_allows(caller.auth, tool.effect.is_read_only())
+        && caller.behaviors_show(&ToolDescriptorView::host(
+            &tool.name,
+            &tool.description,
+            tool.effect,
+        ))
 }
 
 /// A host tool's `tools/list` entry; `None` (and a warning) when its
 /// input schema is not a JSON object or its output schema admits non-objects.
 /// Its output schema goes out as registered tools' do: validation only.
+/// Its hints are [`McpToolAnnotations::host`] of its effect, plus the
+/// `openWorldHint` it set; its `_meta` goes out as given.
 fn host_tool_metadata(mut tool: McpHostTool) -> Option<Tool> {
-    if let Err(error) = normalize_mcp_output_schema(&mut tool.output_schema) {
-        tracing::warn!(tool = %tool.name, error = %error, "host tool output schema must describe JSON objects; not listed");
-        return None;
-    }
-    let (serde_json::Value::Object(args), serde_json::Value::Object(output)) = (
-        tool.args_schema,
-        mcp_wire_output_schema(&tool.output_schema),
-    ) else {
-        tracing::warn!(tool = %tool.name, "host tool schemas must be JSON objects; not listed");
+    let output = match host_wire_output_schema(tool.output_schema.as_mut()) {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(tool = %tool.name, error = %error, "host tool output schema must describe JSON objects; not listed");
+            return None;
+        }
+    };
+    let serde_json::Value::Object(args) = tool.args_schema else {
+        tracing::warn!(tool = %tool.name, "host tool input schema must be a JSON object; not listed");
         return None;
     };
-    Some(
-        Tool::new(
-            Cow::Owned(provider_safe_tool_name(&tool.name)),
-            Cow::Owned(tool.description),
-            Arc::new(args),
-        )
-        .with_raw_output_schema(Arc::new(output))
-        .annotate(to_rmcp_annotations(McpToolAnnotations::host(tool.effect))),
+    let mut listed = Tool::new(
+        Cow::Owned(provider_safe_tool_name(&tool.name)),
+        Cow::Owned(tool.description),
+        Arc::new(args),
     )
+    .annotate(to_rmcp_annotations(McpToolAnnotations {
+        open_world: tool.open_world,
+        ..McpToolAnnotations::host(tool.effect)
+    }));
+    if let Some(output) = output {
+        listed = listed.with_raw_output_schema(Arc::new(output));
+    }
+    if let Some(meta) = tool.meta {
+        listed = listed.with_meta(MetaObject(meta));
+    }
+    Some(listed)
 }
 
-/// The name a call record may carry: a registry tool's canonical name or a
-/// host tool listed for this caller. A name that is neither is caller text
-/// and is never written into the owner's memory.
-fn served_tool_name(
-    server: &McpToolHost,
-    auth: Option<&McpAuthContext>,
-    request_name: &str,
-) -> Option<String> {
-    canonical_tool_name(server, request_name).or_else(|| {
-        server
-            .host_tools_for(auth?)
-            .into_iter()
-            .find(|tool| tool.name == request_name)
-            .map(|tool| tool.name)
-    })
+/// The wire form of a host tool's output schema: `None` for a tool that
+/// declares none, the reason for one that does not describe JSON objects.
+fn host_wire_output_schema(
+    schema: Option<&mut serde_json::Value>,
+) -> Result<Option<JsonObject>, String> {
+    let Some(schema) = schema else {
+        return Ok(None);
+    };
+    normalize_mcp_output_schema(schema)?;
+    match mcp_wire_output_schema(schema) {
+        serde_json::Value::Object(wire) => Ok(Some(wire)),
+        _ => Err("MCP output schema must be a JSON object".to_owned()),
+    }
 }
 
 /// One `tools/call` being recorded ([`McpToolHost::with_call_recording`]).
@@ -1027,14 +1234,10 @@ impl CallRecording {
 
     /// Write the record off the request path: a client that disconnects
     /// does not cancel it, and a failed write never fails the call. Every
-    /// field is server-derived: a failure is its JSON-RPC code, never the
-    /// message, which can echo arguments.
-    fn finish(
-        self,
-        server: &McpToolHost,
-        auth: Option<&McpAuthContext>,
-        outcome: &Result<(serde_json::Value, String), ErrorData>,
-    ) {
+    /// field is server-derived: a failure is its JSON-RPC code, or the fixed
+    /// "tool failure" of a [`ToolReply::Failure`], never a message or content
+    /// block, which can echo arguments.
+    fn finish(self, server: &McpToolHost, auth: Option<&McpAuthContext>, outcome: Recorded) {
         let (Some(engine), Some(auth)) = (server.engine(), auth) else {
             return;
         };
@@ -1043,8 +1246,9 @@ impl CallRecording {
             return;
         };
         let (ok, error, response_bytes) = match outcome {
-            Ok((_, text)) => (true, None, text.len() as u64),
-            Err(err) => (false, Some(format!("jsonrpc {}", err.code.0)), 0),
+            Recorded::Replied(bytes) => (true, None, bytes),
+            Recorded::ToolFailure => (false, Some("tool failure".to_owned()), 0),
+            Recorded::Refused(code) => (false, Some(format!("jsonrpc {code}")), 0),
         };
         let input = proxima_core::McpCallLogInput {
             owner: auth.owner,
@@ -1687,19 +1891,19 @@ mod tests {
             .expect("core search is registered");
 
         assert!(
-            tool_allowed_for_auth(Some(&viewer), &read),
+            tool_allowed_for_auth(Caller::new(Some(&viewer)), &read),
             "a flavor tool that declares read_only must be visible to a viewer"
         );
         assert!(
-            !tool_allowed_for_auth(Some(&viewer), &write),
+            !tool_allowed_for_auth(Caller::new(Some(&viewer)), &write),
             "a flavor write tool must stay hidden from a viewer"
         );
         assert!(
-            !tool_allowed_for_auth(Some(&viewer), &silent_core),
+            !tool_allowed_for_auth(Caller::new(Some(&viewer)), &silent_core),
             "a name is not a declaration"
         );
         assert!(
-            tool_allowed_for_auth(Some(&viewer), core_read),
+            tool_allowed_for_auth(Caller::new(Some(&viewer)), core_read),
             "core search declares its own read effect"
         );
     }
@@ -1722,7 +1926,10 @@ mod tests {
         };
 
         assert!(descriptor.action_arg_specs.is_empty());
-        assert!(!tool_allowed_for_auth(Some(&auth), &descriptor));
+        assert!(!tool_allowed_for_auth(
+            Caller::new(Some(&auth)),
+            &descriptor
+        ));
     }
 
     #[test]
@@ -1760,16 +1967,17 @@ mod tests {
             ..flavor_descriptor("proxima-stub_dispatch", Some(ToolEffect::ReadOnly))
         };
         assert!(
-            tool_allowed_for_auth(Some(&viewer), &mixed),
+            tool_allowed_for_auth(Caller::new(Some(&viewer)), &mixed),
             "the read action keeps a mixed dispatcher visible"
         );
-        let viewer_schema = project_dispatcher_actions_for_auth(&mixed, Some(&viewer));
+        let viewer_schema = project_dispatcher_actions_for_auth(Caller::new(Some(&viewer)), &mixed);
         assert_eq!(
             viewer_schema["properties"]["action"]["enum"],
             serde_json::json!(["look"]),
         );
         assert_eq!(
-            annotations_for_auth(Some(&viewer), &mixed).and_then(|value| value.read_only),
+            annotations_for_auth(Caller::new(Some(&viewer)), &mixed)
+                .and_then(|value| value.read_only),
             Some(true),
         );
 
@@ -1783,11 +1991,13 @@ mod tests {
             .with_tool_scope(ToolScope::All),
         };
         assert_eq!(
-            project_dispatcher_actions_for_auth(&mixed, Some(&writer))["properties"]["action"]["enum"],
+            project_dispatcher_actions_for_auth(Caller::new(Some(&writer)), &mixed)["properties"]["action"]
+                ["enum"],
             serde_json::json!(["look", "touch"]),
         );
         assert_eq!(
-            annotations_for_auth(Some(&writer), &mixed).and_then(|value| value.read_only),
+            annotations_for_auth(Caller::new(Some(&writer)), &mixed)
+                .and_then(|value| value.read_only),
             Some(false),
             "a mixed dispatcher is conservatively a write when both actions are visible",
         );
@@ -1813,7 +2023,7 @@ mod tests {
                 AuthPath::HostBearer,
             ),
         };
-        let projected = project_dispatcher_actions_for_auth(descriptor, Some(&viewer));
+        let projected = project_dispatcher_actions_for_auth(Caller::new(Some(&viewer)), descriptor);
         assert_eq!(
             projected["properties"]["action"]["enum"],
             serde_json::json!(["list_members"])
@@ -1876,19 +2086,20 @@ mod tests {
         };
 
         assert!(
-            action_allowed_for_auth(Some(&viewer), &cli, "approval"),
+            action_allowed_for_auth(Caller::new(Some(&viewer)), &cli, "approval"),
             "an argv command that declares read_only must stay callable by a viewer"
         );
         assert!(
-            !action_allowed_for_auth(Some(&viewer), &cli, "approval-decide"),
+            !action_allowed_for_auth(Caller::new(Some(&viewer)), &cli, "approval-decide"),
             "an argv command that declares nothing classifies from the tool, which writes"
         );
         assert!(
-            tool_allowed_for_auth(Some(&viewer), &cli),
+            tool_allowed_for_auth(Caller::new(Some(&viewer)), &cli),
             "the read command keeps the dispatcher visible"
         );
         assert_eq!(
-            annotations_for_auth(Some(&viewer), &cli).and_then(|value| value.read_only),
+            annotations_for_auth(Caller::new(Some(&viewer)), &cli)
+                .and_then(|value| value.read_only),
             Some(true),
             "only the read command is visible to a viewer",
         );
@@ -1903,7 +2114,8 @@ mod tests {
             .with_tool_scope(ToolScope::All),
         };
         assert_eq!(
-            annotations_for_auth(Some(&writer), &cli).and_then(|value| value.read_only),
+            annotations_for_auth(Caller::new(Some(&writer)), &cli)
+                .and_then(|value| value.read_only),
             Some(false),
             "a mixed argv dispatcher is conservatively a write when both commands are visible",
         );
