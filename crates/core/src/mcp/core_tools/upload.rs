@@ -14,7 +14,6 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use time::format_description::well_known::Rfc3339;
 
 use crate::error::ProtocolError;
 use crate::mcp::{
@@ -133,7 +132,9 @@ pub struct UploadHeaderOutput {
 pub struct UploadPrepareOutput {
     pub upload_id: String,
     pub upload_url: String,
-    pub expires_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "String")]
+    pub expires_at: time::OffsetDateTime,
     pub headers: Vec<UploadHeaderOutput>,
 }
 
@@ -164,7 +165,9 @@ pub struct UploadAbortOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadReadUrlOutput {
     pub read_url: String,
-    pub expires_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "String")]
+    pub expires_at: time::OffsetDateTime,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -239,7 +242,7 @@ impl McpTool for CoreUploadTool {
                     Ok(CoreUploadOutput::Prepare(UploadPrepareOutput {
                         upload_id: outcome.upload_id,
                         upload_url: outcome.upload_url,
-                        expires_at: format_expiry(outcome.expires_at)?,
+                        expires_at: outcome.expires_at,
                         headers: outcome
                             .headers
                             .into_iter()
@@ -299,7 +302,7 @@ impl McpTool for CoreUploadTool {
                     let outcome = service.read_url(&authz, owner, cited_object_id).await?;
                     Ok(CoreUploadOutput::ReadUrl(UploadReadUrlOutput {
                         read_url: outcome.read_url,
-                        expires_at: format_expiry(outcome.expires_at)?,
+                        expires_at: outcome.expires_at,
                     }))
                 }
             }
@@ -357,12 +360,6 @@ fn blob_service(ctx: &McpToolCtx) -> Result<Arc<CitedBlobService>, McpToolError>
                 .into(),
         )
     })
-}
-
-fn format_expiry(value: time::OffsetDateTime) -> Result<String, McpToolError> {
-    value
-        .format(&Rfc3339)
-        .map_err(|err| McpToolError::Other(format!("format expiry timestamp: {err}")))
 }
 
 #[cfg(test)]
