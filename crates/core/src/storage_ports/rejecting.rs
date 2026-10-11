@@ -156,6 +156,16 @@ impl MemoryReadPort for RejectingStorage {
         })
     }
 
+    async fn count_memories(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerRef],
+    ) -> Result<crate::read_models::MemoryCounts, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects memory counts".into(),
+        ))
+    }
+
     async fn search_memories(
         &self,
         _scope: Option<&crate::OwnerScope>,

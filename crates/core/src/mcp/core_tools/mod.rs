@@ -19,6 +19,7 @@ pub mod list_substrate_tools;
 pub mod list_wake_candidates;
 pub mod membership;
 pub mod memory;
+pub mod memory_counts;
 pub mod memory_spaces;
 pub mod transfer;
 pub mod upload;

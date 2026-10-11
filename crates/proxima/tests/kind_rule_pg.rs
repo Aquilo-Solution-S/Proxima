@@ -547,6 +547,20 @@ async fn assert_reads(
         readable(EntityKind::Goal),
         "{name} goal read"
     );
+
+    // Counts follow the one rule: a kind the role cannot read counts zero,
+    // the others count what an admin of the same group counts.
+    let mut everything = engine.memory_counts(&context(group, Role::admin())).await?;
+    let mut counted = engine.memory_counts(&authz).await?;
+    for kind in KINDS {
+        assert!(*everything.slot(kind) > 0, "{name} the seed holds {kind:?}");
+        let expected = if readable(kind) {
+            *everything.slot(kind)
+        } else {
+            0
+        };
+        assert_eq!(*counted.slot(kind), expected, "{name} counts {kind:?}");
+    }
     Ok(())
 }
 

@@ -3,8 +3,8 @@ use crate::authz::AuthzContext;
 use crate::edge::Edge;
 use crate::error::ProtocolError;
 use crate::read_models::{
-    ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySchemaSpec,
-    MemorySnapshot,
+    ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemoryCounts,
+    MemorySchemaSpec, MemorySnapshot,
 };
 use crate::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
@@ -217,6 +217,24 @@ impl Engine {
             .load_sketches(authz.owner_scope(), &read_owners, memory_ids)
             .await
             .map_err(|err| storage_error("load_sketches", &err))
+    }
+
+    /// How many current memories the caller can read, by kind: one per
+    /// series head and one per Goal. Scoped to the same read set as
+    /// [`Engine::query`]; storage narrows it per kind.
+    ///
+    /// # Errors
+    ///
+    /// `Forbidden` when the context authorizes no reads (a denied context
+    /// authorizes nothing); `Internal` on storage.
+    pub async fn memory_counts(&self, authz: &AuthzContext) -> Result<MemoryCounts, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        self.storage
+            .read_verb
+            .memory_read
+            .count_memories(authz.owner_scope(), &read_owners)
+            .await
+            .map_err(|err| storage_error("count_memories", &err))
     }
 
     /// Owner-scoped pin carriers for the given `t`s. Missing/unreadable

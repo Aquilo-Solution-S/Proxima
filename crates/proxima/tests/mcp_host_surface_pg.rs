@@ -620,6 +620,128 @@ async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catal
     Ok(())
 }
 
+/// `resources/read` of `uri`: the JSON the single content block carries.
+async fn read_resource(
+    client: &reqwest::Client,
+    base: &str,
+    subject: UserId,
+    session: &str,
+    uri: &str,
+) -> TestResult<Value> {
+    let reply = rpc(
+        client,
+        base,
+        subject,
+        session,
+        json!({"jsonrpc": "2.0", "id": 9, "method": "resources/read", "params": {"uri": uri}}),
+    )
+    .await?;
+    let content = &reply["result"]["contents"][0];
+    assert_eq!(content["uri"], json!(uri), "{reply}");
+    assert_eq!(content["mimeType"], json!("application/json"), "{reply}");
+    let text = content["text"].as_str().ok_or("no text content")?;
+    Ok(serde_json::from_str(text)?)
+}
+
+/// `proxima://memories/counts` is listed, answers all four kinds as one JSON
+/// object over `/mcp`, and a resource read leaves no `mcp_call_logged_v1`
+/// row, while a recorded tool call does (so the silence is the resource's,
+/// not recording being off).
+#[tokio::test]
+async fn the_memory_counts_resource_is_read_over_mcp_and_leaves_no_call_record() -> TestResult {
+    const URI: &str = "proxima://memories/counts";
+    let db = SplitRoleDb::create("proxima_memory_counts", &[]).await?;
+    let subject = UserId::new(Uuid::now_v7());
+    let owner = OwnerRef::Personal(subject);
+    let running = app(&db)
+        .authenticator(Arc::new(StubAuth { subject }))
+        .record_mcp_calls(true)
+        .run()
+        .await?;
+    let engine = running.host().engine();
+    let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
+    let client = reqwest::Client::new();
+    let session = open_session(&client, &base, subject).await?;
+
+    let listed = rpc(
+        &client,
+        &base,
+        subject,
+        &session,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}}),
+    )
+    .await?;
+    let resources = listed["result"]["resources"]
+        .as_array()
+        .ok_or("no resources")?;
+    assert!(
+        resources.iter().any(|resource| resource["uri"] == URI),
+        "{listed}"
+    );
+
+    let empty = read_resource(&client, &base, subject, &session, URI).await?;
+    assert_eq!(
+        empty,
+        json!({"counts": {"Fact": 0, "Abstraction": 0, "Perspective": 0, "Goal": 0}}),
+        "a caller with no memories gets every kind, at zero"
+    );
+
+    let writer = proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
+        subject,
+        AuthPath::HostBearer,
+    ));
+    engine
+        .ingest_fact(
+            &writer,
+            proxima::FactWrite::new(
+                owner,
+                "test/memory-counts",
+                &proxima_core::AgentNoteV1 {
+                    note_id: Uuid::now_v7(),
+                    title: "one current fact".to_owned(),
+                    body: "counted once".to_owned(),
+                    tags: Vec::new(),
+                    idempotency_key: None,
+                },
+            ),
+        )
+        .await?;
+    let one = read_resource(&client, &base, subject, &session, URI).await?;
+    assert_eq!(
+        one,
+        json!({"counts": {"Fact": 1, "Abstraction": 0, "Perspective": 0, "Goal": 0}})
+    );
+
+    // Recording runs off the request path: a late row would land by now.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        recorded_calls(engine, subject, 0).await?.is_empty(),
+        "reading a resource wrote a call record"
+    );
+
+    // A recorded tool call lands a row, and its ledger Fact is a current Fact.
+    let called = rpc(
+        &client,
+        &base,
+        subject,
+        &session,
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": HOST_TOOL, "arguments": {}}}),
+    )
+    .await?;
+    assert!(called["result"].is_object(), "{called}");
+    assert_eq!(recorded_calls(engine, subject, 1).await?.len(), 1);
+    let after = read_resource(&client, &base, subject, &session, URI).await?;
+    assert_eq!(after["counts"]["Fact"], json!(2), "{after}");
+    assert_eq!(
+        after["counts"].as_object().map(serde_json::Map::len),
+        Some(4)
+    );
+
+    running.shutdown().await;
+    Ok(())
+}
+
 const SLEEP_TOOL: &str = "host_sleep";
 
 /// Sleeps `ms`, then answers — a tool call that sends nothing while it runs.

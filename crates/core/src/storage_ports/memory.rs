@@ -15,7 +15,7 @@ pub struct InboundPinQuery<'a> {
 }
 
 use crate::edge::{EdgeKind, PinNode};
-use crate::read_models::{MemorySchemaSpec, MemorySnapshot};
+use crate::read_models::{MemoryCounts, MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
     MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
@@ -145,6 +145,21 @@ pub trait MemoryReadPort: Send + Sync {
         req: &crate::verbs::query::QueryRequest,
         schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
+
+    /// Count the current memories `read_owners` holds, by kind: one per
+    /// series head (`memory_head`) for the three memory kinds and one per
+    /// Goal (`goal_head`) in any state. A stateful series counts once
+    /// however many versions it has; a forgotten memory has left the heads
+    /// and is not counted. `read_owners` and the backend's per-kind read
+    /// scope narrow the count exactly as they narrow `query_memories`.
+    ///
+    /// A stored kind the backend cannot parse is an error, never a skipped
+    /// or defaulted row.
+    async fn count_memories(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        read_owners: &[OwnerRef],
+    ) -> Result<MemoryCounts, StorageError>;
 
     async fn search_memories(
         &self,

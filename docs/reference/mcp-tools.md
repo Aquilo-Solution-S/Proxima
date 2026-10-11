@@ -16,7 +16,7 @@ binary/profile.
 | citations | `core_fact` actions `citation_of_fact`, `facts_citing_object` | a Fact's 0..1 cited object (`memory.blob_id`); read-back is its id and schema id |
 | membership | `core_membership` | group roster only: `add_member`, `remove_member`, `list_members` |
 | transfer | `core_transfer` | memory owner transfer via `transfer_to_owner`; requires `entity` plus a `to_owner` group key, admin on both sides; not ACL/share; goals do not transfer |
-| memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; lineage paginates by cursor and reports `has_more` |
+| memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memories/counts`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; counts are current memories by kind (`Fact`, `Abstraction`, `Perspective`, `Goal`; zero when none), one per series head or goal, not per version; lineage paginates by cursor and reports `has_more` |
 | goal reads | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | keyset pagination |
 | pin walks | lineage / neighbor expansion | `origins` / `refs` on `memory` |
 | graph | `proxima://graph` | owner-scoped health: schema registry, embedding backlog, `embeddings_client_configured` |

@@ -1,5 +1,16 @@
 # Migrate the Flavor SDK
 
+## v0.0.27
+
+Pin all Proxima Rust dependencies to the same `v0.0.27` tag. No migration.
+**Breaking, no shims** (#435): `MemoryReadPort` gained a required method, so a
+host or test double that implements it stops compiling until it adds the method.
+
+| Removed / changed | Upgrade |
+|---|---|
+| `impl MemoryReadPort for T` | Add `async fn count_memories(&self, owner_scope: Option<&OwnerScope>, read_owners: &[OwnerRef]) -> Result<MemoryCounts, StorageError>`: current memories by kind over the owners the caller reads, one per series head and one per Goal head. Fill the count with `MemoryCounts::slot(kind)`; a stored kind that is not one of the four is `StorageError::Internal`, never skipped. A fake that holds no memories returns `Ok(MemoryCounts::default())` |
+| New | Resource `proxima://memories/counts` (`resource:memory-counts` scope key, REST `GET /v1/resources/memories/counts`), answering `{"counts": {"Fact", "Abstraction", "Perspective", "Goal"}}` with all four keys always present ([14 §Core Memory MCP Surface](../14-protocol-surface.md#core-memory-mcp-surface)). A palette that lists resources by key adds `ScopeKey::Resource(ResourceKey::parse("memory-counts")?)` to expose it. `Engine::memory_counts(&AuthzContext) -> Result<MemoryCounts, ProtocolError>` and `MemoryCounts` are exported from `proxima::host` |
+
 ## v0.0.26
 
 Pin all Proxima Rust dependencies to the same `v0.0.26` tag. Boot applies one

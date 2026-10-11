@@ -86,6 +86,7 @@ parser.
 | `GET /v1/resources/graph` | `proxima://graph` |
 | `GET /v1/resources/memory/F:{uuid}?expand_neighbors=true` | `proxima://memory/F:{uuid}?expand_neighbors=true` |
 | `GET /v1/resources/memories?ids=F:{a},A:{b}` | `proxima://memories?ids=F:{a},A:{b}` |
+| `GET /v1/resources/memories/counts` | `proxima://memories/counts` |
 | `GET /v1/resources/memory/{id}/lineage?direction=ancestors&depth=3` | `proxima://memory/{id}/lineage?...` |
 | `GET /v1/resources/change-events?since={seq}&limit=100` | `proxima://change-events?since={seq}&limit=100` |
 | `GET /v1/resources/wake-candidates?fact=F:{uuid}` | `proxima://wake-candidates?fact=F:{uuid}` |

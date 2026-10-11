@@ -5,6 +5,7 @@ mod citations;
 mod code_chunk_calls;
 mod code_chunk_vectors;
 mod code_series_heads;
+mod counts;
 mod edges;
 mod embedding_candidates;
 mod goals;
@@ -30,6 +31,7 @@ pub use code_series_heads::{
     owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
+pub(crate) use counts::count_memories_on_connection;
 pub use edges::MAX_SNAPSHOT_EDGES;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use edges::inbound_pin_sql_for_tests;
