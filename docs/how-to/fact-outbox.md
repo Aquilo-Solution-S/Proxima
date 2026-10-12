@@ -118,6 +118,52 @@ abandon and achieve. Without an intake no change Fact is written.
 
 Contract and payload: [18 §Goal changes on the feed](../18-fact-outbox.md#goal-changes-on-the-feed).
 
+## 7. Record who set a goal
+
+Proxima keeps no per-write author. The host's ledger records it, from the same intake:
+bind the actor in the `Authenticator`, then read it back in `accept`.
+
+```rust
+use proxima::{AuthError, Authenticator, AuthzContext, Credentials, PublicationExtensions};
+
+#[async_trait::async_trait]
+impl Authenticator for HostAuth {
+    async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+        let (ctx, subject) = self.verify(creds).await?;   // your verifier: the context and the caller's id (String)
+        let bound = PublicationExtensions::new()
+            .with("actor", subject)                       // name: [a-z0-9], at most 20 characters
+            .map_err(|_| AuthError::InvalidCredentials)?; // a value the feed cannot carry: log it, refuse the caller
+        ctx.with_publication_extensions(bound)
+            .map_err(|_| AuthError::InvalidCredentials)
+    }
+}
+```
+
+In `accept`, record the goal changes beside whatever else the intake keeps:
+
+```rust
+let envelope = &event.envelope;
+if envelope.event_type == "core/goal-change-v1" {
+    let actor = envelope.extensions.get("actor").and_then(|value| value.as_str());
+    let data = &envelope.data;
+    // Insert-or-ignore on `event.id`; commit before returning.
+    self.record(&event.id, event.owner, actor,
+                &data["series"], &data["goal"], &data["revision"], &data["change"]["kind"])
+        .await
+        .map_err(|error| IntakeError::new(error.to_string()))?;
+}
+```
+
+- `actor` is `None` for a write with no bound actor: a `for_system` context
+  the host bound nothing to, and a redeemed delegated phase, which rebuilds
+  without host-bound attributes. Attribute those from your own records.
+- The attribute rides on every Fact that context captures, not only goal
+  changes. The row holds personal data, so your erase must reach it.
+- Replay and reordering: a replayed write adds no row, so the first writer keeps
+  the write; order rows by `revision` per `series`, not by arrival.
+
+Contract: [18 §Who wrote what](../18-fact-outbox.md#who-wrote-what).
+
 ## Signal → action
 
 | Signal | Meaning | Action |

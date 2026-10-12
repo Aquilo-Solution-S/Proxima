@@ -110,7 +110,9 @@ checked.
 A read also returns `set_at`, the time of the series' first version, and
 `changed_at`, the time of the version read; a first version has
 `set_at == changed_at`. Both come from the UUIDv7 `t`, not from a column.
-`set_by` and per-version authors are not part of the row.
+`set_by` and per-version authors are not part of the row; a host that needs
+them records them from the goal-change feed
+([18 §Who wrote what](18-fact-outbox.md#who-wrote-what)).
 
 <a id="goal-write-api"></a>
 
