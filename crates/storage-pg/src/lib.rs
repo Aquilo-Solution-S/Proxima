@@ -2595,7 +2595,7 @@ mod tests {
              0021_v027_query_stopwords.sql, 0022_v028_coarse_pin_lock.sql, \
              0023_v029_kind_scoped_owner_rls.sql, \
              0024_v030_owner_rls_table_installer.sql and \
-             0025_v031_goal_text.sql"
+             0025_v031_goal_text_outbox_receipt.sql"
         );
     }
 

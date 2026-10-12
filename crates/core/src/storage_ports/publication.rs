@@ -4,7 +4,7 @@
 //! engine never holds it, `ToolCtx`, `WriteSession` and `UnitOfWork` never
 //! see it, and no flavor-facing facade exposes it. The storage BACKEND type
 //! implements it and the host runtime holds that handle, which is the only
-//! shape in which "claim other owners' rows and ship them to a broker" is a
+//! shape in which "claim other owners' rows and hand them to the host's intake" is a
 //! legitimate operation: a publisher is infrastructure, not a caller.
 //!
 //! [`PublicationOutboxPort`] has no delete or purge method, and never
@@ -131,10 +131,11 @@ pub enum PublisherIdError {
 /// was never in this database at all, so a cleaner pointed at a stream some
 /// other installation published to would read every message as revoked.
 ///
-/// A publisher stamps this on the broker message; a cleaner compares it
-/// against the value it read from the same database that answers the
-/// eligibility check. That makes the binding a fact about the data rather
-/// than a deployment precondition an operator is trusted to have met.
+/// A host that forwards the outbox to its own broker stamps this on its
+/// copies; its cleaner compares it against the value it read from the same
+/// database that answers the eligibility check. That makes the binding a fact
+/// about the data rather than a deployment precondition an operator is
+/// trusted to have met.
 ///
 /// It identifies an installation LINEAGE, not a database instance: a
 /// restore or a clone carries the same value, which is why pointing a copy
@@ -189,14 +190,14 @@ impl std::fmt::Display for ClaimToken {
 
 /// One captured event, leased to the claiming publisher.
 ///
-/// `envelope` is the bytes as captured. The publisher ships them unchanged:
-/// it does not reload the Fact, re-render the payload with today's flavor,
-/// or substitute today's installation identity.
+/// `envelope` is the bytes as captured. The publisher hands them over
+/// unchanged: it does not reload the Fact, re-render the payload with
+/// today's flavor, or substitute today's installation identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedPublication {
     /// The Fact's `t`.
     pub id: Uuid,
-    /// `CloudEvents` `id` (`F:<uuid>`), and the broker dedup key.
+    /// `CloudEvents` `id` (`F:<uuid>`), and the key an intake deduplicates on.
     pub event_id: String,
     pub owner_id: Uuid,
     pub owner_kind: OwnerRefKind,
@@ -209,13 +210,6 @@ pub struct ClaimedPublication {
     pub attempts: u32,
     pub claim: ClaimToken,
     pub lease_expires_at: time::OffsetDateTime,
-}
-
-/// What the broker said about one accepted publish.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrokerReceipt {
-    pub stream: String,
-    pub sequence: u64,
 }
 
 /// Outcome of acknowledging a publish.
@@ -261,17 +255,14 @@ pub trait PublicationOutboxPort: Send + Sync {
         lease: Duration,
     ) -> Result<Vec<ClaimedPublication>, StorageError>;
 
-    /// Record a successful broker acknowledgement, fenced on `claim`.
+    /// Record a successful delivery, fenced on `claim`: the record becomes
+    /// `published`, and nothing else moves it there.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the acknowledgement statement.
-    async fn mark_published(
-        &self,
-        id: Uuid,
-        claim: ClaimToken,
-        receipt: &BrokerReceipt,
-    ) -> Result<AckOutcome, StorageError>;
+    async fn mark_published(&self, id: Uuid, claim: ClaimToken)
+    -> Result<AckOutcome, StorageError>;
 
     /// Return a claimed record to `pending`, fenced on `claim`.
     ///
@@ -299,7 +290,7 @@ pub trait PublicationOutboxPort: Send + Sync {
 /// The implementation is bound by the same rule the trait states — only
 /// `published` rows, only ones whose publication is older than the horizon,
 /// never a `pending` or `claimed` row whatever its age. A record still
-/// waiting for a broker is a promise this deployment has not kept yet, and
+/// waiting for its intake is a promise this deployment has not kept yet, and
 /// no retention policy may quietly cancel it.
 #[async_trait::async_trait]
 pub trait PublicationRetentionPort: Send + Sync {

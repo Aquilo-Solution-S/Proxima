@@ -14,7 +14,7 @@ use proxima_core::publication::{
     SealedPublication,
 };
 use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, PublicationOriginEligibility, PublicationOriginEligibilityPort,
+    AckOutcome, PublicationOriginEligibility, PublicationOriginEligibilityPort,
     PublicationOutboxPort, PublicationRetentionPort, PublisherId,
 };
 use proxima_core::storage_ports::{
@@ -839,19 +839,13 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     assert_eq!(second.attempts, 2, "attempts counts claims");
     assert_ne!(second.claim, first.claim);
 
-    let receipt = BrokerReceipt {
-        stream: "probe".into(),
-        sequence: 3,
-    };
     assert_eq!(
-        pg.mark_published(first.id, first.claim, &receipt)
-            .await
-            .expect("ack"),
+        pg.mark_published(first.id, first.claim).await.expect("ack"),
         AckOutcome::StaleClaim,
         "the evicted publisher must not claim another's delivery"
     );
     assert_eq!(
-        pg.mark_published(second.id, second.claim, &receipt)
+        pg.mark_published(second.id, second.claim)
             .await
             .expect("ack"),
         AckOutcome::Published
@@ -865,8 +859,50 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     .expect("count reads");
     assert_eq!(unpublished, 0);
 
+    published_is_exactly_published_at(&pg, &owner, first.id).await;
+
     drop(pg);
     let _ = drop_db(&db).await;
+}
+
+/// Migration 0025: `publication_outbox_published_chk` ties
+/// `state = 'published'` to `published_at` alone, from either side; the mark
+/// that published `published` wrote no broker receipt.
+async fn published_is_exactly_published_at(pg: &PgStorage, owner: &Owner, published: Uuid) {
+    let pool = pg.pool_for_tests();
+    let pending = ingest_listenable(pg, owner, &probe("still pending"), None)
+        .await
+        .expect("capture")
+        .memory_id
+        .into_inner();
+    for (what, refused) in [
+        (
+            "a published record without its publication time",
+            sqlx::query(
+                "UPDATE proxima_core.publication_outbox SET published_at = NULL WHERE t = $1",
+            )
+            .bind(published),
+        ),
+        (
+            "a publication time on a record that is not published",
+            sqlx::query(
+                "UPDATE proxima_core.publication_outbox SET published_at = now() WHERE t = $1",
+            )
+            .bind(pending),
+        ),
+    ] {
+        let error = refused
+            .execute(pool)
+            .await
+            .expect_err("the CHECK refuses the row");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|error| error.constraint()),
+            Some("publication_outbox_published_chk"),
+            "{what}"
+        );
+    }
 }
 
 // ── immutability and erasure ────────────────────────────────────────────
@@ -1753,16 +1789,9 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
         .iter()
         .find(|record| record.id == delivered.memory_id.into_inner())
         .expect("the record was claimed");
-    pg.mark_published(
-        target.id,
-        target.claim,
-        &BrokerReceipt {
-            stream: "probe".into(),
-            sequence: 1,
-        },
-    )
-    .await
-    .expect("ack");
+    pg.mark_published(target.id, target.claim)
+        .await
+        .expect("ack");
     for record in &claimed {
         if record.id != target.id {
             pg.release(record.id, record.claim)
@@ -1847,16 +1876,9 @@ async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs
         .iter()
         .find(|record| record.id == t)
         .expect("the record is claimable");
-    pg.mark_published(
-        record.id,
-        record.claim,
-        &BrokerReceipt {
-            stream: "probe".into(),
-            sequence: 1,
-        },
-    )
-    .await
-    .expect("ack");
+    pg.mark_published(record.id, record.claim)
+        .await
+        .expect("ack");
     // Release every other record this claim swept up, so a later claim in
     // the same test still sees them.
     for other in claimed.iter().filter(|record| record.id != t) {

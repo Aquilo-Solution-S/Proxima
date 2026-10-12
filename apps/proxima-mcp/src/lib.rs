@@ -304,8 +304,9 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         .ok_or_else(|| CliError::Runtime(ProximaError::Mcp("MCP listener disabled".into())))?;
     tracing::info!(addr = %addr, "proxima-mcp listening; POST http://{addr}/mcp");
     // The runtime started every configured feature — the embedding worker
-    // with an embedding client, the Fact-outbox publisher with
-    // `PROXIMA_NATS_URL` — and joins them all on the way out.
+    // with an embedding client — and joins them all on the way out. This
+    // binary hands the runtime no outbox intake, so captured Facts wait in
+    // the outbox for a host that embeds Proxima and supplies one (docs/18).
     running.until_shutdown_signal().await?;
     Ok(())
 }

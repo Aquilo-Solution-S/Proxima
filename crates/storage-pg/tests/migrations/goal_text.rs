@@ -1,4 +1,5 @@
-//! Migration 0025 (`_v031_`) gives every Goal version its prompt text.
+//! Migration 0025 (`_v031_`) gives every Goal version its prompt text, and
+//! relaxes the outbox's published check to `published_at` alone.
 //!
 //! The fixture is a database standing at the released 0024 schema, written the
 //! way the released binary wrote it: Goal rows without a `text` column and the
@@ -404,6 +405,69 @@ async fn an_empty_database_takes_the_migration_and_a_repeat()
             .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(goals, 0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// An outbox record as the upgrade test reads it: `t`, state, whether it has
+/// a `published_at`, its stream receipt and its envelope.
+type OutboxRow = (Uuid, String, bool, Option<String>, Vec<u8>);
+
+/// 0025's outbox half: every record the old published check accepted survives
+/// the upgrade and its repeat. A pending record with a stray `published_at`
+/// (the old check allowed it without a receipt) loses only that time, and a
+/// record the NATS publisher marked keeps its receipt.
+#[tokio::test]
+async fn the_outbox_check_upgrade_keeps_every_record_the_old_check_accepted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let result: TestResult = async {
+        let pg = database_at_0024(&db_name).await?;
+        let pool = pg.pool_for_tests();
+        let owner = seed_owner(pool).await?;
+        let (stray, marked) = (Uuid::now_v7(), Uuid::now_v7());
+        super::insert_legacy_outbox_row(pool, stray, owner).await?;
+        super::insert_legacy_outbox_row(pool, marked, owner).await?;
+        sqlx::query("UPDATE proxima_core.publication_outbox SET published_at = now() WHERE t = $1")
+            .bind(stray)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "UPDATE proxima_core.publication_outbox
+                SET state = 'published', published_at = now(),
+                    published_stream = 'PROXIMA', published_seq = 7
+              WHERE t = $1",
+        )
+        .bind(marked)
+        .execute(pool)
+        .await?;
+
+        super::apply_current_migrations(&pg).await?;
+        super::apply_core_migrations(pool, 25..=25).await?;
+
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT t, state::text, published_at IS NOT NULL, published_stream, envelope
+               FROM proxima_core.publication_outbox
+              ORDER BY state",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![
+                (stray, "pending".to_owned(), false, None, b"{}".to_vec()),
+                (
+                    marked,
+                    "published".to_owned(),
+                    true,
+                    Some("PROXIMA".to_owned()),
+                    b"{}".to_vec()
+                ),
+            ]
+        );
         Ok(())
     }
     .await;

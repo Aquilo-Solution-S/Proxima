@@ -128,8 +128,9 @@ impl ProximaHost {
         self.erase_context.clone()
     }
 
-    /// This installation's minted identity, for a host wiring its own
-    /// publisher or cleaner against another broker.
+    /// This installation's minted identity, for a host that forwards the
+    /// outbox to its own broker: it stamps this on its copies, and its cleaner
+    /// ignores any message that does not carry it (docs/18).
     #[must_use]
     pub const fn origin_scope_for_host(&self) -> OriginScope {
         self.origin_scope

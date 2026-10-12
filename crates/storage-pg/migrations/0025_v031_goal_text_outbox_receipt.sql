@@ -1,4 +1,5 @@
--- v0.0.31: a Goal version stores its prompt text.
+-- v0.0.31: a Goal version stores its prompt text, and a published outbox
+-- record no longer needs a broker receipt (the last section).
 --
 -- `core_goal set` requires a text (the Goal's prompt), but the Goal row only
 -- carried the title: the text lived in the replay declaration, which is request
@@ -23,8 +24,8 @@
 --
 -- Additive and idempotent: ADD COLUMN IF NOT EXISTS skips the column and its
 -- CHECK together on a second run, the backfill only writes rows whose text is
--- still NULL, and the unique constraint and the foreign key are dropped and
--- added again. An empty database has no rows to visit.
+-- still NULL, and the unique constraint, the foreign key and the outbox check
+-- are dropped and added again. An empty database has no rows to visit.
 
 ALTER TABLE proxima_core.goal
     ADD COLUMN IF NOT EXISTS text text
@@ -115,3 +116,26 @@ ALTER TABLE proxima_core.goal
     ADD CONSTRAINT goal_owner_matches_head_fk
     FOREIGN KEY (handle, owner_id) REFERENCES proxima_core.goal_head (handle, owner_id)
     NOT VALID;
+
+-- Outbox: a published record needs no broker receipt. The outbox is drained in
+-- process into a host intake, so a published record has no stream position to
+-- name. `published_stream` and `published_seq` (0011) held the JetStream
+-- PubAck; nothing writes them any more, and they stay, unwritten, because a
+-- dropped column is not additive. `publication_outbox_published_chk` required
+-- all three for a published row; it now ties `state = 'published'` to
+-- `published_at` alone, in both directions. The old check let a record that
+-- is not published carry `published_at` while a receipt field was NULL. No
+-- Proxima write does that, but a hand-written row can, and the new check would
+-- refuse it and abort the upgrade, so its `published_at` is cleared first: a
+-- record that is not published has no publication time. The captured event is
+-- not touched. The ADD validates every row once.
+UPDATE proxima_core.publication_outbox
+   SET published_at = NULL
+ WHERE state <> 'published'
+   AND published_at IS NOT NULL;
+ALTER TABLE proxima_core.publication_outbox
+    DROP CONSTRAINT IF EXISTS publication_outbox_published_chk;
+ALTER TABLE proxima_core.publication_outbox
+    ADD CONSTRAINT publication_outbox_published_chk CHECK (
+        (state = 'published') = (published_at IS NOT NULL)
+    );

@@ -68,13 +68,6 @@ facade_names! {
         both_tiers: [],
     }
 
-    // Needed by `NatsConsumerConfig`, beside `DEFAULT_SUBJECT_PREFIX`.
-    #[cfg(feature = "outbox-nats")]
-    outbox_defaults {
-        host_only: [DEFAULT_CONSUMER_NAME, DEFAULT_CONSUMER_STREAM],
-        both_tiers: [],
-    }
-
     // Needed by an `rmcp::ServerHandler` around `DynamicHandler`: the one rmcp the facade pins.
     rmcp {
         host_only: [rmcp],
@@ -229,11 +222,11 @@ facade_names! {
         both_tiers: [],
     }
 
-    // Needed by `ReferenceConsumer`, `JetStreamPublisher`: `connect_with_hook`, `process_once`,
-    // `ReceivedEvent` (and `ReceivedEvent::identity`).
-    #[cfg(feature = "outbox-nats")]
-    outbox_consumer {
-        host_only: [AckAction, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState, ConsumerHealth, ConsumerHealthReader, ConsumerPassState, ConsumerTaskState, EventIdentity, HookAction, PublishHook],
+    // Needed by `RuntimeBuilder::outbox_intake`, `RuntimeConfig::outbox_intake` and the intake a
+    // host implements for it: `DurableIntake::accept` takes a `ReceivedEvent` (and
+    // `ReceivedEvent::identity`) and returns `Intake` or `IntakeError`.
+    outbox_intake {
+        host_only: [CloudEventEnvelope, DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent],
         both_tiers: [],
     }
 

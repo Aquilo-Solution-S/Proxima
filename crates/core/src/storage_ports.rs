@@ -88,7 +88,7 @@ pub use proof::{
     HostStateWriteOrigin, HostStateWritePermit, OperatorMaintenanceProof, OwnerWritePermit,
 };
 pub use publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
+    AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,
 };
 pub use write_session::{

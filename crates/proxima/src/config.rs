@@ -157,66 +157,6 @@ fn parse_positive(
     Ok(Some(value))
 }
 
-/// Read the `PROXIMA_NATS_*` block through the adapter crate's parser.
-///
-/// Same single-parser rule as the S3 and Postgres blocks: the adapter owns
-/// the keys, their defaults and their validation. `Ok(None)` when
-/// `PROXIMA_NATS_URL` is unset — a deployment that names no broker gets no
-/// publisher, and that is not an error.
-///
-/// # Errors
-///
-/// [`ProximaError::Config`] for any malformed key in the block.
-#[cfg(feature = "outbox-nats")]
-pub(crate) fn nats_from_lookup(
-    lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<proxima_outbox_nats::NatsPublisherConfig>, ProximaError> {
-    proxima_outbox_nats::NatsPublisherConfig::from_lookup(lookup)
-        .map_err(|error| ProximaError::Config(error.to_string()))
-}
-
-/// Read the `PROXIMA_COPY_CLEANER_*` block through the adapter crate's
-/// parser. `Ok(None)` when none of its keys is set; a key set without
-/// `PROXIMA_COPY_CLEANER_URL` is a half-configured section and refused.
-///
-/// # Errors
-///
-/// [`ProximaError::Config`] for a broker-less section or any malformed key.
-#[cfg(feature = "outbox-nats")]
-pub(crate) fn copy_cleaner_from_lookup(
-    lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>, ProximaError> {
-    proxima_outbox_nats::JetStreamCopyCleanerConfig::from_lookup(lookup)
-        .map_err(|error| ProximaError::Config(error.to_string()))
-}
-
-/// The broker URLs a build without `outbox-nats` cannot honour.
-#[cfg(not(feature = "outbox-nats"))]
-const UNCOMPILED_BROKER_URLS: [&str; 2] = ["PROXIMA_NATS_URL", "PROXIMA_COPY_CLEANER_URL"];
-
-/// Without `outbox-nats` there is no publisher or cleaner to start: a broker
-/// the operator named is a request this binary cannot honour, refused rather
-/// than ignored (as `PROXIMA_OIDC_ISSUER` without `auth-oidc` is).
-///
-/// # Errors
-///
-/// [`ProximaError::Config`] naming the first broker URL that is set.
-#[cfg(not(feature = "outbox-nats"))]
-pub(crate) fn refuse_uncompiled_broker(
-    lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<(), ProximaError> {
-    match UNCOMPILED_BROKER_URLS
-        .iter()
-        .find(|key| lookup(key).is_some())
-    {
-        Some(key) => Err(ProximaError::Config(format!(
-            "{key} is set but this binary was built without the `outbox-nats` cargo \
-             feature; enable it or unset {key}"
-        ))),
-        None => Ok(()),
-    }
-}
-
 pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, ProximaError> {
     match raw.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -300,18 +240,6 @@ mod tests {
                 matches!(err, ProximaError::Config(_)),
                 "{err} for {pairs:?}"
             );
-        }
-    }
-
-    #[cfg(not(feature = "outbox-nats"))]
-    #[test]
-    fn a_broker_url_without_the_outbox_feature_refuses() {
-        assert!(refuse_uncompiled_broker(&env(&[])).is_ok());
-        for key in UNCOMPILED_BROKER_URLS {
-            let err = refuse_uncompiled_broker(&env(&[(key, "nats://127.0.0.1:4222")]))
-                .expect_err("a broker this build cannot reach");
-            assert!(err.to_string().contains(key), "{err}");
-            assert!(err.to_string().contains("outbox-nats"), "{err}");
         }
     }
 }

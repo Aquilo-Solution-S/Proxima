@@ -81,31 +81,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
-| `PROXIMA_NATS_URL` | Fact outbox | unset (publisher off) | starting the JetStream publisher | set ⇒ publisher starts; needs the `outbox-nats` cargo feature (`proxima-mcp`: `nats`), a build without it refuses boot; unset keeps capture running with records `pending`; any other `PROXIMA_NATS_*` publisher key without it refuses boot |
-| `PROXIMA_NATS_SUBJECT_PREFIX` | Fact outbox | `proxima.fact` | non-default source routing | source subject `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`; deployment-owned transforms and partitions may rewrite it; the token encoding is injective ([18](../18-fact-outbox.md#the-type_token-rule)) |
-| `PROXIMA_NATS_CREDS_FILE` | Fact outbox | unset | credentials-file auth | mutually exclusive with user/password and token |
-| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | Fact outbox | unset | user/password auth | both required together |
-| `PROXIMA_NATS_TOKEN` | Fact outbox | unset | token auth | |
-| `PROXIMA_NATS_BATCH` | Fact outbox | `64` | tuning drain size | records claimed per publisher pass |
-| `PROXIMA_NATS_LEASE_SECS` | Fact outbox | `30` | tuning claim recovery | expiry returns a record to `pending`; never deletes |
-| `PROXIMA_NATS_POLL_MS` | Fact outbox | `500` | tuning idle latency | idle poll interval |
-| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | Fact outbox | `5000` | tuning PubAck wait | timeout releases the claim and republishes the same bytes |
-| `PROXIMA_NATS_PUBLISHER_ID` | Fact outbox | `<HOSTNAME>-<pid>` | naming a publisher in incident logs | recorded as `claimed_by` on every claim; operator-facing, not a credential. `HOSTNAME` is read through the injected lookup, never the process environment |
-| `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX` | Fact outbox | unset (async-nats `_INBOX`) | publisher reply subscribe permissions split from the consumer's | validated reply-inbox prefix: nonempty, dot-separated tokens of ASCII letters, digits, `_` or `-`. Routes client replies only; it grants no broker permission ([18](../18-fact-outbox.md)) |
-| `PROXIMA_NATS_CONSUMER_STREAM` | Fact outbox | `PROXIMA_FACTS` | binding the reference consumer | deployment-provided stream name; the consumer binds an existing durable and never creates topology |
-| `PROXIMA_NATS_CONSUMER_NAME` | Fact outbox | `proxima-reference` | binding the reference consumer | deployment-provided durable name; filter, ACK policy, redelivery and flow control remain broker configuration |
-| `PROXIMA_NATS_CONSUMER_INBOX_PREFIX` | Fact outbox | unset (async-nats `_INBOX`) | consumer reply subscribe permissions split from the publisher's | same validation as `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX`, for the reference consumer's client |
-| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the publisher runs; minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
-| `PROXIMA_COPY_CLEANER_URL` | Fact outbox | unset (cleaner off) | starting the retained-copy cleaner | set ⇒ cleaner starts; needs the `outbox-nats` cargo feature, a build without it refuses boot; any other `PROXIMA_COPY_CLEANER_*` key without it refuses boot ([18](../18-fact-outbox.md#retained-copy-cleanup)) |
-| `PROXIMA_COPY_CLEANER_CREDS_FILE` | Fact outbox | unset | cleaner credentials-file auth | the cleaner's own role, never the publisher's `PROXIMA_NATS_*` credential; mutually exclusive with user/password and token |
-| `PROXIMA_COPY_CLEANER_USER` / `PROXIMA_COPY_CLEANER_PASSWORD` | Fact outbox | unset | cleaner user/password auth | both required together |
-| `PROXIMA_COPY_CLEANER_TOKEN` | Fact outbox | unset | cleaner token auth | |
-| `PROXIMA_COPY_CLEANER_INBOX_PREFIX` | Fact outbox | `PROXIMA_PURGE_INBOX` | cleaner reply namespace | validated inbox prefix owned by the cleaner role |
-| `PROXIMA_COPY_CLEANER_ITEMS_PER_SLICE` | Fact outbox | `128` | tuning cleaner slices | positive |
-| `PROXIMA_COPY_CLEANER_SLICE_BUDGET_MS` | Fact outbox | `2000` | tuning cleaner slices | soft per-slice time budget; positive |
-| `PROXIMA_COPY_CLEANER_REQUEST_TIMEOUT_MS` | Fact outbox | `5000` | tuning broker waits | per-request bound; positive |
-| `PROXIMA_COPY_CLEANER_SCAN_INTERVAL_SECS` | Fact outbox | `30` | tuning scan cadence | positive |
-| `PROXIMA_COPY_CLEANER_SHUTDOWN_GRACE_MS` | Fact outbox | `2000` | tuning shutdown | positive |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the outbox publisher runs (an `outbox_intake` is configured); minimum `60` and a smaller value is a boot error; never touches a `pending` or `claimed` record |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
@@ -166,8 +142,6 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|---|---|
 | `PROXIMA_DEV_POSTGRES_PORT` | dev Compose | `5434` | the default host port is occupied | published host port for pgvector Postgres; use the same value in `DATABASE_URL` |
 | `PROXIMA_DEV_S3_PORT` | dev Compose | `9100` | the default host port is occupied | published host port for RustFS; use `http://127.0.0.1:<port>` as `PROXIMA_S3_ENDPOINT_URL` |
-| `PROXIMA_DEV_NATS_PORT` | dev Compose | `4224` | the default host port is occupied | published host port mapped to the dev JetStream container's `4222`; use `nats://127.0.0.1:<port>` as `PROXIMA_NATS_URL` / `PROXIMA_TEST_NATS_URL` |
-| `PROXIMA_DEV_NATS_MONITOR_PORT` | dev Compose | `8224` | the default host port is occupied | published host port mapped to that container's monitoring endpoint (`8222`); `curl http://127.0.0.1:<port>/healthz` |
 
 ## Build/Test/Internal Variables
 
@@ -175,15 +149,12 @@ remain fixed at `5432` (Postgres) and `9000` (RustFS).
 |---|---|---|
 | `PROXIMA_TEST_PG_URL` | tests | admin URL of the Postgres server every pg-testkit test clones its databases from. Required and has no default: unset, empty or whitespace-only makes `admin_url()` / `db_url()` panic naming the variable and the async entry points return `sqlx::Error::Configuration`. `admin_url_or_skip()` skips the test with one line on stderr locally and fails under `CI=true`. The sweep and template GC act on every matching database behind this URL, so point it at a server you own. CI sets it |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
-| `PROXIMA_TEST_NATS_URL` | tests | real JetStream broker for the outbox delivery tests; unset ⇒ those tests skip with a message. CI sets it |
-| `PROXIMA_TEST_NATS_PUBLISHER_URL` | tests | publish-only NATS URL | publisher acceptance path; CI grants publish and reply-inbox access but no stream-management rights |
 | `PROXIMA_DIFFERENTIAL_DIR` | tests | regeneration escape hatch for the owner erase/transfer golden differentials: set it and the test WRITES its dump there instead of comparing. Never set in CI |
-| `PROXIMA_INTAKE_DATABASE_URL` | example | PostgreSQL connection for the reference consumer; required by `crates/outbox-nats/examples/durable_intake.rs`. Provision its example schema first. Not read by any shipped binary |
 | `PROXIMA_PG_TESTKIT_CHILD`, `PROXIMA_PG_TESTKIT_TEMPLATE` | tests | mark the re-executed child process in the `proxima-pg-testkit` admin-URL and split-template tests (the child's mode, and the template it clones); unset in every normal run |
 | `PROXIMA_SCHEMA_PG_URL` | `scripts/regen-schema-sql.sh` | admin URL used to create and drop the scratch database the schema dump is taken from. Falls back to `PROXIMA_TEST_PG_URL` |
 | `PROXIMA_PG_DUMP` | `scripts/regen-schema-sql.sh` | `pg_dump` command to run; its major version must be at least the server's. Default `pg_dump` |
 | `PROXIMA_RESET_CONFIRM` | `proxima-dev-migrate --reset` | must equal `reset-my-dev-db` for the destructive drop-and-recreate of every `proxima_*` schema to run; non-local hosts and protected database names are refused regardless. The earlier `PROXIMA_V004_RESET_CONFIRM` is still accepted |
-| `PROXIMA_EMBED_`, `PROXIMA_NATS_`, `PROXIMA_PG_`, `PROXIMA_S3_` | prefix forms | the wildcard spellings the tables above and [15](../15-deployment.md) use to name a family of keys. Not variables themselves — every member is listed individually in this file |
+| `PROXIMA_EMBED_`, `PROXIMA_PG_`, `PROXIMA_S3_` | prefix forms | the wildcard spellings the tables above and [15](../15-deployment.md) use to name a family of keys. Not variables themselves — every member is listed individually in this file |
 
 ## Source Inventory Reconciliation
 
@@ -193,6 +164,6 @@ Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
 `crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
-`crates/blob-s3/src/config.rs`, `crates/outbox-nats/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
+`crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under
 Build/Test/Internal Variables.

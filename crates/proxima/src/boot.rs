@@ -42,9 +42,10 @@ pub(crate) struct Booted {
     /// database that answers `publication_origin_eligibility`.
     ///
     /// Both halves of the retained-copy rule have to come from one place:
-    /// the publisher stamps this on every broker message and the cleaner
-    /// refuses any message not carrying it, so "no origin row" is only ever
-    /// read as a revocation over copies this database actually published.
+    /// a host that forwards the outbox to its own broker stamps this on its
+    /// copies and its cleaner refuses any message not carrying it, so "no
+    /// origin row" is only ever read as a revocation over copies this
+    /// database actually published.
     pub(crate) origin_scope: OriginScope,
     pub(crate) blobs: Option<CitedBlobStore>,
     /// The host-only drain over captured publication records.
@@ -52,16 +53,12 @@ pub(crate) struct Booted {
     /// Deliberately absent from `StoragePorts`, `Engine` and `ToolCtx` — a
     /// flavor that could claim an outbox record could delay or suppress an
     /// export — so only the publisher task the runtime starts ever sees it.
-    /// Carried only when an adapter is compiled in: without one there is
-    /// nothing that could drain the outbox.
-    #[cfg(feature = "outbox-nats")]
     pub(crate) outbox: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
     /// Operator-only reclaim of records that were already DELIVERED, held
     /// under the same rule and for the same reason as `outbox`. A second
     /// handle rather than a method on the first: a drain loop must not be
     /// able to delete anything, and separate traits are how that is
     /// enforced rather than promised.
-    #[cfg(feature = "outbox-nats")]
     pub(crate) outbox_retention:
         Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort>,
 }
@@ -131,10 +128,8 @@ pub(crate) async fn boot<A: FlavorBundle>(
     // The one handle on the captured outbox. Host-only: it is not in
     // `StoragePorts`, so no flavor, tool or write session can reach a
     // captured event, and a publisher task gets it from here.
-    #[cfg(feature = "outbox-nats")]
     let outbox: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> =
         Arc::new(pg.clone());
-    #[cfg(feature = "outbox-nats")]
     let outbox_retention: Arc<
         dyn proxima_core::storage_ports::publication::PublicationRetentionPort,
     > = Arc::new(pg.clone());
@@ -170,9 +165,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
         publication_origin_eligibility,
         origin_scope,
         blobs,
-        #[cfg(feature = "outbox-nats")]
         outbox,
-        #[cfg(feature = "outbox-nats")]
         outbox_retention,
     })
 }

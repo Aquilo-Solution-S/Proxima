@@ -2,20 +2,19 @@
 
 > **Status:** current.
 
-Host-side at-least-once publication of **declared listenable Facts**. 18 owns
-the listen declaration, the capture record, the delivery state machine, and
-the publisher/consumer adapters. It does not own NATS stream topology: the
-deployment provisions streams, transforms, partitions, consumers, permissions,
-storage, retention and capacity. It owns no verb (see
-[14](14-protocol-surface.md#the-verbs)), no authorization of its own (see
-[01](01-event-source.md)), and no orchestration.
+Host-side at-least-once delivery of **declared listenable Facts**, in process.
+18 owns the listen declaration, the capture record, the delivery state machine,
+and the drain that hands captured events to a host-provided intake. It owns no
+broker: a host that wants one forwards to it from its own intake (§Forwarding
+to a broker). It owns no verb (see [14](14-protocol-surface.md#the-verbs)), no
+authorization of its own (see [01](01-event-source.md)), and no orchestration.
 
 ## Purpose
 
 A host reacts to Fact creation without every flavor carrying a message client
-and its delivery state. A committed Fact survives publisher crash and broker
-outage: the event stays available for later delivery with its original identity
-and bytes.
+and its delivery state. A committed Fact survives a crash and an intake outage:
+the event stays available for later delivery with its original identity and
+bytes.
 
 ```
 flavor write (typed, authorized)
@@ -27,13 +26,13 @@ flavor write (typed, authorized)
         │  commit — any capture failure rolls the whole write back
         ▼
    publication_outbox row, state `pending`
-        │  host publisher: claim(lease) → send the captured bytes, unchanged
+        │  runtime drain: claim(lease) → accept(the captured bytes, unchanged)
         ▼
-   NATS JetStream, deployment-provisioned topology
-        │  PubAck → mark_published    (no PubAck → release/expire → `pending`)
+   the host's DurableIntake, in this process
+        │  Ok → mark_published    (Err or timeout → release → `pending`)
         ▼
-   durable pull consumer
-        ACK only after durable intake OR durable retention of a rejection
+   state `published`
+        accept returns only after the intake made its outcome durable
 ```
 
 ## Flavor Author Contract
@@ -99,7 +98,7 @@ than counting the whole backlog.
 ## Publication Contract
 
 CloudEvents 1.0.2, **structured JSON**, `application/cloudevents+json`. Stored
-verbatim as bytes; the publisher sends those bytes unchanged — it never reloads
+verbatim as bytes; the drain hands those bytes over unchanged — it never reloads
 today's Fact state, regenerates a payload with an upgraded flavor, or
 substitutes today's installation identity.
 
@@ -135,62 +134,16 @@ carries it. Flavor code assembles nothing and can neither set nor read it.
 | Bound | ≤ 8 attributes per event |
 | Additivity | a second bind MERGES; a repeated name is an error. Nothing overwrites or clears a bound attribute, and there is no unbind call — a host that should stop emitting one stops binding it |
 | Validation point | at binding, not at capture: an attribute a consumer would refuse is a host misconfiguration, and the refusal belongs at the boundary that produced it |
-| Order | NAME order, not binding order. The digest, the broker dedup key and every consumer signature check are over the envelope bytes, so the order a host happened to bind in must not reach the wire |
+| Order | NAME order, not binding order. The digest, the intake's dedup key and every consumer signature check are over the envelope bytes, so the order a host happened to bind in must not reach the wire |
 | Unbound | emits nothing — not an empty object, not a null. An event from a deployment that binds none is byte-identical to one from a release without this surface |
 | Storage | no column and no migration: the captured record IS the envelope bytes |
 | Identity | NOT identity material. `identity_for_revalidation()` does not carry them, and a redeemed delegated phase rebuilds without them, exactly as it does for `trusted_model_id` |
 | Consumers | parsed into `CloudEventEnvelope::extensions` (name-ordered); a signature check still reads `ReceivedEvent::raw` |
 
-## AsyncAPI Catalog
-
-`asyncapi_document(&registry, &AsyncApiInfo::new(title, version), prefix)`
-(`proxima_outbox_nats`; `proxima::` under feature `outbox-nats`) describes what
-the publisher sends as an AsyncAPI 3.0.0 document, so a consumer (schema
-catalog, deployment manifest, codegen) reads one generated file instead of
-copying schema ids, subjects and JSON schemas by hand. Offline: frozen registry
-in, `serde_json::Value` out; no database, broker or boot. Not served at
-runtime.
-
-| Part | Content |
-|---|---|
-| `asyncapi` | `3.0.0` |
-| `info` | host-supplied `title`, `version` |
-| `servers` | omitted: topology belongs to the deployment (§Deployment topology) |
-| `channels` | one per listenable schema id, keyed by its `type_token`. `address` = `<prefix>.{ownerKind}.{ownerId}.<type_token>`, from the formatter `subject_for` uses; parameters `ownerKind` (`personal` \| `group`), `ownerId` (UUID) |
-| `operations` | one `send` per channel, same key |
-| `components.messages` | one per registered (schema id, version), keyed `<type_token>.v<version>`. `contentType: application/cloudevents+json`; `payload` = the envelope below |
-
-Message payload: the §Publication Contract envelope as an AsyncAPI Schema
-Object (JSON Schema draft-07 base).
-
-| Attribute | Schema |
-|---|---|
-| `specversion` | const `"1.0"` |
-| `id` | string matching `^F:` |
-| `source` | `uri-reference`; the deployment's value, unknown at build time |
-| `type` | const: the schema id |
-| `dataschema` | const `proxima://schema/{id}/{version}` |
-| `datacontenttype` | const `application/json` |
-| `time` | `date-time` |
-| `proximaowner` | string |
-| `proximamodel` | string, optional |
-| `data` | the registered `json_schema()` (rule below) |
-| host-bound extensions | name `^[a-z0-9]{1,20}$`, not `subject`, not `proxima*`; value a non-empty string of ≤ 256 characters without control characters, an int32, or a boolean (§Host-bound extension attributes). The ≤ 8 count and the 256-**byte** bound stay capture's |
-
-| Rule | |
-|---|---|
-| deterministic | channels, operations and messages ordered by schema id, then version; the same registry yields byte-identical output, so a host commits the file and CI checks that it is current |
-| listenable only | non-listenable schemas never appear; a registry with none yields a valid document with no channels |
-| `data` placement | verbatim, except local `$ref`s (`#`, `#/…`, e.g. schemars' `#/$defs/…`), which are rebased onto the schema's place in the document. A schema declaring both `$id` and a local `$ref` is refused (`IdentifiedLocalReference`): JSON Schema resolves such a ref against the `$id`, AsyncAPI against the document |
-| structured mode | AsyncAPI has no CloudEvents binding; the envelope is the payload. No NATS bindings: JetStream topology is the deployment's |
-| prefix | the publisher's: `DEFAULT_SUBJECT_PREFIX` unless `PROXIMA_NATS_SUBJECT_PREFIX` is set. An invalid one is refused (`InvalidSubjectPrefix`) |
-
-Build-step recipe: [how-to/fact-outbox.md §6](how-to/fact-outbox.md#6-export-the-asyncapi-catalog).
-
 ## Outbox Row and State Machine
 
-Table `proxima_core.publication_outbox` (migration `0011`), one row per
-captured Fact `t`.
+Table `proxima_core.publication_outbox` (migration `0011`; `0025` simplified its
+published check), one row per captured Fact `t`.
 
 | Column | Note |
 |---|---|
@@ -198,12 +151,13 @@ captured Fact `t`.
 | `owner_id` | `uuid NOT NULL REFERENCES owners(owner_id)`. A single id column, not the `(owner_kind, owner_id)` pair `memory` carries: the kind is read back through the `owners` join at claim time, so the record cannot disagree with the owner table |
 | `schema_id`, `schema_version` | the registered typed export's identity |
 | `event_type` | the `CloudEvents` `type`, duplicated out of the envelope so a routing decision needs no JSON parse |
-| `event_id` | the `CloudEvents` `id` (`F:<uuid>`), `UNIQUE` — also the broker dedup key |
+| `event_id` | the `CloudEvents` `id` (`F:<uuid>`), `UNIQUE` — also the intake's dedup key |
 | `envelope` | `bytea`, the verbatim `CloudEvent` |
 | `envelope_digest` | `bytea`, blake3 over those exact bytes; `CHECK (octet_length = 32)` |
 | `state` | SQL enum `publication_state` (`pending`/`claimed`/`published`) |
 | `claim_token`, `claimed_by`, `lease_expires_at`, `attempts` | claim bookkeeping; `claimed_by` is the operator-facing `PublisherId`, `claim_token` is the fencing token |
-| `published_at`, `published_stream`, `published_seq` | the PubAck: when, which stream, which sequence |
+| `published_at` | when the intake's outcome was recorded. Set exactly when `state = 'published'` |
+| `published_stream`, `published_seq` | the JetStream PubAck of the removed NATS publisher. Nothing writes them any more: a record published in process leaves both `NULL`, and one published before v0.0.27 keeps its receipt |
 | `captured_at` | insert time, `DEFAULT now()` |
 
 There is **no `source` column and no `recorded_at` column**. Both live in the
@@ -218,7 +172,7 @@ merely conventional:
 | Constraint | Says |
 |---|---|
 | `publication_outbox_claim_chk` | `state = 'claimed'` **iff** `claim_token`, `lease_expires_at` and `claimed_by` are all present |
-| `publication_outbox_published_chk` | `state = 'published'` **iff** `published_at`, `published_stream` and `published_seq` are all present |
+| `publication_outbox_published_chk` | `state = 'published'` **iff** `published_at` is present |
 
 `publication_outbox_capture_immutable` (a `BEFORE UPDATE` trigger) rejects any
 UPDATE that changes `t`, `event_id`, `event_type`, `envelope`,
@@ -229,14 +183,14 @@ re-owning or re-keying can rewrite what a consumer will be told happened.
 
 **Why no FK to `memory`.** `forget` DELETEs the hot `memory` row — it moves the
 payload to cold storage — so a cascading reference would destroy a captured
-event that no publisher had delivered yet: a committed event lost to an
+event that no drain had delivered yet: a committed event lost to an
 unrelated lifecycle operation. Completeness rests on `owner_id -> owners`
 instead, exactly as `mcp_call_logged_v1` does for the same reason.
 
 | From | Event | To |
 |---|---|---|
 | `pending` | claim (lease) | `claimed` |
-| `claimed` | PubAck recorded | `published` |
+| `claimed` | intake outcome recorded (`mark_published`) | `published` |
 | `claimed` | release | `pending` |
 | `claimed` | lease expiry | `pending` |
 | `published` | retention horizon (below) | row deleted |
@@ -248,7 +202,7 @@ now())` under `FOR UPDATE SKIP LOCKED` — a set scan, not a high-water cursor,
 so a delayed commit cannot disappear behind an advanced position.
 
 **Claim order is `ORDER BY attempts ASC, t ASC`,** not `t` alone. A record the
-broker keeps refusing would otherwise hold the front of every batch window and
+intake keeps refusing would otherwise hold the front of every batch window and
 starve every Fact behind it; ordering on the attempt count first demotes it
 after its first failure, so a poison record costs one slot per pass instead of
 the whole pass. The partial index `publication_outbox_pending_idx`
@@ -304,7 +258,7 @@ predicate is a union over unique `t` keys, so a row matching both legs is
 deleted and counted once. A source erase can revoke an original copy while a
 transferred live Fact stays with its current owner. An authorized physical
 hard erase removes origin and outbox rows by exact Fact `t`, regardless of the
-publisher that captured it. The same source label may be used by a fresh Fact
+writer that captured it. The same source label may be used by a fresh Fact
 `t` after revocation.
 
 Before host code accepts a delayed payload, `PublicationOriginEligibilityPort`
@@ -330,7 +284,7 @@ residuals; lifecycle registration is not a SQL sandbox.
 trait PublicationOutboxPort {
     async fn claim(&self, publisher: &PublisherId, limit: NonZeroU32, lease: Duration)
         -> Result<Vec<ClaimedPublication>>;
-    async fn mark_published(&self, id: Uuid, claim: ClaimToken, receipt: &BrokerReceipt)
+    async fn mark_published(&self, id: Uuid, claim: ClaimToken)
         -> Result<AckOutcome>;               // StaleClaim | Published | AlreadyPublished
     async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome>;
     async fn pending_count(&self) -> Result<u64>;
@@ -341,40 +295,101 @@ trait PublicationRetentionPort {
 }
 ```
 
-Broker-neutral, and **host-only**: neither is reachable from a flavor, a
-`ToolCtx`, or a `WriteSession`, and neither is part of `StoragePorts`. A stale
-claim token cannot acknowledge or discard another publisher's record.
+**Host-only**: neither is reachable from a flavor, a `ToolCtx`, or a
+`WriteSession`, and neither is part of `StoragePorts`. `PgStorage` implements
+both. A stale claim token cannot acknowledge or discard another drain's record.
+The runtime's own drain is built on `PublicationOutboxPort`, and the port is
+exported so a host that needs a different loop (one that holds claims across
+its own round trip, say) can write one.
 
 They are **two traits on purpose**. `PublicationOutboxPort` has no delete
 method and never should — an expiring lease can only make a record deliverable
 again, never destroy it — so the handle a drain loop carries cannot remove a
-record at all. The only DELETE lives on the second trait, which a publisher
-does not need to hold. "A publisher may drain" and "an operator may reclaim
-delivered storage" stay two capabilities rather than one.
+record at all. The only DELETE lives on the second trait, which a drain does
+not need to hold. "A drain may deliver" and "an operator may reclaim delivered
+storage" stay two capabilities rather than one.
 
 `claim` refuses a lease shorter than **one second**. A sub-second lease expires
-before the first publish can finish, so every record claimed under it would be
+before the first delivery can finish, so every record claimed under it would be
 re-claimed while it was still in flight; the floor is a refusal rather than a
 silent clamp, because a caller that asked for 0 s asked for something that
 cannot work.
 
-### Publisher task health
+## Delivery
 
-The runtime starts the publisher when a broker is configured
-(`PROXIMA_NATS_URL` / `nats(..)`; [10 §Runtime features](10-configuration.md#runtime-features)),
-in `build()` and `run()` alike, owns its cancellation, and joins it on
-`shutdown()`. `BuiltProxima::publisher_health()` /
-`RunningProxima::publisher_health()` return its read-only health reader;
-`None` when it is off. Health keeps task, live connection, and latest drain-pass status separate. The
-connection sample comes from the publisher's actual async-nats client, even
-when no outbox rows are available. A pass is failed when it returns an error or
-reports one or more failed records; a later clean pass recovers the latest-pass
-state. Readiness requires a running task, a connected client, and a clean pass.
-Initial and terminal states are unready. The terminal guard clears its client
-slot on normal cancellation, abort, and unwind, so retaining the reader cannot
-keep the NATS client alive. This observation does not prove publish permission
-or deployment stream topology; only actual publication and deployment-owned
-topology checks establish those facts.
+The host hands the runtime one intake, on the runtime builder
+(`RuntimeBuilder::outbox_intake(Arc<dyn DurableIntake>)`, or the same method on
+`Proxima::<A>::app()`; [10 §Runtime features](10-configuration.md#runtime-features)).
+Set, the outbox publisher starts in `build()` and `run()` alike, owns its
+cancellation, and is joined on `shutdown()`. Unset, nothing drains: capture
+still runs and records stay `pending` (§Rollback). There is no environment
+variable and no cargo feature.
+
+```rust
+#[async_trait::async_trait]
+trait DurableIntake: Send + Sync + Debug {
+    async fn accept(&self, event: &ReceivedEvent) -> Result<Intake, IntakeError>;
+}
+enum Intake { Accepted, Rejected { reason: String } }
+struct IntakeError { pub message: String }     // IntakeError::new(message)
+```
+
+All six names (`DurableIntake`, `Intake`, `IntakeError`, `ReceivedEvent`,
+`EventIdentity`, `CloudEventEnvelope`) live in `proxima_core::publication::intake`
+and are re-exported by `proxima`.
+
+| `ReceivedEvent` field | Value |
+|---|---|
+| `id` | the `CloudEvents` `id` (`F:<uuid>`): the dedup key, a plain string |
+| `owner` | the Fact's `OwnerRef`, typed from the outbox row (`owner_kind` joined at claim time) |
+| `delivered_count` | the record's `attempts`: how many times it has been claimed, this claim included. `> 1` means an earlier claim did not end in the mark: its delivery failed or timed out, the process stopped before the mark, or shutdown or a quiesce handed the claim back before `accept` was called. It counts claims, not intake calls |
+| `raw` | the captured envelope bytes, verbatim. A signature check reads these |
+| `envelope` | `raw`, parsed: `CloudEventEnvelope` |
+
+**The contract.** `accept` MUST have made its outcome durable before it
+returns, because `mark_published` follows it: the outbox forgets the record
+once it is marked. Both outcomes count — a rejection nobody recorded is
+indistinguishable from an event that never arrived. Deduplicate on `id`;
+redelivery is not an error case, it is the normal cost of at-least-once. `accept`
+should return within about five seconds (the timeout below): an intake that
+needs longer accepts into its own durable queue and returns.
+
+| What happens | The drain | The record |
+|---|---|---|
+| `accept` returns `Ok(Accepted)` | `mark_published` | `published` |
+| `accept` returns `Ok(Rejected { .. })` | the same: a rejection is a decision the intake made durable | `published` |
+| `accept` returns `Err(IntakeError)` | releases the claim | `pending`, tried again after the backoff |
+| `accept` does not return within 5 s | drops the call and releases the claim | `pending`, tried again |
+| the captured bytes are not a `CloudEvents` envelope | logs the event id and the class of the parse error at error level, releases the claim; the intake is not called | `pending` (re-claimed each pass, `attempts` climbing) |
+| the process stops between `accept` and `mark_published` | nothing: the lease (30 s) expires | `pending`, delivered again with `delivered_count + 1` |
+
+A record leaves `pending`/`claimed` through exactly one path:
+`mark_published`, fenced on the claim token. The only other thing that removes
+a row is the published-record retention below, and compliance erasure (§Outbox
+Row and State Machine).
+
+**The drain.** One loop in the `proxima` crate, with fixed settings: a batch of
+64, a 30 s lease, a 500 ms poll, a 5 s `accept` timeout, claims labelled
+`proxima:<pid>`. A pass claims a batch and delivers its records one at a time.
+
+- **Per-record isolation.** A record that fails is released at once and the
+  pass carries on. A pass reports a failure only when it delivered nothing at
+  all. A record the intake will never take is demoted by the claim order
+  (`attempts ASC`), so it costs one slot per pass instead of stalling every
+  Fact behind it until the backlog fills.
+- **Backoff.** A pass that delivered nothing doubles the wait before the next
+  claim, from the poll interval up to 30 s; any delivery resets it. A pass that
+  claimed anything does not sleep before the next one.
+- **Logs.** A failed pass logs at warn level with a failure category (storage,
+  malformed, intake, timed out). The intake's own message and the parse error's
+  text are never logged by the runtime: either can quote a payload.
+- **Shutdown** abandons the `accept` in flight and hands back every claim the
+  pass still holds, so the next process does not wait out a lease for work
+  nobody is doing. The same bytes are delivered again under the same `id`.
+
+There is no health reader for the drain. The boot report says whether it
+started; `pending_count`, the `attempts` column and the warn-level log say
+whether it is making progress.
 
 <a id="publisher-quiesce"></a>
 ### Publisher quiesce
@@ -382,280 +397,84 @@ topology checks establish those facts.
 `feature_control(Feature::OutboxPublisher)` pauses claiming without stopping
 the task or the server ([10 §Quiesce and resume](10-configuration.md#quiesce-and-resume)).
 
-- `quiesce()` lets the record in flight finish: a record whose `PubAck`
-  arrived is recorded with `mark_published`, not dropped. The unattempted
+- `quiesce()` lets the record in flight finish: a record whose `accept` has
+  returned is recorded with `mark_published`, not dropped. The unattempted
   rest of the claimed batch is released to `pending`, as on shutdown, and
-  the task parks before its next claim. Settling costs at most one publish
-  timeout, not a batch of them. Shutdown differs: it abandons the publish in
-  flight (the same bytes republish under the same `id`).
-- A publisher still connecting holds no claim: it drops the attempt and
-  parks without waiting for the broker; `resume()` dials again.
-- The task and the broker client stay alive, and the task stays `Running`.
-  Connection health is not frozen by the pause and stays observable through
-  `PublisherHealthReader`: a publisher quiesced while connecting stays
-  `Pending`, and a parked client can disconnect. Quiescent does not imply
-  `Connected`. `FeatureControl::status()` is what reports the pause.
+  the task parks before its next claim. Settling costs at most one `accept`
+  timeout, not a batch of them. Shutdown differs: it abandons the `accept` in
+  flight.
+- The task stays alive and `Running`; `FeatureControl::status()` is what
+  reports the pause. `resume()` claims again.
 - Capture continues. A Fact accepted while the publisher is quiescent still
   commits its outbox record in its own transaction, and the record stays
   `pending` until `resume()`: quiescent is not drained. The published-record
   prune keeps running; it deletes delivered records only.
-- Lease caveat: a release that failed (`PROXIMA_NATS_LEASE_SECS`, default
-  30) leaves its lease to expire, so quiescent does not mean no row is
-  `claimed`. A late acknowledgement from a quiesced process is refused as
-  stale.
+- Lease caveat: a release that failed leaves its lease (30 s) to expire, so
+  quiescent does not mean no row is `claimed`. A late `mark_published` from a
+  quiesced process is refused as stale.
 - Kernel: `Causa/Publication.lean` excludes publication liveness and proves
   only the safety half of at-least-once. A pause changes when records are
-  published, not how a duplicate is identified.
+  delivered, not how a duplicate is identified.
 
-`ReferenceConsumer::into_observed_parts` returns a read-only health reader and
-the consumer's existing fetch/ACK future. The compatibility `run` method uses
-that same loop. Health keeps task, live connection, and latest consume-pass
-status separate; the connection sample comes from the consumer's actual
-async-nats client, including while intake is waiting. A pass is failed when it
-returns an error or reports deferred or unacknowledged deliveries. Accepted
-and durably rejected outcomes are clean only when their ACK succeeds; a later
-clean pass recovers the latest-pass state. Readiness requires a running task,
-a connected client, and a clean pass. The terminal guard clears its client slot
-on cancellation, abort, unwind, and drop before first poll, so retaining the
-reader cannot keep the NATS client alive. This reports the latest observed
-pass; it does not impose a callback deadline or prove that the backlog is
-empty.
+## Delivery guarantee
 
-## Two Acknowledgements
-
-| Boundary | Completion condition | What it does NOT mean |
-|---|---|---|
-| outbox → JetStream | PubAck under the deployment's configured broker semantics permits `mark_published` | that a consumer saw it |
-| JetStream → consumer | ACK follows committed durable intake **or** durable retention of a rejection | that a business operation started or finished |
-
-Lost PubAck, timeout, or a crash before the published marker commits ⇒
-republication of the **same bytes under the same `id`**. Duplicate delivery is
-permitted; consumers deduplicate on the durable event identity beyond the
-broker's dedup window. The producer never waits for a subscriber's validation
-or response.
+Delivery is **at-least-once**. A crash between `accept` and the published
+marker, a lost `mark_published`, or an `accept` that outlived its timeout
+delivers the **same bytes under the same `id`** again. Duplicate delivery is
+permitted; the intake deduplicates on the durable event identity. The drain
+never waits for a business operation the event may start, and nothing about
+`Accepted` says one began or finished.
 
 `ReceivedEvent::id` stays the dedup key, a plain string.
 `ReceivedEvent::identity()` reads it as `EventIdentity::Fact(MemoryId)` when it
 is `F:` and a lowercase hyphenated UUID, the exact spelling the producer writes,
 and as `EventIdentity::Opaque(String)`, byte for byte, otherwise: upper-case,
-simple, braced or `urn:` UUIDs, other prefixes, no prefix, padding, the
-consumer's own `malformed:<hex>` id, anything another producer sent. Two ids
-are equal exactly when their identities are equal. A parsed identity proves
-syntax, not admission: it does not say a Fact with that id was admitted, that
-its schema is listenable, that the subject's owner owns it, or that Proxima sent
-the message. Signature and owner checks stay with the consumer.
+simple, braced or `urn:` UUIDs, other prefixes, no prefix, padding, anything
+else. Two ids are equal exactly when their identities are equal. A parsed
+identity proves syntax, not admission: it does not say a Fact with that id was
+admitted, that its schema is listenable, that the owner owns it, or that
+Proxima sent the event. Signature and owner checks stay with the intake.
 
-## Deployment topology
+## Forwarding to a broker
 
-NATS topology is not an application profile. DevOps provisions the stream and
-durable consumer, including subject transforms and partitioning, before the
-publisher is enabled. The publisher emits the canonical source subject:
+Proxima ships no broker client. A host that needs NATS, Kafka or anything else
+forwards from inside its own `accept`: publish `raw` with `id` as the broker's
+dedup key, and return `Ok` only after the broker has acknowledged under the
+host's durability semantics. A broker that is down or full is then an
+`IntakeError`: the record stays `pending` with its original bytes and is
+delivered once the broker recovers. The visible symptom of a broker that stays
+down is `CapacityExhausted` on writes, once the DATABASE backlog reaches
+`PROXIMA_OUTBOX_MAX_PENDING`. Topology, partitioning, retention, capacity and
+permissions belong to the host's deployment.
 
-```text
-proxima.fact.<owner_kind>.<owner_uuid>.<type_token>
-        │
-        └── deployment-owned stream transform / partition mapping
-                         │
-                         └── deployment-owned durable consumer filter
-```
+Copies in a host's broker outlive the Fact's authorization, and a broker copy
+is not removed by any database erase. Two host accessors exist for that:
 
-The publisher needs only broker connectivity, publish permission on the source
-subject, and permission to receive its publish reply inbox. It does not create,
-update, inspect or validate streams or consumers. A successful `PubAck` records
-broker acceptance; the deployment and consumer own the source → transform →
-partition → durable-intake path.
+- `ProximaHost::origin_scope_for_host()` returns the installation's
+  `OriginScope`, minted once by migration `0012` in
+  `proxima_core.installation`. A host stamps it on each forwarded copy (as a
+  header beside the bytes, not inside them: the envelope bytes are the sealed
+  artifact the outbox digest covers).
+- `ProximaHost::publication_origin_eligibility_for_host()` returns the
+  `PublicationOriginEligibilityPort` (§Original publication attribution and
+  erase). A cleaner deletes a copy only when it carries THIS installation's
+  scope **and** the port answers `Ineligible`.
 
-Publisher and consumer clients can use separate validated reply-inbox
-namespaces through `PROXIMA_NATS_PUBLISHER_INBOX_PREFIX` and
-`PROXIMA_NATS_CONSUMER_INBOX_PREFIX`. Each is a nonempty dot-separated prefix
-whose tokens contain only ASCII letters, digits, `_` or `-`; an unset value
-preserves async-nats' `_INBOX` default. Configure matching role-specific NATS
-subscribe permissions for those prefixes. The option routes client replies; it
-does not establish broker permissions, and a server account that still grants
-both roles `_INBOX.>` does not provide isolation.
-
-The local fixture provisions a reproducible stream separately so tests can
-exercise the adapter without making the application a topology controller.
-Production deployments must provide equivalent provisioning, permissions,
-retention and capacity through their own infrastructure system.
-
-The adapter acceptance boundary is explicit: a publisher credential with no
-stream-management rights must still connect, publish and record a `PubAck`.
-The deployment acceptance boundary is separate: publish a sentinel through
-the provisioned source → transform → partition → durable-consumer route and
-prove the consumer durably accepts or retains its outcome before ACK.
-
-### Retained-copy cleanup
-
-The runtime starts the cleaner when its section is configured
-(`PROXIMA_COPY_CLEANER_URL` + `PROXIMA_COPY_CLEANER_*`, or `copy_cleaner(..)`;
-[10 §Runtime features](10-configuration.md#runtime-features)), independent of
-Fact intake and of the publisher, and joins it on `shutdown()`;
-`copy_cleaner_health()` reads it. A cleaner key without the URL refuses boot.
-It scans the fixed
-`PROXIMA_FACTS` stream for the canonical `proxima.fact` source subjects and
-uses its own bounded API-only NATS role and `PROXIMA_PURGE_INBOX` reply
-namespace. Configure the cleaner against the **same Proxima database and cell**
-that captured the origins. The stream must be new, initially empty, dedicated
-to Proxima as its exclusive publisher, and preserve the source subjects. This
-is the trust premise that lets a verified, now-ineligible captured origin
-authorize deletion; it is not a general purge rule for imported, historical,
-transformed, or shared-producer streams.
-
-#### The origin stamp
-
-That premise is **enforced per message**, not merely documented. Deletion
-rests on an ABSENCE — no `publication_origin` row for this Fact — and an
-absence carries no scope: a Fact this database never held and a Fact whose
-origin erasure revoked look identical from the row alone. Every structural
-check the cleaner makes (`Nats-Msg-Id` against the `CloudEvents` id, the
-content type, the owner key round-trip, the derived subject) proves the
-message is canonical Proxima output, which every Proxima's output satisfies.
-None of them says *which* installation produced it.
-
-So migration 0012 mints a write-once identity in
-`proxima_core.installation`, the publisher stamps it on each message as the
-`Proxima-Origin-Scope` header, and the cleaner reads the expected value from
-the same database that answers eligibility — never from configuration, which
-could be made to agree with a foreign stream. Three outcomes:
-
-| Message | Cleaner |
-|---|---|
-| Stamped with this installation's identity | checked, and deleted if `Ineligible` |
-| Stamped by another installation | `ForeignOriginScope`: the **cycle fails**, nothing is deleted |
-| Unstamped | retained, counted as unknown, cycle unhealthy |
-
-The stamp is a header, deliberately not a `CloudEvents` attribute: the
-envelope bytes are the sealed artifact the outbox digest covers, and a
-republication must reproduce them exactly. Provenance of the transport
-belongs beside the bytes, not inside them.
-
-Unstamped is a *skip* while foreign is a *halt*, because the two say
-different things. A stream carrying events published before this release
-began stamping is the ordinary upgrade case and must not block cleaning of
-the stamped messages beside them — but those older copies can never be
-attributed, so they are retained forever and the cycle never reports clean
-until the stream is recreated. A foreign stamp is not a statement about one
-message: the stream is not this installation's, and continuing to scan it
-could only compound the error.
-
-**What the stamp does not catch.** It identifies an installation *lineage*.
-A restore or a clone carries the same identity, so a staging copy of a
-production database pointed at production's broker still passes — and a
-database rolled back beneath a live stream will have lost origin rows for
-messages it still considers its own. Both remain operator responsibilities;
-see the restore guidance below.
-
-The database erase commits without a broker request. Later finite cleaner
-slices recheck each canonical message against committed origin and hard-delete
-witness state, deleting only when storage returns `Ineligible`. A database or
-broker error retains the current scan position for retry; unknown message
-identity is retained, counted, and makes the completed cycle unhealthy. Each
-completed cycle starts again from the stream's first retained sequence so an
-erase or publication arriving behind the in-memory cursor is found later.
-The item limit is strict, while the time budget is checked between messages;
-a started GET, committed origin check, and DELETE can finish after that soft
-budget, with each request bounded by the configured timeout. These bounds do
-not promise a cleanup deadline.
-Health and logs contain fixed categories and aggregate counts, never payloads
-or Fact identities. The result means the broker no longer serves that message
-sequence; it does not prove physical media, snapshots, or backups were erased.
-
-This adapter does not sanitize dependency debug output. In the pinned
-`async-nats` 0.50.0 source, `jetstream/context.rs:1570–1573` logs the raw
-JetStream request response through a `DEBUG` event. The embedding host must
-keep the `async_nats` target at `INFO` or lower; enabling dependency `DEBUG` or
-`TRACE` can expose broker response content. Centauri will enforce that limit
-independently of `RUST_LOG`.
-
-Do not enable cleanup during a coordinated database/broker restore or stream
-recreation until both sides are known consistent, and never point a restored
-or cloned database's cleaner at the original's broker: the origin stamp
-cannot tell a copy of an installation from the installation. Provision and
-verify the fresh stream, dedicated producer policy, cleaner API permissions,
-and same-cell database binding before enabling this host task.
-
-### The `type_token` rule
-
-The last subject element encodes the event type — the registered schema id —
-and the encoding is **injective**, because subject permissions are how doc 18
-tells an operator to scope a NATS account to a set of event types. Two schema
-ids sharing a token would silently widen such a grant.
-
-The rule, over the schema id's BYTES:
-
-| Input byte | Output |
-|---|---|
-| `A-Z`, `a-z`, `0-9`, `-` | itself |
-| **everything else, including `_`** | `_` followed by two lowercase hex digits of the byte (`_%02x`) |
-
-Escaping `_` itself is what makes the map injective; without it `a/b` and `a_b`
-would collide. Non-ASCII is escaped byte by byte, so one multi-byte character
-becomes several `_xx` groups. The empty type maps to a bare `_`, because `""`
-is not a legal subject token — and a bare `_` is never the image of a non-empty
-input, since every escape carries its two hex digits.
-
-| Schema id | Token |
-|---|---|
-| `probe/listenable-v1` | `probe_2flistenable-v1` |
-| `probe_listenable-v1` | `probe_5flistenable-v1` |
-| `acme/build.finished-v1` | `acme_2fbuild_2efinished-v1` |
-
-`proxima_outbox_nats::parse_subject(prefix, subject)` (also `proxima::` under
-feature `outbox-nats`) is the inverse of `subject_for`: `ParsedSubject { owner,
-event_type }`. It accepts only what `subject_for` produces — the hyphenated
-lowercase owner uuid, the canonical escaping above — and refuses anything else
-(`SubjectParseError`), so a consumer routing on the result never reads two
-subjects as one event type. `ReceivedEvent::parsed_subject(prefix)` is
-`parse_subject(prefix, &event.subject)`; the prefix is the deployment's, because
-a stream transform may have rewritten the publisher's. Like `identity()`, a
-parsed subject proves syntax, not admission, and it is not reconciled with the
-id or the envelope's `proximaowner`.
-
-Owner routing lives in the subject, so NATS account permissions restrict a
-consumer by subject prefix. File storage plus PubAck is durability against
-process death, **not** a claim of surviving arbitrary disk loss.
-
-The reference consumer binds an existing durable by the deployment-provided
-stream and durable names. It does not create, update or validate the consumer's
-filter, ACK policy, redelivery policy or flow-control settings. Those settings
-are part of the deployment topology and are tested there.
-
-### Stream space never frees itself
-
-With `retention: Limits` and `discard: New`, **an ACK does not free space** —
-by design. `Limits` retains a message until an age, size or count bound
-evicts it, and consumer acknowledgement is not one of those bounds. So a full
-stream stays full until an operator acts:
-
-| Signal | What it means | Operator action |
-|---|---|---|
-| PubAck refused, `BrokerCapacity` in the publisher log | the deployment's stream is at capacity | raise the deployment's stream capacity, or purge already-consumed sequences |
-| records stay `pending`, `attempts` climbing | the same, seen from the database | as above; **nothing is lost** — the records are still there with their original bytes |
-| `CapacityExhausted` on writes | the DATABASE backlog hit `PROXIMA_OUTBOX_MAX_PENDING` | the broker side is the cause; fix that first |
-
-Purging is `nats stream purge PROXIMA_FACTS --seq <n>`, and `<n>` is safe only
-when **every** consumer's `ack_floor` is at or beyond it — that is the operator
-judgement the substrate refuses to make for you.
-
-The local fixture uses `Limits` and `discard: New` because that combination
-makes broker capacity visible as backpressure. Production may choose another
-retention policy, but DevOps must test its exact semantics: a deployment whose
-consumer has not been created, or was deleted during an incident, must not
-silently discard committed events while returning a `PubAck`. A full stream
-that refuses new work is a failure an operator can see and undo; a stream that
-accepts work and discards it is not.
-
-The local fixture pins nats-server **2.14.6** and `async-nats` **0.50.0**. The
-optional adapter is `crates/outbox-nats/`; the NATS dependency never enters
-`proxima-core`.
+The stamp exists because the eligibility answer comes from the ABSENCE of an
+origin row, and an absence carries no scope: a Fact this database never held
+and a Fact whose origin erasure revoked look identical. A cleaner must treat a
+copy stamped by another installation as a reason to halt, and an unstamped copy
+as unattributable (retain it). The stamp identifies an installation *lineage*:
+a restore or a clone carries the same identity, so never point a restored or
+cloned database's cleaner at the original's broker. Proxima does not do this
+cleanup for a host.
 
 ## Rollback
 
 | Action | Effect |
 |---|---|
-| unset `PROXIMA_NATS_URL` | publisher off; **capture continues**; pending records are retained for repair and replay under their original identities |
-| broker outage | capture continues while local capacity lasts; delivery resumes from `pending` |
+| omit `outbox_intake` | drain off; **capture continues**; pending records are retained and delivered, under their original identities, by the next boot that supplies an intake |
+| intake outage | capture continues while local capacity lasts; delivery resumes from `pending` |
 | disable capture | not available while a listenable type is registered — refuse the write path instead |
 | unset `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | retention off; delivered records are kept forever. Never affects an undelivered one either way |
 

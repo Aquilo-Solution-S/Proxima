@@ -197,6 +197,14 @@ pub use crate::testkit;
 /// flavors onto bare string literals that no compiler could check against
 /// a rename of the constant they duplicate.
 pub use proxima_core::UPLOADED_BLOB_SCHEMA_ID;
+/// The intake contract: what a host implements to receive captured Facts.
+///
+/// [`RuntimeBuilder::outbox_intake`] hands the runtime one [`DurableIntake`],
+/// and the runtime calls it once per captured event, in this process
+/// (docs/18). No cargo feature and no broker client is involved.
+pub use proxima_core::publication::intake::{
+    CloudEventEnvelope, DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent,
+};
 /// The publication half of the engine configuration (docs/18).
 ///
 /// A host that registers a listenable schema must bind a
@@ -210,12 +218,14 @@ pub use proxima_core::publication::{
 };
 /// The host-only outbox drain contract.
 ///
-/// Exported so a host can implement its own publisher against a broker this
-/// workspace ships no adapter for. It is deliberately absent from
+/// The claim, mark and release surface the runtime's own drain uses, exported
+/// so a host that needs a different loop (a forwarder that holds claims
+/// across its own broker round trip, say) can write one. It is deliberately
+/// absent from
 /// `StoragePorts`, `Engine` and `ToolCtx`: a flavor that could claim an
 /// outbox record could delay or suppress an export.
 pub use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
+    AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,
 };
 /// This installation's identity and the host-only provenance check.
@@ -260,36 +270,6 @@ pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{
     HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
     RequestHeaderAllowlist, ResourceServerMetadata,
-};
-/// The reference consumer's defaults ([`NatsConsumerConfig`]), beside
-/// [`DEFAULT_SUBJECT_PREFIX`]. The crate defines them in `config` and does not
-/// re-export them at its root.
-#[cfg(feature = "outbox-nats")]
-pub use proxima_outbox_nats::config::{DEFAULT_CONSUMER_NAME, DEFAULT_CONSUMER_STREAM};
-/// The shipped NATS `JetStream` publisher and its reference consumer
-/// (docs/18, `crates/outbox-nats`).
-///
-/// Behind the `outbox-nats` feature: a deployment that registers no
-/// listenable schema should not link a broker client. The boot guarantee
-/// (listenable schema ⇒ bound source) holds without this feature.
-#[cfg(feature = "outbox-nats")]
-pub use proxima_outbox_nats::{
-    AsyncApiError, AsyncApiInfo, ConfigError as NatsConfigError, ConsumerError,
-    DEFAULT_SUBJECT_PREFIX, DrainReport, DrainSummary, DurableIntake, EventIdentity, Intake,
-    IntakeError, JetStreamPublisher, NatsAuth, NatsConsumerConfig, NatsPublisherConfig,
-    ParsedSubject, PublisherError, ReceivedEvent, ReferenceConsumer, SubjectParseError,
-    asyncapi_document, parse_subject, subject_for,
-};
-/// The retained-copy cleaner's config ([`RuntimeBuilder::copy_cleaner`]) and
-/// the health views [`BuiltProxima::publisher_health`] /
-/// [`BuiltProxima::copy_cleaner_health`] return, with every type their
-/// snapshots carry.
-#[cfg(feature = "outbox-nats")]
-pub use proxima_outbox_nats::{
-    CleanerConfigError, CopyCleanerConnectionState, CopyCleanerFailure, CopyCleanerHealth,
-    CopyCleanerHealthReader, CopyCleanerScanState, CopyCleanerTaskState, InboxPrefix,
-    JetStreamCopyCleanerConfig, PublisherConnectionState, PublisherDrainState, PublisherHealth,
-    PublisherHealthReader, PublisherTaskState,
 };
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
@@ -578,15 +558,6 @@ pub use proxima_mcp_server::{
 };
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
-/// The reference consumer's and the publisher's types that
-/// `ReferenceConsumer::connect_with_hook`, `process_once`, `into_observed_parts`,
-/// `ReceivedEvent` and `JetStreamPublisher::connect_with_hook` name. Behind the
-/// `outbox-nats` feature.
-#[cfg(feature = "outbox-nats")]
-pub use proxima_outbox_nats::{
-    AckAction, AckHook, CloudEventEnvelope, ConsumeReport, ConsumerConnectionState, ConsumerHealth,
-    ConsumerHealthReader, ConsumerPassState, ConsumerTaskState, HookAction, PublishHook,
-};
 /// What [`ProximaHost::host_state_erase_context_for_host`] returns. Opaque and
 /// authority-free: it grants no erase by itself.
 pub use proxima_storage_pg::PgHostStateEraseContext;

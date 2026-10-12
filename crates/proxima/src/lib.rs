@@ -140,8 +140,11 @@ mod features;
 pub mod flavor;
 mod health;
 pub mod host;
+mod in_process_outbox;
 mod mcp_edge;
 mod migrations;
+#[cfg(test)]
+mod outbox_test_fixture;
 mod owner_access;
 mod proxima_host;
 mod runtime;
