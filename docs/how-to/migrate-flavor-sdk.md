@@ -61,6 +61,14 @@ sidecar table ([migrations §v0.0.27](migrations.md#v0027)).
 | Boot | With an `outbox_intake` the schema is listenable, so an intake without `PROXIMA_PUBLICATION_SOURCE` now fails boot with a `PublicationConfig::validate_against` error that names `core/goal-change-v1`, as for any listenable schema. Set the source, or drop the intake |
 | Wire | With an intake, every goal write adds one event of type `core/goal-change-v1` to the feed, `data` `{series, goal, prior, revision, state, change}` ([18 §Goal changes on the feed](../18-fact-outbox.md#goal-changes-on-the-feed)). An intake that rejects unknown event types must accept it. Deliveries can arrive out of order: key by `series` and apply only an event whose `revision` is greater than the last applied for that series |
 
+**Also breaking, no shims** (#442): a host tool failure can carry a JSON
+object as `structuredContent` beside its content blocks ([12 §Tool
+Replies](../12-tool-manifest.md#tool-replies)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| `ToolReply` (`proxima_core::mcp`, `proxima::flavor`) | Gains `StructuredFailure { structured: serde_json::Map<String, Value>, content: Vec<ToolContent> }`, sent as `structuredContent` beside the content blocks with `isError: true`. An exhaustive `match` on `ToolReply` adds the arm; `Failure` is unchanged. A structured failure from a tool that declares an `output_schema` is an internal error (logged, returned redacted) |
+
 ## v0.0.26
 
 Pin all Proxima Rust dependencies to the same `v0.0.26` tag. Boot applies one

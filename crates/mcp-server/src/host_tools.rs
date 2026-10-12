@@ -43,8 +43,9 @@ pub struct McpHostTool {
     /// Object schema; unions of object branches are normalized on `tools/list`.
     /// Invalid output schemas are omitted from the list with a warning.
     /// A tool that declares one answers [`ToolReply::Structured`] or
-    /// [`ToolReply::Failure`]; a [`ToolReply::Content`] reply from it is an
-    /// internal error. `None` for a tool that answers with content.
+    /// [`ToolReply::Failure`]; a [`ToolReply::Content`] or
+    /// [`ToolReply::StructuredFailure`] reply from it is an internal error.
+    /// `None` for a tool that answers with content or a structured failure.
     pub output_schema: Option<serde_json::Value>,
     /// What the tool does; its MCP hints are
     /// [`McpToolAnnotations::host`](proxima_core::McpToolAnnotations::host),
@@ -132,15 +133,18 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     /// engine).
     ///
     /// A tool that ran answers with a [`ToolReply`]: [`ToolReply::Failure`]
-    /// for a failure the model should read and retry. The `Err` side is for
-    /// a call that cannot be answered at all, and maps to a JSON-RPC error;
-    /// Proxima never turns it into a `Failure`.
+    /// for a failure the model should read and retry, or
+    /// [`ToolReply::StructuredFailure`] when the failure also carries an
+    /// object a program reads. The `Err` side is for a call that cannot be
+    /// answered at all, and maps to a JSON-RPC error; Proxima never turns it
+    /// into a failure.
     ///
     /// # Errors
     ///
     /// Any [`McpToolError`]; it maps to the same JSON-RPC error a registry
     /// tool's would. A [`ToolReply::Structured`] value must be a JSON
-    /// object, and a [`ToolReply::Content`] reply is refused from a tool that
+    /// object, and a [`ToolReply::Content`] or
+    /// [`ToolReply::StructuredFailure`] reply is refused from a tool that
     /// declared an output schema; either is logged and returned as a
     /// redacted internal error.
     async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError>;

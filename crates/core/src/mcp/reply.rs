@@ -71,12 +71,22 @@ impl ToolContent {
 /// scope gate's refusal, authentication, an unknown tool, invalid input, a
 /// host's [`McpToolError`](super::McpToolError)) answers with that error,
 /// which the transport reports as a protocol error. The two never convert
-/// into each other: [`Self::Failure`] is built by a host terminal and
-/// nothing in Proxima turns an error into one.
+/// into each other: [`Self::Failure`] and [`Self::StructuredFailure`] are
+/// built by a host terminal and nothing in Proxima turns an error into one.
 ///
 /// ```compile_fail,E0277
 /// let error = proxima_core::McpToolError::NotAuthorized("tool".into());
 /// let _reply: proxima_core::ToolReply = error.into();
+/// ```
+///
+/// A structured failure carries a JSON object, so any other JSON value does
+/// not build one:
+///
+/// ```compile_fail,E0308
+/// let _reply = proxima_core::ToolReply::StructuredFailure {
+///     structured: serde_json::json!("not an object"),
+///     content: Vec::new(),
+/// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolReply {
@@ -90,6 +100,15 @@ pub enum ToolReply {
     /// retry: content blocks with `isError: true`. Proxima does not redact
     /// them; the host owns what it puts here.
     Failure(Vec<ToolContent>),
+    /// The tool ran and failed with details a program reads: `structured` is
+    /// sent as `structuredContent` beside the content blocks, with
+    /// `isError: true`. Only from a tool that declares no output schema
+    /// (docs/12 §Tool Replies). Proxima does not redact either; the host owns
+    /// what it puts here.
+    StructuredFailure {
+        structured: serde_json::Map<String, serde_json::Value>,
+        content: Vec<ToolContent>,
+    },
 }
 
 impl ToolReply {
@@ -98,11 +117,14 @@ impl ToolReply {
     ///
     /// # Errors
     ///
-    /// The reply itself when it is [`Self::Content`] or [`Self::Failure`].
+    /// The reply itself when it is [`Self::Content`], [`Self::Failure`] or
+    /// [`Self::StructuredFailure`].
     pub fn into_structured(self) -> Result<serde_json::Value, Self> {
         match self {
             Self::Structured(value) => Ok(value),
-            other @ (Self::Content(_) | Self::Failure(_)) => Err(other),
+            other @ (Self::Content(_) | Self::Failure(_) | Self::StructuredFailure { .. }) => {
+                Err(other)
+            }
         }
     }
 }
@@ -140,5 +162,13 @@ mod tests {
         assert_eq!(content.clone().into_structured(), Err(content));
         let failure = ToolReply::Failure(vec![ToolContent::text("x")]);
         assert_eq!(failure.clone().into_structured(), Err(failure));
+        let structured_failure = ToolReply::StructuredFailure {
+            structured: serde_json::Map::from_iter([("code".to_owned(), serde_json::json!("x"))]),
+            content: vec![ToolContent::text("x")],
+        };
+        assert_eq!(
+            structured_failure.clone().into_structured(),
+            Err(structured_failure)
+        );
     }
 }
