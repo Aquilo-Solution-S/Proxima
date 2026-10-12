@@ -2,6 +2,7 @@
 //! flavor registry, through the same scope gate and request behaviors.
 
 use async_trait::async_trait;
+use proxima_core::FlavorServices;
 use proxima_core::mcp::{McpToolError, ToolCall, ToolEffect, ToolReply};
 
 use crate::auth::McpAuthContext;
@@ -25,9 +26,10 @@ pub const MAX_HOST_INSTRUCTIONS_CHARS: usize = 4096;
 ///     effect: proxima_core::ToolEffect::ReadOnly,
 ///     meta: None,
 ///     open_world: None,
+///     services: proxima_core::FlavorServices::default(),
 /// };
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct McpHostTool {
     /// Canonical and wire name: 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters
@@ -59,6 +61,15 @@ pub struct McpHostTool {
     ///
     /// [`McpToolAnnotations::host`]: proxima_core::McpToolAnnotations::host
     pub open_world: Option<bool>,
+    /// Values a call resolved to this entry carries: they join the call's
+    /// request services beside
+    /// [`McpHostToolCall`](proxima_core::McpHostToolCall), taken from the list
+    /// the call was resolved against, so [`McpHostTools::call`] and every
+    /// request behavior read the entry the scope gate judged without listing
+    /// again. Proxima neither reads them nor lists them. A type the call's
+    /// services already hold (`McpHostToolCall`, a request or boot service) is
+    /// an internal error.
+    pub services: FlavorServices,
 }
 
 impl McpHostTool {
@@ -77,6 +88,7 @@ impl McpHostTool {
             effect,
             meta: None,
             open_world: None,
+            services: FlavorServices::default(),
         }
     }
 
@@ -100,6 +112,13 @@ impl McpHostTool {
         self.open_world = Some(open_world);
         self
     }
+
+    /// Set the services a call resolved to this entry carries (see [`Self::services`]).
+    #[must_use]
+    pub fn with_services(mut self, services: FlavorServices) -> Self {
+        self.services = services;
+        self
+    }
 }
 
 /// A host's tool source, registered on the runtime builder
@@ -110,8 +129,8 @@ impl McpHostTool {
 /// `visible`, like every registry tool. `tools/call` runs a listed tool
 /// through the registry's request behaviors (scope gate first) with
 /// [`Self::call`] as the terminal; the call's services carry an
-/// [`McpHostToolCall`](proxima_core::McpHostToolCall). Each request lists
-/// once.
+/// [`McpHostToolCall`](proxima_core::McpHostToolCall) and the listed entry's
+/// [`services`](McpHostTool::services). Each request lists once.
 ///
 /// [`McpToolHost::with_host_tools`]: crate::McpToolHost::with_host_tools
 #[async_trait]

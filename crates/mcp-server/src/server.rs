@@ -396,7 +396,10 @@ impl McpToolHost {
         Err(ToolInvocationError::ToolNotFound(name.to_string()))
     }
 
-    /// Run a [`Self::resolve_tool`] result through the request behaviors.
+    /// Run a [`Self::resolve_tool`] result through the request behaviors. A
+    /// host tool's call services are the request's, the call's
+    /// [`McpHostToolCall`] and the `services` of the entry it resolved to; a
+    /// type any of them already holds is an internal error.
     pub(crate) async fn call_resolved(
         &self,
         target: ToolTarget<'_>,
@@ -418,16 +421,26 @@ impl McpToolHost {
                 )
             }
             ToolTarget::Host(tool) => {
+                let McpHostTool {
+                    name,
+                    effect,
+                    services,
+                    ..
+                } = *tool;
                 let Some(source) = &self.host_tools else {
                     // A host tool only exists in a source's list.
-                    return Err(ToolInvocationError::ToolNotFound(tool.name));
+                    return Err(ToolInvocationError::ToolNotFound(name));
                 };
                 request
-                    .try_insert(McpHostToolCall::new(tool.name.clone(), tool.effect))
+                    .try_insert(McpHostToolCall::new(name.clone(), effect))
                     .map_err(|err| McpToolError::Other(format!("request services: {err}")))?;
+                // After the call marker, so an entry cannot replace it.
+                request
+                    .try_extend(services)
+                    .map_err(|err| McpToolError::Other(format!("host tool services: {err}")))?;
                 let source = Arc::clone(source);
                 (
-                    tool.name,
+                    name,
                     Box::new(move |call| Box::pin(async move { source.call(call).await })),
                 )
             }
@@ -1770,6 +1783,105 @@ mod tests {
             Err(McpToolError::Unavailable(message)) if message == "catalog down"
         ));
         assert_eq!(lists(&counter), 3);
+    }
+
+    /// What a catalog entry attached when it was listed.
+    #[derive(Debug)]
+    struct Revision(u64);
+
+    /// A catalog that moves on right after it is listed: every list stamps
+    /// its entry with the revision it read, then bumps it.
+    #[derive(Debug)]
+    struct MovingHostTools(std::sync::atomic::AtomicU64);
+
+    #[async_trait::async_trait]
+    impl McpHostTools for MovingHostTools {
+        async fn list(&self, _: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
+            let listed = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![
+                host_tool("host_rev", READ).with_services(FlavorServices::with(Revision(listed))),
+            ])
+        }
+
+        async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
+            let resolved = call
+                .ctx
+                .services
+                .get::<Revision>()
+                .ok_or_else(|| McpToolError::Other("no revision".into()))?;
+            Ok(ToolReply::Structured(serde_json::json!({
+                "resolved": resolved.0,
+                "catalog": self.0.load(std::sync::atomic::Ordering::SeqCst),
+            })))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RevisionBehavior(Arc<std::sync::Mutex<Vec<u64>>>);
+
+    #[async_trait::async_trait]
+    impl proxima_core::RequestBehavior for RevisionBehavior {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
+            if let Some(revision) = call.ctx.services.get::<Revision>() {
+                self.0.lock().expect("lock").push(revision.0);
+            }
+            next.run(call).await
+        }
+    }
+
+    /// A call carries the entry it was resolved to, not the catalog as it
+    /// stands when the behaviors and the terminal run.
+    #[tokio::test]
+    async fn a_host_call_carries_the_entry_it_resolved_to_although_the_catalog_moved() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_request_behavior(RevisionBehavior(Arc::clone(&seen)));
+        let server = McpToolHost::from_parts(
+            Arc::new(registry.freeze_or_panic_for_tests()),
+            FlavorServices::default(),
+        )
+        .with_host_tools(Arc::new(MovingHostTools(
+            std::sync::atomic::AtomicU64::new(1),
+        )));
+
+        let output = server
+            .call_tool(
+                "host_rev",
+                serde_json::json!({}),
+                author(),
+                Some(owner_auth()),
+            )
+            .await
+            .expect("the host tool answers");
+        assert_eq!(output, serde_json::json!({"resolved": 1, "catalog": 2}));
+        assert_eq!(*seen.lock().expect("lock"), [1]);
+    }
+
+    /// A listed entry cannot replace the effect declaration the gate reads:
+    /// the call fails before any behavior or the source's `call` runs.
+    #[tokio::test]
+    async fn a_listed_entry_cannot_replace_a_call_service() {
+        let forged = host_tool("host_forged", WRITE).with_services(FlavorServices::with(
+            McpHostToolCall::new("host_forged", READ),
+        ));
+        let (server, _) = scripted(
+            Ok(vec![forged]),
+            ToolReply::Structured(serde_json::json!({"ran": true})),
+        );
+
+        let result = server
+            .call_tool(
+                "host_forged",
+                serde_json::json!({}),
+                author(),
+                Some(owner_auth()),
+            )
+            .await;
+        let Err(ToolInvocationError::Tool(error @ McpToolError::Other(_))) = result else {
+            panic!("a colliding entry service must be an internal error: {result:?}");
+        };
+        assert_eq!(error.kind(), McpToolErrorKind::Internal);
+        assert_eq!(error.client_message(), "internal server error");
     }
 
     fn without_output_schema() -> McpHostTool {

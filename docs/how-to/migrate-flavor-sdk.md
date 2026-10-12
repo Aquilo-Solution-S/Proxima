@@ -69,6 +69,14 @@ Replies](../12-tool-manifest.md#tool-replies)).
 |---|---|
 | `ToolReply` (`proxima_core::mcp`, `proxima::flavor`) | Gains `StructuredFailure { structured: serde_json::Map<String, Value>, content: Vec<ToolContent> }`, sent as `structuredContent` beside the content blocks with `isError: true`. An exhaustive `match` on `ToolReply` adds the arm; `Failure` is unchanged. A structured failure from a tool that declares an `output_schema` is an internal error (logged, returned redacted) |
 
+**Also breaking, no shims** (#444): a host tool call carries the services of the
+catalog entry it was resolved to ([10 §MCP Endpoint and
+Authentication](../10-configuration.md#mcp-endpoint-and-authentication)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| `McpHostTool` (`proxima_mcp_server`, `proxima`) | Gains `services: FlavorServices` and `with_services(FlavorServices)`; the values join the services of a call resolved to that entry. No longer `PartialEq`: compare the fields a test cares about |
+
 ## v0.0.26
 
 Pin all Proxima Rust dependencies to the same `v0.0.26` tag. Boot applies one
