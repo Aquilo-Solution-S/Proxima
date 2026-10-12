@@ -193,6 +193,44 @@ identifiers, not an order: a version's `t` comes from the database clock and
 can sort below its predecessor after a clock step. Proxima has no code for
 this.
 
+## Who wrote what
+
+Proxima knows what was written; the host knows who called. Proxima keeps no
+per-write author: the opt-in MCP call ledger (`record_mcp_calls`) records who
+called a tool, not what that call wrote. A host that needs an audit (who set,
+paused or modified a goal in a shared owner) records it from this feed, in its
+own table and under its own retention
+([13 §The position](13-compliance.md#the-position)). A goal read
+returns no `set_by` for the same reason.
+
+The host binds the actor as a host-bound extension attribute (§Host-bound
+extension attributes), in its `Authenticator`. Every Fact that context goes on
+to capture carries it, `core/goal-change-v1` included, because a goal write
+stamps its change Fact from the same `AuthzContext` as any other Fact write.
+Proxima names no actor attribute and reads none: the name and the value are the
+host's. The examples use the name `actor` and the host's subject id as a
+string. `proximaowner` is the owner (for a group, the group), never the actor.
+`proximamodel` is the token-certified model, not the person.
+
+| Property | Value |
+|---|---|
+| Exists iff committed | the record is written in the write's transaction, so a rolled-back write leaves no event |
+| At least once | a redelivery is normal (§Delivery guarantee), so the host's ledger inserts-or-ignores on the event `id` |
+| Replay | a replayed write (same idempotency key) writes no second Fact and captures no second record, so the first writer keeps the write |
+| Order | a ledger appends, so reordering does not matter. For the latest version per goal, use `revision` (§Goal changes on the feed) |
+| Coverage | listenable Facts, and goal writes while an intake is configured. Not on the feed: derivations (Abstractions, Perspectives), interpretations, links, forget, transfer and membership changes. The host attributes those from its own request records |
+| No actor | a context the host bound nothing to (a `for_system` context, unless the host binds one on it) and a redeemed delegated phase capture no extension attributes. The host attributes such a write from its own records: which job, which delegation |
+
+The actor attribute lies in the envelope bytes of the OWNER's record. Erasing
+that owner destroys its records. Erasing the actor's own personal owner does
+not reach the records of a group the actor wrote into. Published records stay
+until `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` removes them (unset keeps them),
+so set it to bound how long they hold the attribute. The host's ledger, its
+retention and who may read it, is the host's
+([13](13-compliance.md#the-position)).
+
+Recipe: [how-to/fact-outbox.md §7](how-to/fact-outbox.md#7-record-who-set-a-goal).
+
 ## Outbox Row and State Machine
 
 Table `proxima_core.publication_outbox` (migration `0011`; `0025` simplified its
@@ -539,7 +577,8 @@ No destructive schema rollback, no hosted reroute.
 Exactly-once delivery. A global commit order across owners. Host orchestration,
 Goal matching, claims or retries of application work. Typed invocation
 dispatch and automatic invocation-context propagation. A queue HTTP service or
-a generic broker-plugin framework.
+a generic broker-plugin framework. An audit of who wrote what
+(§Who wrote what).
 
 ## Kernel Carrier
 
