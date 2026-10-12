@@ -343,8 +343,8 @@ impl McpToolHost {
     }
 
     /// [`Self::call_tool_in_request`] with the tool's whole [`ToolReply`]: a
-    /// host tool may answer content blocks or a content-bearing failure,
-    /// which a JSON-only surface cannot carry.
+    /// host tool may answer content blocks or a failure, which a JSON-only
+    /// surface cannot carry.
     ///
     /// Resolves `name` once: a registry tool without listing the host
     /// source, any other name with one [`Self::host_tools_for`].
@@ -353,8 +353,9 @@ impl McpToolHost {
     ///
     /// As [`Self::call_tool_in_request`], and the host source's list error
     /// for a name the registry does not serve. A [`ToolReply::Structured`]
-    /// that is not an object, or a [`ToolReply::Content`] from a tool that
-    /// declared an output schema, is an internal error.
+    /// that is not an object, or a [`ToolReply::Content`] or
+    /// [`ToolReply::StructuredFailure`] from a tool that declared an output
+    /// schema, is an internal error.
     pub async fn call_tool_reply_in_request(
         &self,
         name: &str,
@@ -540,8 +541,9 @@ impl ToolTarget<'_> {
 
 /// The final reply of a tool call, checked where it leaves the behaviors: a
 /// structured answer is a JSON object, and only a tool that declared no
-/// output schema answers content, which a schema-validating client could not
-/// check. A failure carries content by definition and is not held to either.
+/// output schema answers content or a structured failure, which a
+/// schema-validating client could not check. A plain failure carries content
+/// by definition and is not held to either.
 fn checked_reply(
     tool: &str,
     declares_output_schema: bool,
@@ -560,7 +562,16 @@ fn checked_reply(
                 "tool output must be structured content".into(),
             ))
         }
-        ToolReply::Structured(_) | ToolReply::Content(_) | ToolReply::Failure(_) => Ok(reply),
+        ToolReply::StructuredFailure { .. } if declares_output_schema => {
+            tracing::error!(tool = %tool, "a tool that declares an output schema must not answer a structured failure");
+            Err(McpToolError::Other(
+                "a structured failure needs a tool without an output schema".into(),
+            ))
+        }
+        ToolReply::Structured(_)
+        | ToolReply::Content(_)
+        | ToolReply::Failure(_)
+        | ToolReply::StructuredFailure { .. } => Ok(reply),
     }
 }
 
@@ -1761,23 +1772,24 @@ mod tests {
         assert_eq!(lists(&counter), 3);
     }
 
+    fn without_output_schema() -> McpHostTool {
+        McpHostTool::new(
+            "host_out",
+            "no output schema",
+            serde_json::json!({"type": "object"}),
+            READ,
+        )
+    }
+
     /// The final reply is checked once, where it leaves the behaviors.
     #[tokio::test]
     async fn replies_are_checked_where_they_leave_the_behaviors() {
         let auth = owner_auth();
         let content = ToolReply::Content(vec![ToolContent::text("read me")]);
         let failure = ToolReply::Failure(vec![ToolContent::text("token sk-live-1234 rejected")]);
-        let without_schema = || {
-            McpHostTool::new(
-                "host_out",
-                "no output schema",
-                serde_json::json!({"type": "object"}),
-                READ,
-            )
-        };
 
         // A tool without an output schema may answer content.
-        let (server, _) = scripted(Ok(vec![without_schema()]), content.clone());
+        let (server, _) = scripted(Ok(vec![without_output_schema()]), content.clone());
         let reply = server
             .call_tool_reply_in_request(
                 "host_out",
@@ -1837,6 +1849,67 @@ mod tests {
             .await
             .expect("a failure passes");
         assert_eq!(reply, failure);
+    }
+
+    /// A structured failure follows the content rule: delivered from a tool
+    /// without an output schema, refused from one that declared it.
+    #[tokio::test]
+    async fn a_structured_failure_is_refused_from_a_tool_with_an_output_schema() {
+        let auth = owner_auth();
+        let structured_failure = ToolReply::StructuredFailure {
+            structured: serde_json::Map::from_iter([(
+                "code".to_owned(),
+                serde_json::json!("quota_exhausted"),
+            )]),
+            content: vec![ToolContent::text("quota exhausted")],
+        };
+        let (server, _) = scripted(
+            Ok(vec![without_output_schema()]),
+            structured_failure.clone(),
+        );
+        let reply = server
+            .call_tool_reply_in_request(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+                FlavorServices::default(),
+            )
+            .await
+            .expect("a structured failure from a tool that declared no schema");
+        assert_eq!(reply, structured_failure);
+        // A JSON-only surface cannot carry it.
+        let json = server
+            .call_tool(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth.clone()),
+            )
+            .await;
+        assert!(
+            matches!(
+                &json,
+                Err(ToolInvocationError::Tool(McpToolError::Other(_)))
+            ),
+            "{json:?}"
+        );
+        let (server, _) = scripted(Ok(vec![host_tool("host_out", READ)]), structured_failure);
+        let error = server
+            .call_tool_reply_in_request(
+                "host_out",
+                serde_json::json!({}),
+                author(),
+                Some(auth),
+                FlavorServices::default(),
+            )
+            .await
+            .expect_err("a structured failure against a declared schema is refused");
+        let ToolInvocationError::Tool(error) = error else {
+            panic!("expected an internal tool error, got {error:?}");
+        };
+        assert_eq!(error.kind(), McpToolErrorKind::Internal);
+        assert_eq!(error.client_message(), "internal server error");
     }
 
     /// A behavior that answers content for every call.

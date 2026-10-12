@@ -671,7 +671,8 @@ fn structured_tool_output(
 enum Recorded {
     /// The tool answered; the reply's size in bytes.
     Replied(u64),
-    /// The tool ran and answered [`ToolReply::Failure`].
+    /// The tool ran and answered [`ToolReply::Failure`] or
+    /// [`ToolReply::StructuredFailure`].
     ToolFailure,
     /// The call was refused or failed with this JSON-RPC code.
     Refused(i32),
@@ -680,7 +681,8 @@ enum Recorded {
 /// A tool's reply as the wire carries it, with the shape a call record keeps.
 ///
 /// `Structured` is `structuredContent` plus its text rendering; `Content` is
-/// content blocks alone; `Failure` is content blocks with `isError`.
+/// content blocks alone; `Failure` is content blocks with `isError`;
+/// `StructuredFailure` is the same with `structuredContent` beside them.
 fn wire_reply(tool: &str, reply: ToolReply) -> Result<(CallToolResult, Recorded), ErrorData> {
     match reply {
         ToolReply::Structured(output) => {
@@ -699,6 +701,15 @@ fn wire_reply(tool: &str, reply: ToolReply) -> Result<(CallToolResult, Recorded)
             CallToolResult::error(content.into_iter().map(content_block).collect()),
             Recorded::ToolFailure,
         )),
+        ToolReply::StructuredFailure {
+            structured,
+            content,
+        } => {
+            let mut result =
+                CallToolResult::error(content.into_iter().map(content_block).collect());
+            result.structured_content = Some(serde_json::Value::Object(structured));
+            Ok((result, Recorded::ToolFailure))
+        }
     }
 }
 
@@ -1242,8 +1253,9 @@ impl CallRecording {
     /// Write the record off the request path: a client that disconnects
     /// does not cancel it, and a failed write never fails the call. Every
     /// field is server-derived: a failure is its JSON-RPC code, or the fixed
-    /// "tool failure" of a [`ToolReply::Failure`], never a message or content
-    /// block, which can echo arguments.
+    /// "tool failure" of a [`ToolReply::Failure`] or
+    /// [`ToolReply::StructuredFailure`], never a message or content block,
+    /// which can echo arguments.
     fn finish(self, server: &McpToolHost, auth: Option<&McpAuthContext>, outcome: Recorded) {
         let (Some(engine), Some(auth)) = (server.engine(), auth) else {
             return;

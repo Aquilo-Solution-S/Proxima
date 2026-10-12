@@ -437,9 +437,11 @@ async fn the_authenticator_is_built_after_the_platform_scope() -> TestResult {
 
 const FAILING_TOOL: &str = "host_fail";
 const CONTENT_TOOL: &str = "host_content";
+const STRUCTURED_FAILING_TOOL: &str = "host_fail_structured";
 
-/// Two tools without an output schema: one answers content, one a tool
-/// failure. Counts how often a request reads the catalog.
+/// Three tools without an output schema: one answers content, one a tool
+/// failure, one a structured failure. Counts how often a request reads the
+/// catalog.
 #[derive(Debug, Clone)]
 struct ReplyTools {
     lists: Arc<AtomicUsize>,
@@ -452,7 +454,7 @@ impl McpHostTools for ReplyTools {
         _auth: &proxima::McpAuthContext,
     ) -> Result<Vec<McpHostTool>, McpToolError> {
         self.lists.fetch_add(1, Ordering::SeqCst);
-        Ok([FAILING_TOOL, CONTENT_TOOL]
+        Ok([FAILING_TOOL, STRUCTURED_FAILING_TOOL, CONTENT_TOOL]
             .into_iter()
             .map(|name| {
                 McpHostTool::new(
@@ -470,6 +472,13 @@ impl McpHostTools for ReplyTools {
             FAILING_TOOL => Ok(ToolReply::Failure(vec![ToolContent::text(
                 "upstream said no",
             )])),
+            STRUCTURED_FAILING_TOOL => Ok(ToolReply::StructuredFailure {
+                structured: serde_json::Map::from_iter([
+                    ("code".to_owned(), json!("quota_exhausted")),
+                    ("retry_after_s".to_owned(), json!(60)),
+                ]),
+                content: vec![ToolContent::text("quota exhausted; retry in 60s")],
+            }),
             _ => Ok(ToolReply::Content(vec![
                 ToolContent::text("hello"),
                 ToolContent::image([0xfb, 0xff], "image/png"),
@@ -512,9 +521,37 @@ async fn recorded_calls(
     Ok(calls)
 }
 
-/// A host tool answers content blocks or a tool failure (`isError`, still a
-/// JSON-RPC result), a failure is recorded as not ok without its content,
-/// and no request reads the host catalog twice, the recorder included.
+/// A tool failure result: `isError`, the one text block, and
+/// `structuredContent` exactly when `structured` is given.
+fn assert_failure_result(reply: &Value, text: &str, structured: Option<Value>) {
+    let result = &reply["result"];
+    assert_eq!(result["isError"], json!(true), "{reply}");
+    assert_eq!(
+        result["content"],
+        json!([{"type": "text", "text": text}]),
+        "{reply}"
+    );
+    match structured {
+        Some(expected) => assert_eq!(result["structuredContent"], expected, "{reply}"),
+        None => assert!(result.get("structuredContent").is_none(), "{reply}"),
+    }
+}
+
+/// `tool`'s call record is a failure: not ok, the fixed error, no content.
+fn assert_recorded_failure(recorded: &[McpCallRecord], tool: &str) {
+    let record = recorded
+        .iter()
+        .find(|call| call.tool_name == tool)
+        .unwrap_or_else(|| panic!("{tool} not recorded"));
+    assert!(!record.ok, "{record:?}");
+    assert_eq!(record.error.as_deref(), Some("tool failure"));
+    assert_eq!(record.io_body, None, "the failure's content is not stored");
+}
+
+/// A host tool answers content blocks, a tool failure or a structured failure
+/// (`isError`, still a JSON-RPC result), a failure is recorded as not ok
+/// without its content, and no request reads the host catalog twice, the
+/// recorder included.
 #[tokio::test]
 async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catalog_read()
 -> TestResult {
@@ -561,7 +598,7 @@ async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catal
         1,
         "one list per tools/list"
     );
-    for name in [FAILING_TOOL, CONTENT_TOOL] {
+    for name in [FAILING_TOOL, STRUCTURED_FAILING_TOOL, CONTENT_TOOL] {
         let tool = listed["result"]["tools"]
             .as_array()
             .and_then(|tools| tools.iter().find(|tool| tool["name"] == name))
@@ -570,16 +607,7 @@ async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catal
     }
 
     let failed = call(3, FAILING_TOOL).await?;
-    assert_eq!(failed["result"]["isError"], json!(true), "{failed}");
-    assert_eq!(
-        failed["result"]["content"],
-        json!([{"type": "text", "text": "upstream said no"}]),
-        "{failed}"
-    );
-    assert!(
-        failed["result"].get("structuredContent").is_none(),
-        "{failed}"
-    );
+    assert_failure_result(&failed, "upstream said no", None);
 
     let content = call(4, CONTENT_TOOL).await?;
     assert_ne!(content["result"]["isError"], json!(true), "{content}");
@@ -598,23 +626,25 @@ async fn host_content_and_failure_replies_are_served_and_recorded_with_one_catal
         "{content}"
     );
 
-    let recorded = recorded_calls(running.host().engine(), subject, 2).await?;
-    let failure = recorded
-        .iter()
-        .find(|call| call.tool_name == FAILING_TOOL)
-        .ok_or("failure not recorded")?;
-    assert!(!failure.ok, "{failure:?}");
-    assert_eq!(failure.error.as_deref(), Some("tool failure"));
-    assert_eq!(failure.io_body, None, "the failure's content is not stored");
+    let structured_failed = call(5, STRUCTURED_FAILING_TOOL).await?;
+    assert_failure_result(
+        &structured_failed,
+        "quota exhausted; retry in 60s",
+        Some(json!({"code": "quota_exhausted", "retry_after_s": 60})),
+    );
+
+    let recorded = recorded_calls(running.host().engine(), subject, 3).await?;
+    assert_recorded_failure(&recorded, FAILING_TOOL);
+    assert_recorded_failure(&recorded, STRUCTURED_FAILING_TOOL);
     let served = recorded
         .iter()
         .find(|call| call.tool_name == CONTENT_TOOL)
         .ok_or("content call not recorded")?;
     assert!(served.ok, "{served:?}");
     assert_eq!(served.io_body, None, "no body is stored");
-    // The tools/list and the two calls read the catalog once each; the
+    // The tools/list and the three calls read the catalog once each; the
     // recorder, finished by now, read it zero times.
-    assert_eq!(lists.load(Ordering::SeqCst) - before, 3);
+    assert_eq!(lists.load(Ordering::SeqCst) - before, 4);
 
     running.shutdown().await;
     Ok(())

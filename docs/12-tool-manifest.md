@@ -251,8 +251,8 @@ and object-root output normalization described below.
   empty struct instead of `()`. A host tool's `output_schema` is optional
   and follows the same rule; an invalid one is omitted with a warning. The
   handler refuses non-object `structuredContent`, and a `ToolReply::Content`
-  from a tool that declares an output schema, as an internal error (logged,
-  returned redacted).
+  or `ToolReply::StructuredFailure` from a tool that declares an output
+  schema, as an internal error (logged, returned redacted).
 - MCP `outputSchema` is `mcp_wire_output_schema(output_schema)`: validation
   keywords only — no `description`, `title`, `examples`, `default`. Model
   APIs carry a tool's name, description and input schema, never its output
@@ -404,14 +404,28 @@ MCP dispatch contract:
 | `Structured(Value)` | JSON object → `structuredContent` + its text rendering | every registry tool; a host tool |
 | `Content(Vec<ToolContent>)` | content blocks, no `structuredContent` | a host tool that declares no `output_schema` |
 | `Failure(Vec<ToolContent>)` | content blocks, `isError: true`, a JSON-RPC result; not redacted | a host terminal only |
+| `StructuredFailure { structured: Map, content: Vec<ToolContent> }` | content blocks and `structuredContent` (the object), `isError: true`, a JSON-RPC result; not redacted | a host tool that declares no `output_schema` |
+
+A structured failure comes only from a tool without an output schema, and the
+final reply check refuses one from a tool that declares one, as it refuses
+`Content`. MCP says a tool with an `outputSchema` must return structured
+results that conform to it, the TypeScript SDK checks `structuredContent`
+against the output schema on an error result too, and Proxima has no JSON
+Schema validator. Every registry tool declares an output schema, so a
+behavior that turns a registry reply into a structured failure is refused. A
+plain `Failure` stays allowed from every tool. `structured` is a
+`serde_json::Map`, so a structured failure that is not an object cannot be
+built. Proxima adds no text rendering of `structured` and requires no block:
+the content goes out as the host built it, in order, and may be empty.
 
 `ToolContent` is `Text`, `Image`, `Audio`, `ResourceLink`, `TextResource`,
-`BlobResource`. `McpToolError` never becomes a `Failure` (no `From`): the scope
+`BlobResource`. `McpToolError` never becomes a failure (no `From`): the scope
 gate's refusal, auth failure, an unknown tool, invalid input and a host's
 `Err` stay JSON-RPC errors. A behavior that post-processes JSON matches
 `Structured` and passes the others on; `read_resource`, REST and the core
 tool surface carry JSON only and refuse any other reply. A recorded
-`Failure` is stored `ok = false`, error `tool failure`, no content.
+`Failure` or `StructuredFailure` is stored `ok = false`, error `tool failure`,
+no content.
 
 ### Tool Visibility
 

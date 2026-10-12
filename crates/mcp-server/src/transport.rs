@@ -614,7 +614,8 @@ mod tests {
 
     /// A host's content reply goes out as content blocks of the same names,
     /// with no `structuredContent`; a failure is the same blocks with
-    /// `isError`, still a result and not a JSON-RPC error.
+    /// `isError`, still a result and not a JSON-RPC error, and a structured
+    /// failure adds its object as `structuredContent`.
     #[tokio::test]
     async fn host_content_and_failure_replies_go_out_as_content_blocks() {
         use proxima_core::{ToolContent, ToolReply};
@@ -690,6 +691,35 @@ mod tests {
         assert!(message.get("error").is_none(), "{message}");
         assert_eq!(message["result"]["isError"], true, "{message}");
         assert!(message["result"].get("structuredContent").is_none());
+        assert_eq!(
+            message["result"]["content"],
+            serde_json::json!([{"type": "text", "text": "quota exhausted; retry in 60s"}])
+        );
+
+        // A structured failure adds `structuredContent`, from a tool that
+        // declares no schema; the blocks are the host's, unchanged.
+        let host = stub_host().with_host_tools(Arc::new(HostFixture::new(
+            vec![content_tool("host_failing_structured")],
+            ToolReply::StructuredFailure {
+                structured: serde_json::Map::from_iter([
+                    ("code".to_owned(), serde_json::json!("quota_exhausted")),
+                    ("retry_after_s".to_owned(), serde_json::json!(60)),
+                ]),
+                content: vec![ToolContent::text("quota exhausted; retry in 60s")],
+            },
+        )));
+        let message = first_message(
+            mcp_service_for(host),
+            tools_call("host_failing_structured", owner),
+        )
+        .await;
+        assert!(message.get("error").is_none(), "{message}");
+        assert_eq!(message["result"]["isError"], true, "{message}");
+        assert_eq!(
+            message["result"]["structuredContent"],
+            serde_json::json!({"code": "quota_exhausted", "retry_after_s": 60}),
+            "{message}"
+        );
         assert_eq!(
             message["result"]["content"],
             serde_json::json!([{"type": "text", "text": "quota exhausted; retry in 60s"}])
