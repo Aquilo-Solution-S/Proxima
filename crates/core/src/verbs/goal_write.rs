@@ -4,11 +4,12 @@
 //! docs/06-goals-and-self.md §"Goal entity". The
 //! storage-side body lives in proxima-storage-pg.
 
+use crate::publication::PublicationStamp;
 use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 use crate::{FlavorRegistryFrozen, ProtocolError, ScopeKey};
 use crate::{
-    GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
-    PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
+    GoalChange, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner,
+    OwnerRef, PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -48,6 +49,54 @@ impl GoalState {
     #[must_use]
     pub const fn may_achieve(self) -> bool {
         matches!(self, Self::Active)
+    }
+}
+
+/// A plain lifecycle transition, as a request names it: the goal's next
+/// state AND what the change means for work a scheduler already queued.
+///
+/// Closed, and `pending` exists only on [`Self::Pause`]: a resume or an
+/// abandon cannot carry it, and no transition leads to `Achieved` (that goes
+/// through the achieve verb, which carries evidence).
+///
+/// ```compile_fail
+/// use proxima_core::PendingWork;
+/// use proxima_core::verbs::goal_write::GoalTransitionKind;
+///
+/// // `pending` is a field of `Pause` alone.
+/// let _ = GoalTransitionKind::Resume {
+///     pending: PendingWork::Keep,
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTransitionKind {
+    /// Active to Paused. `pending` says what happens to the queued work.
+    Pause { pending: PendingWork },
+    /// Paused to Active.
+    Resume,
+    /// Active to Abandoned.
+    Abandon,
+}
+
+impl GoalTransitionKind {
+    /// The state the goal is in after this transition.
+    #[must_use]
+    pub const fn next_state(self) -> GoalState {
+        match self {
+            Self::Pause { .. } => GoalState::Paused,
+            Self::Resume => GoalState::Active,
+            Self::Abandon => GoalState::Abandoned,
+        }
+    }
+}
+
+impl From<GoalTransitionKind> for GoalChange {
+    fn from(kind: GoalTransitionKind) -> Self {
+        match kind {
+            GoalTransitionKind::Pause { pending } => Self::Pause { pending },
+            GoalTransitionKind::Resume => Self::Resume,
+            GoalTransitionKind::Abandon => Self::Abandon,
+        }
     }
 }
 
@@ -674,6 +723,11 @@ impl<P> GoalCreateRequest<P> {
 pub struct GoalAtomicContext<'a> {
     pub registry: &'a crate::FlavorRegistryFrozen,
     pub author_self_perspective_id: Option<MemoryId>,
+    /// What storage needs to capture the write's `core/goal-change-v1` Fact.
+    /// Storage writes that Fact exactly when the schema is listenable in
+    /// `registry`; the engine supplies this then, and storage refuses a
+    /// listenable schema without it. `None` is an unlistenable deployment.
+    pub publication: Option<PublicationStamp<'a>>,
 }
 
 #[derive(Debug)]
@@ -689,7 +743,7 @@ pub struct CreateGoalAtomicRequest<'a> {
 pub struct TransitionGoalAtomicRequest<'a> {
     pub owner: Owner,
     pub prior_goal_id: GoalId,
-    pub next_state: GoalState,
+    pub transition: GoalTransitionKind,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub context: GoalAtomicContext<'a>,

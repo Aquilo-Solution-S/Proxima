@@ -202,7 +202,7 @@ Closed vocabularies are SQL enums.
 | `cooled` | forget stub; object key `cold/<t>` — owner-free, so a transfer re-homes the row and never the bytes; `blob_id`, `source_id`, and `ingest_key` copied from the hot row for replay and for source-scope erase |
 | `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
 | embeddings / jobs / heads | independent of graph authorship |
-| core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `write_act_v1`, `task_goal_v1` |
+| core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `write_act_v1`, `goal_change_v1`, `task_goal_v1` |
 
 No `edges`, `memories`, `goals` (plural), `fact_entities`, `fact_receipts`, `cited_objects`, `citation_mappings`, `change_event` tables.
 

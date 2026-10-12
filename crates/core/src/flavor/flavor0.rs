@@ -1,6 +1,6 @@
 //! Flavor #0 — core, as a declaration.
 //!
-//! Core registers 12 schemas, 15 MCP tools and 12 `proxima://` resources
+//! Core registers 13 schemas, 15 MCP tools and 12 `proxima://` resources
 //! across five sites, and this module is the `FlavorDescriptor` that makes
 //! them visible to the registry that is meant to be the single source of
 //! truth.
@@ -147,6 +147,34 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
         "proxima_core.write_act_v1",
         None,
         Some(t_fkey("proxima_core.write_act_v1", "write_act_v1_t_fkey")),
+    )],
+    natural_key_columns: &[],
+};
+
+/// Written by every goal write, in the goal's own transaction, when the
+/// schema is listenable (docs/05 §Actions, docs/18 §Goal changes). It
+/// follows `core/write-act-v1` row for row: a protocol lifecycle Fact keyed
+/// on `memory.t`, with nothing to search, embed or re-home.
+const GOAL_CHANGE_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "goal-change", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_core.goal_change_v1"),
+    search: SearchProjectionDecl::None {
+        why: "a goal change is ids and two closed enums, none of it text; \
+              the goal's own title is what search finds",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "a goal change has no content; its render is a template",
+    },
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[memory_sidecar(
+        "proxima_core.goal_change_v1",
+        None,
+        Some(t_fkey(
+            "proxima_core.goal_change_v1",
+            "goal_change_v1_t_fkey",
+        )),
     )],
     natural_key_columns: &[],
 };
@@ -1324,7 +1352,7 @@ const BESPOKE_TRANSFER_LEGS: &[&str] = &[
     "proxima_core.memory_head",
 ];
 
-/// Core's contract. Twelve schema registrations over eleven distinct schema
+/// Core's contract. Thirteen schema registrations over twelve distinct schema
 /// ids (`core/agent-derivation-v1` registers as both Abstraction and
 /// Perspective), fifteen tools, twelve resources.
 pub const FLAVOR_0: FlavorContract = FlavorContract {
@@ -1332,6 +1360,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
     ordinal: CORE_ORDINAL,
     schemas: &[
         WRITE_ACT_V1,
+        GOAL_CHANGE_V1,
         AGENT_NOTE_V1,
         UTTERANCE_V1,
         UPLOAD_V1,

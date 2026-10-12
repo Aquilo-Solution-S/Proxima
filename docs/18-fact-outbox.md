@@ -140,6 +140,59 @@ carries it. Flavor code assembles nothing and can neither set nor read it.
 | Identity | NOT identity material. `identity_for_revalidation()` does not carry them, and a redeemed delegated phase rebuilds without them, exactly as it does for `trusted_model_id` |
 | Consumers | parsed into `CloudEventEnvelope::extensions` (name-ordered); a signature check still reads `ReceivedEvent::raw` |
 
+## Goal changes on the feed
+
+A goal write is an action, and an action is an ordinary Fact
+([05](05-actions.md)). With an intake configured, every goal write that inserts
+a Goal row also writes one core Fact of schema `core/goal-change-v1` in the
+same transaction, and the capture above delivers it. That covers set, modify,
+each decomposed child, pause, resume, abandon and achieve, on every path
+including the unit-of-work path. The outbox still holds only Facts: a goal
+change is one, with its own `t`, its own sidecar row and its own record.
+
+| Property | Value |
+|---|---|
+| Schema | `core/goal-change-v1` version 1, sidecar `proxima_core.goal_change_v1`; declares no payload references |
+| Listenable | only when the runtime has an `outbox_intake`: `compose_registry` calls `FlavorRegistry::publish_goal_changes` before freeze. The schema is always registered, so a stored change Fact stays readable. A goal write writes the Fact exactly when the schema is listenable in the frozen registry, so `capture_iff_listenable` holds unchanged |
+| No intake | a goal write is unchanged: no change Fact, no record. Omitting the intake later stops goal changes; it does not keep capturing them (§Rollback) |
+| Boot | the schema being listenable, an intake without `PROXIMA_PUBLICATION_SOURCE` fails boot with a `PublicationConfig::validate_against` error that names `core/goal-change-v1` |
+| Replay | a replayed goal write (same idempotency key) writes no second Fact and captures no second record |
+| Writer | only a goal write. Engine Fact ingest refuses the schema (`InvalidArgument`), so Fact-write authority cannot stand in for goal-write authority on an event a scheduler acts on |
+| Event `id` | the change Fact's `F:<uuid>`; the goal version is in `data.goal` |
+
+`data`:
+
+```json
+{
+  "series": "<uuid>",
+  "goal":   "G:<uuid>",
+  "prior":  "G:<uuid>" | null,
+  "revision": <n>,
+  "state":  "Active" | "Paused" | "Achieved" | "Abandoned",
+  "change": {"kind": "set"} | {"kind": "modify"}
+          | {"kind": "decompose_child", "parent": "G:<uuid>"}
+          | {"kind": "pause", "pending": "keep" | "discard"}
+          | {"kind": "resume"} | {"kind": "abandon"} | {"kind": "achieve"}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `series` | the goal's series handle, the same on every version. Opaque, not a `G:` handle |
+| `goal` | the version this write created |
+| `prior` | the version it replaced; `null` when the write starts a series (set, decomposed child) |
+| `revision` | the version's position in its series: 1 for a set and for a decomposed child, one more for each later version. Storage counts the series' goal rows in the write's transaction, under the series lock |
+| `state` | the state after the write |
+| `change.pending` | on `pause` only, and always there: `keep` means the scheduler holds the work it queued for the goal and runs it after a resume; `discard` means it drops that work (ready or waiting to retry). Work already running finishes either way. Proxima records the decision and does not interpret it. Every other change says nothing about pending work; after `abandon` or `achieve` the goal is terminal and the scheduler drops what it queued |
+
+**Ordering.** A failed delivery is retried after later records (claim order
+`attempts ASC, t ASC`), so a consumer can see a `resume` before the `pause` it
+follows. Key state by `series` and apply an event only if its `revision` is
+greater than the last `revision` applied for that series. `goal` versions are
+identifiers, not an order: a version's `t` comes from the database clock and
+can sort below its predecessor after a clock step. Proxima has no code for
+this.
+
 ## Outbox Row and State Machine
 
 Table `proxima_core.publication_outbox` (migration `0011`; `0025` simplified its
@@ -476,6 +529,7 @@ cleanup for a host.
 | omit `outbox_intake` | drain off; **capture continues**; pending records are retained and delivered, under their original identities, by the next boot that supplies an intake |
 | intake outage | capture continues while local capacity lasts; delivery resumes from `pending` |
 | disable capture | not available while a listenable type is registered — refuse the write path instead |
+| omit `outbox_intake` after running with one | goal writes stop writing `core/goal-change-v1` Facts, because the schema is no longer listenable; the change Facts already written stay readable and their pending records stay `pending` |
 | unset `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | retention off; delivered records are kept forever. Never affects an undelivered one either way |
 
 No destructive schema rollback, no hosted reroute.

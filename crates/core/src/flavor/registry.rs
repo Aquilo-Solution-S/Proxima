@@ -1,9 +1,10 @@
 use super::contract::FlavorContract;
 use super::{
-    Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, OwnerResolver,
+    Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, OwnerResolver, PayloadKind,
     ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaId, SchemaInfo,
     ScopeGateBehavior, ScopeKind,
 };
+use crate::FactPayload;
 
 /// Mutable build-time registry. Flavors push into it during their
 /// `register()` call; `freeze` consumes it whole into a
@@ -74,5 +75,21 @@ impl FlavorRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Make `core/goal-change-v1` listenable, so every goal write also writes
+    /// its change Fact into the outbox.
+    ///
+    /// Public only because the runtime composes the registry from another
+    /// crate: `LISTENABLE` is a type constant, and whether anything drains
+    /// the outbox is a runtime fact (`RuntimeConfig.outbox_intake`).
+    #[doc(hidden)]
+    pub fn publish_goal_changes(&mut self) {
+        let goal_change = crate::GoalChangeV1::schema_id();
+        for schema in &mut self.schemas {
+            if schema.schema_id == goal_change && schema.kind == PayloadKind::Fact {
+                schema.listenable = true;
+            }
+        }
     }
 }

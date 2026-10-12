@@ -1,13 +1,18 @@
 //! Goal timeseries write.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
+use proxima_core::publication::PublicationStamp;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{Owner, StorageError};
+use proxima_core::{
+    FactPayload, GoalChange, GoalChangeV1, GoalId, Owner, SchemaVersion, SidecarPayload,
+    StorageError,
+};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::memory_timeseries::{ingest_fact_timeseries, ingest_unpinned_fact_at};
 use crate::verbs::wake_timeseries::{WakeConfigDraft, insert_wake_config};
 
@@ -111,9 +116,26 @@ pub(crate) struct PreparedGoalWrite {
     targets: Vec<Uuid>,
     write_act_identity: Option<ReservedFactIdentity>,
     close_fact_identity: Option<ReservedFactIdentity>,
+    /// The goal-change Fact's reserved identity. Held here only so it joins
+    /// the lock union; the Fact itself is written by
+    /// [`persist_goal_change_fact`] from the [`GoalChangeFact`] that owns the
+    /// same identity.
+    change_fact_identity: Option<ReservedFactIdentity>,
 }
 
 impl PreparedGoalWrite {
+    /// Every Fact identity this write reserved: the write-act, the close
+    /// Fact and the goal-change Fact.
+    fn lifecycle_identities(&self) -> impl Iterator<Item = ReservedFactIdentity> {
+        [
+            self.write_act_identity,
+            self.close_fact_identity,
+            self.change_fact_identity,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     #[cfg(test)]
     pub(crate) fn reserved_write_act_t(&self) -> Option<Uuid> {
         self.write_act_identity.map(|identity| identity.t)
@@ -222,7 +244,7 @@ pub(crate) async fn ingest_write_act_at(
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t)).await
+    ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t), &[]).await
 }
 
 /// Test-fixtures only: it writes `draft.text` as given and carries nothing.
@@ -334,6 +356,7 @@ pub(crate) async fn prepare_goal_write(
         targets,
         write_act_identity,
         close_fact_identity: None,
+        change_fact_identity: None,
     })))
 }
 
@@ -355,9 +378,8 @@ async fn lock_and_validate_prepared_goal_write(
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, &prepared.owner).await?;
-    let handles = [prepared.write_act_identity, prepared.close_fact_identity]
-        .into_iter()
-        .flatten()
+    let handles = prepared
+        .lifecycle_identities()
         .map(|identity| identity.handle)
         .collect::<Vec<_>>();
     crate::verbs::forget::lock_memory_handles_tx(tx, &handles).await?;
@@ -400,6 +422,128 @@ pub(crate) fn attach_goal_close_fact_reservation(
     }
 }
 
+/// What a goal write's change Fact is made of, fixed while the write is
+/// prepared: the identity it will take, what the write did, and the stamp it
+/// is captured with.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GoalChangeFact<'a> {
+    identity: ReservedFactIdentity,
+    change: GoalChange,
+    stamp: PublicationStamp<'a>,
+}
+
+impl<'a> GoalChangeFact<'a> {
+    pub(crate) const fn new(
+        identity: ReservedFactIdentity,
+        change: GoalChange,
+        stamp: PublicationStamp<'a>,
+    ) -> Self {
+        Self {
+            identity,
+            change,
+            stamp,
+        }
+    }
+}
+
+/// Join a change Fact's reserved identity to the write's lock union, so it is
+/// held with the rest of the footprint before any row is written.
+pub(crate) fn attach_goal_change_fact_reservation(
+    preparation: GoalWritePreparation,
+    change_fact: Option<&GoalChangeFact<'_>>,
+) -> GoalWritePreparation {
+    match preparation {
+        GoalWritePreparation::Replay(outcome) => GoalWritePreparation::Replay(outcome),
+        GoalWritePreparation::New(mut prepared) => {
+            if let Some(change_fact) = change_fact {
+                prepared.targets.push(change_fact.identity.t);
+                prepared.change_fact_identity = Some(change_fact.identity);
+            }
+            GoalWritePreparation::New(prepared)
+        }
+    }
+}
+
+/// Write the Fact that says what this goal write did, and capture its
+/// event, in the goal's own transaction.
+///
+/// The one place a goal change's payload is composed: the version `t` and the
+/// series handle are minted by the preparation, so only storage holds them.
+/// The Fact goes through the typed admission pieces every Fact does (memory
+/// row, typed sidecar, outbox capture), at the identity reserved before the
+/// lock union; it is written after the goal row, so a goal that was refused
+/// leaves neither.
+pub(crate) async fn persist_goal_change_fact(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    prepared: &PreparedGoalWrite,
+    fact: &GoalChangeFact<'_>,
+) -> Result<(), StorageError> {
+    // The goal row is in and the series is locked, so the count is this
+    // version's position. A version's `t` is the database clock and is no
+    // order.
+    let revision: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal WHERE handle = $1")
+            .bind(prepared.handle)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    let revision = u32::try_from(revision)
+        .map_err(|error| StorageError::Internal(format!("goal revision: {error}")))?;
+    let payload = SidecarPayload::fact(GoalChangeV1 {
+        series: prepared.handle,
+        goal: GoalId::new(prepared.t),
+        prior: prepared.expected_prior_t.map(GoalId::new),
+        revision,
+        state: prepared.command.state,
+        change: fact.change,
+    });
+    let data = payload
+        .to_protocol_json()
+        .map_err(|error| StorageError::Internal(format!("goal change payload: {error}")))?;
+    let schema_id = GoalChangeV1::schema_id();
+    let schema_version = SchemaVersion::new(GoalChangeV1::SCHEMA_VERSION);
+    let plan = fact
+        .stamp
+        .plan(schema_id.clone(), schema_version, prepared.owner, data);
+    let draft = FactWriteCommand {
+        schema_id,
+        schema_version,
+        handle: Some(fact.identity.handle),
+        source_id: None,
+        ingest_key: None,
+        payload: Vec::new(),
+        rendered_text: None,
+        lexical_language: None,
+        receipt: None,
+        citation: None,
+        additional_references: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
+    };
+    let tables = sidecars.tables_for_payloads(std::slice::from_ref(&payload))?;
+    let outcome = ingest_unpinned_fact_at(
+        tx,
+        &prepared.owner,
+        &draft,
+        (fact.identity.handle, fact.identity.t),
+        &tables,
+    )
+    .await?;
+    sidecars
+        .writing(&draft)
+        .insert_memory_sidecar(tx, outcome.memory_id, &payload)
+        .await?;
+    crate::verbs::publication_outbox::capture_publication_in_tx(
+        tx,
+        prepared.owner_id,
+        outcome.memory_id.into_inner(),
+        &plan,
+    )
+    .await
+}
+
 pub(crate) async fn lock_prepared_goal_writes(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &[&GoalWritePreparation],
@@ -416,12 +560,7 @@ pub(crate) async fn lock_prepared_goal_writes(
     let mut targets = Vec::new();
     for item in prepared {
         if let GoalWritePreparation::New(item) = item {
-            handles.extend(
-                [item.write_act_identity, item.close_fact_identity]
-                    .into_iter()
-                    .flatten()
-                    .map(|identity| identity.handle),
-            );
+            handles.extend(item.lifecycle_identities().map(|identity| identity.handle));
             targets.extend(item.targets.iter().copied());
         }
     }

@@ -440,6 +440,8 @@ pub async fn apply_current_migrations(pg: &PgStorage) -> Result<(), Box<dyn std:
         .fetch_one(pg.pool_for_tests())
         .await?;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database).await?;
+    proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(pg.pool_for_tests())
+        .await?;
     let platform = PgStorage::connect_for_migrations_with_config(
         &platform_url,
         proxima_storage_pg::PgPoolConfig::default(),

@@ -384,6 +384,7 @@ async fn create_goal(
                 context: GoalAtomicContext {
                     registry,
                     author_self_perspective_id: None,
+                    publication: None,
                 },
                 write_act_t: None,
             },

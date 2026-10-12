@@ -1029,6 +1029,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("erased_pin_target", Rows::NoKind),
     ("flavor_surface", Rows::NoKind),
     ("goal", Rows::Goal),
+    ("goal_change_v1", Rows::FactSidecar),
     ("goal_head", Rows::Goal),
     ("goal_replay_declaration", Rows::Goal),
     ("group_memberships", Rows::NoKind),

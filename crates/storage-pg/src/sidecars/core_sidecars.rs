@@ -242,6 +242,116 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
     }
 }
 
+/// One goal write, as `proxima_core.goal_change_v1` stores it.
+///
+/// Hand-written rather than `pg_sidecar!`-generated: `change` is a closed
+/// enum whose `parent` and `pending` live in their own columns, and the macro
+/// maps one field to one column. The three columns are cut from the enum by
+/// `GoalChange::{kind, parent, pending}` and rebuilt by
+/// `GoalChange::from_columns`, the one place a stored row becomes a change.
+#[derive(Debug, sqlx::FromRow)]
+struct GoalChangePayloadRow {
+    t: uuid::Uuid,
+    series: uuid::Uuid,
+    goal_t: uuid::Uuid,
+    prior_t: Option<uuid::Uuid>,
+    revision: i32,
+    state: proxima_core::verbs::goal_write::GoalState,
+    change_kind: proxima_core::GoalChangeKind,
+    parent_t: Option<uuid::Uuid>,
+    pending: Option<proxima_core::PendingWork>,
+}
+
+impl PgMemorySidecar for proxima_core::GoalChangeV1 {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_core.goal_change_v1
+                    (t, series, goal_t, prior_t, revision, state, change_kind, parent_t, pending)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.series)
+            .bind(self.goal.into_inner())
+            .bind(self.prior.map(GoalId::into_inner))
+            .bind(
+                i32::try_from(self.revision)
+                    .map_err(|error| StorageError::Internal(format!("goal revision: {error}")))?,
+            )
+            .bind(self.state)
+            .bind(self.change.kind())
+            .bind(self.change.parent().map(GoalId::into_inner))
+            .bind(self.change.pending())
+            .execute(tx.as_mut())
+            .await
+            .map_err(crate::error::map_err)?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for proxima_core::GoalChangeV1 {
+    // Freeze holds the key column equal to the contract `Surface`'s
+    // `KeyShape::MemoryT { column }` for proxima_core.goal_change_v1.
+    const OWNER_PINNED: bool = false;
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
+    fn load_batch<'t>(
+        ctx: PgSidecarReadCtx<'t>,
+        _kind: PayloadKind,
+        memory_ids: &'t [MemoryId],
+    ) -> PgMemoryPayloadBatchFuture<'t> {
+        Box::pin(async move {
+            let rows: Vec<GoalChangePayloadRow> = ctx
+                .fetch_all_by_memory_ids(
+                    "SELECT t, series, goal_t, prior_t, revision, state, change_kind, parent_t,
+                            pending
+                       FROM proxima_core.goal_change_v1
+                      WHERE t = ANY($1::uuid[])",
+                    memory_ids,
+                )
+                .await?;
+            rows.into_iter()
+                .map(|row| {
+                    let change = proxima_core::GoalChange::from_columns(
+                        row.change_kind,
+                        row.parent_t.map(GoalId::new),
+                        row.pending,
+                    )
+                    .map_err(|error| {
+                        StorageError::Internal(format!(
+                            "goal_change_v1 row for memory {} is not a goal change: {error}",
+                            row.t
+                        ))
+                    })?;
+                    let revision = u32::try_from(row.revision).map_err(|error| {
+                        StorageError::Internal(format!(
+                            "goal_change_v1 row for memory {} has revision {}: {error}",
+                            row.t, row.revision
+                        ))
+                    })?;
+                    Ok((
+                        MemoryId::new(row.t),
+                        SidecarPayload::fact(proxima_core::GoalChangeV1 {
+                            series: row.series,
+                            goal: GoalId::new(row.goal_t),
+                            prior: row.prior_t.map(GoalId::new),
+                            revision,
+                            state: row.state,
+                            change,
+                        }),
+                    ))
+                })
+                .collect()
+        })
+    }
+}
+
 /// Frozen core sidecar registry used by plain substrate `PgStorage`.
 ///
 /// # Panics
@@ -259,6 +369,7 @@ pub fn core_pg_sidecars() -> PgSidecarRegistryFrozen {
 
 pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_fact::<proxima_core::WriteActV1>();
+    registry.add_fact::<proxima_core::GoalChangeV1>();
     registry.add_fact::<proxima_core::AgentNoteV1>();
     registry.add_fact::<proxima_core::UtteranceV1>();
     registry.add_fact::<proxima_core::verbs::persist_mcp_call::McpCallLoggedV1>();

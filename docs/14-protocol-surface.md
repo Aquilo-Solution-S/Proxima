@@ -92,7 +92,7 @@ Canonical substrate tools:
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
 | `core_transfer` | owner-transfer dispatcher: `transfer_to_owner`; moves a memory's owner to a destination group, not membership or ACL. Args: `entity` plus a required `to_owner` external owner key (`group:<uuid>`) |
-| `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
+| `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose`. `transition` takes `transition` (`pause`, `resume` or `abandon`) and, for a pause, a required `pending` (`keep` or `discard`): what the scheduler does with the work it queued for the Goal. `null` is the same as omitting it. `pending` on a resume or abandon, and a pause without it, are refused with an `InvalidInput` error. With an outbox intake every goal write also emits a `core/goal-change-v1` event ([18 §Goal changes on the feed](18-fact-outbox.md#goal-changes-on-the-feed)) |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
 | `core_upload` | cited-blob upload dispatcher: `prepare`, `complete`, `abort`, `read_url`; artefact bytes travel by presigned URL only, and the tool never emits `bucket`/`object_key` |
 

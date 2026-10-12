@@ -58,6 +58,45 @@ impl PgStorage {
     }
 }
 
+/// Prepare a database built by [`core_migrator_before_owner_rls`] for a run of
+/// the full core migrator on top of it, which then applies the owner-RLS lane.
+///
+/// The lane's base also ran every migration after the lane's last member, so
+/// a table such as 0025's `goal_change_v1` exists before 0014's whole-schema
+/// census sees the schema, and 0014 refuses a table it has never classified
+/// (production applies 0014 first). This drops those tables and forgets the
+/// ledger rows after the lane, so the next run applies them after it; those
+/// migrations are idempotent and install a new table's owner-RLS themselves.
+/// A database whose lane has already run is left alone.
+///
+/// # Errors
+///
+/// Returns the database error of the statement.
+pub async fn reopen_migrations_after_owner_rls_lane(
+    pool: &sqlx::PgPool,
+) -> Result<(), sqlx::Error> {
+    let lane_end = OWNER_RLS_MIGRATION_VERSIONS
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or_default();
+    // SQL-POLICY: fixed-fragment — a version number from the const above.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DO $reopen$
+         BEGIN
+             IF NOT EXISTS (SELECT 1 FROM public._sqlx_migrations WHERE version = {first}) THEN
+                 DROP TABLE IF EXISTS proxima_core.goal_change_v1;
+                 DELETE FROM public._sqlx_migrations WHERE version > {lane_end};
+             END IF;
+         END
+         $reopen$",
+        first = OWNER_RLS_MIGRATION_VERSIONS[0],
+    )))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Build the [`core_template_name`] template once per migration set:
 /// [`core_migrator_before_owner_rls`] run on an empty database.
 ///

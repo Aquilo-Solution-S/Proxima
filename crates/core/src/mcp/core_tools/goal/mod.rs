@@ -10,11 +10,14 @@ use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::tool::validate_trimmed_len;
 use crate::verbs::goal_write::{
     ChildGoalDraft, GoalAssignmentTarget, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite,
-    GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
+    GoalTopologyWrite, GoalTransitionKind, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
     GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{InputContractId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId};
+use crate::{
+    InputContractId, ModelId, OperatorId, PendingWork, PromptVersion, SchemaId, SchemaVersion,
+    ToolId,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -174,7 +177,8 @@ impl McpTool for CoreGoalTool {
          pause/resume/abandon it, replace its content, mark it achieved. Every write returns the \
          goal's new head `handle`; the next write on that goal names that handle. set and decompose \
          assign goals to a Perspective: pass target_perspective unless the host supplies a caller \
-         Perspective.";
+         Perspective. A pause names what happens to work already queued for the goal: pending is \
+         keep or discard.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -196,7 +200,9 @@ impl McpTool for CoreGoalTool {
         },
         McpActionArgSpec {
             action: "transition",
-            allowed_fields: &["goal", "transition", "idempotency_key"],
+            allowed_fields: &["goal", "transition", "pending", "idempotency_key"],
+            // `pending` is required for pause and refused for the other two:
+            // `GoalTransitionArgs::transition_kind` decides, once.
             required_fields: &["goal", "transition"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
@@ -325,21 +331,42 @@ pub struct GoalTransitionArgs {
     )]
     pub transition: GoalTransition,
     #[schemars(
+        description = "Required for pause, refused for resume and abandon. keep: the scheduler holds the work it queued for this goal and runs it after a resume. discard: it drops that work, ready or waiting to retry. Running work finishes either way. null is the same as omitting it."
+    )]
+    pub pending: Option<PendingWork>,
+    #[schemars(
         description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
     )]
     pub idempotency_key: Option<String>,
+}
+
+impl GoalTransitionArgs {
+    /// The one place `transition` and `pending` meet: what the caller wrote
+    /// becomes a [`GoalTransitionKind`], in which `pending` exists only on a
+    /// pause.
+    fn transition_kind(&self) -> Result<GoalTransitionKind, McpToolError> {
+        match (&self.transition, self.pending) {
+            (GoalTransition::Pause, Some(pending)) => Ok(GoalTransitionKind::Pause { pending }),
+            (GoalTransition::Pause, None) => Err(McpToolError::InvalidInput(
+                "pending is required when transition is pause: \"keep\" (the scheduler holds the \
+                 queued work and runs it after a resume) or \"discard\" (it drops the queued work)"
+                    .into(),
+            )),
+            (GoalTransition::Resume, None) => Ok(GoalTransitionKind::Resume),
+            (GoalTransition::Abandon, None) => Ok(GoalTransitionKind::Abandon),
+            (GoalTransition::Resume | GoalTransition::Abandon, Some(_)) => Err(
+                McpToolError::InvalidInput("pending applies only when transition is pause".into()),
+            ),
+        }
+    }
 }
 
 async fn goal_transition(
     ctx: McpToolCtx,
     args: GoalTransitionArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    let transition = args.transition_kind()?;
     let prior = ctx.resolve_goal(&args.goal)?;
-    let next_state = match args.transition {
-        GoalTransition::Pause => GoalState::Paused,
-        GoalTransition::Resume => GoalState::Active,
-        GoalTransition::Abandon => GoalState::Abandoned,
-    };
     let request_id = IdempotencyKey::optional_or_generated("goal_transition", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
     let engine = ctx.require_engine()?;
@@ -349,7 +376,7 @@ async fn goal_transition(
             &GoalTransitionRequest {
                 owner: ctx.owner,
                 prior_goal_id: prior,
-                next_state,
+                transition,
                 authorship: GoalAuthorship::User,
                 request_id,
                 author_self_perspective_id: ctx.caller_self_perspective,

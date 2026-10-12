@@ -92,6 +92,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -135,6 +136,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -184,6 +186,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -215,6 +218,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     evidence: None,
                 },
@@ -236,6 +240,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 context: GoalAtomicContext {
                     registry: &registry,
                     author_self_perspective_id: None,
+                    publication: None,
                 },
                 evidence: vec![GoalEvidenceRef::new(fact.memory_id)],
             },
@@ -277,6 +282,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -315,6 +321,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -336,6 +343,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 context: GoalAtomicContext {
                     registry: &registry,
                     author_self_perspective_id: None,
+                    publication: None,
                 },
                 evidence: vec![GoalEvidenceRef::new(abs.memory_id)],
             },
@@ -369,6 +377,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -385,6 +394,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     evidence: vec![GoalEvidenceRef::new(perspective.memory_id)],
                 },
@@ -422,6 +432,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -437,6 +448,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     topology: GoalTopologyWrite::new(
                         GoalAssignmentTarget::perspective(perspective.memory_id),

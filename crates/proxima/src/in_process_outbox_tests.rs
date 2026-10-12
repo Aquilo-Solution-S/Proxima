@@ -17,6 +17,10 @@ use uuid::Uuid;
 
 use crate::in_process_outbox::{AfterAccept, Drain, Proceed, Settings, spawn};
 use crate::outbox_test_fixture::{OutboxProbeApp, PROBE_SOURCE, capture, wait_for_outbox};
+use proxima_core::test_fixtures::authenticated_context;
+use proxima_core::{
+    GoalId, GoalTransitionRequest, MemoryTarget, PendingWork, SeriesHandle, SimpleTextGoalV1,
+};
 
 /// Spends one unit of `counter`, if any is left.
 fn take(counter: &AtomicUsize) -> bool {
@@ -36,6 +40,8 @@ struct TestIntake {
     calls: Mutex<Vec<(String, u64)>>,
     /// What a deduplicating intake keeps: one entry per id.
     kept: Mutex<BTreeSet<String>>,
+    /// The envelope of each accepted delivery, in order.
+    events: Mutex<Vec<serde_json::Value>>,
 }
 
 impl TestIntake {
@@ -65,6 +71,10 @@ impl DurableIntake for TestIntake {
             .lock()
             .expect("kept lock")
             .insert(event.id.clone());
+        self.events
+            .lock()
+            .expect("events lock")
+            .push(serde_json::from_slice(&event.raw).expect("an envelope is JSON"));
         Ok(Intake::Accepted)
     }
 }
@@ -278,4 +288,158 @@ async fn an_accept_that_never_returns_is_released_and_delivered_again() {
     .catch_unwind()
     .await;
     world.finish(outcome).await;
+}
+
+/// Sets a goal through a unit of work, then pauses it through the engine.
+async fn set_and_pause(world: &World, pending: PendingWork) -> (GoalId, GoalId) {
+    use proxima_core::verbs::goal_write::{
+        GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalTopologyWrite,
+        GoalTransitionKind, IdempotencyKey,
+    };
+    use proxima_core::{DerivedMemory, InterpretationSubjectKind, InterpretationV1};
+    let authz = authenticated_context(world.built.single_owner_authz().expect("single owner"));
+    let engine = world.built.host().engine();
+    let fact = capture(&world.built, world.owner, "grounding").await;
+    let assignment = DerivedMemory::interpretation(
+        MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+        world.owner,
+        "assignment",
+        InterpretationV1 {
+            claim: "claim".into(),
+            confidence: 80,
+            subject_memory_ids: vec![fact],
+            subject_kinds: vec![InterpretationSubjectKind::Fact],
+            model_id: "test".into(),
+            client_name: "test".into(),
+            client_version: "1".into(),
+        },
+    );
+    let assignment = engine
+        .derive_memory(&authz, assignment)
+        .await
+        .expect("assignment");
+    let topology = GoalTopologyWrite::new(
+        GoalAssignmentTarget::perspective(assignment.memory_id),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut uow = engine.unit_of_work(&authz).await.expect("unit of work");
+    let set = uow
+        .create_goal(GoalCreateRequest {
+            owner: world.owner,
+            topology: topology.expect("topology"),
+            wake: None,
+            title: "feed".into(),
+            text: "feed".into(),
+            payload: SimpleTextGoalV1 {},
+            request_id: IdempotencyKey::new("feed-set").expect("request id"),
+            authorship: GoalAuthorship::User,
+            author_self_perspective_id: None,
+        })
+        .await
+        .expect("set")
+        .goal_id;
+    uow.commit().await.expect("commit");
+    let pause = GoalTransitionRequest {
+        owner: world.owner,
+        prior_goal_id: set,
+        transition: GoalTransitionKind::Pause { pending },
+        authorship: GoalAuthorship::User,
+        request_id: IdempotencyKey::new("feed-pause").expect("request id"),
+        author_self_perspective_id: None,
+    };
+    let pause = engine.transition_goal(&authz, &pause).await.expect("pause");
+    (set, pause.goal_id)
+}
+
+#[tokio::test]
+async fn a_pause_that_discards_pending_work_reaches_the_intake_as_a_goal_change() {
+    let intake = Arc::new(TestIntake::default());
+    let Some(world) = World::new(Some(intake.clone())).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let (set, paused) = set_and_pause(&world, PendingWork::Discard).await;
+        let records: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.publication_outbox WHERE schema_id = 'core/goal-change-v1'",
+        )
+        .fetch_all(&world.pool)
+        .await
+        .expect("goal change records");
+        assert_eq!(records.len(), 2);
+        for t in records {
+            wait_for_outbox(&world.pool, t, "published").await;
+        }
+        let events = intake.events.lock().expect("events lock").clone();
+        let data = |kind: &str| {
+            let changes = events.iter().filter(|e| e["type"] == "core/goal-change-v1");
+            changes
+                .map(|e| e["data"].clone())
+                .find(|d| d["change"]["kind"] == kind)
+        };
+        let set_data = data("set").expect("the set event");
+        assert_eq!(set_data["prior"], serde_json::Value::Null);
+        assert_eq!(
+            data("pause").expect("the pause event"),
+            serde_json::json!({
+                "series": set_data["series"],
+                "goal": format!("G:{}", paused.into_inner()),
+                "prior": format!("G:{}", set.into_inner()),
+                "revision": 2,
+                "state": "Paused",
+                "change": {"kind": "pause", "pending": "discard"},
+            })
+        );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+#[tokio::test]
+async fn without_an_intake_a_goal_write_writes_no_goal_change() {
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        set_and_pause(&world, PendingWork::Keep).await;
+        let written: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM proxima_core.memory WHERE schema_id = 'core/goal-change-v1')
+                  + (SELECT count(*) FROM proxima_core.publication_outbox
+                      WHERE schema_id = 'core/goal-change-v1')",
+        )
+        .fetch_one(&world.pool)
+        .await
+        .expect("goal change count");
+        assert_eq!(written, 0);
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+#[tokio::test]
+async fn an_intake_without_a_publication_source_fails_boot_naming_the_goal_change_schema() {
+    if proxima_pg_testkit::admin_url_or_skip().is_none() {
+        return;
+    }
+    let db_name = proxima_pg_testkit::unique_db_name("in_process_outbox_boot");
+    proxima_pg_testkit::create_db(&db_name)
+        .await
+        .expect("PG fixture database");
+    let (db_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
+        .await
+        .expect("split fixture roles");
+    let refused = crate::Proxima::<OutboxProbeApp>::app()
+        .database_url(db_url)
+        .platform_database_url(platform_url)
+        .owner(crate::company_owner(Uuid::now_v7()))
+        .tool_scope(crate::ToolScope::All)
+        .allow_insecure_single_owner()
+        .outbox_intake(Arc::new(TestIntake::default()))
+        .build()
+        .await;
+    let _ = proxima_pg_testkit::drop_db(&db_name).await;
+    let message = refused.expect_err("boot is refused").to_string();
+    assert!(message.contains("core/goal-change-v1"), "{message}");
 }

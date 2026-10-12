@@ -263,12 +263,15 @@ async fn goal_helper_accepts_only_goal_command_handles() {
     let req = crate::verbs::goal_write::TransitionGoalAtomicRequest {
         owner: OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7())),
         prior_goal_id: crate::GoalId::new(uuid::Uuid::now_v7()),
-        next_state: crate::verbs::goal_write::GoalState::Paused,
+        transition: crate::verbs::goal_write::GoalTransitionKind::Pause {
+            pending: crate::PendingWork::Keep,
+        },
         authorship: crate::verbs::goal_write::GoalAuthorship::User,
         request_id: crate::verbs::goal_write::IdempotencyKey::generated("test"),
         context: crate::verbs::goal_write::GoalAtomicContext {
             registry: &registry,
             author_self_perspective_id: None,
+            publication: None,
         },
     };
     let permit = crate::storage_ports::OwnerWritePermit::new(

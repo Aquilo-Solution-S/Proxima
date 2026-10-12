@@ -1,6 +1,6 @@
 use super::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalDraft, GoalId,
+    DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalChange, GoalDraft, GoalId,
     GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWakeConfigWrite, GoalWriteOutcome,
     ModifyGoalAtomicRequest, Owner, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
@@ -90,17 +90,25 @@ pub(super) fn transition_replay_declaration(
     req: &TransitionGoalAtomicRequest<'_>,
 ) -> serde_json::Value {
     let prior = req.prior_goal_id.into_inner();
-    command_declaration(
+    let mut declaration = command_declaration(
         "transition",
         [
             ("prior_goal_id", serde_json::json!(prior)),
-            ("next_state", serde_json::json!(req.next_state)),
+            ("next_state", serde_json::json!(req.transition.next_state())),
             (
                 "authorship",
                 serde_json::json!(authorship_declaration(&req.authorship)),
             ),
         ],
-    )
+    );
+    // A pause also declares what happens to pending work, so the same request
+    // id with the other choice is a conflict, not a replay. Resume and
+    // abandon declare nothing new, and a declaration stored before `pending`
+    // existed still matches them.
+    if let GoalChange::Pause { pending } = GoalChange::from(req.transition) {
+        declaration["pending"] = serde_json::json!(pending);
+    }
+    declaration
 }
 
 pub(super) fn achieve_replay_declaration(req: &AchieveGoalAtomicRequest<'_>) -> serde_json::Value {

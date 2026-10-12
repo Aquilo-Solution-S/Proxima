@@ -1,19 +1,20 @@
 use super::{Engine, pipeline::WritePermit};
 use crate::access::{AccessKind, EntityId};
-use crate::authz::AuthzContext;
+use crate::authz::{AuthzContext, EngineAuthority};
 use crate::error::ProtocolError;
+use crate::publication::PublicationStamp;
 use crate::storage::StorageError;
 use crate::storage_ports::GoalCommandStoragePorts;
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
-    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalState,
-    GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
-    IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalTopologyWrite,
+    GoalTransitionKind, GoalWakeConfigWrite, GoalWakeTrigger, GoalWriteBuildError,
+    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{EntityKind, GoalPayload, MemoryId};
+use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, SchemaVersion};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreatePayloadWriteRequest {
@@ -30,7 +31,7 @@ pub struct GoalCreatePayloadWriteRequest {
 pub struct GoalTransitionRequest {
     pub owner: crate::OwnerRef,
     pub prior_goal_id: crate::GoalId,
-    pub next_state: GoalState,
+    pub transition: GoalTransitionKind,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub author_self_perspective_id: Option<MemoryId>,
@@ -156,7 +157,7 @@ impl Engine {
             req.authorship.clone(),
             req.request_id.clone(),
         );
-        let context = self.goal_atomic_context(req.author_self_perspective_id);
+        let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = CreateGoalAtomicRequest {
             draft,
             context,
@@ -201,28 +202,19 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
-        let context = self.goal_atomic_context(req.author_self_perspective_id);
+        let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
+        // `Achieved` is not a `GoalTransitionKind`: achievement carries
+        // mandatory evidence and goes through `mark_goal_achieved`. The
+        // authoritative legality matrix is `GoalState::may_transition_to`,
+        // enforced storage-side.
         let atomic = TransitionGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
-            next_state: req.next_state,
+            transition: req.transition,
             authorship: req.authorship.clone(),
             request_id: req.request_id.clone(),
             context,
         };
-        // `Achieved` is never a legal plain-transition target (achievement
-        // carries mandatory evidence via `mark_goal_achieved`); the
-        // authoritative matrix is `GoalState::{may_transition_to, may_achieve}`,
-        // enforced storage-side. Pre-screen only this target here for an
-        // actionable error before opening a storage transaction.
-        if req.next_state == GoalState::Achieved {
-            return Err(ProtocolError::invalid_argument(
-                "next_state",
-                "Achieved is not a valid transition target; use mark_goal_achieved with evidence",
-            ));
-        }
-        // Constant-time rejection first: this check ran before every prior
-        // write, so no stored declaration can name `Achieved`.
         if let Some(replay) = resolve_single_goal_replay(
             &self.storage().goal_command,
             GoalReplayRequest::Transition(&atomic),
@@ -258,7 +250,7 @@ impl Engine {
         let permit = self
             .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
-        let context = self.goal_atomic_context(req.author_self_perspective_id);
+        let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = AchieveGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
@@ -306,7 +298,7 @@ impl Engine {
             .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let replacement = self.normalize_payload_write(req.replacement.clone())?;
-        let context = self.goal_atomic_context(req.author_self_perspective_id);
+        let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = ModifyGoalAtomicRequest {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
@@ -378,7 +370,7 @@ impl Engine {
         for child in &req.children {
             children.push(self.normalize_child_goal_draft(child)?);
         }
-        let context = self.goal_atomic_context(req.author_self_perspective_id);
+        let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = DecomposeGoalAtomicRequest {
             owner: *permit.owner(),
             parent_goal_id: req.parent_goal_id,
@@ -412,14 +404,60 @@ impl Engine {
             .map_err(map_goal_storage_error)
     }
 
-    pub(in crate::engine) fn goal_atomic_context(
-        &self,
+    /// The context every goal write runs under: the frozen registry, the
+    /// author's self-perspective and, while `core/goal-change-v1` is
+    /// listenable, the stamp storage captures its change Fact with.
+    ///
+    /// The stamp binds what [`Self::resolve_publication`] binds for any other
+    /// listenable Fact: the configured source, the token-certified model id
+    /// (never the caller's label) and the host's extension attributes, under
+    /// this engine's limits. Storage composes the payload itself, because the
+    /// version's `t` and the series handle are minted inside its transaction.
+    ///
+    /// # Errors
+    ///
+    /// `Internal` when the schema is listenable and no publication source is
+    /// configured: boot validation refuses that composition, so only an
+    /// unvalidated one reaches here.
+    pub(in crate::engine) fn goal_atomic_context<'a, A>(
+        &'a self,
+        authority: &'a A,
         author_self_perspective_id: Option<MemoryId>,
-    ) -> GoalAtomicContext<'_> {
-        GoalAtomicContext {
+    ) -> Result<GoalAtomicContext<'a>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let listenable = self
+            .registry()
+            .lookup_payload(
+                &GoalChangeV1::schema_id(),
+                SchemaVersion::new(GoalChangeV1::SCHEMA_VERSION),
+                PayloadKind::Fact,
+            )
+            .is_some_and(|schema| schema.listenable);
+        let publication = if listenable {
+            let Some(source) = self.publication.source.as_ref() else {
+                return Err(super::errors::map_publication_error(
+                    &crate::publication::PublicationError::SourceUnbound {
+                        schema_id: GoalChangeV1::SCHEMA_ID.to_owned(),
+                    },
+                ));
+            };
+            let authz = self.operation_authority(authority)?.authz();
+            Some(PublicationStamp::new(
+                source,
+                authz.trusted_model_id(),
+                authz.publication_extensions(),
+                self.publication.limits,
+            ))
+        } else {
+            None
+        };
+        Ok(GoalAtomicContext {
             registry: self.registry(),
             author_self_perspective_id,
-        }
+            publication,
+        })
     }
 
     pub(in crate::engine) fn normalize_payload_write(
@@ -968,43 +1006,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transition_goal_rejects_achieved_target_pre_storage() {
-        // Transitioning to Achieved is rejected at the engine boundary,
-        // after authz but before any storage transaction. The membership
-        // storage authorizes the self-owner write; the guard fires first, so
-        // the goal write port is never reached.
-        let owner = owner();
-        let engine = engine_with_ports(storage_with_memory(
-            owner,
-            owner,
-            true,
-            EntityKind::Perspective,
-        ));
-        let req = GoalTransitionRequest {
-            owner,
-            prior_goal_id: goal_id(),
-            next_state: GoalState::Achieved,
-            authorship: GoalAuthorship::User,
-            request_id: request_id("transition-achieved"),
-            author_self_perspective_id: None,
-        };
-        let err = engine
-            .transition_goal(
-                &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-                &req,
-            )
-            .await
-            .expect_err("Achieved is not a valid plain-transition target");
-        assert_eq!(err.code, ErrorCode::InvalidArgument);
-    }
-
-    #[tokio::test]
     async fn transition_goal_denies_denied_context() {
         let owner = owner();
         let req = GoalTransitionRequest {
             owner,
             prior_goal_id: goal_id(),
-            next_state: GoalState::Paused,
+            transition: GoalTransitionKind::Pause {
+                pending: crate::PendingWork::Keep,
+            },
             authorship: GoalAuthorship::User,
             request_id: request_id("transition"),
             author_self_perspective_id: None,

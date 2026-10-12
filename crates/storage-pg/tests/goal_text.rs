@@ -19,13 +19,13 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
-    GoalPayloadWrite, GoalReplayRequest, GoalState, GoalTopologyWrite, GoalWriteOutcome,
-    IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    GoalPayloadWrite, GoalReplayRequest, GoalState, GoalTopologyWrite, GoalTransitionKind,
+    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxima_core::verbs::query::{EntityKind, GoalRow, QueryRequest};
 use proxima_core::{
     AccessKind, EdgeEndpoint, FlavorRegistry, FlavorRegistryFrozen, GoalId, GoalPayload, MemoryId,
-    OwnerRef, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, UserId,
+    OwnerRef, PendingWork, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -125,6 +125,7 @@ impl Harness {
         GoalAtomicContext {
             registry: &self.registry,
             author_self_perspective_id: None,
+            publication: None,
         }
     }
 
@@ -180,13 +181,21 @@ impl Harness {
         next_state: GoalState,
         request_id: &str,
     ) -> TestResult<GoalWriteOutcome> {
+        let transition = match next_state {
+            GoalState::Paused => GoalTransitionKind::Pause {
+                pending: PendingWork::Keep,
+            },
+            GoalState::Active => GoalTransitionKind::Resume,
+            GoalState::Abandoned => GoalTransitionKind::Abandon,
+            GoalState::Achieved => return Err("achieve goes through achieve_goal_atomic".into()),
+        };
         Ok(self
             .pg
             .transition_goal_atomic(
                 &TransitionGoalAtomicRequest {
                     owner: self.owner,
                     prior_goal_id: prior,
-                    next_state,
+                    transition,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new(request_id)?,
                     context: self.context(),
@@ -611,8 +620,9 @@ goal_test!(
         let source = h.create("replay-source", "replayable", "replay me").await?;
 
         // The declaration a transition and an achievement record names the
-        // request, never the Goal's text. It is what a v0.0.30 binary wrote, so a
-        // request recorded then and retried now compares equal.
+        // request, never the Goal's text. A resume, an abandon and an achieve
+        // record what a v0.0.30 binary wrote, so a request recorded then and
+        // retried now compares equal. A pause also records `pending`.
         let transition = h
             .transition(source.goal_id, GoalState::Paused, "replay-live")
             .await?;
@@ -623,9 +633,10 @@ goal_test!(
                 "verb": "transition",
                 "prior_goal_id": source.goal_id.into_inner(),
                 "next_state": "Paused",
+                "pending": "keep",
                 "authorship": "user",
             }),
-            "the transition declaration is the one v0.0.30 recorded"
+            "a pause declaration records what happens to pending work"
         );
         let live_retry = h
             .transition(source.goal_id, GoalState::Paused, "replay-live")
@@ -638,6 +649,17 @@ goal_test!(
         let resumed = h
             .transition(transition.goal_id, GoalState::Active, "replay-live-resume")
             .await?;
+        assert_eq!(
+            declaration_of(&h.pg, resumed.goal_id).await?,
+            serde_json::json!({
+                "version": 1,
+                "verb": "transition",
+                "prior_goal_id": transition.goal_id.into_inner(),
+                "next_state": "Active",
+                "authorship": "user",
+            }),
+            "the resume declaration is the one v0.0.30 recorded"
+        );
         let achieved = h.achieve(resumed.goal_id, "replay-live-achieve").await?;
         let evidence: Vec<MemoryId> = sqlx::query_scalar::<_, Vec<Uuid>>(
             "SELECT evidence_t FROM proxima_core.goal WHERE t = $1",
@@ -673,7 +695,7 @@ goal_test!(
         sqlx::query(
             "INSERT INTO proxima_core.goal
              (handle, t, owner_id, title, state, request_id, assignment_t)
-         SELECT handle, $1, owner_id, title, 'Paused', 'recorded-before', assignment_t
+         SELECT handle, $1, owner_id, title, 'Active', 'recorded-before', assignment_t
            FROM proxima_core.goal WHERE t = $2",
         )
         .bind(recorded)
@@ -697,7 +719,7 @@ goal_test!(
             "version": 1,
             "verb": "transition",
             "prior_goal_id": source_two.goal_id.into_inner(),
-            "next_state": "Paused",
+            "next_state": "Active",
             "authorship": "user",
         }))
         .execute(pool)
@@ -707,7 +729,7 @@ goal_test!(
             .await?;
 
         let retry = h
-            .transition(source_two.goal_id, GoalState::Paused, "recorded-before")
+            .transition(source_two.goal_id, GoalState::Active, "recorded-before")
             .await?;
         assert!(
             retry.idempotent_replay,
@@ -736,7 +758,7 @@ goal_test!(
             "the backfill gave the recorded transition its series' text"
         );
         let retry = h
-            .transition(source_two.goal_id, GoalState::Paused, "recorded-before")
+            .transition(source_two.goal_id, GoalState::Active, "recorded-before")
             .await?;
         assert!(
             retry.idempotent_replay,
@@ -753,7 +775,7 @@ goal_test!(
         let request = TransitionGoalAtomicRequest {
             owner: h.owner,
             prior_goal_id: source_two.goal_id,
-            next_state: GoalState::Paused,
+            transition: GoalTransitionKind::Resume,
             authorship: GoalAuthorship::User,
             request_id: IdempotencyKey::new("recorded-before")?,
             context: h.context(),
@@ -767,7 +789,7 @@ goal_test!(
         // Identity still discriminates: another command under the same key is a
         // conflict, not a replay.
         let conflict = h
-            .transition(source_two.goal_id, GoalState::Abandoned, "recorded-before")
+            .transition(source_two.goal_id, GoalState::Paused, "recorded-before")
             .await
             .expect_err("a different transition under a recorded key must conflict");
         assert!(
@@ -775,6 +797,45 @@ goal_test!(
                 .downcast_ref::<StorageError>()
                 .is_some_and(|error| matches!(error, StorageError::IdempotencyConflict { .. })),
             "{conflict}"
+        );
+
+        // A pause recorded before `pending` existed has no `pending` to compare:
+        // its retry now conflicts instead of replaying (the migration guide says
+        // so).
+        let legacy = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+             (handle, t, owner_id, title, state, request_id, assignment_t)
+         SELECT handle, $1, owner_id, title, 'Paused', 'recorded-pause', assignment_t
+           FROM proxima_core.goal WHERE t = $2",
+        )
+        .bind(legacy)
+        .bind(source_two.goal_id.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+         VALUES ($1, $2, 1)",
+        )
+        .bind(legacy)
+        .bind(serde_json::json!({
+            "version": 1,
+            "verb": "transition",
+            "prior_goal_id": source_two.goal_id.into_inner(),
+            "next_state": "Paused",
+            "authorship": "user",
+        }))
+        .execute(pool)
+        .await?;
+        let legacy_pause = h
+            .transition(source_two.goal_id, GoalState::Paused, "recorded-pause")
+            .await
+            .expect_err("a pause recorded without pending conflicts with a retry that has one");
+        assert!(
+            legacy_pause
+                .downcast_ref::<StorageError>()
+                .is_some_and(|error| matches!(error, StorageError::IdempotencyConflict { .. })),
+            "{legacy_pause}"
         );
         Ok(())
     }

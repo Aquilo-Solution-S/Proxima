@@ -18,7 +18,9 @@ const INSTALLER_MIGRATIONS: [i64; 2] = [20_260_924_000_020, 20_260_929_000_020];
 /// hand-written policies. Later files are kept: the template already holds
 /// them, and a lane that lacked them would read its ledger as diverged.
 async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage) {
-    let _ = pg;
+    proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(pg.pool_for_tests())
+        .await
+        .expect("reopen the migrations after the lane");
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(database)
         .await
         .expect("split roles");

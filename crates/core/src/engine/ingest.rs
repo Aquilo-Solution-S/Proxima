@@ -809,11 +809,21 @@ impl Engine {
         )))
     }
 
+    /// Every engine-authorized Fact write names its schema here, so this is
+    /// where `core/goal-change-v1` is refused: a scheduler acts on a goal
+    /// change, so only a goal write may record one, in storage and under the
+    /// goal's own authority (docs/18 §Goal changes on the feed).
     fn fact_schema_info(
         &self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,
     ) -> Result<&SchemaInfo, ProtocolError> {
+        if schema_id.as_str() == <crate::GoalChangeV1 as crate::FactPayload>::SCHEMA_ID {
+            return Err(ProtocolError::invalid_argument(
+                "schema_id",
+                "core/goal-change-v1 is written only by a goal write (core_goal)",
+            ));
+        }
         self.registry
             .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
             .ok_or_else(|| {
@@ -1381,6 +1391,30 @@ mod tests {
             .expect("single-owner host context should authorize ingest");
 
         assert_eq!(authorized.permit().owner(), &owner);
+    }
+
+    #[tokio::test]
+    async fn fact_ingest_refuses_a_goal_change_a_goal_write_did_not_make() {
+        let owner = test_owner();
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let forged = crate::GoalChangeV1 {
+            series: uuid::Uuid::now_v7(),
+            goal: crate::GoalId::new(uuid::Uuid::now_v7()),
+            prior: None,
+            revision: u32::MAX,
+            state: crate::goal_write::GoalState::Abandoned,
+            change: crate::GoalChange::Abandon,
+        };
+        let draft =
+            FactWriteCommand::from_payload("test/source", &forged, time::OffsetDateTime::now_utc());
+
+        let error = engine
+            .authorize_fact_ingest(&authz, draft, &[SidecarPayload::fact(forged)])
+            .await
+            .expect_err("only a goal write may record a goal change");
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
 
     #[tokio::test]

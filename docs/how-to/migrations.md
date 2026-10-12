@@ -23,7 +23,7 @@ is `0024` ([v0.0.26](#v0026)).
 
 | Lane | Migration |
 |---|---|
-| Core | `0025_v031_goal_text_outbox_receipt.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`); and `publication_outbox_published_chk` relaxed to `CHECK ((state = 'published') = (published_at IS NOT NULL))` |
+| Core | `0025_v031_goal_text_outbox_receipt.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`); and `publication_outbox_published_chk` relaxed to `CHECK ((state = 'published') = (published_at IS NOT NULL))`; the sidecar table `proxima_core.goal_change_v1` of the `core/goal-change-v1` Fact, with the enums `goal_change_kind` and `goal_pending_work` |
 
 **Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
 unknown, never empty: a version that no declaration can speak for (written
@@ -73,6 +73,31 @@ record that is not published; the captured event is untouched. The two receipt
 columns stay, and nothing writes them any more. The check is dropped and added
 again, so a re-run changes nothing.
 
+**Goal change Fact (`_v031_`).** A goal write that inserts a Goal row also
+writes a `core/goal-change-v1` Fact when the runtime has an outbox intake
+([18 §Goal changes on the feed](../18-fact-outbox.md#goal-changes-on-the-feed)).
+Its sidecar `proxima_core.goal_change_v1` is `(t, series, goal_t, prior_t,
+revision, state, change_kind, parent_t, pending)`, append-only, with `t` a
+foreign key to `proxima_core.memory` and `revision integer NOT NULL CHECK
+(revision >= 1)`, the version's position in its series. Two checks tie the
+optional columns to the kind:
+`goal_change_v1_pending_chk CHECK ((change_kind = 'pause') = (pending IS NOT
+NULL))` and `goal_change_v1_parent_chk CHECK ((change_kind = 'decompose_child')
+= (parent_t IS NOT NULL))`, so `pending` exists on a pause alone and is
+required there, and `parent_t` likewise on a decomposed child. There is no key
+into `goal`: a goal erase never has to reach the Fact. The table is wired as
+`utterance_v1` and `write_act_v1` are: a `proxima_core.flavor_surface` row for
+the core flavor, the declaration and presence triggers of
+`crates/storage-pg/src/integrity.rs` (pasted verbatim and pinned by
+`generated_declaration_triggers_are_the_migration_text` and
+`generated_presence_triggers_are_the_migration_text`), and owner-RLS of class
+`fk_parent` through the 0024 per-table building blocks. The section is idempotent:
+the enums are created only when missing, the table with `IF NOT EXISTS`, the
+triggers with `OR REPLACE` or dropped first, and the surface row skips a
+conflict; a second run changes nothing. A database that holds no goal-change
+Fact before the upgrade holds no row after it, and no existing row is
+rewritten.
+
 **Locks.** The migration takes `ACCESS EXCLUSIVE` on `proxima_core.goal` for
 its transaction: a validating scan for the check, then one `UPDATE` that writes
 a new row version for every Goal version it can give a text (the old versions
@@ -86,13 +111,16 @@ put into another owner's series stays, and every new insert is checked against
 `proxima_core.publication_outbox`, and its rows are scanned twice: once by the
 `UPDATE` (which rewrites no row of a database Proxima alone wrote) and once to
 validate. The table holds the pending backlog and whatever published history
-retention leaves. No other table is touched.
+retention leaves. The goal-change section creates one empty table and a
+trigger on `proxima_core.memory`, which takes `SHARE ROW EXCLUSIVE` on it
+briefly; it reads and rewrites no row. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27
 binary starts: boot checks for the column, its constraint and the foreign key
 `goal_owner_matches_head_fk` and refuses a database without them ("apply
-migrations before boot").
+migrations before boot"). `ensure_declaration_triggers` also refuses a database
+without the declaration triggers of `proxima_core.goal_change_v1`.
 
 **Stop v0.0.26 processes before the upgrade.** A v0.0.26 binary cannot start
 against the upgraded database, with or without `PROXIMA_SKIP_MIGRATIONS`: both
