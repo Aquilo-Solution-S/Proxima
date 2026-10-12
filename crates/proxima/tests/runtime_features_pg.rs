@@ -14,8 +14,9 @@ use proxima::flavor::{
     NamedMigrator,
 };
 use proxima::{
-    AppInfo, BootReport, Feature, FeatureControl, FeatureControlError, FeatureState, FeatureStatus,
-    FlavorApp, Proxima, ProximaError, ToolScope, company_owner,
+    AppInfo, BootReport, DurableIntake, Feature, FeatureControl, FeatureControlError, FeatureState,
+    FeatureStatus, FlavorApp, Intake, IntakeError, Proxima, ReceivedEvent, ToolScope,
+    company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
@@ -87,6 +88,17 @@ impl FlavorApp for WorkerApp {
             title: "Runtime Features Worker",
             version: "1",
         }
+    }
+}
+
+/// An intake that records nothing: enough to start the outbox publisher.
+#[derive(Debug)]
+struct DiscardIntake;
+
+#[async_trait]
+impl DurableIntake for DiscardIntake {
+    async fn accept(&self, _event: &ReceivedEvent) -> Result<Intake, IntakeError> {
+        Ok(Intake::Accepted)
     }
 }
 
@@ -185,81 +197,22 @@ fn assert_all(report: &BootReport, state: FeatureState) {
     }
 }
 
-/// Every feature this build can start is started.
+/// Every feature is started.
 fn assert_configured_started(report: &BootReport) {
-    #[cfg(feature = "outbox-nats")]
     assert_all(report, FeatureState::Started);
-    #[cfg(not(feature = "outbox-nats"))]
-    for feature in [
-        Feature::Mcp,
-        Feature::FlavorWorkers,
-        Feature::EmbeddingWorker,
-    ] {
-        assert_eq!(report.get(feature).state, FeatureState::Started);
-    }
-}
-
-/// The health readers a runtime handle exposes for its started features.
-#[cfg(feature = "outbox-nats")]
-struct Health(
-    proxima::PublisherHealthReader,
-    proxima::CopyCleanerHealthReader,
-);
-
-#[cfg(not(feature = "outbox-nats"))]
-struct Health;
-
-#[cfg(feature = "outbox-nats")]
-macro_rules! health {
-    ($handle:expr) => {
-        Health(
-            $handle.publisher_health().expect("publisher health"),
-            $handle.copy_cleaner_health().expect("cleaner health"),
-        )
-    };
-}
-
-#[cfg(not(feature = "outbox-nats"))]
-macro_rules! health {
-    ($handle:expr) => {
-        Health
-    };
-}
-
-impl Health {
-    /// After shutdown every task reports itself stopped.
-    #[cfg_attr(
-        not(feature = "outbox-nats"),
-        expect(clippy::unused_self, reason = "no health reader without outbox-nats")
-    )]
-    fn assert_stopped(&self) {
-        #[cfg(feature = "outbox-nats")]
-        {
-            assert_eq!(self.0.snapshot().task, proxima::PublisherTaskState::Stopped);
-            assert_eq!(
-                self.1.snapshot().task,
-                proxima::CopyCleanerTaskState::Stopped
-            );
-        }
-    }
 }
 
 /// Only the two workers that claim queue rows through the runtime's gate have
 /// a control; every other feature, started or off, has none. Each control
-/// quiesces and resumes, the publisher included against a broker nothing
-/// listens on. Returns the handles for the after-shutdown check.
+/// quiesces and resumes. Returns the handles for the after-shutdown check.
 async fn exercise_controls(
     control: impl Fn(Feature) -> Option<FeatureControl>,
 ) -> Vec<FeatureControl> {
     let mut controls = Vec::new();
     for feature in Feature::ALL {
         let controlled = match feature {
-            Feature::EmbeddingWorker => true,
-            Feature::OutboxPublisher => cfg!(feature = "outbox-nats"),
-            Feature::Mcp
-            | Feature::FlavorWorkers
-            | Feature::PublishedRecordPrune
-            | Feature::CopyCleaner => false,
+            Feature::EmbeddingWorker | Feature::OutboxPublisher => true,
+            Feature::Mcp | Feature::FlavorWorkers | Feature::PublishedRecordPrune => false,
         };
         let handle = control(feature);
         assert_eq!(handle.is_some(), controlled, "{feature}");
@@ -292,11 +245,6 @@ fn assert_controls_stopped(controls: &[FeatureControl]) {
     }
 }
 
-/// A broker nothing listens on: the tasks start, retry, and still observe
-/// cancellation.
-#[cfg(feature = "outbox-nats")]
-const UNREACHABLE_BROKER: &str = "nats://127.0.0.1:1";
-
 #[tokio::test]
 async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     let db = SplitRoleDb::create("proxima_features_off", &[])
@@ -322,11 +270,6 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
             "{feature} is off: nothing to control"
         );
     }
-    #[cfg(feature = "outbox-nats")]
-    {
-        assert!(built.publisher_health().is_none());
-        assert!(built.copy_cleaner_health().is_none());
-    }
     for decision in report.decisions() {
         let line = captured.line(decision.feature);
         assert!(line.contains("state=off "), "{line}");
@@ -339,24 +282,8 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     assert!(reason(Feature::Mcp).contains("PROXIMA_MCP_BIND"));
     assert!(reason(Feature::FlavorWorkers).contains("no linked flavor"));
     assert!(reason(Feature::EmbeddingWorker).contains("embed_client"));
-    #[cfg(feature = "outbox-nats")]
-    {
-        assert!(reason(Feature::OutboxPublisher).contains("PROXIMA_NATS_URL"));
-        assert!(reason(Feature::PublishedRecordPrune).contains("no retention"));
-        assert!(reason(Feature::CopyCleaner).contains("PROXIMA_COPY_CLEANER_URL"));
-    }
-    #[cfg(not(feature = "outbox-nats"))]
-    for feature in [
-        Feature::OutboxPublisher,
-        Feature::PublishedRecordPrune,
-        Feature::CopyCleaner,
-    ] {
-        assert!(
-            reason(feature).contains("outbox-nats"),
-            "{}",
-            reason(feature)
-        );
-    }
+    assert!(reason(Feature::OutboxPublisher).contains("outbox_intake"));
+    assert!(reason(Feature::PublishedRecordPrune).contains("no retention"));
 
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())
         .await
@@ -371,7 +298,7 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
     let owner = company_owner(Uuid::now_v7());
     let subject = UserId::new(Uuid::now_v7());
     let app = || {
-        let app = Proxima::<WorkerApp>::app()
+        Proxima::<WorkerApp>::app()
             .database_url(db.runtime_url())
             .platform_database_url(db.platform_url())
             .owner(owner)
@@ -381,13 +308,9 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 "features-embed",
                 &[0.25, 0.5, 0.75],
-            )));
-        #[cfg(feature = "outbox-nats")]
-        let app = app
-            .nats(proxima::NatsPublisherConfig::new(UNREACHABLE_BROKER).expect("broker url"))
+            )))
+            .outbox_intake(Arc::new(DiscardIntake))
             .published_retention(Duration::from_mins(1))
-            .copy_cleaner(proxima::JetStreamCopyCleanerConfig::new(UNREACHABLE_BROKER));
-        app
     };
 
     // build(): every feature starts; MCP is assembled and handed over.
@@ -412,13 +335,11 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
         1,
         "build() starts workers"
     );
-    let health = health!(built);
     let controls = exercise_controls(|feature| built.feature_control(feature)).await;
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())
         .await
         .expect("build() shutdown joins every task");
     assert_eq!(WORKERS_STOPPED.load(Ordering::SeqCst), 1, "worker joined");
-    health.assert_stopped();
     assert_controls_stopped(&controls);
 
     // run(): the same features, MCP now listening.
@@ -437,18 +358,15 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
         2,
         "run() starts workers"
     );
-    let health = health!(running);
     let controls = exercise_controls(|feature| running.feature_control(feature)).await;
     tokio::time::timeout(Duration::from_secs(10), running.shutdown())
         .await
         .expect("run() shutdown joins every task");
     assert_eq!(WORKERS_STOPPED.load(Ordering::SeqCst), 2, "worker joined");
-    health.assert_stopped();
     assert_controls_stopped(&controls);
 }
 
 /// The prune rides on the publisher: a retention alone starts nothing.
-#[cfg(feature = "outbox-nats")]
 #[tokio::test]
 async fn a_retention_without_a_publisher_is_off_and_says_so() {
     let db = SplitRoleDb::create("proxima_features_prune", &[])
@@ -476,43 +394,4 @@ async fn a_retention_without_a_publisher_is_off_and_says_so() {
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())
         .await
         .expect("shutdown");
-}
-
-fn refusal(lookup: &[(&str, &str)]) -> String {
-    let lookup: Vec<(String, String)> = lookup
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect();
-    match Proxima::<BareApp>::app().from_lookup(move |key| {
-        lookup
-            .iter()
-            .find(|(candidate, _)| candidate == key)
-            .map(|(_, value)| value.clone())
-    }) {
-        Err(ProximaError::Config(message)) => message,
-        Err(other) => panic!("expected a config refusal, got {other}"),
-        Ok(_) => panic!("a half-configured feature must refuse to boot"),
-    }
-}
-
-/// A section that names no broker refuses boot and names the missing key.
-#[cfg(feature = "outbox-nats")]
-#[test]
-fn a_half_configured_feature_refuses_boot_naming_the_missing_part() {
-    let cleaner = refusal(&[("PROXIMA_COPY_CLEANER_TOKEN", "secret")]);
-    assert!(cleaner.contains("PROXIMA_COPY_CLEANER_URL"), "{cleaner}");
-    assert!(cleaner.contains("PROXIMA_COPY_CLEANER_TOKEN"), "{cleaner}");
-    let publisher = refusal(&[("PROXIMA_NATS_SUBJECT_PREFIX", "proxima")]);
-    assert!(publisher.contains("PROXIMA_NATS_URL"), "{publisher}");
-}
-
-/// A broker this binary was built without cannot be honoured.
-#[cfg(not(feature = "outbox-nats"))]
-#[test]
-fn a_broker_without_the_outbox_nats_build_refuses_boot() {
-    for url in ["PROXIMA_NATS_URL", "PROXIMA_COPY_CLEANER_URL"] {
-        let message = refusal(&[(url, "nats://127.0.0.1:4222")]);
-        assert!(message.contains(url), "{message}");
-        assert!(message.contains("outbox-nats"), "{message}");
-    }
 }

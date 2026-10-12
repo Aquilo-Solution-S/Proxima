@@ -196,9 +196,9 @@ the ORIGINAL owner's id.
 
 Counted on the receipt (`publications`), excluded from the export bundle (a
 derived delivery copy of a typed Fact the bundle already carries, wrapped in a
-transport envelope naming this installation), kept by forget. What a broker
-already accepted is outside the database's reach — the stream's own retention
-is the host's obligation, not this verb's. `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`
+transport envelope naming this installation), kept by forget. What the host's
+intake already received, and any broker it forwarded to, is outside the
+database's reach — that retention is the host's obligation, not this verb's. `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`
 is housekeeping, not compliance: it removes only records that were already
 delivered, and no horizon can reach an undelivered one.
 

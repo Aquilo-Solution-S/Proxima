@@ -3,7 +3,7 @@
 ## v0.0.27
 
 Pin all Proxima Rust dependencies to the same `v0.0.27` tag. One additive core
-migration, `0025_v031_goal_text.sql`; boot applies it ([migrations
+migration, `0025_v031_goal_text_outbox_receipt.sql`; boot applies it ([migrations
 §v0.0.27](migrations.md#v0027)). **Breaking, no shims** (#435): `MemoryReadPort`
 gained a required method, `GoalRow` gained fields and `GoalWriteCommand` gained
 `text`, so a host or test double that implements the one or builds the others
@@ -19,6 +19,28 @@ time string now carry `time::OffsetDateTime` (same wire).
 | `SearchMemoryOutput.created_at`, `UploadPrepareOutput.expires_at`, `UploadReadUrlOutput.expires_at` (`proxima_core::mcp::core_tools::{search_memories, upload}`) | Now `time::OffsetDateTime` instead of a preformatted `String`. They serialize with `time::serde::rfc3339` to the same RFC 3339 strings, and the tool output schemas still declare a string, so the wire is unchanged. Code that read the `String` formats the value itself |
 | Changed | `proxima://goals` and `proxima://goal/{id}` return `text` (the full text in the listing too; JSON `null` when unknown, the key always present), `set_at` and `changed_at` (RFC 3339 strings) on every goal. A client that rejects unknown fields adds the three ([14 §Core Memory MCP Surface](../14-protocol-surface.md#core-memory-mcp-surface)). The export bundle's `proxima_core.goal` rows carry `text` |
 | New | Resource `proxima://memories/counts` (`resource:memory-counts` scope key, REST `GET /v1/resources/memories/counts`), answering `{"counts": {"Fact", "Abstraction", "Perspective", "Goal"}}` with all four keys always present ([14 §Core Memory MCP Surface](../14-protocol-surface.md#core-memory-mcp-surface)). A palette that lists resources by key adds `ScopeKey::Resource(ResourceKey::parse("memory-counts")?)` to expose it. `Engine::memory_counts(&AuthzContext) -> Result<MemoryCounts, ProtocolError>` and `MemoryCounts` are exported from `proxima::host` |
+
+**Also breaking, no shims** (#435): the NATS adapter is removed and the Fact
+outbox is delivered in process, to an intake the host provides
+([18 §Delivery](../18-fact-outbox.md#delivery)). A host that still needs a
+broker forwards to it from its own `DurableIntake`
+([18 §Forwarding to a broker](../18-fact-outbox.md#forwarding-to-a-broker)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| Crate `proxima-outbox-nats` (`OutboxPublisher`, `ReferenceConsumer`, the copy cleaner, `asyncapi_document` / `AsyncApiInfo`, `subject_for` / `parse_subject` / `DEFAULT_SUBJECT_PREFIX`, `DrainReport`, `PublishHook`, the `durable_intake` example) | Deleted, with its `async-nats` dependency. Drop the dependency. Deliver through a `DurableIntake` instead; to publish to a broker, do it inside `accept` |
+| `proxima` feature `outbox-nats`; `proxima-mcp` feature `nats` | Removed. Delete them from `features = [..]` and from `cargo build --features`; the shipped `proxima-mcp` binary supplies no intake, so its outbox is captured and not drained |
+| `RuntimeBuilder::nats(..)`, `copy_cleaner(..)` and the same overlay methods on `Proxima<A>` | Removed. Hand the runtime the intake with `outbox_intake(Arc<dyn DurableIntake>)` on either builder: set, the outbox publisher starts and delivers to it; unset, nothing drains, as before without a broker |
+| `RuntimeConfig` struct literals | Lose `nats` and `copy_cleaner`, gain `outbox_intake: Option<Arc<dyn DurableIntake>>` |
+| `PROXIMA_NATS_*`, `PROXIMA_COPY_CLEANER_*` | **No longer read, and no longer refused**: a stale `PROXIMA_NATS_URL` in the environment boots without a publisher and without a warning. Delete them from deployment manifests. The drain's batch (64), lease (30 s), poll (500 ms) and `accept` timeout (5 s) are fixed. `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`, `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` and `PROXIMA_PUBLICATION_SOURCE` are unchanged |
+| `BuiltProxima::publisher_health()`, `RunningProxima::publisher_health()`, `copy_cleaner_health()` | Removed; the drain has no health reader. Read `boot_report()`, `pending_count` and the `attempts` column |
+| `Feature::CopyCleaner` | Removed. `Feature::ALL` has five entries and `boot_report()` five decisions; an exhaustive `match` on `Feature` drops the arm. The publisher's off reason is now "no intake configured (outbox_intake)" |
+| `PublicationOutboxPort::mark_published(id, claim, &BrokerReceipt)` | `mark_published(&self, id: Uuid, claim: ClaimToken) -> Result<AckOutcome, StorageError>`. An implementation or fake drops the parameter; a caller stops building the receipt. `BrokerReceipt` is removed from `proxima_core::storage_ports::publication` and `proxima::host` |
+| `publication_outbox.published_stream`, `published_seq` | Kept, but no longer written: a record published in process leaves both `NULL`. `published_at` alone marks a published record (migration `0025` relaxes `publication_outbox_published_chk`) |
+| `proxima_outbox_nats::{DurableIntake, Intake, IntakeError, ReceivedEvent, EventIdentity, CloudEventEnvelope}` (gated by `outbox-nats`) | Now `proxima_core::publication::intake::{..}`, re-exported ungated as `proxima::{..}` and `proxima::host::{..}`. `EventIdentity` and `ReceivedEvent::identity()` are unchanged |
+| `ReceivedEvent { subject, stream_sequence, .. }` and `ReceivedEvent::parsed_subject(prefix)` | `subject`, `stream_sequence` and `parsed_subject` are gone. `owner: OwnerRef` replaces the subject's owner token, typed from the outbox row rather than parsed back out of a string. `delivered_count: u64` is now the record's `attempts` (this delivery included). A struct literal needs `owner` |
+| `IntakeError { retry_after, .. }`, `IntakeError::retry_after(delay)` | Removed: nothing honours a redelivery hint in process. `IntakeError::new(message)` is unchanged; the drain releases the claim and backs off |
+| An envelope that does not parse | Was delivered under a synthetic `malformed:<hex>` id. Now logged at error level (event id and error class) and released; the intake is never called with it. It stays `pending` until an operator repairs it |
 
 ## v0.0.26
 
@@ -210,7 +232,7 @@ so a caller with Fact rights alone no longer reaches plan rows.
 | Tests | `proxima = { features = ["testkit"] }`: `proxima::testkit::{SplitRoleDb, split_role_urls_for, scoped_authz, assert_trigger_migrations}`; the feature now also enables `proxima-core/test-fixtures`. `proxima::testkit` is a module re-exporting `proxima-pg-testkit`, so existing `proxima::testkit::…` paths still resolve. |
 | Side-effect Facts | `proxima::flavor::ingest_fact_detached(&ctx, write, deadline)` / `Engine::ingest_fact_detached` replace hand-rolled spawn + timeout + join. |
 | Host state (behavior change) | A second `host_state_participant` registration — same builder, or overlay over `FlavorApp::configure` — now refuses boot (`ProximaError::Config`) instead of replacing the first. `HostStateRequest::is::<C>()` / `try_downcast::<C>()` dispatch without consuming the request. |
-| NATS subjects | `proxima_outbox_nats::parse_subject(prefix, subject)` inverts `subject_for` ([18 §The `type_token` rule](../18-fact-outbox.md#the-type_token-rule)). |
+| NATS subjects | `proxima_outbox_nats::parse_subject(prefix, subject)` inverts `subject_for` (history: both were removed with the crate in [v0.0.27](#v0027)). |
 
 ## v0.0.14
 

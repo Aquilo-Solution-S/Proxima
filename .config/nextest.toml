@@ -10,10 +10,3 @@ failure-output = "immediate-final"
 success-output = "never"
 status-level = "fail"
 final-status-level = "fail"
-
-[test-groups]
-canonical-proxima-facts = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = "binary_id(proxima-outbox-nats::copy_cleaner_pg_nats)"
-test-group = "canonical-proxima-facts"

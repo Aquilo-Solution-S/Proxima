@@ -1403,7 +1403,6 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
            AND (
              datname LIKE 'proxima\\_%' ESCAPE '\\'
              OR datname LIKE 'pub\\_%' ESCAPE '\\'
-             OR datname LIKE 'nats\\_%' ESCAPE '\\'
            )
            AND datname NOT LIKE 'proxima\\_tmpl\\_core\\_%' ESCAPE '\\'
            AND datname NOT LIKE 'proxima\\_tmpl\\_code\\_%' ESCAPE '\\'

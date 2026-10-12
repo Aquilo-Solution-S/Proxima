@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::PublicationConfig;
+use proxima_core::publication::intake::DurableIntake;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
     FlavorServices, Owner, OwnerAccessPort, RequestHeaders, RevalidationConfig, ToolScope,
@@ -78,10 +79,7 @@ pub struct RuntimeBuilder {
     /// keeps published records forever, which is both the default and what
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
-    #[cfg(feature = "outbox-nats")]
-    nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
-    #[cfg(feature = "outbox-nats")]
-    copy_cleaner: Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>,
+    outbox_intake: Option<Arc<dyn DurableIntake>>,
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// A second participant was registered; [`Self::resolve`] refuses.
     duplicate_host_state_participant: bool,
@@ -197,10 +195,7 @@ impl RuntimeBuilder {
                 .or(base.embedding_runtime_policy),
             publication: self.publication.or(base.publication),
             published_retention: self.published_retention.or(base.published_retention),
-            #[cfg(feature = "outbox-nats")]
-            nats: self.nats.or(base.nats),
-            #[cfg(feature = "outbox-nats")]
-            copy_cleaner: self.copy_cleaner.or(base.copy_cleaner),
+            outbox_intake: self.outbox_intake.or(base.outbox_intake),
             duplicate_host_state_participant: self.duplicate_host_state_participant
                 || base.duplicate_host_state_participant
                 || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
@@ -282,25 +277,32 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Configure the `JetStream` publisher: set, it starts. Env equivalent:
-    /// the `PROXIMA_NATS_*` block.
-    #[cfg(feature = "outbox-nats")]
+    /// Deliver the captured outbox to `intake`, in this process: set, the
+    /// outbox publisher starts and calls [`DurableIntake::accept`] once per
+    /// captured event (docs/18 §Delivery). Unset, nothing drains the outbox:
+    /// Facts are still captured, the backlog is bounded by
+    /// `max_pending`, and a later boot with an intake delivers it.
+    ///
+    /// Delivery is at-least-once: a crash between `accept` and the outbox
+    /// recording it delivers the event again with a higher
+    /// [`ReceivedEvent::delivered_count`], so the intake deduplicates on
+    /// [`ReceivedEvent::id`]. `Ok` (`Accepted` or `Rejected`) records the
+    /// event as published. An [`IntakeError`], or an `accept` that does not
+    /// return within five seconds, releases it to be tried again after the
+    /// drain's backoff (the poll interval, doubling up to 30 s while a pass
+    /// delivers nothing). The runtime keeps no per-event state of its own.
+    ///
+    /// No environment variables: the drain's batch (64), lease (30 s) and poll
+    /// interval (500 ms) are fixed. A later call replaces an earlier one.
+    /// Published-record retention and the feature's quiesce/resume
+    /// ([`crate::Feature::OutboxPublisher`]) apply to the drain.
+    ///
+    /// [`ReceivedEvent::delivered_count`]: proxima_core::publication::intake::ReceivedEvent::delivered_count
+    /// [`ReceivedEvent::id`]: proxima_core::publication::intake::ReceivedEvent::id
+    /// [`IntakeError`]: proxima_core::publication::intake::IntakeError
     #[must_use]
-    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
-        self.nats = Some(nats);
-        self
-    }
-
-    /// Configure the retained-copy cleaner (docs/18 §Retained-copy cleanup):
-    /// set, it starts, under its own broker role and independent of the
-    /// publisher. Env equivalent: the `PROXIMA_COPY_CLEANER_*` block.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn copy_cleaner(
-        mut self,
-        cleaner: proxima_outbox_nats::JetStreamCopyCleanerConfig,
-    ) -> Self {
-        self.copy_cleaner = Some(cleaner);
+    pub fn outbox_intake(mut self, intake: Arc<dyn DurableIntake>) -> Self {
+        self.outbox_intake = Some(intake);
         self
     }
 
@@ -682,9 +684,7 @@ impl RuntimeBuilder {
         if self.embedding_runtime_policy.is_none() && embedding_runtime_policy_env_is_set(&lookup) {
             self.embedding_runtime_policy = Some(embedding_runtime_policy_from_lookup(&lookup)?);
         }
-        // Unconditional: the block is read (and validated) on every boot,
-        // independent of any cargo feature. A malformed bound is a boot
-        // error whether or not this binary can talk to a broker.
+        // Unconditional: the block is read (and validated) on every boot.
         if self.publication.is_none() {
             self.publication = Some(publication_config_from_lookup(&lookup)?);
         }
@@ -695,16 +695,6 @@ impl RuntimeBuilder {
         if self.published_retention.is_none() {
             self.published_retention = crate::config::published_retention_from_lookup(&lookup)?;
         }
-        #[cfg(feature = "outbox-nats")]
-        if self.nats.is_none() {
-            self.nats = crate::config::nats_from_lookup(&lookup)?;
-        }
-        #[cfg(feature = "outbox-nats")]
-        if self.copy_cleaner.is_none() {
-            self.copy_cleaner = crate::config::copy_cleaner_from_lookup(&lookup)?;
-        }
-        #[cfg(not(feature = "outbox-nats"))]
-        crate::config::refuse_uncompiled_broker(&lookup)?;
         Ok(self)
     }
 
@@ -948,10 +938,7 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: publication.clone(),
             published_retention: self.published_retention,
-            #[cfg(feature = "outbox-nats")]
-            nats: self.nats,
-            #[cfg(feature = "outbox-nats")]
-            copy_cleaner: self.copy_cleaner,
+            outbox_intake: self.outbox_intake,
         };
         config.validate()?;
         Ok((config, parts))
@@ -1045,17 +1032,13 @@ pub struct RuntimeConfig {
     /// the engine never sees it, and the only port that can act on it is
     /// host-held.
     pub published_retention: Option<Duration>,
-    /// The broker the captured outbox drains to (`PROXIMA_NATS_*`).
+    /// The host intake the captured outbox is delivered to, in this process
+    /// ([`RuntimeBuilder::outbox_intake`]).
     ///
     /// `None` — the default — leaves the outbox captured and undrained,
     /// which is a safe state: nothing is lost, the backlog is bounded, and
-    /// the publisher can be started later against the same records.
-    #[cfg(feature = "outbox-nats")]
-    pub nats: Option<proxima_outbox_nats::NatsPublisherConfig>,
-    /// The retained-copy cleaner (`PROXIMA_COPY_CLEANER_*`; docs/18
-    /// §Retained-copy cleanup). `None` — the default — leaves it off.
-    #[cfg(feature = "outbox-nats")]
-    pub copy_cleaner: Option<proxima_outbox_nats::JetStreamCopyCleanerConfig>,
+    /// a later boot with an intake delivers the same records.
+    pub outbox_intake: Option<Arc<dyn DurableIntake>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1536,65 +1519,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "outbox-nats")]
-    #[test]
-    fn the_cleaner_section_is_read_from_env_refused_half_configured_and_overridden_by_code() {
-        let base = || {
-            RuntimeBuilder::default()
-                .database_url("postgres://localhost/proxima")
-                .tool_scope(ToolScope::All)
-        };
-        let (off, _) = base()
-            .apply_lookup(lookup(&[]))
-            .expect("empty env")
-            .resolve()
-            .expect("resolves");
-        assert!(off.copy_cleaner.is_none());
-
-        let (on, _) = base()
-            .apply_lookup(lookup(&[("PROXIMA_COPY_CLEANER_URL", "nats://env:4222")]))
-            .expect("cleaner env parses")
-            .resolve()
-            .expect("resolves");
-        assert!(on.copy_cleaner.is_some());
-
-        let half = base()
-            .apply_lookup(lookup(&[(
-                "PROXIMA_COPY_CLEANER_CREDS_FILE",
-                "/run/cleaner.creds",
-            )]))
-            .expect_err("a cleaner section without a broker");
-        assert!(matches!(half, ProximaError::Config(_)), "{half}");
-        assert!(
-            half.to_string().contains("PROXIMA_COPY_CLEANER_URL"),
-            "the refusal names the missing part: {half}"
-        );
-
-        // Code wins: a programmatic section suppresses the env block, broken
-        // or not.
-        let (code, _) = base()
-            .copy_cleaner(proxima_outbox_nats::JetStreamCopyCleanerConfig::new(
-                "nats://code:4222",
-            ))
-            .apply_lookup(lookup(&[(
-                "PROXIMA_COPY_CLEANER_CREDS_FILE",
-                "/run/cleaner.creds",
-            )]))
-            .expect("the env block is not read")
-            .resolve()
-            .expect("resolves");
-        assert!(format!("{:?}", code.copy_cleaner).contains("code:4222"));
-    }
-
-    #[cfg(not(feature = "outbox-nats"))]
-    #[test]
-    fn a_broker_in_a_build_without_outbox_nats_refuses_before_storage() {
-        let err = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[("PROXIMA_NATS_URL", "nats://127.0.0.1:4222")]))
-            .expect_err("a broker this build cannot reach");
-        assert!(err.to_string().contains("outbox-nats"), "{err}");
-    }
-
     #[derive(Debug)]
     struct TestAuthenticator;
 
@@ -1612,10 +1536,7 @@ mod tests {
         RuntimeConfig {
             publication: PublicationConfig::default(),
             published_retention: None,
-            #[cfg(feature = "outbox-nats")]
-            nats: None,
-            #[cfg(feature = "outbox-nats")]
-            copy_cleaner: None,
+            outbox_intake: None,
             database_url: "postgres://localhost/proxima".to_string(),
             platform_database_url: None,
             s3: None,

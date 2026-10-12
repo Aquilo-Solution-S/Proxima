@@ -9,7 +9,7 @@
 //! were already DELIVERED. Neither of the first two deletes anything, and
 //! the third cannot touch an undelivered record: an expired lease makes a
 //! record deliverable again, never destroys it, and an event that has not
-//! reached the broker leaves this table only through compliance erasure.
+//! reached its intake leaves this table only through compliance erasure.
 //!
 //! [`PublicationRetentionPort`]: proxima_core::storage_ports::publication::PublicationRetentionPort
 
@@ -18,9 +18,8 @@ use std::time::Duration;
 
 use proxima_core::publication::{PublicationError, PublicationLimits, PublicationPlan};
 use proxima_core::storage_ports::publication::{
-    AckOutcome, BrokerReceipt, ClaimToken, ClaimedPublication, OriginScope,
-    PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
-    PublisherId, ReleaseOutcome,
+    AckOutcome, ClaimToken, ClaimedPublication, OriginScope, PublicationOriginEligibility,
+    PublicationOriginEligibilityPort, PublicationOutboxPort, PublisherId, ReleaseOutcome,
 };
 use proxima_core::{OwnerRefKind, SealedPublication, StorageError};
 use sqlx::{Postgres, Row, Transaction};
@@ -183,7 +182,7 @@ async fn refuse_when_full(
 /// high-water mark would have stepped over it forever.
 ///
 /// `attempts ASC` before `t ASC` is head-of-line-blocking insurance. Under
-/// `t` alone, one record the broker will never accept is re-claimed at the
+/// `t` alone, one record the intake will never accept is re-claimed at the
 /// front of every batch forever, and a `batch`-sized window of the backlog
 /// behind it never ships. Ordering by attempt count demotes a repeatedly
 /// failing record behind every fresher one after its first failure, so a
@@ -268,8 +267,8 @@ impl PublicationOutboxPort for PgStorage {
         if lease < MIN_CLAIM_LEASE {
             return Err(StorageError::ConstraintViolation(format!(
                 "publication claim lease is {} ms, under the {} ms floor; a lease shorter \
-                 than one broker round trip expires while the first publisher is still \
-                 sending, so every record would be re-claimed under it",
+                 than one delivery expires while the first publisher is still \
+                 delivering, so every record would be re-claimed under it",
                 lease.as_millis(),
                 MIN_CLAIM_LEASE.as_millis(),
             )));
@@ -290,18 +289,12 @@ impl PublicationOutboxPort for PgStorage {
         &self,
         id: Uuid,
         claim: ClaimToken,
-        receipt: &BrokerReceipt,
     ) -> Result<AckOutcome, StorageError> {
-        let sequence = i64::try_from(receipt.sequence).map_err(|_| {
-            StorageError::ConstraintViolation("broker sequence does not fit a bigint".into())
-        })?;
         let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
             "UPDATE proxima_core.publication_outbox
                 SET state = 'published',
                     published_at = now(),
-                    published_stream = $3,
-                    published_seq = $4,
                     claim_token = NULL,
                     claimed_by = NULL,
                     lease_expires_at = NULL
@@ -311,8 +304,6 @@ impl PublicationOutboxPort for PgStorage {
         )
         .bind(id)
         .bind(claim.into_inner())
-        .bind(&receipt.stream)
-        .bind(sequence)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -426,10 +417,10 @@ impl PublicationOriginEligibilityPort for PgStorage {
 impl PgStorage {
     /// Read this installation's minted identity.
     ///
-    /// The value a publisher stamps on a broker message and a cleaner
-    /// checks that stamp against. Both must come from THIS database — the
-    /// same one that answers eligibility — or the check degenerates into
-    /// comparing a configuration value with itself.
+    /// The value a host that forwards the outbox to its own broker stamps on
+    /// its copies, and its cleaner checks that stamp against. Both must come
+    /// from THIS database — the same one that answers eligibility — or the
+    /// check degenerates into comparing a configuration value with itself.
     ///
     /// Read once at boot rather than per message: the row is written by
     /// migration 0012 and a trigger refuses to change or remove it, so a

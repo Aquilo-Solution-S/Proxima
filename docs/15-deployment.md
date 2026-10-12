@@ -19,8 +19,9 @@ Optional dependencies: S3 for cited-blob storage (see [10](10-configuration.md#l
 and an OpenAI-compatible embedding client; when configured, the server
 drains embeddings in-process automatically. Without embeddings the server
 operates in degraded lexical-only mode.
-NATS JetStream is optional and only for the Fact outbox ([§Fact outbox](#fact-outbox));
-without it, capture still runs and records accumulate as `pending`.
+The Fact outbox ([§Fact outbox](#fact-outbox)) needs no broker: the host hands
+the runtime an intake and the runtime delivers in process. Without one, capture
+still runs and records accumulate as `pending`.
 
 ## PostgreSQL extensions and search performance
 
@@ -174,9 +175,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Crash-reclaim window; range `1..=86400`, strictly greater than request timeout. Must cover the longest honest drain interval between successful claim renewals. Live claims heartbeat every third of the window; claim-token fencing rejects writes after a real reclaim. |
 | `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. `pending_migrations` lists what the migration step would apply. |
-| `PROXIMA_PUBLICATION_SOURCE` | when listenable | `urn:proxima:acme-prod` | Producer identity URI in every published CloudEvent. Required once a listenable Fact type is registered; boot fails otherwise. |
-| `PROXIMA_NATS_URL` | no | `nats://nats:4222` | JetStream server. Unset ⇒ publisher off, capture retained. Needs the `nats` cargo feature. |
-| `PROXIMA_NATS_*` | no | see [10](10-configuration.md#framework-facade-host-app-boot) | Broker URL/auth, source subject prefix, and publisher claim/retry tuning. Stream topology is provisioned separately. |
+| `PROXIMA_PUBLICATION_SOURCE` | when listenable | `urn:proxima:acme-prod` | Producer identity URI in every captured CloudEvent. Required once a listenable Fact type is registered; boot fails otherwise. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | no | `100000` | Unpublished-record ceiling; at the ceiling listenable writes fail `CapacityExhausted`. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | no | `524288` | Largest captured export; over-cap writes fail `PayloadTooLarge`. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
@@ -535,14 +534,11 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 
 | Concern | Deployment rule |
 |---|---|
-| NATS | optional — a deployment with no listenable Fact type needs no broker at all. `PROXIMA_NATS_URL` unset ⇒ publisher off, capture unaffected, records retained |
-| JetStream storage | **DevOps-owned.** Configure the stream's storage and persistent volume according to the deployment's durability requirement. Proxima receives only the `PubAck` that the broker accepted the bytes |
-| topology | **DevOps-owned.** Provision streams, subject transforms, partitions and durable consumers before enabling the publisher. Test the complete source → transform → consumer path separately |
-| capacity | **DevOps-owned** for the broker; `discard: New` (or the chosen deployment semantics) determines whether a full stream rejects a publish. `PROXIMA_OUTBOX_MAX_PENDING` remains the database-side bound and fails listenable writes with `CapacityExhausted` (HTTP **503**) |
-| freeing stream space | an ACK does **not** necessarily free it: the deployment's retention policy decides. For `Limits` retention, purge only sequences at or below every consumer's `ack_floor` ([18 §Stream space never frees itself](18-fact-outbox.md#stream-space-never-frees-itself)) |
-| existing stream | Proxima neither creates nor validates it. The publisher must work with credentials that have publish and reply-inbox permissions but no stream-management permissions |
-| durability claim | file storage plus PubAck survives process death, not arbitrary disk loss. Back up the JetStream volume alongside Postgres (see [how-to/operate.md](how-to/operate.md)) |
-| erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Rows already delivered to the broker are outside that reach — set the stream's retention to match the host's obligation |
+| delivery | in process, to the intake the host passes to `outbox_intake(..)`; no broker, no cargo feature, no env var. Without an intake the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)) |
+| the shipped `proxima-mcp` binary | supplies no intake, so its outbox is captured and not drained: a deployment that registers a listenable type must embed Proxima in a host that supplies one, or the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
+| forwarding to a broker | **host-owned.** A host that forwards from its intake provisions the broker's topology, storage, capacity, permissions and retention itself; Proxima sees only that `accept` returned ([18 §Forwarding to a broker](18-fact-outbox.md#forwarding-to-a-broker)) |
+| capacity | `PROXIMA_OUTBOX_MAX_PENDING` is the database-side bound and fails listenable writes with `CapacityExhausted` (HTTP **503**). A stalled intake (including a full broker behind it) shows up here |
+| erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Events already delivered to the host's intake or broker are outside that reach — match the host's retention to its obligation |
 | delivered-record retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` reclaims database storage from records that are already published. Off by default; floor 60 s; it can never remove a `pending` or `claimed` record whatever its age |
 
 ## Owner-RLS rollout

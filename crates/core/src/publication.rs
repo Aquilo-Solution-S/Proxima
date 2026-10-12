@@ -20,7 +20,8 @@
 //!
 //! The port that drains the captured records lives in
 //! [`crate::storage_ports::publication`]; it is host-only and is reachable
-//! from no flavor-facing facade.
+//! from no flavor-facing facade. What a host implements to receive the
+//! drained events is [`intake`].
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -30,6 +31,8 @@ use uuid::Uuid;
 
 use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid};
 use crate::{Owner, SchemaId, SchemaVersion};
+
+pub mod intake;
 
 /// Default ceiling on records that have not been published yet.
 pub const DEFAULT_MAX_PENDING: u64 = 100_000;
@@ -207,7 +210,7 @@ impl PublicationConfig {
 /// Ceiling on host-bound extension attributes carried by one event.
 ///
 /// Small on purpose: these attributes travel on EVERY captured Fact of a
-/// listenable schema, and a broker header set that grows with the host's
+/// listenable schema, and an envelope that grows with the host's
 /// imagination is a cost every consumer pays forever.
 pub const MAX_PUBLICATION_EXTENSIONS: usize = 8;
 
@@ -282,7 +285,7 @@ impl From<bool> for ExtensionValue {
 /// attributes a HOST binds to every Fact it captures.
 ///
 /// Name-ordered because the envelope bytes are the stored artifact: the
-/// digest, the broker's dedup key and every consumer's signature check are
+/// digest, the intake's dedup key and every consumer's signature check are
 /// over them, so the attribute order cannot depend on the order a host
 /// happened to bind things in. A `BTreeMap` makes "sorted by name" a
 /// property of the type rather than of the caller.
@@ -609,7 +612,7 @@ pub fn data_schema_uri(schema_id: &SchemaId, schema_version: SchemaVersion) -> S
 /// order.
 ///
 /// A struct rather than a `serde_json::Map`, because the bytes are the
-/// stored artifact: the digest, the broker's dedup key and every consumer's
+/// stored artifact: the digest, the intake's dedup key and every consumer's
 /// signature check are over these bytes, and an attribute order that
 /// depended on a map's iteration order would make the same event serialize
 /// two ways.

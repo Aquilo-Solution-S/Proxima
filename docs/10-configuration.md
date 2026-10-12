@@ -27,7 +27,7 @@ host injects for vector retrieval.
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
-| Fact outbox publisher | binary-wide | `nats` cargo feature + `PROXIMA_NATS_URL`; capture itself is not configurable (see [18](18-fact-outbox.md)) |
+| Fact outbox publisher | binary-wide | `outbox_intake(..)` on the builder, no env and no cargo feature; capture itself is not configurable (see [18](18-fact-outbox.md)) |
 | source credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, edge kinds, prompts,
@@ -108,27 +108,10 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed), `full` (opt-in), or `code` (the code flavor's search and read tools, no memory tools; [15](15-deployment.md)). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. Each entry is parsed into a `ScopeKey` at boot; an entry that is not one fails boot naming it. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. Parsed as `PROXIMA_TOOL_ALLOW` is. |
-| `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every published CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
+| `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every captured CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
-| `PROXIMA_NATS_URL` | NATS server URL. **Set ⇒ publisher starts; unset ⇒ off**; capture still runs and records stay `pending` (the rollback path). Requires the `outbox-nats` cargo feature (`proxima-mcp`: `nats`); a build without it refuses boot. Another `PROXIMA_NATS_*` publisher key without it refuses boot. The publisher only needs publish and reply-inbox permissions. |
-| `PROXIMA_NATS_SUBJECT_PREFIX` | Source subject prefix; full source subject is `<prefix>.<owner_kind>.<owner_uuid>.<type_token>`. Default `proxima.fact`. Stream transforms and partitions are deployment-owned. The token encoding is injective — see [18 §The `type_token` rule](18-fact-outbox.md#the-type_token-rule). |
-| `PROXIMA_NATS_CREDS_FILE` | NATS credentials file. Mutually exclusive with the user/password and token forms. |
-| `PROXIMA_NATS_USER` / `PROXIMA_NATS_PASSWORD` | NATS user credentials. |
-| `PROXIMA_NATS_TOKEN` | NATS auth token. |
-| `PROXIMA_NATS_BATCH` | Records claimed per publisher pass. Default `64`. |
-| `PROXIMA_NATS_LEASE_SECS` | Claim lease. Default `30`. Expiry returns the record to `pending`; it never deletes it. |
-| `PROXIMA_NATS_POLL_MS` | Idle poll interval. Default `500`. |
-| `PROXIMA_NATS_PUBLISH_TIMEOUT_MS` | PubAck wait. Default `5000`. A timeout releases the claim and republishes the same bytes. |
-| `PROXIMA_NATS_PUBLISHER_ID` | Operator-facing identity recorded on every claim (`claimed_by`). Default: `HOSTNAME` (read through the same injected lookup, not the process environment) plus the pid. Not a credential — the fencing token is the claim token. |
-| `PROXIMA_NATS_CONSUMER_STREAM` | Deployment-provided stream name for the reference consumer. Default `PROXIMA_FACTS`; the consumer binds an existing durable and never creates topology. |
-| `PROXIMA_NATS_CONSUMER_NAME` | Deployment-provided durable consumer name for the reference consumer. Default `proxima-reference`. Its filter, ACK policy, redelivery and flow-control settings belong to the broker topology. |
-| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the publisher runs. Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
-| `PROXIMA_COPY_CLEANER_URL` (+ `PROXIMA_COPY_CLEANER_*`) | Retained-copy cleaner broker. **Set ⇒ cleaner starts.** Its own credential and bounds; any other key of the block without the URL refuses boot. Every key: [env-vars](reference/env-vars.md); contract: [18 §Retained-copy cleanup](18-fact-outbox.md#retained-copy-cleanup). |
-| `PROXIMA_TEST_NATS_URL` | Test-only. Unset ⇒ broker-backed tests skip with a message; CI sets it. |
-| `PROXIMA_TEST_NATS_PUBLISHER_URL` | Test-only. CI publisher URL with publish and reply-inbox permissions but no stream-management permissions. |
-| `PROXIMA_DEV_NATS_PORT` | Local-dev only (`docker-compose.dev.yml`): host port mapped to the dev JetStream container's `4222`. Default `4224`, so it cannot collide with a system NATS. |
-| `PROXIMA_DEV_NATS_MONITOR_PORT` | Local-dev only: host port mapped to that container's monitoring endpoint (`8222`). Default `8224`. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an `outbox_intake` is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
@@ -154,9 +137,8 @@ enable flags, no spawn calls.
 | `mcp` | bind address | `PROXIMA_MCP_BIND` | `mcp_bind(..)` | — | — |
 | `flavor-workers` | a linked flavor's `FlavorBundle::spawn_workers` returns ≥1 | — | — | — | — |
 | `embedding-worker` | embedding client or router; startup reconcile, then drain | host-built (`proxima-mcp`: `PROXIMA_EMBED_*`) | `embed_client(..)` / `embedding_router(..)` | — | `feature_control(Feature::EmbeddingWorker)` |
-| `outbox-publisher` | broker URL | `PROXIMA_NATS_URL` | `nats(..)` | `publisher_health()` | `feature_control(Feature::OutboxPublisher)` |
+| `outbox-publisher` | an intake | — (no env var) | `outbox_intake(Arc<dyn DurableIntake>)` | — | `feature_control(Feature::OutboxPublisher)` |
 | `published-record-prune` | publisher runs ∧ retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | `published_retention(..)` | — | — |
-| `copy-cleaner` | cleaner section (broker required) | `PROXIMA_COPY_CLEANER_URL` | `copy_cleaner(..)` | `copy_cleaner_health()` | — |
 
 - Config: one typed section per feature, from env (`from_env` /
   `from_lookup`) or code (`Proxima<A>` builder calls, `RuntimeBuilder` in
@@ -171,9 +153,6 @@ enable flags, no spawn calls.
 - Boot report: one INFO line per feature,
   `feature=<name> state=started|off reason=<rule>`; the same decisions on
   `boot_report()`.
-- Half-configured refuses boot, naming the missing key: a
-  `PROXIMA_NATS_*` / `PROXIMA_COPY_CLEANER_*` key without its section's URL;
-  either URL in a build without the `outbox-nats` cargo feature.
 - Several processes with the same config are safe: publisher claims are
   leased and fenced (see [18](18-fact-outbox.md)).
 - Quiesce and resume, without stopping the server: the Control column,
@@ -192,7 +171,7 @@ serving. `shutdown(self)` is the only other stop and ends serving too.
 `feature_control(feature: Feature) -> Option<FeatureControl>` on
 `BuiltProxima` and `RunningProxima`: `Some` for a started `embedding-worker`
 or `outbox-publisher`. `None` for a feature that is off, and for `mcp`,
-`flavor-workers`, `published-record-prune` and `copy-cleaner`: the runtime
+`flavor-workers` and `published-record-prune`: the runtime
 has no gate for them. `FeatureControl` is owned and `Clone`, so a host can move it into a
 signal handler and still call `shutdown(self)` later; it outlives the
 shutdown.
@@ -227,9 +206,8 @@ pub enum FeatureControlError { Stopped, Resumed }
   reclaims stale ones, and claims none. It runs before the first gate check,
   so a quiesce that arrives during it waits for it; `resume()` does not
   repeat it (boot-time catch-up).
-- **Publisher:** finishes the record in flight and releases the rest of its
-  batch; a publisher still connecting parks without waiting for the broker.
-  Its task, broker connection and health reader stay alive
+- **Publisher:** finishes the record in flight (at most one `accept`, five
+  seconds) and releases the rest of its batch. Its task stays alive
   ([18 §Publisher quiesce](18-fact-outbox.md#publisher-quiesce)).
 - Quiesce and resume interrupt the idle sleep: neither waits a poll
   interval. `resume()` reopens the gate and wakes the worker.
@@ -240,7 +218,7 @@ pub enum FeatureControlError { Stopped, Resumed }
   `pending_embedding_jobs` per owner).
 - **Lease caveat.** Quiescent means this process acts on no claim it holds.
   A release that failed leaves its lease to expire (publisher:
-  `PROXIMA_NATS_LEASE_SECS`, default 30; embedding jobs: the policy's
+  30 s, fixed; embedding jobs: the policy's
   stale-claim timeout), so it does not mean no row is `claimed`. Claims stay leased and fenced: a late acknowledgement from a
   quiesced process is refused as stale.
 - **Not gated:** a host that calls `Engine::drain_embedding_jobs` itself

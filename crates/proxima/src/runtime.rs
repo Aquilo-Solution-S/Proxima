@@ -347,23 +347,11 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
-    /// [`RuntimeBuilder::nats`]: set, the outbox publisher starts.
-    #[cfg(feature = "outbox-nats")]
+    /// [`RuntimeBuilder::outbox_intake`]: set, the outbox publisher starts and
+    /// delivers to `intake` in this process.
     #[must_use]
-    pub fn nats(mut self, nats: proxima_outbox_nats::NatsPublisherConfig) -> Self {
-        self.overlay = self.overlay.nats(nats);
-        self
-    }
-
-    /// [`RuntimeBuilder::copy_cleaner`]: set, the retained-copy cleaner
-    /// starts.
-    #[cfg(feature = "outbox-nats")]
-    #[must_use]
-    pub fn copy_cleaner(
-        mut self,
-        cleaner: proxima_outbox_nats::JetStreamCopyCleanerConfig,
-    ) -> Self {
-        self.overlay = self.overlay.copy_cleaner(cleaner);
+    pub fn outbox_intake(mut self, intake: Arc<dyn crate::DurableIntake>) -> Self {
+        self.overlay = self.overlay.outbox_intake(intake);
         self
     }
 
@@ -579,7 +567,7 @@ struct Runtime {
     /// The host-only outbox drain, kept for unit tests that drive a
     /// publisher over a wrapped port. Production code never holds it
     /// outside the publisher task.
-    #[cfg(all(test, feature = "outbox-nats"))]
+    #[cfg(test)]
     outbox_for_tests: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
 }
 
@@ -600,12 +588,9 @@ impl Runtime {
                 services: &host.services,
                 cancel: &cancel,
                 config,
-                #[cfg(feature = "outbox-nats")]
                 publication: crate::features::PublicationHandles {
                     outbox: booted.outbox.clone(),
                     retention: booted.outbox_retention,
-                    eligibility: host.publication_origin_eligibility.clone(),
-                    origin_scope: host.origin_scope,
                 },
             },
         );
@@ -618,7 +603,7 @@ impl Runtime {
             cancel,
             insecure_single_owner: config.insecure_single_owner,
             features,
-            #[cfg(all(test, feature = "outbox-nats"))]
+            #[cfg(test)]
             outbox_for_tests: booted.outbox,
         }
     }
@@ -691,27 +676,12 @@ macro_rules! runtime_handle_methods {
         /// `Some` for a started [`Feature::EmbeddingWorker`] or
         /// [`Feature::OutboxPublisher`]. `None` for a feature that is off and
         /// for [`Feature::Mcp`] (serving continues by definition),
-        /// [`Feature::FlavorWorkers`], [`Feature::PublishedRecordPrune`] and
-        /// [`Feature::CopyCleaner`]: the runtime has no gate for them. The
-        /// handle outlives `shutdown(self)`, after which every call on it
-        /// reports `Stopped`.
+        /// [`Feature::FlavorWorkers`] and [`Feature::PublishedRecordPrune`]: the
+        /// runtime has no gate for them. The handle outlives `shutdown(self)`,
+        /// after which every call on it reports `Stopped`.
         #[must_use]
         pub fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
             self.runtime.features.feature_control(feature)
-        }
-
-        /// The running outbox publisher's health; `None` when it is off.
-        #[cfg(feature = "outbox-nats")]
-        #[must_use]
-        pub fn publisher_health(&self) -> Option<proxima_outbox_nats::PublisherHealthReader> {
-            self.runtime.features.publisher_health()
-        }
-
-        /// The running retained-copy cleaner's health; `None` when it is off.
-        #[cfg(feature = "outbox-nats")]
-        #[must_use]
-        pub fn copy_cleaner_health(&self) -> Option<proxima_outbox_nats::CopyCleanerHealthReader> {
-            self.runtime.features.copy_cleaner_health()
         }
     };
 }
@@ -753,7 +723,7 @@ impl BuiltProxima {
     }
 
     /// The host-only outbox drain, for unit tests that wrap it.
-    #[cfg(all(test, feature = "outbox-nats"))]
+    #[cfg(test)]
     pub(crate) fn outbox_for_tests(
         &self,
     ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> {

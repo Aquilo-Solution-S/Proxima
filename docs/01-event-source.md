@@ -247,7 +247,7 @@ changes.
 A source picks one based on the shape of its Reality:
 
 - **Push** — Reality emits events on its own timeline (webhooks, MQTT,
-  Telegram, Forgejo, NATS). The source registers as a subscriber and forwards
+  Telegram, Forgejo). The source registers as a subscriber and forwards
   into the engine's input queue.
 - **Pull** — Reality is queryable, and the agent advances through it on its
   own cadence (filesystem walk, repo snapshot, ERPNext API, court calendar).

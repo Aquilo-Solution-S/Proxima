@@ -36,7 +36,7 @@ explicit request.
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
 | `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
-| `docs/18-fact-outbox.md` | Transactional Fact publication outbox + NATS JetStream publisher: listen declaration, capture, CloudEvents contract, delivery state machine, host-only port |
+| `docs/18-fact-outbox.md` | Transactional Fact publication outbox + in-process delivery to a host intake: listen declaration, capture, CloudEvents contract, delivery state machine, host-only port |
 | `docs/19-host-state-maintenance.md` | Scoped host-state maintenance authority: boot-bound capability, participant/table scope, lifecycle callbacks, publication-origin erasure |
 
 ## Workspace layout
@@ -51,7 +51,6 @@ proxima/
 │   ├── core/                Rust lib crate `proxima-core`
 │   ├── llm-openai-compat/   Rust OpenAI-compatible embedding client crate
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
-│   ├── outbox-nats/         Rust NATS JetStream Fact-outbox publisher crate (optional)
 │   ├── pg-testkit/          Rust Postgres test helper crate
 │   ├── proxima/             Rust framework facade crate
 │   └── storage-pg/          Rust Postgres storage crate
@@ -157,7 +156,7 @@ behind that URL.
 
 CI runs one pass, `cargo nextest run --workspace --all-targets --all-features`,
 which includes every feature-gated target (REST surface, mounted REST/OIDC
-e2e, Fact-outbox host lane, publisher supervision, durable-intake example).
+e2e, Fact-outbox host lane, publisher supervision, in-process delivery).
 Plain `cargo nextest run --workspace` covers `apps/proxima-mcp` OIDC e2e
 without REST (code flavor is the host default).
 Substrate-only: `--no-default-features`. Touching the flavor's `mcp_tools`

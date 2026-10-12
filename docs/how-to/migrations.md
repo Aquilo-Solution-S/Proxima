@@ -23,7 +23,7 @@ is `0024` ([v0.0.26](#v0026)).
 
 | Lane | Migration |
 |---|---|
-| Core | `0025_v031_goal_text.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`) |
+| Core | `0025_v031_goal_text_outbox_receipt.sql`: nullable `proxima_core.goal.text` with `goal_text_nonblank_chk CHECK (text IS NULL OR length(btrim(text, E' \t\n\r\x0b\f')) > 0)`, backfilled from `proxima_core.goal_replay_declaration`; the unique constraint `goal_head_handle_owner_key` on `goal_head (handle, owner_id)` and the foreign key `goal_owner_matches_head_fk` from `goal (handle, owner_id)` to it (`NOT VALID`); and `publication_outbox_published_chk` relaxed to `CHECK ((state = 'published') = (published_at IS NOT NULL))` |
 
 **Goal text (`_v031_`).** A Goal version stores its prompt text. `NULL` means
 unknown, never empty: a version that no declaration can speak for (written
@@ -61,6 +61,18 @@ Re-running the file changes nothing: `ADD COLUMN IF NOT EXISTS` skips the
 column and its check together, and only rows whose text is still `NULL` are
 written. An empty database has no rows to visit.
 
+**Outbox check (`_v031_`).** The Fact outbox is delivered in process to a host
+intake, so a published record has no broker stream position to name ([18
+§Outbox Row and State Machine](../18-fact-outbox.md#outbox-row-and-state-machine)).
+`publication_outbox_published_chk` required `published_at`, `published_stream`
+and `published_seq` for a published row; it now requires `published_at` alone,
+in both directions. The old check let a record that is not published carry
+`published_at` while a receipt field was `NULL`. No Proxima write does that, but
+a hand-written row can, so the migration first clears `published_at` on every
+record that is not published; the captured event is untouched. The two receipt
+columns stay, and nothing writes them any more. The check is dropped and added
+again, so a re-run changes nothing.
+
 **Locks.** The migration takes `ACCESS EXCLUSIVE` on `proxima_core.goal` for
 its transaction: a validating scan for the check, then one `UPDATE` that writes
 a new row version for every Goal version it can give a text (the old versions
@@ -70,7 +82,11 @@ commits, so no concurrent write sees the gap. The unique constraint builds its
 index on `proxima_core.goal_head` (one scan of the heads), and the foreign key
 is added `NOT VALID`, so it scans no existing row; a row an earlier raw insert
 put into another owner's series stays, and every new insert is checked against
-`goal_head`. No other table is touched.
+`goal_head`. The outbox check takes `ACCESS EXCLUSIVE` on
+`proxima_core.publication_outbox`, and its rows are scanned twice: once by the
+`UPDATE` (which rewrites no row of a database Proxima alone wrote) and once to
+validate. The table holds the pending backlog and whatever published history
+retention leaves. No other table is touched.
 
 **Operator action.** None when boot applies migrations. A deployment with
 `PROXIMA_SKIP_MIGRATIONS=true` must run the migration step before the v0.0.27

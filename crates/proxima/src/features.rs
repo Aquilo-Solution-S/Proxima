@@ -7,22 +7,18 @@
 //! module: resolve refuses it before storage.
 
 use std::sync::Arc;
-#[cfg(feature = "outbox-nats")]
 use std::time::Duration;
 
 use proxima_core::quiesce::Checkpoint;
+use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
 use proxima_core::{Engine, FeatureControlError, FeatureStatus, FlavorServices, QuiesceGate};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::RuntimeConfig;
 use crate::bundle::FlavorBundle;
+use crate::in_process_outbox::{self, Drain, Proceed, Settings};
 use crate::workers::{FlavorWorker, FlavorWorkerContext};
-
-#[cfg(feature = "outbox-nats")]
-use proxima_core::storage_ports::publication::{
-    OriginScope, PublicationOriginEligibilityPort, PublicationOutboxPort, PublicationRetentionPort,
-};
 
 /// One runtime feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,25 +31,22 @@ pub enum Feature {
     /// Starts when an embedding client or router is configured: startup
     /// reconcile, then drain.
     EmbeddingWorker,
-    /// Starts when a broker is configured (`PROXIMA_NATS_URL` / `nats`).
+    /// Starts when an intake is configured (`outbox_intake`): the captured
+    /// outbox is delivered to it in this process.
     OutboxPublisher,
     /// Starts when the publisher runs AND a retention horizon is configured
     /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` / `published_retention`).
     PublishedRecordPrune,
-    /// Starts when a cleaner section is configured
-    /// (`PROXIMA_COPY_CLEANER_URL` / `copy_cleaner`).
-    CopyCleaner,
 }
 
 impl Feature {
     /// Every feature, in boot-report order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Mcp,
         Self::FlavorWorkers,
         Self::EmbeddingWorker,
         Self::OutboxPublisher,
         Self::PublishedRecordPrune,
-        Self::CopyCleaner,
     ];
 
     /// The `feature=` value of this feature's boot-report line.
@@ -65,7 +58,6 @@ impl Feature {
             Self::EmbeddingWorker => "embedding-worker",
             Self::OutboxPublisher => "outbox-publisher",
             Self::PublishedRecordPrune => "published-record-prune",
-            Self::CopyCleaner => "copy-cleaner",
         }
     }
 
@@ -76,7 +68,6 @@ impl Feature {
             Self::EmbeddingWorker => 2,
             Self::OutboxPublisher => 3,
             Self::PublishedRecordPrune => 4,
-            Self::CopyCleaner => 5,
         }
     }
 }
@@ -118,15 +109,15 @@ impl FeatureControl {
     /// no claim starts after it returns, and the embedding worker's current
     /// `drain_embedding_jobs` call, or the publisher's record in flight, has
     /// settled. Concurrent calls resolve together; on a quiescent feature it
-    /// resolves at once. The task, its broker connection and its health
-    /// reader stay alive.
+    /// resolves at once. The task stays alive.
     ///
     /// Quiescent is not drained. Serving continues, so writes accepted now
     /// still enqueue embedding jobs and outbox records, and they wait for
     /// [`Self::resume`]. A release that failed leaves its lease to expire
-    /// (`PROXIMA_NATS_LEASE_SECS`; the embedding policy's stale-claim
-    /// timeout), so quiescent does not mean no row is `claimed`. A host that calls `Engine::drain_embedding_jobs` itself is
-    /// not gated. Dropping the future does not reopen the gate.
+    /// (the outbox drain's 30 s lease; the embedding policy's stale-claim
+    /// timeout), so quiescent does not mean no row is `claimed`. A host that
+    /// calls `Engine::drain_embedding_jobs` itself is not gated. Dropping the
+    /// future does not reopen the gate.
     ///
     /// # Errors
     ///
@@ -232,7 +223,7 @@ impl FeatureDecision {
 /// Every feature's decision for one boot, in [`Feature::ALL`] order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootReport {
-    decisions: [FeatureDecision; 6],
+    decisions: [FeatureDecision; 5],
 }
 
 impl BootReport {
@@ -266,17 +257,13 @@ pub(crate) struct FeatureInputs<'a> {
     pub(crate) services: &'a FlavorServices,
     pub(crate) cancel: &'a CancellationToken,
     pub(crate) config: &'a RuntimeConfig,
-    #[cfg(feature = "outbox-nats")]
     pub(crate) publication: PublicationHandles,
 }
 
 /// The host-only publication handles, moved into the tasks that use them.
-#[cfg(feature = "outbox-nats")]
 pub(crate) struct PublicationHandles {
     pub(crate) outbox: Arc<dyn PublicationOutboxPort>,
     pub(crate) retention: Arc<dyn PublicationRetentionPort>,
-    pub(crate) eligibility: Arc<dyn PublicationOriginEligibilityPort>,
-    pub(crate) origin_scope: OriginScope,
 }
 
 /// The started features: their decisions and the tasks the runtime owns.
@@ -284,10 +271,7 @@ pub(crate) struct Features {
     pub(crate) report: BootReport,
     workers: Vec<FlavorWorker>,
     embedding: Option<(QuiesceGate, JoinHandle<()>)>,
-    #[cfg(feature = "outbox-nats")]
-    publisher: StartedPublisher,
-    #[cfg(feature = "outbox-nats")]
-    cleaner: Option<(proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>)>,
+    publisher: Option<(QuiesceGate, JoinHandle<()>)>,
 }
 
 impl std::fmt::Debug for Features {
@@ -307,36 +291,16 @@ impl std::fmt::Debug for Features {
 }
 
 impl Features {
-    /// The running publisher's health; `None` when it is off.
-    #[cfg(feature = "outbox-nats")]
-    pub(crate) fn publisher_health(&self) -> Option<proxima_outbox_nats::PublisherHealthReader> {
-        self.publisher.as_ref().map(|(reader, _, _)| reader.clone())
-    }
-
-    /// The running cleaner's health; `None` when it is off.
-    #[cfg(feature = "outbox-nats")]
-    pub(crate) fn copy_cleaner_health(
-        &self,
-    ) -> Option<proxima_outbox_nats::CopyCleanerHealthReader> {
-        self.cleaner.as_ref().map(|(reader, _)| reader.clone())
-    }
-
     /// The pause control of `feature`; `None` unless it is a started worker
     /// that claims queue rows through a gate. The match names every feature,
     /// so a new one must decide whether it claims.
     pub(crate) fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
         let gate = match feature {
             Feature::EmbeddingWorker => self.embedding.as_ref().map(|(gate, _)| gate),
-            #[cfg(feature = "outbox-nats")]
-            Feature::OutboxPublisher => self.publisher.as_ref().map(|(_, gate, _)| gate),
-            #[cfg(not(feature = "outbox-nats"))]
-            Feature::OutboxPublisher => None,
-            // Serving continues by definition; the other three claim no
+            Feature::OutboxPublisher => self.publisher.as_ref().map(|(gate, _)| gate),
+            // Serving continues by definition; the other two claim no
             // queue row through the runtime's gate.
-            Feature::Mcp
-            | Feature::FlavorWorkers
-            | Feature::PublishedRecordPrune
-            | Feature::CopyCleaner => None,
+            Feature::Mcp | Feature::FlavorWorkers | Feature::PublishedRecordPrune => None,
         }?;
         Some(FeatureControl::new(feature, gate.clone()))
     }
@@ -353,17 +317,10 @@ impl Features {
         {
             tracing::warn!(error = %err, "embedding worker join failed");
         }
-        #[cfg(feature = "outbox-nats")]
-        if let Some((_, _, publisher)) = self.publisher
+        if let Some((_, publisher)) = self.publisher
             && let Err(err) = publisher.await
         {
             tracing::warn!(error = %err, "outbox publisher join failed");
-        }
-        #[cfg(feature = "outbox-nats")]
-        if let Some((_, cleaner)) = self.cleaner
-            && let Err(err) = cleaner.await
-        {
-            tracing::warn!(error = %err, "copy cleaner join failed");
         }
     }
 }
@@ -413,66 +370,35 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
         )
     };
 
-    #[cfg(feature = "outbox-nats")]
-    {
-        let (publisher, publisher_decision, prune_decision) = start_publisher(inputs);
-        let (cleaner, cleaner_decision) = start_cleaner(inputs);
-        let report = BootReport {
-            decisions: [
-                mcp,
-                workers_decision,
-                embedding_decision,
-                publisher_decision,
-                prune_decision,
-                cleaner_decision,
-            ],
-        };
-        report.log();
-        Features {
-            report,
-            workers,
-            embedding,
-            publisher,
-            cleaner,
-        }
-    }
-    #[cfg(not(feature = "outbox-nats"))]
-    {
-        let _ = inputs.config;
-        let uncompiled = "built without the outbox-nats cargo feature";
-        let report = BootReport {
-            decisions: [
-                mcp,
-                workers_decision,
-                embedding_decision,
-                FeatureDecision::off(Feature::OutboxPublisher, uncompiled),
-                FeatureDecision::off(Feature::PublishedRecordPrune, uncompiled),
-                FeatureDecision::off(Feature::CopyCleaner, uncompiled),
-            ],
-        };
-        report.log();
-        Features {
-            report,
-            workers,
-            embedding,
-        }
+    let (publisher, publisher_decision, prune_decision) = start_publisher(inputs);
+    let report = BootReport {
+        decisions: [
+            mcp,
+            workers_decision,
+            embedding_decision,
+            publisher_decision,
+            prune_decision,
+        ],
+    };
+    report.log();
+    Features {
+        report,
+        workers,
+        embedding,
+        publisher,
     }
 }
 
-#[cfg(feature = "outbox-nats")]
-type StartedPublisher = Option<(
-    proxima_outbox_nats::PublisherHealthReader,
-    QuiesceGate,
-    JoinHandle<()>,
-)>;
-
 /// The publisher, and the prune that rides on it.
-#[cfg(feature = "outbox-nats")]
 fn start_publisher(
     inputs: &FeatureInputs<'_>,
-) -> (StartedPublisher, FeatureDecision, FeatureDecision) {
+) -> (
+    Option<(QuiesceGate, JoinHandle<()>)>,
+    FeatureDecision,
+    FeatureDecision,
+) {
     let horizon = inputs.config.published_retention;
-    let Some(mut nats) = inputs.config.nats.clone() else {
+    let Some(intake) = inputs.config.outbox_intake.clone() else {
         let prune = match horizon {
             Some(_) => "a retention is configured but the outbox publisher is off",
             None => {
@@ -484,14 +410,11 @@ fn start_publisher(
             None,
             FeatureDecision::off(
                 Feature::OutboxPublisher,
-                "no broker configured (PROXIMA_NATS_URL / nats)",
+                "no intake configured (outbox_intake)",
             ),
             FeatureDecision::off(Feature::PublishedRecordPrune, prune),
         );
     };
-    // Stamped here, from the same database that answers eligibility, never
-    // from configuration: see `Booted::origin_scope`.
-    nats.origin_scope = Some(inputs.publication.origin_scope);
     let retention = horizon.map(|older_than| PublicationRetention {
         port: inputs.publication.retention.clone(),
         older_than,
@@ -511,63 +434,32 @@ fn start_publisher(
              published_retention)",
         ),
     };
-    let supervised = spawn_publication_publisher_supervised(
+    let drain = Drain::new(
         inputs.publication.outbox.clone(),
-        nats,
-        retention,
-        inputs.cancel.child_token(),
+        intake,
+        Settings::new(),
+        Arc::new(Proceed),
     );
-    let gate = supervised.quiesce_gate().clone();
-    let (health, task) = supervised.into_parts();
+    let publisher = in_process_outbox::spawn(drain, inputs.cancel.child_token(), move |cancel| {
+        prune_published_records(retention, cancel)
+    });
     (
-        Some((health, gate, task)),
+        Some(publisher),
         FeatureDecision::started(
             Feature::OutboxPublisher,
-            "a broker is configured (PROXIMA_NATS_URL / nats)",
+            "an intake is configured (outbox_intake)",
         ),
         prune,
     )
 }
 
-#[cfg(feature = "outbox-nats")]
-fn start_cleaner(
-    inputs: &FeatureInputs<'_>,
-) -> (
-    Option<(proxima_outbox_nats::CopyCleanerHealthReader, JoinHandle<()>)>,
-    FeatureDecision,
-) {
-    let Some(config) = inputs.config.copy_cleaner.clone() else {
-        return (
-            None,
-            FeatureDecision::off(
-                Feature::CopyCleaner,
-                "no cleaner section configured (PROXIMA_COPY_CLEANER_URL / copy_cleaner)",
-            ),
-        );
-    };
-    (
-        Some(proxima_outbox_nats::spawn_supervised_copy_cleaner(
-            config,
-            inputs.publication.eligibility.clone(),
-            inputs.publication.origin_scope,
-            inputs.cancel.child_token(),
-        )),
-        FeatureDecision::started(
-            Feature::CopyCleaner,
-            "a cleaner section is configured (PROXIMA_COPY_CLEANER_URL / copy_cleaner)",
-        ),
-    )
-}
-
 /// The configured reclaim of DELIVERED records, and the handle that can
 /// perform it. Absent when the deployment keeps published records forever.
-#[cfg(feature = "outbox-nats")]
 struct PublicationRetention {
     port: Arc<dyn PublicationRetentionPort>,
     older_than: Duration,
 }
 
-#[cfg(feature = "outbox-nats")]
 impl std::fmt::Debug for PublicationRetention {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublicationRetention")
@@ -583,34 +475,18 @@ impl std::fmt::Debug for PublicationRetention {
 /// slice does not ship), so each pass is a sequential scan and must not
 /// also hold row locks over an unbounded delete. A backlog larger than this
 /// is reclaimed over several passes.
-#[cfg(feature = "outbox-nats")]
 const RETENTION_PRUNE_BATCH: u32 = 1_000;
 
 /// How often the prune runs.
 ///
-/// DELIBERATELY not once per drain pass. The drain polls every
-/// `PROXIMA_NATS_POLL_MS` (500 ms by default), and a sequential scan at
-/// that rate would cost more than the storage it reclaims — while the
-/// horizon it enforces is at least a minute, so nothing becomes prunable
-/// faster than this either.
-#[cfg(feature = "outbox-nats")]
+/// DELIBERATELY not once per drain pass. The drain polls every 500 ms, and a
+/// sequential scan at that rate would cost more than the storage it reclaims
+/// — while the horizon it enforces is at least a minute, so nothing becomes
+/// prunable faster than this either.
 const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
-
-#[cfg(feature = "outbox-nats")]
-fn spawn_publication_publisher_supervised(
-    outbox: Arc<dyn PublicationOutboxPort>,
-    config: proxima_outbox_nats::NatsPublisherConfig,
-    retention: Option<PublicationRetention>,
-    cancel: CancellationToken,
-) -> proxima_outbox_nats::SupervisedPublisher {
-    proxima_outbox_nats::spawn_supervised(config, outbox, cancel, move |cancel| {
-        prune_published_records(retention, cancel)
-    })
-}
 
 /// Reclaim delivered records older than the configured horizon, until
 /// cancellation. A no-op future when no horizon is configured.
-#[cfg(feature = "outbox-nats")]
 async fn prune_published_records(
     retention: Option<PublicationRetention>,
     cancel: CancellationToken,
@@ -726,7 +602,3 @@ fn spawn_embedding_worker(
     });
     (control, task)
 }
-
-#[cfg(all(test, feature = "outbox-nats"))]
-#[path = "publisher_supervision_tests.rs"]
-mod publisher_supervision_tests;

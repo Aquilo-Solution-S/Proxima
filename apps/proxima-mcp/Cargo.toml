@@ -28,9 +28,6 @@ code = ["dep:proxima-code", "proxima-code/host-api"]
 # Compile the `/v1` REST surface into the binary. Serving it still needs
 # `PROXIMA_REST_ENABLED=true` at runtime — see docs/17-rest-surface.md.
 rest = ["proxima/rest"]
-# Compile the NATS JetStream Fact-outbox publisher into the binary. Starting
-# it still needs `PROXIMA_NATS_URL` at runtime — see docs/18-fact-outbox.md.
-nats = ["proxima/outbox-nats"]
 
 [dev-dependencies]
 boon = { workspace = true }

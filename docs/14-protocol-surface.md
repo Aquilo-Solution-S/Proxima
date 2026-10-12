@@ -155,8 +155,8 @@ delivers a change record to a client.
 
 The Fact outbox ([18](18-fact-outbox.md)) does not change that. It is a
 **host-side** at-least-once publication of Facts whose registered type declared
-itself listenable — captured in the Fact's own transaction, drained by a host
-publisher into a broker. It is not a protocol verb: no client subscribes, the
+itself listenable — captured in the Fact's own transaction, drained in process
+into an intake the host provides. It is not a protocol verb: no client subscribes, the
 five verbs are unchanged, and it opens no second read path (a record is exactly
 as readable as its Fact).
 

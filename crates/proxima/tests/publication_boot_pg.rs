@@ -343,11 +343,11 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
 /// Capture is downstream of authorization, so a refused write leaves
 /// nothing to publish.
 ///
-/// The broker's only input is `proxima_core.publication_outbox`: the
-/// publisher claims from it and ships the `envelope` column verbatim
-/// (`crates/outbox-nats/tests/jetstream_e2e.rs` proves that half against a
-/// real `JetStream`). An empty table after a denial is therefore the whole
-/// claim — there is no second path from a Fact write to the stream.
+/// The intake's only input is `proxima_core.publication_outbox`: the drain
+/// claims from it and hands over the `envelope` column verbatim
+/// (`in_process_outbox_tests.rs` proves that half). An empty table after a
+/// denial is therefore the whole claim — there is no second path from a Fact
+/// write to the intake.
 #[tokio::test]
 async fn an_unauthorized_listenable_write_captures_nothing() {
     let split_db = clone_split_core_db("proxima_pub_authz")

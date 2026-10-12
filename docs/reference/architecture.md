@@ -18,7 +18,7 @@ core engine (`crates/core`)
         +--> storage ports -> `crates/storage-pg` -> Postgres + pgvector
         +--> optional embedding client (`crates/llm-openai-compat`)
         +--> optional cited blob service (`crates/blob-s3`)
-        +--> optional Fact-outbox publisher (`crates/outbox-nats`) -> NATS JetStream
+        +--> optional in-process Fact-outbox delivery (`crates/proxima`) -> host `DurableIntake`
 ```
 
 ## Package Map
@@ -30,7 +30,6 @@ core engine (`crates/core`)
 | `crates/core` | engine contracts/runtime | flavor authors / maintainers |
 | `crates/storage-pg` | Postgres storage | deployers / maintainers |
 | `crates/mcp-server` | MCP transport/self-doc | MCP integrators |
-| `crates/outbox-nats` | optional Fact-outbox JetStream publisher | hosts publishing declared Facts |
 | `flavors/code` | code-memory flavor | code-agent deployments |
 | `crates/llm-openai-compat` | OpenAI-compatible HTTP `EmbeddingClient`, the reference embedding adapter | hosts that embed for retrieval |
 | `crates/blob-s3` | S3-backed cited-blob service (presigned upload, confirm, read) | hosts storing cited blobs |
