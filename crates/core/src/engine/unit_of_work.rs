@@ -572,8 +572,10 @@ impl Engine {
     }
 }
 
-impl UnitOfWork<'_> {
-    fn authz(&self) -> Result<&AuthzContext, ProtocolError> {
+impl<'a> UnitOfWork<'a> {
+    /// The ordinary authority, borrowed for the unit's own lifetime so a
+    /// request built from it can outlive a `&mut self` call.
+    fn authz(&self) -> Result<&'a AuthzContext, ProtocolError> {
         match self.authorization {
             UnitAuthorization::Ordinary(authz) => Ok(authz),
             UnitAuthorization::HostState { .. } => Err(ProtocolError::forbidden(
@@ -1060,7 +1062,7 @@ impl UnitOfWork<'_> {
         );
         let context = self
             .engine
-            .goal_atomic_context(req.author_self_perspective_id);
+            .goal_atomic_context(self.authz()?, req.author_self_perspective_id)?;
         let atomic = CreateGoalAtomicRequest {
             draft,
             context,

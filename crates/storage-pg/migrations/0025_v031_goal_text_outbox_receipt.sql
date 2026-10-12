@@ -1,5 +1,6 @@
--- v0.0.31: a Goal version stores its prompt text, and a published outbox
--- record no longer needs a broker receipt (the last section).
+-- v0.0.31: a Goal version stores its prompt text, a published outbox record no
+-- longer needs a broker receipt, and a goal write has a change Fact
+-- (`core/goal-change-v1`, the last section).
 --
 -- `core_goal set` requires a text (the Goal's prompt), but the Goal row only
 -- carried the title: the text lived in the replay declaration, which is request
@@ -139,3 +140,145 @@ ALTER TABLE proxima_core.publication_outbox
     ADD CONSTRAINT publication_outbox_published_chk CHECK (
         (state = 'published') = (published_at IS NOT NULL)
     );
+
+-- Goal changes: `core/goal-change-v1`, one Fact per goal write (#435).
+--
+-- Every goal write that inserts a goal row also writes one Fact of this
+-- schema, in the same transaction, when the schema is listenable (the runtime
+-- turns that on when it drains the outbox into an intake). The Fact is an
+-- ordinary listenable Fact, so the outbox, publication_origin, owner RLS and
+-- erase need nothing new; only its typed sidecar table is new:
+--
+--   series        the goal's series handle (goal.handle), the same on every
+--                 version
+--   goal_t        the goal version this write created (goal.t)
+--   prior_t       the version it replaced; NULL when the write starts a series
+--                 (a set, a decomposed child)
+--   revision      the version's position in its series: the number of goal
+--                 rows with this handle once the write's row is in, so 1 for
+--                 a set and a decomposed child
+--   state         the goal's state after the write
+--   change_kind   what the write did
+--   parent_t      the parent of a decomposed child, on that kind alone
+--   pending       what a pause does with the work a scheduler queued for the
+--                 goal, on that kind alone
+--
+-- No foreign key into goal: the Fact records what happened and follows the
+-- memory it describes, not the goal, so a goal erase never has to reach it.
+-- The table is append-only, like the other core sidecars that are written
+-- once.
+--
+-- Additive and idempotent: the types are created only when missing, the table
+-- with IF NOT EXISTS, the triggers with OR REPLACE or DROP first, the surface
+-- row skips a conflict, and the RLS installer replaces the policies it makes.
+-- A second run changes nothing.
+
+DO $goal_change_types$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type AS t JOIN pg_namespace AS n ON n.oid = t.typnamespace
+         WHERE n.nspname = 'proxima_core' AND t.typname = 'goal_change_kind'
+    ) THEN
+        CREATE TYPE proxima_core.goal_change_kind AS ENUM (
+            'set', 'modify', 'decompose_child', 'pause', 'resume', 'abandon', 'achieve'
+        );
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type AS t JOIN pg_namespace AS n ON n.oid = t.typnamespace
+         WHERE n.nspname = 'proxima_core' AND t.typname = 'goal_pending_work'
+    ) THEN
+        CREATE TYPE proxima_core.goal_pending_work AS ENUM ('keep', 'discard');
+    END IF;
+END
+$goal_change_types$;
+
+CREATE TABLE IF NOT EXISTS proxima_core.goal_change_v1 (
+    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    series uuid NOT NULL,
+    goal_t uuid NOT NULL,
+    prior_t uuid,
+    revision integer NOT NULL CONSTRAINT goal_change_v1_revision_chk CHECK (revision >= 1),
+    state proxima_core.goal_state NOT NULL,
+    change_kind proxima_core.goal_change_kind NOT NULL,
+    parent_t uuid,
+    pending proxima_core.goal_pending_work,
+    CONSTRAINT goal_change_v1_pending_chk
+        CHECK ((change_kind = 'pause') = (pending IS NOT NULL)),
+    CONSTRAINT goal_change_v1_parent_chk
+        CHECK ((change_kind = 'decompose_child') = (parent_t IS NOT NULL))
+);
+
+-- flavor_surface is FORCE-RLS, writable only in platform scope (0014, 0017).
+-- The migration runner binds that scope; the block binds it itself so that a
+-- bare re-run of this file (a repair, a test) is a no-op rather than a policy
+-- refusal, and restores the caller's scope afterwards.
+DO $goal_change_surface$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
+        ('proxima_core.goal_change_v1', 'core')
+    ON CONFLICT (table_name) DO NOTHING;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+END
+$goal_change_surface$;
+
+CREATE OR REPLACE TRIGGER goal_change_v1_append_only
+    BEFORE UPDATE ON proxima_core.goal_change_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+-- The declaration-integrity triggers of the table (the 0002 and 0009 families:
+-- a sidecar row needs a memory that declares it, a memory that declares the
+-- table needs the row, and neither survives the other's delete or re-point).
+-- GENERATED — see `crates/storage-pg/src/integrity.rs` and the
+-- `generated_declaration_triggers_are_the_migration_text` and
+-- `generated_presence_triggers_are_the_migration_text` pins. Edit the
+-- generator, not this block.
+CREATE OR REPLACE TRIGGER goal_change_v1_declared_by_memory
+    BEFORE INSERT ON proxima_core.goal_change_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');
+
+DROP TRIGGER IF EXISTS memory_declares_proxima_core_goal_change_v1 ON proxima_core.memory;
+CREATE CONSTRAINT TRIGGER memory_declares_proxima_core_goal_change_v1
+    AFTER INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    WHEN ('proxima_core.goal_change_v1' = ANY (NEW.sidecar_tables))
+    EXECUTE FUNCTION proxima_core.assert_declared_sidecar_present('proxima_core.goal_change_v1', 't');
+
+DROP TRIGGER IF EXISTS goal_change_v1_declared_by_memory_on_delete ON proxima_core.goal_change_v1;
+CREATE CONSTRAINT TRIGGER goal_change_v1_declared_by_memory_on_delete
+    AFTER DELETE ON proxima_core.goal_change_v1
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_row_not_still_declared('proxima_core.goal_change_v1', 't');
+
+CREATE OR REPLACE TRIGGER goal_change_v1_declared_by_memory_on_update
+    BEFORE UPDATE OF t ON proxima_core.goal_change_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');
+
+-- Owner RLS, as the other FK sidecars of a memory have it (class fk_parent:
+-- read in an owner scope, write by the parent memory's kind). The whole-schema
+-- install_owner_rls of 0023 classified the tables that existed then; this
+-- one table is added through the building blocks of the per-table installer
+-- (0024), whose public entry refuses proxima_core. The fixture lane that skips
+-- the owner-RLS migrations (test_fixtures::OWNER_RLS_MIGRATION_VERSIONS) has
+-- neither installer nor policies, so there is nothing to extend there.
+DO $goal_change_rls$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_proc AS p
+          JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'proxima_core' AND p.proname = 'owner_rls_apply_class'
+    ) THEN
+        PERFORM proxima_core.owner_rls_apply_class(
+            '0025', 'class fk_parent', 'proxima_core', 'goal_change_v1', 'fk_parent', NULL);
+        PERFORM proxima_core.owner_rls_census_table('proxima_core', 'goal_change_v1');
+    END IF;
+END
+$goal_change_rls$;

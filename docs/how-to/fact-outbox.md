@@ -62,7 +62,8 @@ let running = app.run().await?;
 listenable; the env spelling is `PROXIMA_PUBLICATION_SOURCE`). `outbox_intake`
 starts the drain; omitting it is the rollback path: writes still capture and
 records stay `pending` until a boot that supplies an intake. The shipped
-`proxima-mcp` binary supplies none.
+`proxima-mcp` binary supplies none. Setting it also makes goal writes emit
+`core/goal-change-v1` events (§6), so the publication source above is required.
 
 ## 4. Forward to a broker (optional)
 
@@ -92,6 +93,31 @@ PROXIMA_TEST_PG_URL=postgres://proxima:proxima@127.0.0.1:5434/proxima \
 Unset `PROXIMA_TEST_PG_URL` and those tests skip with a message rather than
 passing vacuously.
 
+## 6. Follow goal changes (a scheduler)
+
+A host that runs queued work for Goals (a wake scheduler) learns of goal writes
+from the same intake. With `outbox_intake` set, every goal write delivers one
+`core/goal-change-v1` event: set, modify, each decomposed child, pause, resume,
+abandon and achieve. Without an intake no change Fact is written.
+
+```json
+{ "series": "<uuid>", "goal": "G:<uuid>", "prior": "G:<uuid>", "revision": 2,
+  "state": "Paused", "change": { "kind": "pause", "pending": "discard" } }
+```
+
+- A pause carries `pending`, required on the `core_goal` call. `keep`: hold the
+  work queued for the goal and run it after a resume. `discard`: drop that work
+  (ready or waiting to retry). Running work finishes either way.
+- After `abandon` or `achieve` the goal is terminal: drop what you queued.
+- Deliveries can be reordered (a retried record arrives after later ones), so
+  key by `series` and apply an event only if its `revision` is greater than the
+  last `revision` you applied for that series. `goal` versions are identifiers,
+  not an order.
+- Proxima already admits no new run for a goal that is not Active; `pending`
+  covers the work you had queued before the pause.
+
+Contract and payload: [18 §Goal changes on the feed](../18-fact-outbox.md#goal-changes-on-the-feed).
+
 ## Signal → action
 
 | Signal | Meaning | Action |
@@ -101,6 +127,7 @@ passing vacuously.
 | `PayloadTooLarge` on write | export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | shrink the payload or raise the Proxima capture cap |
 | one record's `attempts` climbing while others deliver | a single record the intake keeps refusing, or captured bytes that are not an envelope; the claim order demoted it so it no longer blocks the queue | for the latter, read the `error`-level line naming its event id; for the former, your intake's own log |
 | boot fails `SourceUnbound` | a listenable type is registered with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
+| boot fails naming `core/goal-change-v1` | an `outbox_intake` is set, which makes goal changes listenable, with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
 | duplicate deliveries | expected: at-least-once | deduplicate on the CloudEvent `id` (`F:<uuid>`) |
 
 ### Reclaiming database storage

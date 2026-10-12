@@ -7,20 +7,23 @@
 
 use std::sync::Arc;
 
+use proxima_core::publication::{
+    PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
+};
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort};
 use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
-    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId,
-    GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, OperatorKind,
-    SystemOrigin, TransitionGoalAtomicRequest,
+    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind, GoalWakeConfigWrite,
+    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest,
+    OperatorKind, SystemOrigin, TransitionGoalAtomicRequest,
 };
 use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalPayload, InputContractId, ModelId,
-    OperatorId, OwnerRef, PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError,
-    ToolId, UserId,
+    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalId, GoalPayload, InputContractId,
+    ModelId, OperatorId, OwnerRef, PendingWork, PromptVersion, SchemaId, SchemaVersion,
+    SimpleTextGoalV1, StorageError, ToolId, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -80,6 +83,7 @@ fn context(registry: &proxima_core::FlavorRegistryFrozen) -> GoalAtomicContext<'
     GoalAtomicContext {
         registry,
         author_self_perspective_id: None,
+        publication: None,
     }
 }
 
@@ -232,6 +236,152 @@ async fn replay_state(pg: &PgStorage, owner: OwnerRef) -> Result<ReplayState, sq
     .await
 }
 
+/// With `core/goal-change-v1` listenable, every verb that inserts a goal row
+/// writes one change Fact and captures one record in its transaction, and a
+/// replay writes neither.
+#[tokio::test]
+async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let mut listenable = FlavorRegistry::new();
+        listenable.publish_goal_changes();
+        let registry = listenable.freeze_or_panic_for_tests();
+        let source = PublicationSource::new("urn:proxima:goal-feed-test")?;
+        let extensions = PublicationExtensions::default();
+        let stamped = || GoalAtomicContext {
+            publication: Some(PublicationStamp::new(
+                &source,
+                None,
+                &extensions,
+                PublicationLimits::default(),
+            )),
+            ..context(&registry)
+        };
+        let assignment = ingest_grounded_perspective(&pg, &permit).await?.memory_id;
+        let evidence = pg
+            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .await?
+            .memory_id;
+        let step = |prior_goal_id, transition, id: &str| TransitionGoalAtomicRequest {
+            owner,
+            prior_goal_id,
+            transition,
+            authorship: GoalAuthorship::User,
+            request_id: IdempotencyKey::new(id).expect("request id"),
+            context: stamped(),
+        };
+
+        let set = CreateGoalAtomicRequest {
+            draft: active_draft(owner, assignment, "feed-set", "feed", Vec::new(), None)?,
+            context: stamped(),
+            write_act_t: None,
+        };
+        let set = pg.create_goal_atomic(&set, &permit).await?.goal_id;
+        let pause = step(
+            set,
+            GoalTransitionKind::Pause {
+                pending: PendingWork::Discard,
+            },
+            "feed-pause",
+        );
+        let paused = pg.transition_goal_atomic(&pause, &permit).await?.goal_id;
+        let resume = step(paused, GoalTransitionKind::Resume, "feed-resume");
+        let resumed = pg.transition_goal_atomic(&resume, &permit).await?.goal_id;
+        let modify = ModifyGoalAtomicRequest {
+            owner,
+            prior_goal_id: resumed,
+            replacement: simple_payload("feed modified"),
+            wake: None,
+            authorship: GoalAuthorship::User,
+            request_id: IdempotencyKey::new("feed-modify")?,
+            context: stamped(),
+            evidence: None,
+        };
+        let modified = pg.modify_goal_atomic(&modify, &permit).await?.goal_id;
+        let mut decompose =
+            decompose_request(owner, modified, &registry, assignment, evidence, evidence, "one", "feed-one", "feed-two")?;
+        decompose.context = stamped();
+        let children = pg.decompose_goal_atomic(&decompose, &permit).await?.children;
+        let [one, two] = [children[0].outcome.goal_id, children[1].outcome.goal_id];
+        let abandoned = pg
+            .transition_goal_atomic(&step(one, GoalTransitionKind::Abandon, "feed-abandon"), &permit)
+            .await?
+            .goal_id;
+        let achieve = AchieveGoalAtomicRequest {
+            owner,
+            prior_goal_id: modified,
+            authorship: GoalAuthorship::User,
+            request_id: IdempotencyKey::new("feed-achieve")?,
+            context: stamped(),
+            evidence: vec![GoalEvidenceRef::new(evidence)],
+        };
+        let achieved = pg.achieve_goal_atomic(&achieve, &permit).await?.goal_id;
+
+        // goal, kind, state, revision, prior, parent, pending
+        let expected = [
+            (set, "set", "Active", 1, None, None, None),
+            (paused, "pause", "Paused", 2, Some(set), None, Some("discard")),
+            (resumed, "resume", "Active", 3, Some(paused), None, None),
+            (modified, "modify", "Active", 4, Some(resumed), None, None),
+            (one, "decompose_child", "Active", 1, None, Some(modified), None),
+            (two, "decompose_child", "Active", 1, None, Some(modified), None),
+            (abandoned, "abandon", "Abandoned", 2, Some(one), None, None),
+            (achieved, "achieve", "Achieved", 5, Some(modified), None, None),
+        ];
+        for (goal, kind, state, revision, prior, parent, pending) in expected {
+            let row: (String, String, i32, Option<Uuid>, Option<Uuid>, Option<String>) =
+                sqlx::query_as(
+                    "SELECT change_kind::text, state::text, revision, prior_t, parent_t, pending::text
+                       FROM proxima_core.goal_change_v1 WHERE goal_t = $1",
+                )
+                .bind(goal.into_inner())
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+            let wanted = (
+                kind.to_owned(),
+                state.to_owned(),
+                revision,
+                prior.map(GoalId::into_inner),
+                parent.map(GoalId::into_inner),
+                pending.map(str::to_owned),
+            );
+            assert_eq!(row, wanted, "{kind}");
+        }
+        let counts = || async {
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT (SELECT count(*) FROM proxima_core.goal_change_v1),
+                        (SELECT count(*) FROM proxima_core.publication_outbox
+                          WHERE schema_id = 'core/goal-change-v1')",
+            )
+            .fetch_one(pg.pool_for_tests())
+            .await
+        };
+        assert_eq!(counts().await?, (8, 8), "one Fact and one record per write");
+
+        let replay = pg.transition_goal_atomic(&pause, &permit).await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(counts().await?, (8, 8), "a replay writes neither");
+
+        // A listenable schema needs the stamp the engine builds: refused.
+        let unstamped = CreateGoalAtomicRequest {
+            draft: active_draft(owner, assignment, "feed-bare", "bare", Vec::new(), None)?,
+            context: context(&registry),
+            write_act_t: None,
+        };
+        let refused = pg.create_goal_atomic(&unstamped, &permit).await.expect_err("refused");
+        assert!(
+            matches!(&refused, StorageError::ConstraintViolation(m) if m.contains("core/goal-change-v1")),
+            "{refused}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("goal change feed scenario failed");
+}
+
 #[tokio::test]
 async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
     let (db_name, pg) = fresh_pg().await;
@@ -373,7 +523,9 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                 &TransitionGoalAtomicRequest {
                     owner,
                     prior_goal_id: transition_source.goal_id,
-                    next_state: GoalState::Paused,
+                    transition: GoalTransitionKind::Pause {
+                        pending: PendingWork::Keep,
+                    },
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-transition")?,
                     context: context(&registry),
@@ -389,7 +541,9 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                 &TransitionGoalAtomicRequest {
                     owner,
                     prior_goal_id: transition_source.goal_id,
-                    next_state: GoalState::Paused,
+                    transition: GoalTransitionKind::Pause {
+                        pending: PendingWork::Keep,
+                    },
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-transition")?,
                     context: context(&registry),
@@ -403,7 +557,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                 &TransitionGoalAtomicRequest {
                     owner,
                     prior_goal_id: transition_source.goal_id,
-                    next_state: GoalState::Abandoned,
+                    transition: GoalTransitionKind::Abandon,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-transition")?,
                     context: context(&registry),
@@ -413,12 +567,32 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             .await
             .expect_err("a changed transition declaration must conflict");
         assert!(matches!(changed, StorageError::IdempotencyConflict { .. }));
+        let changed_pending = pg
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: transition_source.goal_id,
+                    transition: GoalTransitionKind::Pause {
+                        pending: PendingWork::Discard,
+                    },
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("replay-transition")?,
+                    context: context(&registry),
+                },
+                &permit,
+            )
+            .await
+            .expect_err("a pause that changes what happens to pending work must conflict");
+        assert!(matches!(
+            changed_pending,
+            StorageError::IdempotencyConflict { .. }
+        ));
         let fresh = pg
             .transition_goal_atomic(
                 &TransitionGoalAtomicRequest {
                     owner,
                     prior_goal_id: transition_first.goal_id,
-                    next_state: GoalState::Active,
+                    transition: GoalTransitionKind::Resume,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-transition-fresh")?,
                     context: context(&registry),
@@ -702,7 +876,9 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             &TransitionGoalAtomicRequest {
                 owner,
                 prior_goal_id: decompose_parent.goal_id,
-                next_state: GoalState::Paused,
+                transition: GoalTransitionKind::Pause {
+                    pending: PendingWork::Keep,
+                },
                 authorship: GoalAuthorship::User,
                 request_id: IdempotencyKey::new("replay-decompose-parent-pause")?,
                 context: context(&registry),
@@ -840,6 +1016,7 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: Some(assignment.memory_id),
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -863,6 +1040,7 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },
@@ -889,6 +1067,7 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
                     context: GoalAtomicContext {
                         registry: &registry,
                         author_self_perspective_id: None,
+                        publication: None,
                     },
                     write_act_t: None,
                 },

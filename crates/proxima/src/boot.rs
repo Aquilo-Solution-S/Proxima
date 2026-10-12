@@ -89,7 +89,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
     parts: &RuntimeParts,
 ) -> Result<Booted, ProximaError> {
     let migrators = A::migrators();
-    let registry = compose_registry::<A>()?;
+    let registry = compose_registry::<A>(config)?;
     let grants = config
         .runtime_grants
         .then(|| {
@@ -246,9 +246,19 @@ async fn connect_and_migrate(
 }
 
 /// Run every linked flavor's registration callback and freeze the result.
-fn compose_registry<A: FlavorBundle>() -> Result<proxima_core::FlavorRegistryFrozen, ProximaError> {
+///
+/// With an intake configured, `core/goal-change-v1` is made listenable before
+/// the freeze, so every goal write also feeds the outbox. That makes the
+/// schema subject to the boot publication check: an intake without
+/// `PROXIMA_PUBLICATION_SOURCE` is refused in `compose_engine`, naming it.
+fn compose_registry<A: FlavorBundle>(
+    config: &RuntimeConfig,
+) -> Result<proxima_core::FlavorRegistryFrozen, ProximaError> {
     let mut registry = FlavorRegistry::new();
     A::register(&mut registry)?;
+    if config.outbox_intake.is_some() {
+        registry.publish_goal_changes();
+    }
     Ok(registry.try_freeze()?)
 }
 

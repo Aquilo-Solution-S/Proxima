@@ -176,11 +176,16 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 /// union lock. The caller already owns the reserved handle and lifecycle
 /// union; this helper still uses the same prepare/claim/materialize phases as
 /// ordinary admission.
+///
+/// `sidecar_tables` is the stamp the caller then backs with its sidecar rows
+/// in the same transaction: empty for the payload-less write-act Fact, the
+/// goal-change table for a goal's change Fact.
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
     identity: (Uuid, Uuid),
+    sidecar_tables: &[String],
 ) -> Result<FactIngestOutcome, StorageError> {
     let prepared = prepare_memory_admission_at(
         tx,
@@ -190,9 +195,9 @@ pub(crate) async fn ingest_unpinned_fact_at(
             draft,
             origins: &[],
             references: &[],
-            sidecar_tables: &[],
-            // A Goal's write-act Fact carries no typed payload and so
-            // declares no scope.
+            sidecar_tables,
+            // A Goal's lifecycle Facts (write-act, goal change) carry no
+            // declared scope.
             scopes: &[],
         },
         PreparationOptions {

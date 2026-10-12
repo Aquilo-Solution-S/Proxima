@@ -84,6 +84,52 @@ mod manifest_tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_refuses_a_pending_that_does_not_fit_the_transition() {
+        let desc_ctx = prefixed_ctx();
+        let desc = desc_ctx
+            .registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == protocol_tool::CORE_GOAL)
+            .expect("core_goal registered");
+        // None of these reaches the engine (the test context has none): each
+        // is refused where the argument is parsed.
+        for (transition, pending, named) in [
+            ("pause", None, vec!["keep", "discard"]),
+            (
+                "resume",
+                Some("keep"),
+                vec!["only when transition is pause"],
+            ),
+            (
+                "abandon",
+                Some("discard"),
+                vec!["only when transition is pause"],
+            ),
+            ("pause", Some("maybe"), vec!["maybe", "keep"]),
+        ] {
+            let ctx = prefixed_ctx();
+            let goal = ctx.format_goal(GoalId::new(uuid::Uuid::now_v7()));
+            let mut args = serde_json::json!({
+                "action": "transition",
+                "goal": goal,
+                "transition": transition,
+            });
+            if let Some(pending) = pending {
+                args["pending"] = pending.into();
+            }
+            let err = (desc.call)(ctx, args)
+                .await
+                .expect_err("a pending that does not fit the transition is refused");
+            assert_eq!(err.kind(), McpToolErrorKind::InvalidInput, "{transition}");
+            let message = err.to_string();
+            for name in named {
+                assert!(message.contains(name), "{transition}: {message}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_rejects_cross_action_fact_fields_before_execution() {
         let ctx = prefixed_ctx();
         let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));

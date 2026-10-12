@@ -6,28 +6,47 @@ use super::{
     prepare_goal_write,
 };
 use crate::verbs::goal_timeseries::{
-    GoalWriteCommand, attach_goal_close_fact_reservation, load_goal_by_request_id,
+    GoalChangeFact, GoalWriteCommand, attach_goal_change_fact_reservation,
+    attach_goal_close_fact_reservation, load_goal_by_request_id, persist_goal_change_fact,
     reserve_fact_identity,
 };
+use proxima_core::publication::PublicationStamp;
+use proxima_core::{FactPayload, GoalChange, GoalChangeV1, SchemaVersion};
 
 pub(super) struct PreparedGoalInsert<'a> {
     pub(super) draft: GoalDraft,
     pub(super) context: GoalAtomicContext<'a>,
     pub(super) expected_prior: Option<GoalId>,
     pub(super) preparation: GoalWritePreparation,
+    /// The `core/goal-change-v1` Fact this write will also write: `Some`
+    /// exactly when the write is new and the schema is listenable.
+    pub(super) change_fact: Option<GoalChangeFact<'a>>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "forwards prepare_goal_insert's arguments and the sidecar registry"
+)]
 pub(super) async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     draft: &GoalDraft,
     expected_prior: Option<GoalId>,
+    change: GoalChange,
     context: GoalAtomicContext<'_>,
     wake_write: WakeWrite<'_>,
     columns: RowColumns<'_>,
 ) -> Result<InsertedGoal, StorageError> {
-    let prepared =
-        prepare_goal_insert(tx, draft, expected_prior, context, wake_write, columns).await?;
+    let prepared = prepare_goal_insert(
+        tx,
+        draft,
+        expected_prior,
+        change,
+        context,
+        wake_write,
+        columns,
+    )
+    .await?;
     if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
         lock_prepared_goal_write(tx, prepared_write).await?;
     }
@@ -38,6 +57,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     tx: &mut Transaction<'_, Postgres>,
     draft: &GoalDraft,
     expected_prior: Option<GoalId>,
+    change: GoalChange,
     context: GoalAtomicContext<'a>,
     wake_write: WakeWrite<'_>,
     columns: RowColumns<'_>,
@@ -59,6 +79,8 @@ pub(super) async fn prepare_goal_insert<'a>(
                     replay: true,
                 },
             ),
+            // A replay writes no second change Fact.
+            change_fact: None,
         });
     }
     // Fence the owner immediately after replay detection.  The lower-level
@@ -126,12 +148,50 @@ pub(super) async fn prepare_goal_insert<'a>(
         GoalWritePreparation::Replay(_) | GoalWritePreparation::New(_) => None,
     };
     let preparation = attach_goal_close_fact_reservation(preparation, close_fact);
+    let change_fact = match (&preparation, goal_change_stamp(context)?) {
+        (GoalWritePreparation::New(_), Some(stamp)) => Some(GoalChangeFact::new(
+            reserve_fact_identity(tx).await?,
+            change,
+            stamp,
+        )),
+        (GoalWritePreparation::Replay(_) | GoalWritePreparation::New(_), _) => None,
+    };
+    let preparation = attach_goal_change_fact_reservation(preparation, change_fact.as_ref());
     Ok(PreparedGoalInsert {
         draft: draft.clone(),
         context,
         expected_prior,
         preparation,
+        change_fact,
     })
+}
+
+/// The stamp a goal-change Fact is captured with, or `None` while
+/// `core/goal-change-v1` is not listenable.
+///
+/// The frozen registry is the one authority on listenability, so a goal write
+/// writes the Fact exactly when the registry says so. A listenable schema
+/// without a stamp is a context the engine did not build: refused, not
+/// skipped, because skipping would drop a record the deployment asked for.
+fn goal_change_stamp(
+    context: GoalAtomicContext<'_>,
+) -> Result<Option<PublicationStamp<'_>>, StorageError> {
+    let listenable = context
+        .registry
+        .lookup_payload(
+            &GoalChangeV1::schema_id(),
+            SchemaVersion::new(GoalChangeV1::SCHEMA_VERSION),
+            PayloadKind::Fact,
+        )
+        .is_some_and(|schema| schema.listenable);
+    match (listenable, context.publication) {
+        (false, _) => Ok(None),
+        (true, Some(stamp)) => Ok(Some(stamp)),
+        (true, None) => Err(StorageError::ConstraintViolation(format!(
+            "{} is listenable but the goal context carries no publication stamp",
+            GoalChangeV1::SCHEMA_ID
+        ))),
+    }
 }
 
 pub(super) async fn persist_prepared_goal_insert(
@@ -153,6 +213,13 @@ pub(super) async fn persist_prepared_goal_insert(
             prepared.expected_prior,
         )
         .await?;
+        // The choke point of the change Fact: every goal row a verb inserts
+        // is persisted here, and a replay (above) never reaches it.
+        if let (GoalWritePreparation::New(write), Some(fact)) =
+            (&prepared.preparation, &prepared.change_fact)
+        {
+            persist_goal_change_fact(tx, sidecars, write, fact).await?;
+        }
     }
 
     Ok(InsertedGoal {

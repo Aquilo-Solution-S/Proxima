@@ -928,6 +928,10 @@ mod tests {
             )
             .execute(pg.pool_for_tests())
             .await?;
+            proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(
+                pg.pool_for_tests(),
+            )
+            .await?;
             run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
             stamp_squashed_lane(&pg).await?;
 

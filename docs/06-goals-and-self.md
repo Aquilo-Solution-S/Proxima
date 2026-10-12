@@ -138,9 +138,33 @@ Head-advance constraints:
 | Valid transition | prior state and new state pair is admitted |
 | Payload typed | the new `t` satisfies the registered payload contract; its sidecar may be absent |
 
-A transition is the Goal's later `t` on the same `handle`. Only a terminal
-transition (`Achieved`, `Abandoned`) writes a Fact: the close Fact the new row
-names in `close_fact_t`, in the same transaction.
+A transition is the Goal's later `t` on the same `handle`. A terminal
+transition (`Achieved`, `Abandoned`) writes a close Fact: the one the new row
+names in `close_fact_t`, in the same transaction. When the runtime has an
+outbox intake, every goal write that inserts a Goal row (set, modify, each
+decomposed child, pause, resume, abandon, achieve) also writes one
+`core/goal-change-v1` Fact in that transaction, so the write reaches the feed
+([18 §Goal changes on the feed](18-fact-outbox.md#goal-changes-on-the-feed)).
+Without an intake it writes no such Fact.
+
+A pause says what happens to the work a scheduler already queued for the Goal.
+The transition request carries a `GoalTransitionKind`, which replaces
+`next_state`:
+
+| `GoalTransitionKind` | Next state | `pending` |
+|---|---|---|
+| `Pause { pending }` | `Paused` | `PendingWork::Keep` or `PendingWork::Discard`, required |
+| `Resume` | `Active` | does not exist |
+| `Abandon` | `Abandoned` | does not exist |
+
+`Achieved` is not a transition: `mark_achieved` has its own verb. `pending`
+exists only on `Pause`, so a resume or abandon that names it does not compile.
+Proxima records the decision (in the change Fact and in the replay
+declaration) and does not interpret it: `keep` means the scheduler holds the
+queued work and runs it after a resume, `discard` means it drops the queued
+work, and work already running finishes either way. A transition replayed under
+the same request id with a different `pending` is a conflict, as is a pause
+recorded before `pending` existed.
 
 Public Rust surface:
 
@@ -228,7 +252,7 @@ Core owns:
 | Entity | Goal row, Goal identity, 4-state lifecycle |
 | Payloads | `GoalPayload` schemas |
 | Verb | `GoalWrite` |
-| Tools | `core_goal` action dispatcher: `set`, `transition` (pause / resume / abandon), `modify`, `mark_achieved`, `decompose` |
+| Tools | `core_goal` action dispatcher: `set`, `transition` (pause with a required `pending` / resume / abandon), `modify`, `mark_achieved`, `decompose` |
 | Topology | `assignment_t`, `dependency_t`, `evidence_t` on the Goal row; index entries are derived from them |
 | Query | active-goal traversal |
 | Renderers | Goal payload views |

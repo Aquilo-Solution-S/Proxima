@@ -598,6 +598,64 @@ impl PublicationPlan {
     }
 }
 
+/// What a listenable core Fact needs from the operation's authority when
+/// storage, not the engine, composes its payload: what the engine's
+/// `resolve_publication` binds, minus the payload and the owner.
+///
+/// Borrowed from the engine's [`PublicationConfig`] and the operation's
+/// authorization context, so it is `Copy` and a request carrying one stays
+/// `Copy`. The goal write composes its change Fact's payload inside the goal
+/// transaction (the new version's `t` is minted there) and builds the
+/// [`PublicationPlan`] from this.
+#[derive(Debug, Clone, Copy)]
+pub struct PublicationStamp<'a> {
+    source: &'a PublicationSource,
+    model_id: Option<&'a str>,
+    extensions: &'a PublicationExtensions,
+    limits: PublicationLimits,
+}
+
+impl<'a> PublicationStamp<'a> {
+    #[must_use]
+    pub const fn new(
+        source: &'a PublicationSource,
+        model_id: Option<&'a str>,
+        extensions: &'a PublicationExtensions,
+        limits: PublicationLimits,
+    ) -> Self {
+        Self {
+            source,
+            model_id,
+            extensions,
+            limits,
+        }
+    }
+
+    /// The capture instruction for one Fact of `schema_id` owned by `owner`
+    /// whose event `data` is `data`.
+    #[must_use]
+    pub fn plan(
+        &self,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        owner: Owner,
+        data: serde_json::Value,
+    ) -> PublicationPlan {
+        PublicationPlan::new(
+            PublicationDraft::new(
+                schema_id,
+                schema_version,
+                self.source.clone(),
+                owner,
+                self.model_id.map(ToOwned::to_owned),
+                self.extensions.clone(),
+                data,
+            ),
+            self.limits,
+        )
+    }
+}
+
 /// The local `dataschema` target for a registered schema.
 #[must_use]
 pub fn data_schema_uri(schema_id: &SchemaId, schema_version: SchemaVersion) -> String {

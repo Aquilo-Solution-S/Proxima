@@ -18,6 +18,7 @@ use proxima::{
     FeatureStatus, FlavorApp, Intake, IntakeError, Proxima, ReceivedEvent, ToolScope,
     company_owner,
 };
+use proxima_core::publication::{PublicationConfig, PublicationSource};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
@@ -309,6 +310,10 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
                 "features-embed",
                 &[0.25, 0.5, 0.75],
             )))
+            // An intake makes goal changes listenable, which needs a source.
+            .publication(PublicationConfig::new(
+                PublicationSource::new("urn:proxima:features-test").expect("publication source"),
+            ))
             .outbox_intake(Arc::new(DiscardIntake))
             .published_retention(Duration::from_mins(1))
     };

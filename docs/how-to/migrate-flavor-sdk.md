@@ -42,6 +42,25 @@ broker forwards to it from its own `DurableIntake`
 | `IntakeError { retry_after, .. }`, `IntakeError::retry_after(delay)` | Removed: nothing honours a redelivery hint in process. `IntakeError::new(message)` is unchanged; the drain releases the claim and backs off |
 | An envelope that does not parse | Was delivered under a synthetic `malformed:<hex>` id. Now logged at error level (event id and error class) and released; the intake is never called with it. It stays `pending` until an operator repairs it |
 
+**Also breaking, no shims** (#435): a goal write reaches the feed as a core
+Fact (`core/goal-change-v1`), and a pause says what happens to the work a
+scheduler queued for the goal ([18 §Goal changes on the
+feed](../18-fact-outbox.md#goal-changes-on-the-feed)). The schema is always
+registered; it is listenable only when the runtime has an `outbox_intake`, so a
+deployment without one writes no extra Fact. The core migration adds its
+sidecar table ([migrations §v0.0.27](migrations.md#v0027)).
+
+| Removed / changed | Upgrade |
+|---|---|
+| `GoalTransitionRequest { next_state, .. }` (`proxima_core::engine`, `proxima::host`) | `next_state: GoalState` is now `transition: GoalTransitionKind` (`proxima_core::verbs::goal_write`): `Pause { pending: PendingWork }`, `Resume`, `Abandon`. `pending` exists on `Pause` alone, so a resume or abandon that names it does not compile, and there is no `Achieved` variant (achievement is `GoalMarkAchievedRequest`; the engine's runtime refusal of an `Achieved` target is gone with the case). `GoalTransitionKind::next_state(self) -> GoalState` gives the state; `GoalChange::from(kind)` the change. `PendingWork` (`proxima_core::PendingWork`) is `Keep` or `Discard` |
+| `TransitionGoalAtomicRequest<'_> { next_state, .. }` (`proxima_core::verbs::goal_write`) | The same replacement: `transition: GoalTransitionKind`. A storage implementer writes the verb's replay declaration with `pending` for a pause |
+| `GoalAtomicContext<'a> { .. }` struct literal | Gains `publication: Option<PublicationStamp<'a>>` (`proxima_core::publication::PublicationStamp`, `Copy`). A host or test that builds the context by hand writes `publication: None`, which is right for any registry where `core/goal-change-v1` is not listenable. Storage writes the change Fact exactly when the schema is listenable in `registry`; with it listenable and `publication: None` the write fails with `StorageError::ConstraintViolation` naming the schema. The engine builds the stamp itself from the configured source, the token-certified model id and the host extension attributes |
+| `core_goal` `action=transition` | Takes `pending: "keep" \| "discard"`: **required** with `transition: "pause"`, refused with `resume` and `abandon`. A pause without it fails `InvalidInput` naming both values. A client or script that pauses goals adds the field |
+| Replay of a transition | The replay declaration of a pause records `pending`. Retrying a pause request id recorded by v0.0.26 (no `pending`) now conflicts instead of replaying; a resume or abandon declaration is unchanged and still replays. A retry of a pause with a different `pending` conflicts |
+| New | Fact schema `core/goal-change-v1` (`proxima_core::GoalChangeV1`, `GoalChange`, `GoalChangeKind`, `PendingWork`), sidecar `proxima_core.goal_change_v1` registered by `register_core_pg_sidecars`. `FlavorRegistry::publish_goal_changes(&mut self)` (`#[doc(hidden)]`) turns its `listenable` on; the runtime calls it in `compose_registry` when `outbox_intake` is set, and a host that composes its own registry never needs it. `PublicationStamp::new(&PublicationSource, Option<&str>, &PublicationExtensions, PublicationLimits)` and `PublicationStamp::plan(..) -> PublicationPlan` |
+| Boot | With an `outbox_intake` the schema is listenable, so an intake without `PROXIMA_PUBLICATION_SOURCE` now fails boot with a `PublicationConfig::validate_against` error that names `core/goal-change-v1`, as for any listenable schema. Set the source, or drop the intake |
+| Wire | With an intake, every goal write adds one event of type `core/goal-change-v1` to the feed, `data` `{series, goal, prior, revision, state, change}` ([18 §Goal changes on the feed](../18-fact-outbox.md#goal-changes-on-the-feed)). An intake that rejects unknown event types must accept it. Deliveries can arrive out of order: key by `series` and apply only an event whose `revision` is greater than the last applied for that series |
+
 ## v0.0.26
 
 Pin all Proxima Rust dependencies to the same `v0.0.26` tag. Boot applies one

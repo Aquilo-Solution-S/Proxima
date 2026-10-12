@@ -1,8 +1,8 @@
 use super::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalId,
-    GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit, PgPool,
-    PgSidecarRegistryFrozen, PreparedGoalInsert, RowColumns, StorageError, SystemOrigin,
+    DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalChange,
+    GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit,
+    PgPool, PgSidecarRegistryFrozen, PreparedGoalInsert, RowColumns, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, WakeWrite, achieve_replay_declaration, child_draft,
     create_replay_declaration, decompose_replay_declarations, draft_from_payload,
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
@@ -113,6 +113,7 @@ pub(crate) async fn create_goal_in_tx(
         sidecars,
         &req.draft,
         None,
+        GoalChange::Set,
         req.context,
         WakeWrite::Explicit(req.draft.wake.as_ref()),
         RowColumns {
@@ -146,14 +147,11 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     req: &TransitionGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    // Constant-time command validation stays ahead of the replay probe: these
-    // two rejections ran before every prior write, so no stored declaration can
-    // ever carry a shape they refuse, and probing for one is pure cost.
-    if matches!(req.next_state, GoalState::Achieved) {
-        return Err(StorageError::ConstraintViolation(
-            "use achieve_goal_atomic for Achieved transitions".into(),
-        ));
-    }
+    // Constant-time command validation stays ahead of the replay probe: this
+    // rejection ran before every prior write, so no stored declaration can
+    // ever carry a shape it refuses, and probing for one is pure cost.
+    // (`Achieved` is not a `GoalTransitionKind`, so a transition to it is
+    // unrepresentable and needs no screen.)
     if matches!(
         &req.authorship,
         GoalAuthorship::System(SystemOrigin::Operator { .. })
@@ -177,11 +175,12 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         return Ok(replay);
     }
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
-    validate_goal_transition(prior.state, req.next_state)?;
+    let next_state = req.transition.next_state();
+    validate_goal_transition(prior.state, next_state)?;
     let draft = draft_from_stored(
         &req.owner,
         &prior,
-        req.next_state,
+        next_state,
         Some(req.prior_goal_id),
         req.authorship.clone(),
         req.request_id.as_str(),
@@ -194,6 +193,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         sidecars,
         &draft,
         Some(req.prior_goal_id),
+        GoalChange::from(req.transition),
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
         // A lifecycle write declares no text: the version keeps the prior
@@ -275,6 +275,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         sidecars,
         &draft,
         Some(req.prior_goal_id),
+        GoalChange::Achieve,
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
         // A lifecycle write declares no text: the version keeps the prior
@@ -376,6 +377,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         sidecars,
         &draft,
         Some(req.prior_goal_id),
+        GoalChange::Modify,
         req.context,
         wake_write,
         RowColumns {
@@ -446,6 +448,9 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             &mut tx,
             &draft,
             None,
+            GoalChange::DecomposeChild {
+                parent: req.parent_goal_id,
+            },
             req.context,
             WakeWrite::Explicit(child.wake.as_ref()),
             RowColumns {
@@ -514,6 +519,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
 
 #[cfg(test)]
 mod lifecycle_lock_tests {
+    use super::super::GoalChange;
     use super::super::insert::prepare_goal_insert;
     use super::super::types::{RowColumns, WakeWrite};
     use super::super::{
@@ -1001,9 +1007,11 @@ mod lifecycle_lock_tests {
                 &mut tx,
                 &draft,
                 None,
+                GoalChange::Set,
                 GoalAtomicContext {
                     registry: &registry,
                     author_self_perspective_id: None,
+                    publication: None,
                 },
                 WakeWrite::Explicit(None),
                 RowColumns {

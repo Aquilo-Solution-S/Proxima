@@ -2314,14 +2314,21 @@ fn generated_declaration_triggers_are_the_migration_text() {
         .expect("core's declaration triggers");
     assert_eq!(
         artifacts.len(),
-        6,
-        "flavor #0 registers six memory sidecars; a seventh needs its trigger in the migration"
+        7,
+        "flavor #0 registers seven memory sidecars; an eighth needs its trigger in the migration"
     );
+    // `goal_change_v1` joined after 0002 was applied, so its text is the
+    // unreleased 0025's goal-change section; the other six are 0002's.
+    let goal_change = include_str!("../migrations/0025_v031_goal_text_outbox_receipt.sql");
     for artifact in &artifacts {
+        let (file, text) = if artifact.forward.contains("proxima_core.goal_change_v1") {
+            ("0025_v031_goal_text_outbox_receipt.sql", goal_change)
+        } else {
+            ("0002_v009_declaration_triggers.sql", migration)
+        };
         assert!(
-            migration.contains(&artifact.forward),
-            "0002_v009_declaration_triggers.sql does not carry the generator's output \
-             verbatim:\n{}",
+            text.contains(&artifact.forward),
+            "{file} does not carry the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
@@ -2386,12 +2393,12 @@ fn generated_presence_triggers_are_the_migration_text() {
         .count();
     assert_eq!(
         (presence, orphan),
-        (5, 5),
-        "flavor #0 registers six memory sidecars, one of them owner-pinned; only the other \
-         five get a presence trigger and an orphan guard"
+        (6, 6),
+        "flavor #0 registers seven memory sidecars, one of them owner-pinned; only the other \
+         six get a presence trigger and an orphan guard"
     );
     assert_eq!(
-        repoint, 6,
+        repoint, 7,
         "every registered memory sidecar gets the UPDATE-of-key guard, owner-pinned included"
     );
     assert_eq!(
@@ -2399,11 +2406,20 @@ fn generated_presence_triggers_are_the_migration_text() {
         presence + orphan + repoint,
         "every generated artifact belongs to one of the three families"
     );
+    let goal_change = include_str!("../migrations/0025_v031_goal_text_outbox_receipt.sql");
     for artifact in &artifacts {
+        let (file, text) = if artifact.forward.contains("proxima_core.goal_change_v1")
+            || artifact
+                .forward
+                .contains("goal_change_v1_declared_by_memory")
+        {
+            ("0025_v031_goal_text_outbox_receipt.sql", goal_change)
+        } else {
+            ("0009_declared_sidecar_presence.sql", migration)
+        };
         assert!(
-            migration.contains(&artifact.forward),
-            "0009_declared_sidecar_presence.sql does not carry the generator's output \
-             verbatim:\n{}",
+            text.contains(&artifact.forward),
+            "{file} does not carry the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
@@ -2688,6 +2704,70 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
 
     let _ = drop_db(&db_name).await;
     result.expect("declaration integrity trigger test failed");
+}
+
+/// The checks of `goal_change_v1` refuse the rows they name; a re-run of 0025 keeps its rows.
+#[tokio::test]
+async fn goal_change_checks_refuse_the_rows_they_name() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
+        let pool = pg.pool_for_tests();
+        // kind, has parent, pending, revision, the `goal_change_v1_<>_chk` that refuses it
+        let rows = [
+            ("pause", false, Some("keep"), 1, None),
+            ("set", false, Some("keep"), 1, Some("pending")),
+            ("resume", false, Some("discard"), 1, Some("pending")),
+            ("pause", false, None, 1, Some("pending")),
+            ("set", true, None, 1, Some("parent")),
+            ("decompose_child", false, None, 1, Some("parent")),
+            ("set", false, None, 0, Some("revision")),
+        ];
+        for (kind, has_parent, pending, revision, refused_by) in rows {
+            // Only the checks are under test, not the declaration triggers.
+            let mut tx = pool.begin().await?;
+            sqlx::query("SET LOCAL session_replication_role = replica")
+                .execute(&mut *tx)
+                .await?;
+            let inserted = sqlx::query(
+                "INSERT INTO proxima_core.goal_change_v1
+                     (t, series, goal_t, revision, state, change_kind, parent_t, pending)
+                 VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), $1, 'Paused',
+                         $2::proxima_core.goal_change_kind,
+                         CASE WHEN $3 THEN gen_random_uuid() END,
+                         $4::proxima_core.goal_pending_work)",
+            )
+            .bind(revision)
+            .bind(kind)
+            .bind(has_parent)
+            .bind(pending)
+            .execute(&mut *tx)
+            .await;
+            let refused = inserted
+                .err()
+                .and_then(|error| error.as_database_error()?.constraint().map(str::to_owned));
+            let wanted = refused_by.map(|check| format!("goal_change_v1_{check}_chk"));
+            assert_eq!(refused, wanted, "{kind} {pending:?} {revision}");
+            if refused.is_none() {
+                tx.commit().await?;
+            }
+        }
+
+        apply_core_migrations(pool, 25..=25).await?;
+        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal_change_v1")
+            .fetch_one(pool)
+            .await?;
+        assert_eq!(kept, 1);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("goal_change_v1 check test failed");
 }
 
 /// The boot guardrail is bidirectional, like its projection sibling.

@@ -247,9 +247,29 @@ async fn apply_owner_rls_fixtures(pool: &PgPool) {
         .await
         .unwrap();
     let core = proxima_storage_pg::core_migrator();
-    for migration in core.iter().filter(|migration| {
-        proxima_storage_pg::test_fixtures::OWNER_RLS_MIGRATION_VERSIONS.contains(&migration.version)
-    }) {
+    let lane = proxima_storage_pg::test_fixtures::OWNER_RLS_MIGRATION_VERSIONS;
+    // The base lane already ran 0025, whose `goal_change_v1` table 0014's
+    // whole-schema census has never heard of (production runs 0014 first).
+    // Remove it, run the lane, then re-run what follows the lane: 0025 is
+    // idempotent and now installs the table's RLS through the 0024 installer.
+    sqlx::raw_sql("DROP TABLE proxima_core.goal_change_v1")
+        .execute(transaction.as_mut())
+        .await
+        .unwrap();
+    for migration in core
+        .iter()
+        .filter(|migration| lane.contains(&migration.version))
+    {
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(transaction.as_mut())
+            .await
+            .unwrap();
+    }
+    let after_lane = lane.iter().max().copied().unwrap_or_default();
+    for migration in core
+        .iter()
+        .filter(|migration| migration.version > after_lane)
+    {
         sqlx::raw_sql(migration.sql.clone())
             .execute(transaction.as_mut())
             .await
