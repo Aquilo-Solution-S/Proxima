@@ -11,11 +11,12 @@ use std::time::Duration;
 use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
 use proxima_core::publication::{
     PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
-    SealedPublication,
+    SealedPublication, SubjectPosition,
 };
 use proxima_core::storage_ports::publication::{
-    AckOutcome, PublicationOriginEligibility, PublicationOriginEligibilityPort,
-    PublicationOutboxPort, PublicationRetentionPort, PublisherId,
+    AckOutcome, ClaimedPublication, ConsumerName, PublicationConsumerPort,
+    PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
+    PublicationRetentionPort, PublisherId, ReleaseOutcome, RetireOutcome,
 };
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, WriteSessionFactory,
@@ -814,6 +815,7 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     let first_publisher = PublisherId::new("publisher-one").expect("valid");
     let first = pg
         .claim(
+            &ConsumerName::default(),
             &first_publisher,
             NonZeroU32::new(1).expect("nonzero"),
             Duration::from_secs(1),
@@ -828,6 +830,7 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     let second_publisher = PublisherId::new("publisher-two").expect("valid");
     let second = pg
         .claim(
+            &ConsumerName::default(),
             &second_publisher,
             NonZeroU32::new(1).expect("nonzero"),
             Duration::from_mins(1),
@@ -840,12 +843,14 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     assert_ne!(second.claim, first.claim);
 
     assert_eq!(
-        pg.mark_published(first.id, first.claim).await.expect("ack"),
+        pg.mark_published(&ConsumerName::default(), first.id, first.claim)
+            .await
+            .expect("ack"),
         AckOutcome::StaleClaim,
         "the evicted publisher must not claim another's delivery"
     );
     assert_eq!(
-        pg.mark_published(second.id, second.claim)
+        pg.mark_published(&ConsumerName::default(), second.id, second.claim)
             .await
             .expect("ack"),
         AckOutcome::Published
@@ -1004,10 +1009,10 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     let claimed_by = "same-uow-race";
     let claim_token = Uuid::now_v7();
     let updated = sqlx::query(
-        "UPDATE proxima_core.publication_outbox
+        "UPDATE proxima_core.publication_delivery
             SET state = 'claimed', claim_token = $2, claimed_by = $3,
                 lease_expires_at = now() + interval '30 seconds', attempts = 1
-          WHERE t = $1",
+          WHERE t = $1 AND consumer = 'default'",
     )
     .bind(t)
     .bind(claim_token)
@@ -1742,6 +1747,7 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
     let publisher = PublisherId::new(PUBLISHER).expect("valid");
     let claimed = pg
         .claim(
+            &ConsumerName::default(),
             &publisher,
             NonZeroU32::new(4).expect("nonzero"),
             Duration::from_mins(1),
@@ -1779,6 +1785,7 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
     let publisher = PublisherId::new(PUBLISHER).expect("valid");
     let claimed = pg
         .claim(
+            &ConsumerName::default(),
             &publisher,
             NonZeroU32::new(10).expect("nonzero"),
             Duration::from_mins(1),
@@ -1789,12 +1796,12 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
         .iter()
         .find(|record| record.id == delivered.memory_id.into_inner())
         .expect("the record was claimed");
-    pg.mark_published(target.id, target.claim)
+    pg.mark_published(&ConsumerName::default(), target.id, target.claim)
         .await
         .expect("ack");
     for record in &claimed {
         if record.id != target.id {
-            pg.release(record.id, record.claim)
+            pg.release(&ConsumerName::default(), record.id, record.claim)
                 .await
                 .expect("release the rest");
         }
@@ -1866,6 +1873,7 @@ async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs
     let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
     let claimed = pg
         .claim(
+            &ConsumerName::default(),
             &publisher,
             NonZeroU32::new(16).expect("nonzero"),
             Duration::from_mins(1),
@@ -1876,13 +1884,15 @@ async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs
         .iter()
         .find(|record| record.id == t)
         .expect("the record is claimable");
-    pg.mark_published(record.id, record.claim)
+    pg.mark_published(&ConsumerName::default(), record.id, record.claim)
         .await
         .expect("ack");
     // Release every other record this claim swept up, so a later claim in
     // the same test still sees them.
     for other in claimed.iter().filter(|record| record.id != t) {
-        pg.release(other.id, other.claim).await.expect("release");
+        pg.release(&ConsumerName::default(), other.id, other.claim)
+            .await
+            .expect("release");
     }
     sqlx::query(
         "UPDATE proxima_core.publication_outbox
@@ -1937,6 +1947,7 @@ async fn retention_prunes_only_published_records_past_the_horizon() {
     let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
     let claimed = pg
         .claim(
+            &ConsumerName::default(),
             &publisher,
             NonZeroU32::new(16).expect("nonzero"),
             Duration::from_mins(30),
@@ -1969,7 +1980,7 @@ async fn retention_prunes_only_published_records_past_the_horizon() {
     assert!(
         surviving
             .iter()
-            .any(|(t, state)| *t == still_pending && state == "claimed"),
+            .any(|(t, state)| *t == still_pending && state == "pending"),
         "a leased, undelivered record is never retention's business: {surviving:?}"
     );
 
@@ -1990,7 +2001,12 @@ async fn a_lease_under_the_floor_is_refused() {
 
     for lease in [Duration::ZERO, Duration::from_millis(999)] {
         let err = pg
-            .claim(&publisher, NonZeroU32::new(1).expect("nonzero"), lease)
+            .claim(
+                &ConsumerName::default(),
+                &publisher,
+                NonZeroU32::new(1).expect("nonzero"),
+                lease,
+            )
             .await
             .expect_err("a sub-second lease must be refused");
         assert!(
@@ -1999,6 +2015,7 @@ async fn a_lease_under_the_floor_is_refused() {
         );
     }
     pg.claim(
+        &ConsumerName::default(),
         &publisher,
         NonZeroU32::new(1).expect("nonzero"),
         Duration::from_secs(1),
@@ -2010,7 +2027,7 @@ async fn a_lease_under_the_floor_is_refused() {
     let _ = drop_db(&db).await;
 }
 
-/// The seal is deterministic: the same draft and the same `t` produce the
+/// The seal is deterministic: the same draft, `t` and position produce the
 /// same bytes, so a captured record can be re-derived and checked.
 #[test]
 fn sealing_is_a_function_of_the_draft_and_the_t() {
@@ -2020,8 +2037,381 @@ fn sealing_is_a_function_of_the_draft_and_the_t() {
     let t = Uuid::now_v7();
     let limits = PublicationLimits::default();
     let plan = PublicationPlan::new(draft, limits);
-    let first = SealedPublication::seal(&plan, t).expect("seals");
-    let second = SealedPublication::seal(&plan, t).expect("seals");
+    let position = SubjectPosition::new(Uuid::now_v7(), std::num::NonZeroU64::MIN);
+    let first = SealedPublication::seal(&plan, t, position).expect("seals");
+    let second = SealedPublication::seal(&plan, t, position).expect("seals");
     assert_eq!(first, second);
     assert_eq!(first.digest, *blake3::hash(&first.bytes).as_bytes());
+}
+
+// ── consumers (docs/18 §Consumers) ──────────────────────────────────────
+
+fn consumer(name: &str) -> ConsumerName {
+    ConsumerName::new(name).expect("a valid consumer name")
+}
+
+/// Every lane `consumer` can claim right now, under a lease long enough that
+/// nothing expires inside a test.
+async fn claim_for(pg: &PgStorage, consumer: &ConsumerName) -> Vec<ClaimedPublication> {
+    let publisher = PublisherId::new(PUBLISHER).expect("valid publisher id");
+    pg.claim(
+        consumer,
+        &publisher,
+        NonZeroU32::new(16).expect("nonzero"),
+        Duration::from_mins(1),
+    )
+    .await
+    .expect("claim")
+}
+
+fn ids(claimed: &[ClaimedPublication]) -> Vec<Uuid> {
+    let mut ids: Vec<Uuid> = claimed.iter().map(|record| record.id).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Two consumers each receive every record, on lanes of their own: a
+/// consumer that fails holds only its own lane, and a record is published,
+/// and so prunable, only once BOTH delivered it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one record's lanes, followed from capture to prune
+async fn two_consumers_each_receive_every_record_and_a_failing_one_holds_only_its_own_lane() {
+    let (pg, db) = fresh_pg("pub_two_consumers").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+    let audit = consumer("audit");
+    pg.register(&audit).await.expect("register");
+    pg.register(&audit)
+        .await
+        .expect("registering twice is a no-op");
+    assert_eq!(
+        pg.registered().await.expect("list"),
+        vec![audit.clone(), default.clone()]
+    );
+
+    let mut written: Vec<Uuid> = Vec::new();
+    for note in ["first", "second"] {
+        let outcome = ingest_listenable(&pg, &owner, &probe(note), None)
+            .await
+            .expect("capture");
+        written.push(outcome.memory_id.into_inner());
+    }
+    written.sort_unstable();
+
+    let to_default = claim_for(&pg, &default).await;
+    let to_audit = claim_for(&pg, &audit).await;
+    assert_eq!(
+        ids(&to_default),
+        written,
+        "the default consumer gets every record"
+    );
+    assert_eq!(
+        ids(&to_audit),
+        written,
+        "so does audit, while default holds them"
+    );
+
+    for record in &to_default {
+        assert_eq!(
+            pg.mark_published(&default, record.id, record.claim)
+                .await
+                .expect("mark"),
+            AckOutcome::Published
+        );
+    }
+    assert!(
+        states(&pool)
+            .await
+            .iter()
+            .all(|(_, state)| state == "pending"),
+        "a record audit still owes is not published"
+    );
+    assert_eq!(
+        pg.prune_published(Duration::ZERO, NonZeroU32::new(100).expect("nonzero"))
+            .await
+            .expect("prune"),
+        0,
+        "retention never takes a record a consumer still owes"
+    );
+    assert!(claim_for(&pg, &default).await.is_empty(), "default is done");
+
+    // audit fails one record and delivers the other.
+    let (failed, delivered) = (&to_audit[0], &to_audit[1]);
+    assert_eq!(
+        pg.release(&audit, failed.id, failed.claim)
+            .await
+            .expect("release"),
+        ReleaseOutcome::Released
+    );
+    assert_eq!(
+        pg.mark_published(&audit, delivered.id, delivered.claim)
+            .await
+            .expect("mark"),
+        AckOutcome::Published
+    );
+    let settled = states(&pool).await;
+    assert!(
+        settled.contains(&(delivered.id, "published".to_owned())),
+        "delivered by both: published {settled:?}"
+    );
+    assert!(
+        settled.contains(&(failed.id, "pending".to_owned())),
+        "audit still owes it: pending {settled:?}"
+    );
+
+    // A claim token is fenced to its consumer: default's claim cannot mark
+    // audit's lane.
+    let retry = claim_for(&pg, &audit).await;
+    assert_eq!(
+        ids(&retry),
+        vec![failed.id],
+        "only the failed lane comes back"
+    );
+    assert_eq!(
+        retry[0].attempts, 2,
+        "attempts count this consumer's claims"
+    );
+    assert_eq!(
+        pg.mark_published(&default, retry[0].id, retry[0].claim)
+            .await
+            .expect("mark"),
+        AckOutcome::AlreadyPublished,
+        "default's lane is already delivered; audit's lane is untouched"
+    );
+    assert_eq!(
+        pg.mark_published(&audit, retry[0].id, retry[0].claim)
+            .await
+            .expect("mark"),
+        AckOutcome::Published
+    );
+    assert!(
+        states(&pool)
+            .await
+            .iter()
+            .all(|(_, state)| state == "published")
+    );
+    assert_eq!(
+        pg.prune_published(Duration::ZERO, NonZeroU32::new(100).expect("nonzero"))
+            .await
+            .expect("prune"),
+        2,
+        "delivered to every consumer: retention may reclaim both"
+    );
+    let lanes: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_delivery")
+        .fetch_one(&pool)
+        .await
+        .expect("count reads");
+    assert_eq!(lanes, 0, "a pruned record takes its lanes with it");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// Retiring a consumer cancels what it was still owed: a record only it
+/// still owed is published at once, the other consumers keep their lanes,
+/// and later captures no longer fan out to it.
+#[tokio::test]
+async fn retiring_a_consumer_settles_what_only_it_still_owed() {
+    let (pg, db) = fresh_pg("pub_retire_consumer").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+    let audit = consumer("audit");
+    pg.register(&audit).await.expect("register");
+
+    let delivered_by_default = ingest_listenable(&pg, &owner, &probe("one"), None)
+        .await
+        .expect("capture")
+        .memory_id
+        .into_inner();
+    let owed_by_both = ingest_listenable(&pg, &owner, &probe("two"), None)
+        .await
+        .expect("capture")
+        .memory_id
+        .into_inner();
+    let claimed = claim_for(&pg, &default).await;
+    let first = claimed
+        .iter()
+        .find(|record| record.id == delivered_by_default)
+        .expect("claimed");
+    pg.mark_published(&default, first.id, first.claim)
+        .await
+        .expect("mark");
+    for rest in claimed
+        .iter()
+        .filter(|record| record.id != delivered_by_default)
+    {
+        pg.release(&default, rest.id, rest.claim)
+            .await
+            .expect("release");
+    }
+    // audit holds a live claim while it is retired: the retire wins and the
+    // claim is fenced out.
+    let held = claim_for(&pg, &audit).await;
+    assert_eq!(held.len(), 2);
+
+    assert_eq!(
+        pg.retire(&audit).await.expect("retire"),
+        RetireOutcome::Retired { undelivered: 2 }
+    );
+    let settled = states(&pool).await;
+    assert!(
+        settled.contains(&(delivered_by_default, "published".to_owned())),
+        "{settled:?}"
+    );
+    assert!(
+        settled.contains(&(owed_by_both, "pending".to_owned())),
+        "{settled:?}"
+    );
+    for record in &held {
+        assert_eq!(
+            pg.mark_published(&audit, record.id, record.claim)
+                .await
+                .expect("mark"),
+            AckOutcome::StaleClaim,
+            "a retired consumer's claim marks nothing"
+        );
+    }
+    assert_eq!(pg.registered().await.expect("list"), vec![default.clone()]);
+    assert_eq!(
+        pg.retire(&audit).await.expect("retire"),
+        RetireOutcome::NotRegistered
+    );
+
+    let later = ingest_listenable(&pg, &owner, &probe("after the retire"), None)
+        .await
+        .expect("capture")
+        .memory_id
+        .into_inner();
+    let lanes: Vec<String> =
+        sqlx::query_scalar("SELECT consumer FROM proxima_core.publication_delivery WHERE t = $1")
+            .bind(later)
+            .fetch_all(&pool)
+            .await
+            .expect("lanes read");
+    assert_eq!(lanes, vec!["default".to_owned()]);
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// With no consumer registered there is nobody to owe the event to: the
+/// record is published at capture rather than held against the pending
+/// ceiling forever.
+#[tokio::test]
+async fn a_record_captured_with_no_consumer_registered_is_published_at_once() {
+    let (pg, db) = fresh_pg("pub_no_consumer").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+    assert_eq!(
+        pg.retire(&default).await.expect("retire"),
+        RetireOutcome::Retired { undelivered: 0 }
+    );
+
+    let t = ingest_listenable(&pg, &owner, &probe("nobody listens"), None)
+        .await
+        .expect("capture")
+        .memory_id
+        .into_inner();
+    assert_eq!(states(&pool).await, vec![(t, "published".to_owned())]);
+    assert_eq!(pg.pending_count().await.expect("count"), 0);
+    assert!(claim_for(&pg, &default).await.is_empty());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+// ── ordering (docs/18 §Ordering) ────────────────────────────────────────
+
+async fn envelope_of(pool: &sqlx::PgPool, t: Uuid) -> serde_json::Value {
+    let bytes: Vec<u8> =
+        sqlx::query_scalar("SELECT envelope FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(t)
+            .fetch_one(pool)
+            .await
+            .expect("the record reads");
+    serde_json::from_slice(&bytes).expect("valid JSON")
+}
+
+/// Delivery order is not commit order (a failed record is demoted behind
+/// fresher work), so each event names its series and its place in it. Each
+/// write to a series takes the next position under the series lock; a new
+/// series starts at 1; a delivered event reads the position back.
+#[tokio::test]
+async fn every_event_of_a_series_carries_the_next_position_in_it() {
+    let (pg, db) = fresh_pg("pub_series_position").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let first = ingest_listenable(&pg, &owner, &probe("v1"), None)
+        .await
+        .expect("capture");
+    let series = first.handle;
+    let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
+    command.handle = Some(series);
+    let second = pg
+        .ingest_fact_with_typed_sidecar(
+            &witness(&owner, command).with_publication_for_tests(plan_for(
+                owner,
+                &probe("v2"),
+                PublicationLimits::default(),
+            )),
+            &[],
+        )
+        .await
+        .expect("a second write to the series");
+    assert_eq!(second.handle, series);
+    let other = ingest_listenable(&pg, &owner, &probe("elsewhere"), None)
+        .await
+        .expect("capture");
+
+    for (outcome, subject, sequence) in [
+        (&first, series, "00000000000000000001"),
+        (&second, series, "00000000000000000002"),
+        (&other, other.handle, "00000000000000000001"),
+    ] {
+        let envelope = envelope_of(&pool, outcome.memory_id.into_inner()).await;
+        assert_eq!(envelope["subject"], subject.to_string());
+        assert_eq!(envelope["sequence"], sequence);
+    }
+
+    // The consumer reads the position back, typed, and orders by it even
+    // when the claim hands the later event over first.
+    let claimed = claim_for(&pg, &ConsumerName::default()).await;
+    let mut positions: Vec<SubjectPosition> = claimed
+        .iter()
+        .filter_map(|record| {
+            proxima_core::publication::intake::ReceivedEvent::from_record(record)
+                .expect("parses")
+                .position
+        })
+        .filter(|position| position.subject == series)
+        .collect();
+    positions.sort_by_key(|position| position.sequence);
+    assert_eq!(
+        positions
+            .iter()
+            .map(|position| position.sequence.get())
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+
+    // The position never goes back.
+    let refused = sqlx::query(
+        "UPDATE proxima_core.memory_head SET publication_sequence = 0 WHERE handle = $1",
+    )
+    .bind(series)
+    .execute(&pool)
+    .await
+    .expect_err("the trigger refuses a decrease");
+    assert!(refused.to_string().contains("never decreases"), "{refused}");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
 }

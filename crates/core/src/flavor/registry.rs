@@ -81,8 +81,8 @@ impl FlavorRegistry {
     /// its change Fact into the outbox.
     ///
     /// Public only because the runtime composes the registry from another
-    /// crate: `LISTENABLE` is a type constant, and whether anything drains
-    /// the outbox is a runtime fact (`RuntimeConfig.outbox_intake`).
+    /// crate: `LISTENABLE` is a type constant, and whether anything consumes
+    /// the outbox is a runtime fact (`RuntimeConfig.outbox_consumers`).
     #[doc(hidden)]
     pub fn publish_goal_changes(&mut self) {
         let goal_change = crate::GoalChangeV1::schema_id();

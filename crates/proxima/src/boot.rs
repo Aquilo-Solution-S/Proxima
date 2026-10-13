@@ -61,6 +61,10 @@ pub(crate) struct Booted {
     /// enforced rather than promised.
     pub(crate) outbox_retention:
         Arc<dyn proxima_core::storage_ports::publication::PublicationRetentionPort>,
+    /// Operator-only registry of outbox consumers, held under the same rule
+    /// as `outbox`: retiring a consumer cancels every delivery it was owed.
+    pub(crate) outbox_consumers:
+        Arc<dyn proxima_core::storage_ports::publication::PublicationConsumerPort>,
 }
 
 impl std::fmt::Debug for Booted {
@@ -133,6 +137,10 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let outbox_retention: Arc<
         dyn proxima_core::storage_ports::publication::PublicationRetentionPort,
     > = Arc::new(pg.clone());
+    let outbox_consumers: Arc<
+        dyn proxima_core::storage_ports::publication::PublicationConsumerPort,
+    > = Arc::new(pg.clone());
+    register_outbox_consumers(config, outbox_consumers.as_ref()).await?;
 
     let (engine, system_authority, delegation_runtime_authority) =
         engine.into_runtime_authorities();
@@ -167,7 +175,40 @@ pub(crate) async fn boot<A: FlavorBundle>(
         blobs,
         outbox,
         outbox_retention,
+        outbox_consumers,
     })
+}
+
+/// Register every configured outbox consumer, before any capture of this
+/// process can fan out, so a record written from here on owes each of them a
+/// delivery.
+///
+/// A consumer that is registered but not configured keeps receiving lanes it
+/// never drains; only an explicit retire removes it, because a rolling deploy
+/// briefly runs binaries with different consumer sets and must not drop a
+/// backlog on the way. It is named in a warning so a forgotten one is found
+/// before its lanes fill the outbox.
+async fn register_outbox_consumers(
+    config: &RuntimeConfig,
+    port: &dyn proxima_core::storage_ports::publication::PublicationConsumerPort,
+) -> Result<(), ProximaError> {
+    if config.outbox_consumers.is_empty() {
+        return Ok(());
+    }
+    for name in config.outbox_consumers.names() {
+        port.register(name).await.map_err(storage_error)?;
+    }
+    let configured: Vec<_> = config.outbox_consumers.names().collect();
+    for name in port.registered().await.map_err(storage_error)? {
+        if !configured.contains(&&name) {
+            tracing::warn!(
+                consumer = %name,
+                "outbox consumer is registered but not configured in this process; \
+                 its deliveries accumulate until it is configured again or retired"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The two halves of the retained-copy rule, taken from ONE database.
@@ -247,16 +288,17 @@ async fn connect_and_migrate(
 
 /// Run every linked flavor's registration callback and freeze the result.
 ///
-/// With an intake configured, `core/goal-change-v1` is made listenable before
-/// the freeze, so every goal write also feeds the outbox. That makes the
-/// schema subject to the boot publication check: an intake without
-/// `PROXIMA_PUBLICATION_SOURCE` is refused in `compose_engine`, naming it.
+/// With an outbox consumer configured, `core/goal-change-v1` is made
+/// listenable before the freeze, so every goal write also feeds the outbox.
+/// That makes the schema subject to the boot publication check: a consumer
+/// without `PROXIMA_PUBLICATION_SOURCE` is refused in `compose_engine`,
+/// naming it.
 fn compose_registry<A: FlavorBundle>(
     config: &RuntimeConfig,
 ) -> Result<proxima_core::FlavorRegistryFrozen, ProximaError> {
     let mut registry = FlavorRegistry::new();
     A::register(&mut registry)?;
-    if config.outbox_intake.is_some() {
+    if !config.outbox_consumers.is_empty() {
         registry.publish_goal_changes();
     }
     Ok(registry.try_freeze()?)

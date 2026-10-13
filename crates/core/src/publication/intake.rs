@@ -13,6 +13,7 @@ use bytes::Bytes;
 use crate::MemoryId;
 use crate::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::owner::OwnerRef;
+use crate::publication::{SubjectPosition, SubjectPositionError};
 use crate::storage_ports::publication::ClaimedPublication;
 
 /// The `CloudEvents` 1.0 structured envelope, as parsed from the captured bytes.
@@ -36,6 +37,15 @@ pub struct CloudEventEnvelope {
     pub dataschema: Option<String>,
     #[serde(default)]
     pub time: Option<String>,
+    /// The series the event is about (docs/18 §Ordering). Absent on a record
+    /// captured before v0.0.28.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// The event's position in [`Self::subject`], 20 decimal digits (the
+    /// `CloudEvents` sequence extension). Absent on a record captured before
+    /// v0.0.28.
+    #[serde(default)]
+    pub sequence: Option<String>,
     #[serde(default)]
     pub proximaowner: Option<String>,
     #[serde(default)]
@@ -71,6 +81,12 @@ pub struct ReceivedEvent {
     pub raw: Bytes,
     /// [`Self::raw`], parsed.
     pub envelope: CloudEventEnvelope,
+    /// The envelope's `subject` and `sequence`, typed: where this event
+    /// stands among the events about the same series. Delivery does not
+    /// follow it (docs/18 §Ordering): keep the last `sequence` applied per
+    /// `subject` and drop an event whose `sequence` is not greater. `None`
+    /// for a record captured before v0.0.28, which carries neither.
+    pub position: Option<SubjectPosition>,
 }
 
 /// How a [`ReceivedEvent::id`] is spelled: a Fact id in Proxima's canonical
@@ -206,16 +222,25 @@ impl ReceivedEvent {
     /// # Errors
     ///
     /// The parse error when the captured bytes are not a `CloudEvents`
-    /// envelope. The outbox seals them at capture, so this is corruption, not
+    /// envelope, or carry a `subject`/`sequence` pair not in the producer's
+    /// spelling. The outbox seals them at capture, so this is corruption, not
     /// a case to deliver.
     pub fn from_record(record: &ClaimedPublication) -> Result<Self, serde_json::Error> {
-        let envelope = serde_json::from_slice(&record.envelope)?;
+        let envelope: CloudEventEnvelope = serde_json::from_slice(&record.envelope)?;
+        let position = match (&envelope.subject, &envelope.sequence) {
+            (None, None) => None,
+            (Some(subject), Some(sequence)) => Some(SubjectPosition::parse(subject, sequence)),
+            _ => Some(Err(SubjectPositionError::Unpaired)),
+        }
+        .transpose()
+        .map_err(<serde_json::Error as serde::de::Error>::custom)?;
         Ok(Self {
             id: record.event_id.clone(),
             owner: record.owner_kind.with_uuid(record.owner_id),
             delivered_count: u64::from(record.attempts),
             raw: Bytes::copy_from_slice(&record.envelope),
             envelope,
+            position,
         })
     }
 }
@@ -271,6 +296,50 @@ mod tests {
             "the captured bytes are kept verbatim"
         );
         assert_eq!(event.envelope.event_type, "probe/listenable-v1");
+        assert_eq!(event.position, None, "a pre-v0.0.28 record has no position");
+    }
+
+    fn envelope_with(subject: Option<&str>, sequence: Option<&str>) -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&envelope_bytes("F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"))
+                .expect("json");
+        let object = value.as_object_mut().expect("object");
+        if let Some(subject) = subject {
+            object.insert("subject".into(), subject.into());
+        }
+        if let Some(sequence) = sequence {
+            object.insert("sequence".into(), sequence.into());
+        }
+        serde_json::to_vec(&value).expect("serializes")
+    }
+
+    #[test]
+    fn a_position_is_read_once_and_a_malformed_one_is_corruption() {
+        let subject = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+        let event = ReceivedEvent::from_record(&claimed(envelope_with(
+            Some(subject),
+            Some("00000000000000000003"),
+        )))
+        .expect("a sealed position parses");
+        let position = event.position.expect("present");
+        assert_eq!(position.subject.to_string(), subject);
+        assert_eq!(position.sequence.get(), 3);
+        assert_eq!(
+            event.envelope.extensions.get("sequence"),
+            None,
+            "sequence is a named attribute, not an unknown extension"
+        );
+
+        for (subject, sequence) in [
+            (Some(subject), None),
+            (None, Some("00000000000000000003")),
+            (Some(subject), Some("3")),
+            (Some("not-a-uuid"), Some("00000000000000000003")),
+        ] {
+            let error = ReceivedEvent::from_record(&claimed(envelope_with(subject, sequence)))
+                .expect_err("refused");
+            assert_eq!(error.classify(), serde_json::error::Category::Data);
+        }
     }
 
     #[test]
@@ -290,6 +359,7 @@ mod tests {
             delivered_count: 1,
             raw,
             envelope,
+            position: None,
         }
     }
 

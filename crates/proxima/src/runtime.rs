@@ -348,10 +348,23 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     /// [`RuntimeBuilder::outbox_intake`]: set, the outbox publisher starts and
-    /// delivers to `intake` in this process.
+    /// delivers to `intake` in this process, as the consumer `default`.
     #[must_use]
     pub fn outbox_intake(mut self, intake: Arc<dyn crate::DurableIntake>) -> Self {
         self.overlay = self.overlay.outbox_intake(intake);
+        self
+    }
+
+    /// [`RuntimeBuilder::outbox_consumer`]: set, the outbox publisher starts
+    /// and delivers every record to `intake` as the consumer `name`, on a
+    /// lane of its own.
+    #[must_use]
+    pub fn outbox_consumer(
+        mut self,
+        name: crate::ConsumerName,
+        intake: Arc<dyn crate::DurableIntake>,
+    ) -> Self {
+        self.overlay = self.overlay.outbox_consumer(name, intake);
         self
     }
 
@@ -564,6 +577,9 @@ struct Runtime {
     _cancel_on_drop: tokio_util::sync::DropGuard,
     insecure_single_owner: bool,
     features: Features,
+    /// The operator's registry of outbox consumers; see
+    /// `runtime_handle_methods!`'s `outbox_consumers`.
+    outbox_consumers: Arc<dyn proxima_core::storage_ports::publication::PublicationConsumerPort>,
     /// The host-only outbox drain, kept for unit tests that drive a
     /// publisher over a wrapped port. Production code never holds it
     /// outside the publisher task.
@@ -603,6 +619,7 @@ impl Runtime {
             cancel,
             insecure_single_owner: config.insecure_single_owner,
             features,
+            outbox_consumers: booted.outbox_consumers,
             #[cfg(test)]
             outbox_for_tests: booted.outbox,
         }
@@ -682,6 +699,22 @@ macro_rules! runtime_handle_methods {
         #[must_use]
         pub fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
             self.runtime.features.feature_control(feature)
+        }
+
+        /// The registry of outbox consumers (docs/18 §Consumers): list them,
+        /// or retire one this deployment no longer runs.
+        ///
+        /// Boot registers every configured consumer; nothing but
+        /// [`retire`](crate::PublicationConsumerPort::retire) removes one, so
+        /// a consumer missing from one binary of a rolling deploy keeps its
+        /// backlog. Retiring cancels every delivery the consumer was still
+        /// owed, and a record no other consumer owes is published at once.
+        /// Host-only, like the authorities above: no flavor reaches it.
+        #[must_use]
+        pub fn outbox_consumers(
+            &self,
+        ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationConsumerPort> {
+            self.runtime.outbox_consumers.clone()
         }
     };
 }

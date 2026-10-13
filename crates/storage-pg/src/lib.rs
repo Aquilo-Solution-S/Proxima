@@ -632,6 +632,17 @@ const SUPPORT_RELATION_MARKERS: &str = r"SELECT CASE
            THEN 'missing relation proxima_core.cold_purge_pending'
          WHEN to_regclass('proxima_core.publication_outbox') IS NULL
            THEN 'missing relation proxima_core.publication_outbox'
+         WHEN to_regclass('proxima_core.publication_consumer') IS NULL
+           THEN 'missing relation proxima_core.publication_consumer'
+         WHEN to_regclass('proxima_core.publication_delivery') IS NULL
+           THEN 'missing relation proxima_core.publication_delivery'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'memory_head'
+                     AND column_name = 'publication_sequence' AND data_type = 'bigint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'memory_head.publication_sequence must be bigint NOT NULL'
          ELSE NULL
        END";
 
@@ -2578,7 +2589,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25,
+                24, 25, 26,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2594,8 +2605,9 @@ mod tests {
              0019_v025_definer_search_path.sql, 0020_v026_embedding_chunks.sql, \
              0021_v027_query_stopwords.sql, 0022_v028_coarse_pin_lock.sql, \
              0023_v029_kind_scoped_owner_rls.sql, \
-             0024_v030_owner_rls_table_installer.sql and \
-             0025_v031_goal_text_outbox_receipt.sql"
+             0024_v030_owner_rls_table_installer.sql, \
+             0025_v031_goal_text_outbox_receipt.sql and \
+             0026_v032_outbox_consumers.sql"
         );
     }
 

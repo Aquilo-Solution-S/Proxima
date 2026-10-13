@@ -12,6 +12,7 @@ use std::time::Duration;
 use futures::FutureExt;
 use proxima_core::publication::intake::{DurableIntake, Intake, IntakeError, ReceivedEvent};
 use proxima_core::publication::{PublicationConfig, PublicationSource};
+use proxima_core::storage_ports::publication::ConsumerName;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -108,6 +109,18 @@ impl World {
     /// configured. With an `intake` the runtime delivers to it; without one
     /// it starts no drain, so a test can run its own beside the outbox.
     async fn new(intake: Option<Arc<TestIntake>>) -> Option<Self> {
+        Self::configured(|app| match intake {
+            Some(intake) => app.outbox_intake(intake),
+            None => app,
+        })
+        .await
+    }
+
+    /// A booted app over a fresh database, with whatever outbox consumers
+    /// `configure` adds; `None` when no Postgres is configured.
+    async fn configured(
+        configure: impl FnOnce(crate::Proxima<OutboxProbeApp>) -> crate::Proxima<OutboxProbeApp>,
+    ) -> Option<Self> {
         proxima_pg_testkit::admin_url_or_skip()?;
         let db_name = proxima_pg_testkit::unique_db_name("in_process_outbox");
         proxima_pg_testkit::create_db(&db_name)
@@ -135,11 +148,7 @@ impl World {
             .publication(PublicationConfig::new(
                 PublicationSource::new(PROBE_SOURCE).expect("publication source"),
             ));
-        let app = match intake {
-            Some(intake) => app.outbox_intake(intake),
-            None => app,
-        };
-        let built = app.build().await.expect("Proxima builds");
+        let built = configure(app).build().await.expect("Proxima builds");
         Some(Self {
             db_name,
             built,
@@ -166,6 +175,19 @@ impl World {
             .expect("outbox row")
     }
 
+    /// The state of `consumer`'s delivery lane on one record.
+    async fn lane_state(&self, t: Uuid, consumer: &str) -> String {
+        sqlx::query_scalar(
+            "SELECT state::text FROM proxima_core.publication_delivery
+              WHERE t = $1 AND consumer = $2",
+        )
+        .bind(t)
+        .bind(consumer)
+        .fetch_one(&self.pool)
+        .await
+        .expect("delivery lane")
+    }
+
     /// The drain a test runs itself over the outbox: a short lease and poll,
     /// and `hook` between `accept` and the mark.
     fn drain(
@@ -182,12 +204,13 @@ impl World {
         };
         let drain = Drain::new(
             self.built.outbox_for_tests(),
+            ConsumerName::default(),
             intake.clone(),
             settings,
             hook,
         );
         let cancel = CancellationToken::new();
-        let (_gate, task) = spawn(drain, cancel.clone(), |_| async {});
+        let (_gate, task) = spawn(vec![drain], cancel.clone(), |_| async {});
         (cancel, task)
     }
 }
@@ -247,10 +270,11 @@ async fn a_crash_between_accept_and_the_mark_redelivers_and_a_deduplicating_inta
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(
-            world.state(t).await,
+            world.lane_state(t, "default").await,
             "claimed",
-            "an accepted record leaves `claimed` only through mark_published"
+            "an accepted lane leaves `claimed` only through mark_published"
         );
+        assert_eq!(world.state(t).await, "pending");
         wait_for_outbox(&world.pool, t, "published").await;
         cancel.cancel();
         task.await.expect("drain joins");
@@ -442,4 +466,67 @@ async fn an_intake_without_a_publication_source_fails_boot_naming_the_goal_chang
     let _ = proxima_pg_testkit::drop_db(&db_name).await;
     let message = refused.expect_err("boot is refused").to_string();
     assert!(message.contains("core/goal-change-v1"), "{message}");
+}
+
+/// Two consumers configured on the builder each receive every Fact, on
+/// drains of their own: one whose intake is down delays only itself, and the
+/// record is published once both have it.
+#[tokio::test]
+async fn two_consumers_each_receive_every_fact_and_one_failing_does_not_hold_up_the_other() {
+    let steady = Arc::new(TestIntake::default());
+    let failing = Arc::new(TestIntake {
+        refuse: AtomicUsize::new(3),
+        ..TestIntake::default()
+    });
+    let audit = ConsumerName::new("audit").expect("valid consumer name");
+    let Some(world) = World::configured(|app| {
+        app.outbox_intake(steady.clone())
+            .outbox_consumer(audit.clone(), failing.clone())
+    })
+    .await
+    else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let reason = &world
+            .built
+            .boot_report()
+            .get(crate::Feature::OutboxPublisher)
+            .reason;
+        assert!(reason.contains("audit, default"), "{reason}");
+        let mut consumers = world
+            .built
+            .outbox_consumers()
+            .registered()
+            .await
+            .expect("registered consumers");
+        consumers.sort();
+        assert_eq!(consumers, vec![audit.clone(), ConsumerName::default()]);
+
+        let t = capture(&world.built, world.owner, "both consumers want this").await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while world.lane_state(t, "default").await != "published" {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the steady consumer is not held up by the failing one");
+        assert_eq!(steady.kept(), 1);
+
+        wait_for_outbox(&world.pool, t, "published").await;
+        assert_eq!(failing.kept(), 1, "the failing consumer still gets it");
+        let id = failing.calls()[0].0.clone();
+        assert!(
+            failing.calls().iter().all(|(call, _)| *call == id),
+            "the failing consumer was offered only this event"
+        );
+        assert_eq!(
+            steady.calls(),
+            vec![(id, 1)],
+            "the steady consumer saw one delivery, unaffected by audit's retries"
+        );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
 }

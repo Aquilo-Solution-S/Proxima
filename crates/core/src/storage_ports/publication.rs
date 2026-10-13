@@ -12,7 +12,9 @@
 //! destroy it. Housekeeping of records that ARE delivered lives on a second,
 //! separate host-only trait, [`PublicationRetentionPort`], so that "a
 //! publisher may drain" and "an operator may reclaim delivered storage" stay
-//! two capabilities rather than one.
+//! two capabilities rather than one. Registering and retiring a consumer is a
+//! third, [`PublicationConsumerPort`]: retiring is the one act that cancels
+//! an undelivered promise, so the drain handle does not carry it either.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -72,6 +74,77 @@ pub trait PublicationOriginEligibilityPort: Send + Sync {
         original_owner: OwnerRef,
         fact_id: MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError>;
+}
+
+/// The name one outbox consumer is registered under (docs/18 §Consumers).
+///
+/// Every consumer has its own delivery lane per record: its own claim,
+/// attempts and published mark, so one consumer's failures never hold or
+/// take another's events. `[a-z0-9][a-z0-9_-]{0,62}`: a name an operator
+/// types into a retire call and reads in a log, never a free-form label.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConsumerName(String);
+
+impl ConsumerName {
+    /// The consumer a single [`crate::publication::intake::DurableIntake`]
+    /// is registered as (`RuntimeBuilder::outbox_intake`). The schema seeds
+    /// it, so records captured before any intake was configured are owed to
+    /// it.
+    pub const DEFAULT: &'static str = "default";
+
+    /// The longest name, in bytes.
+    pub const MAX_LEN: usize = 63;
+
+    /// # Errors
+    ///
+    /// [`ConsumerNameError`] for an empty name, one longer than
+    /// [`Self::MAX_LEN`] bytes, one that does not start with `[a-z0-9]`, or
+    /// one carrying a character outside `[a-z0-9_-]`.
+    pub fn new(raw: impl Into<String>) -> Result<Self, ConsumerNameError> {
+        let raw = raw.into();
+        let Some(first) = raw.bytes().next() else {
+            return Err(ConsumerNameError::Empty);
+        };
+        if raw.len() > Self::MAX_LEN {
+            return Err(ConsumerNameError::TooLong { bytes: raw.len() });
+        }
+        let lower_alnum = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+        if !lower_alnum(first)
+            || !raw
+                .bytes()
+                .all(|byte| lower_alnum(byte) || byte == b'_' || byte == b'-')
+        {
+            return Err(ConsumerNameError::IllegalCharacter { value: raw });
+        }
+        Ok(Self(raw))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ConsumerName {
+    fn default() -> Self {
+        Self(Self::DEFAULT.to_owned())
+    }
+}
+
+impl std::fmt::Display for ConsumerName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConsumerNameError {
+    #[error("consumer name must not be empty")]
+    Empty,
+    #[error("consumer name {value:?} must match [a-z0-9][a-z0-9_-]*")]
+    IllegalCharacter { value: String },
+    #[error("consumer name is {bytes} bytes, over the 63-byte limit")]
+    TooLong { bytes: usize },
 }
 
 /// Identity of one publisher process, recorded on every claim.
@@ -188,7 +261,7 @@ impl std::fmt::Display for ClaimToken {
     }
 }
 
-/// One captured event, leased to the claiming publisher.
+/// One captured event, leased to the claiming publisher for one consumer.
 ///
 /// `envelope` is the bytes as captured. The publisher hands them over
 /// unchanged: it does not reload the Fact, re-render the payload with
@@ -206,7 +279,8 @@ pub struct ClaimedPublication {
     pub event_type: String,
     pub envelope: Vec<u8>,
     pub digest: [u8; 32],
-    /// How many times this record has been claimed, including this one.
+    /// How many times this record has been claimed for this consumer,
+    /// including this one.
     pub attempts: u32,
     pub claim: ClaimToken,
     pub lease_expires_at: time::OffsetDateTime,
@@ -236,47 +310,109 @@ pub enum ReleaseOutcome {
 
 /// The bounded claim/acknowledge/release surface a shared publisher needs,
 /// and nothing else.
+///
+/// Every call names the consumer whose lane it moves. A record is
+/// `published` once every consumer registered when it was captured has
+/// marked it (or was retired); until then it counts toward the pending
+/// ceiling.
 #[async_trait::async_trait]
 pub trait PublicationOutboxPort: Send + Sync {
-    /// Claim up to `limit` deliverable records under a `lease`.
+    /// Claim up to `limit` records deliverable to `consumer` under a `lease`.
     ///
-    /// Deliverable means `pending`, or `claimed` with an expired lease. The
-    /// scan carries NO cursor and NO watermark: a transaction that commits
-    /// late is simply `pending` on the next call rather than invisible
-    /// behind an advanced high-water mark.
+    /// Deliverable means the consumer's lane is `pending`, or `claimed` with
+    /// an expired lease. The scan carries NO cursor and NO watermark: a
+    /// transaction that commits late is simply `pending` on the next call
+    /// rather than invisible behind an advanced high-water mark.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the claim statement.
     async fn claim(
         &self,
+        consumer: &ConsumerName,
         publisher: &PublisherId,
         limit: NonZeroU32,
         lease: Duration,
     ) -> Result<Vec<ClaimedPublication>, StorageError>;
 
-    /// Record a successful delivery, fenced on `claim`: the record becomes
-    /// `published`, and nothing else moves it there.
+    /// Record a successful delivery to `consumer`, fenced on `claim`: the
+    /// consumer's lane becomes `published`, and nothing else moves it there.
+    /// The record itself becomes `published` with its last lane.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the acknowledgement statement.
-    async fn mark_published(&self, id: Uuid, claim: ClaimToken)
-    -> Result<AckOutcome, StorageError>;
+    async fn mark_published(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+    ) -> Result<AckOutcome, StorageError>;
 
-    /// Return a claimed record to `pending`, fenced on `claim`.
+    /// Return `consumer`'s claim on a record to `pending`, fenced on `claim`.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the release statement.
-    async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome, StorageError>;
+    async fn release(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+    ) -> Result<ReleaseOutcome, StorageError>;
 
-    /// Records that are not published yet, claimed or otherwise.
+    /// Records some registered consumer has not been delivered yet.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the count query.
     async fn pending_count(&self) -> Result<u64, StorageError>;
+}
+
+/// What [`PublicationConsumerPort::retire`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetireOutcome {
+    /// The consumer is gone, with the deliveries it still owed.
+    Retired {
+        /// Records the consumer had not been delivered yet.
+        undelivered: u64,
+    },
+    /// No consumer of that name was registered.
+    NotRegistered,
+}
+
+/// Which consumers the outbox owes its records to.
+///
+/// Host-only, and separate from [`PublicationOutboxPort`]: retiring a
+/// consumer cancels every delivery it was still owed, which a drain must not
+/// be able to do.
+#[async_trait::async_trait]
+pub trait PublicationConsumerPort: Send + Sync {
+    /// Register `consumer`. Every record captured after the registration
+    /// commits is owed to it; one captured before is not. Registering a
+    /// registered consumer changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the insert.
+    async fn register(&self, consumer: &ConsumerName) -> Result<(), StorageError>;
+
+    /// Every registered consumer, in name order.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the read.
+    async fn registered(&self) -> Result<Vec<ConsumerName>, StorageError>;
+
+    /// Stop owing records to `consumer`: removes its registration and every
+    /// delivery it has not been given, and marks published each record no
+    /// other consumer still owes. The only call that cancels an undelivered
+    /// delivery; nothing does it on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the delete.
+    async fn retire(&self, consumer: &ConsumerName) -> Result<RetireOutcome, StorageError>;
 }
 
 /// Operator-only housekeeping of records that were already delivered.
@@ -336,5 +472,29 @@ mod tests {
             PublisherId::new("x".repeat(129)),
             Err(PublisherIdError::TooLong { bytes: 129 })
         ));
+    }
+
+    #[test]
+    fn a_consumer_name_is_a_lowercase_slug() {
+        assert_eq!(ConsumerName::default().as_str(), "default");
+        assert_eq!(
+            ConsumerName::new("audit-log_2").expect("valid").as_str(),
+            "audit-log_2"
+        );
+        assert_eq!(ConsumerName::new(""), Err(ConsumerNameError::Empty));
+        for bad in ["Audit", "-audit", "_audit", "au dit", "audit.log", "ä"] {
+            assert!(
+                matches!(
+                    ConsumerName::new(bad),
+                    Err(ConsumerNameError::IllegalCharacter { .. })
+                ),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(ConsumerName::new("a".repeat(63)).is_ok());
+        assert_eq!(
+            ConsumerName::new("a".repeat(64)),
+            Err(ConsumerNameError::TooLong { bytes: 64 })
+        );
     }
 }

@@ -25,6 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 
 use uuid::Uuid;
@@ -241,6 +242,11 @@ const CLOUDEVENTS_CORE_ATTRIBUTES: [&str; 10] = [
 /// `proximamodel`, and whatever a later release adds).
 const PROXIMA_EXTENSION_PREFIX: &str = "proxima";
 
+/// Documented `CloudEvents` extension attributes this substrate writes on
+/// every event, which a host therefore cannot bind: `sequence` is the
+/// event's position in its subject (docs/18 §Ordering).
+const SUBSTRATE_EXTENSION_ATTRIBUTES: [&str; 1] = ["sequence"];
+
 /// One extension attribute's value.
 ///
 /// The three types the `CloudEvents` 1.0.2 JSON format serializes without a
@@ -436,6 +442,8 @@ pub enum PublicationExtensionsError {
     CoreAttributeName { name: String },
     #[error("extension attribute name {name:?} uses the reserved {prefix:?} prefix")]
     ReservedName { name: String, prefix: &'static str },
+    #[error("extension attribute name {name:?} is written by the substrate on every event")]
+    SubstrateAttributeName { name: String },
     #[error("extension attribute {name:?} must not carry an empty string value")]
     EmptyValue { name: String },
     #[error("extension attribute {name:?} must not carry control characters")]
@@ -473,6 +481,11 @@ fn validate_extension_name(name: &str) -> Result<(), PublicationExtensionsError>
     }
     if CLOUDEVENTS_CORE_ATTRIBUTES.contains(&name) {
         return Err(PublicationExtensionsError::CoreAttributeName {
+            name: name.to_owned(),
+        });
+    }
+    if SUBSTRATE_EXTENSION_ATTRIBUTES.contains(&name) {
+        return Err(PublicationExtensionsError::SubstrateAttributeName {
             name: name.to_owned(),
         });
     }
@@ -684,6 +697,8 @@ struct CloudEventEnvelope<'a> {
     datacontenttype: &'static str,
     dataschema: &'a str,
     time: &'a str,
+    subject: &'a str,
+    sequence: &'a str,
     proximaowner: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     proximamodel: Option<&'a str>,
@@ -694,6 +709,84 @@ struct CloudEventEnvelope<'a> {
     #[serde(flatten)]
     extensions: &'a PublicationExtensions,
     data: &'a serde_json::Value,
+}
+
+/// Where one event stands among the events about the same thing.
+///
+/// `subject` is the series the event is about: the Fact's own series
+/// handle, or for a `core/goal-change-v1` Fact the goal's series. `sequence`
+/// is its position there, from 1, assigned by storage under the series lock
+/// in the capture transaction: a later write to the same subject always gets
+/// a larger one. It is NOT a delivery order — delivery can reorder (docs/18
+/// §Ordering) — and it is not dense across subjects.
+///
+/// Only storage builds one, at capture; a consumer reads it back off the
+/// envelope ([`crate::publication::intake::ReceivedEvent::position`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubjectPosition {
+    pub subject: Uuid,
+    pub sequence: NonZeroU64,
+}
+
+impl SubjectPosition {
+    /// Width of the decimal `sequence` attribute: every `u64`, zero-padded,
+    /// so that the string order the `CloudEvents` sequence extension
+    /// specifies is the numeric order.
+    pub const SEQUENCE_DIGITS: usize = 20;
+
+    #[must_use]
+    pub const fn new(subject: Uuid, sequence: NonZeroU64) -> Self {
+        Self { subject, sequence }
+    }
+
+    /// The `subject` attribute: the series uuid, lowercase hyphenated.
+    #[must_use]
+    pub fn subject_attribute(&self) -> String {
+        self.subject.as_hyphenated().to_string()
+    }
+
+    /// The `sequence` attribute: [`Self::SEQUENCE_DIGITS`] decimal digits.
+    #[must_use]
+    pub fn sequence_attribute(&self) -> String {
+        format!("{:0width$}", self.sequence, width = Self::SEQUENCE_DIGITS)
+    }
+
+    /// Read a position back from the two attribute strings, exactly as
+    /// [`Self::subject_attribute`] and [`Self::sequence_attribute`] write
+    /// them; any other spelling is refused, so two equal positions are two
+    /// equal pairs of strings.
+    ///
+    /// # Errors
+    ///
+    /// [`SubjectPositionError`] naming the attribute that is not in the
+    /// producer's spelling.
+    pub fn parse(subject: &str, sequence: &str) -> Result<Self, SubjectPositionError> {
+        let parsed = Uuid::try_parse(subject)
+            .ok()
+            .filter(|uuid| uuid.as_hyphenated().to_string() == subject)
+            .ok_or(SubjectPositionError::Subject)?;
+        if sequence.len() != Self::SEQUENCE_DIGITS || !sequence.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(SubjectPositionError::Sequence);
+        }
+        let number = sequence
+            .parse::<u64>()
+            .ok()
+            .and_then(NonZeroU64::new)
+            .ok_or(SubjectPositionError::Sequence)?;
+        Ok(Self::new(parsed, number))
+    }
+}
+
+/// Why an envelope's `subject`/`sequence` pair is not a [`SubjectPosition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SubjectPositionError {
+    #[error("`subject` is not a lowercase hyphenated uuid")]
+    Subject,
+    #[error("`sequence` is not 20 decimal digits above zero")]
+    Sequence,
+    #[error("`subject` and `sequence` must both be present or both absent")]
+    Unpaired,
 }
 
 /// A captured event, sealed against the `t` storage minted for the Fact.
@@ -715,8 +808,8 @@ pub struct SealedPublication {
 }
 
 impl SealedPublication {
-    /// Seal `plan.draft` against the `t` the admission minted, under
-    /// `plan.limits`.
+    /// Seal `plan.draft` against the `t` the admission minted and the
+    /// `position` storage assigned it, under `plan.limits`.
     ///
     /// The limits arrive WITH the draft rather than beside it so that no
     /// caller can seal against a different ceiling than the engine
@@ -728,11 +821,17 @@ impl SealedPublication {
     ///   timestamp or the envelope cannot be serialized.
     /// - [`PublicationError::PayloadTooLarge`] when the sealed bytes exceed
     ///   `plan.limits.max_payload_bytes`.
-    pub fn seal(plan: &PublicationPlan, t: Uuid) -> Result<Self, PublicationError> {
+    pub fn seal(
+        plan: &PublicationPlan,
+        t: Uuid,
+        position: SubjectPosition,
+    ) -> Result<Self, PublicationError> {
         let PublicationPlan { draft, limits } = plan;
         let event_id = format_prefixed_uuid(t, PrefixedUuidClass::Fact);
         let time = uuid_v7_rfc3339_millis(t)?;
         let owner = draft.owner.external_key();
+        let subject = position.subject_attribute();
+        let sequence = position.sequence_attribute();
         let envelope = CloudEventEnvelope {
             specversion: CLOUDEVENTS_SPEC_VERSION,
             id: &event_id,
@@ -741,6 +840,8 @@ impl SealedPublication {
             datacontenttype: CLOUDEVENTS_DATA_CONTENT_TYPE,
             dataschema: &draft.data_schema,
             time: &time,
+            subject: &subject,
+            sequence: &sequence,
             proximaowner: &owner,
             proximamodel: draft.model_id.as_deref(),
             extensions: &draft.extensions,
@@ -859,6 +960,53 @@ mod tests {
         );
     }
 
+    fn position() -> SubjectPosition {
+        SubjectPosition::new(
+            Uuid::parse_str("01930000-0000-7000-8000-0000000000aa").expect("v7 id"),
+            NonZeroU64::new(7).expect("not zero"),
+        )
+    }
+
+    #[test]
+    fn a_position_reads_back_only_in_the_producers_spelling() {
+        let written = position();
+        assert_eq!(
+            SubjectPosition::parse(&written.subject_attribute(), &written.sequence_attribute()),
+            Ok(written)
+        );
+        let max = SubjectPosition::new(written.subject, NonZeroU64::MAX);
+        assert_eq!(max.sequence_attribute(), u64::MAX.to_string());
+        // The zero padding makes string order numeric order.
+        let nine = SubjectPosition::new(written.subject, NonZeroU64::new(9).expect("9"));
+        let ten = SubjectPosition::new(written.subject, NonZeroU64::new(10).expect("10"));
+        assert!(nine.sequence_attribute() < ten.sequence_attribute());
+
+        let subject = written.subject_attribute();
+        for bad in [
+            subject.to_uppercase(),
+            written.subject.simple().to_string(),
+            format!("urn:uuid:{subject}"),
+        ] {
+            assert_eq!(
+                SubjectPosition::parse(&bad, &written.sequence_attribute()),
+                Err(SubjectPositionError::Subject),
+                "{bad:?}"
+            );
+        }
+        for bad in [
+            "7",
+            "00000000000000000000",
+            "0000000000000000000x",
+            "+0000000000000000007",
+        ] {
+            assert_eq!(
+                SubjectPosition::parse(&subject, bad),
+                Err(SubjectPositionError::Sequence),
+                "{bad:?}"
+            );
+        }
+    }
+
     /// Bound in a deliberately non-alphabetical order, so the ordering
     /// assertion below is about the type and not about the caller.
     fn extensions() -> PublicationExtensions {
@@ -881,6 +1029,7 @@ mod tests {
         let sealed = SealedPublication::seal(
             &PublicationPlan::new(draft, PublicationLimits::default()),
             t,
+            position(),
         )
         .expect("seal");
         let text = String::from_utf8(sealed.bytes.clone()).expect("utf8");
@@ -896,6 +1045,8 @@ mod tests {
             "\"datacontenttype\"",
             "\"dataschema\"",
             "\"time\"",
+            "\"subject\":\"01930000-0000-7000-8000-0000000000aa\"",
+            "\"sequence\":\"00000000000000000007\"",
             "\"proximaowner\"",
             "\"proximamodel\"",
             // Host-bound extensions: after the substrate's own attributes,
@@ -934,8 +1085,12 @@ mod tests {
             max_payload_bytes: 16,
             ..PublicationLimits::default()
         };
-        let err = SealedPublication::seal(&PublicationPlan::new(draft(), limits), Uuid::now_v7())
-            .expect_err("too big");
+        let err = SealedPublication::seal(
+            &PublicationPlan::new(draft(), limits),
+            Uuid::now_v7(),
+            position(),
+        )
+        .expect_err("too big");
         assert!(matches!(
             err,
             PublicationError::PayloadTooLarge { max: 16, .. }
@@ -971,6 +1126,7 @@ mod tests {
             SealedPublication::seal(
                 &PublicationPlan::new(draft, PublicationLimits::default()),
                 t,
+                position(),
             )
             .expect("seal")
         };
@@ -1020,6 +1176,10 @@ mod tests {
         assert!(matches!(
             empty.clone().with("data", "v"),
             Err(PublicationExtensionsError::CoreAttributeName { .. })
+        ));
+        assert!(matches!(
+            empty.clone().with("sequence", "v"),
+            Err(PublicationExtensionsError::SubstrateAttributeName { .. })
         ));
         assert!(matches!(
             empty.with("proximaowner", "v"),

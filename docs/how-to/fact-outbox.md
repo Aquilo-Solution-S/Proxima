@@ -65,6 +65,36 @@ records stay `pending` until a boot that supplies an intake. The shipped
 `proxima-mcp` binary supplies none. Setting it also makes goal writes emit
 `core/goal-change-v1` events (§6), so the publication source above is required.
 
+### Several consumers
+
+`outbox_intake` is the consumer named `default`. To deliver every Fact to more
+than one intake, name each one:
+
+```rust
+let app = Proxima::<HostBundle>::app()
+    .publication(PublicationConfig::new(PublicationSource::new("urn:proxima:dev-host")?))
+    .outbox_intake(Arc::new(inbox))                                   // `default`
+    .outbox_consumer(ConsumerName::new("scheduler")?, Arc::new(scheduler));
+```
+
+Each consumer gets every record captured while it is registered, on a lane of
+its own: one that fails or lags is retried on its own and holds up nobody else.
+A record is `published`, and so prunable, once every consumer has it.
+
+Boot registers each configured consumer; removing one from the builder does
+**not** unregister it, so a rolling deploy cannot drop its backlog. Its
+undelivered lanes keep counting toward `PROXIMA_OUTBOX_MAX_PENDING`, and boot
+logs a warning naming it. When you mean to stop it for good, retire it:
+
+```rust
+match built.outbox_consumers().retire(&ConsumerName::new("scheduler")?).await? {
+    RetireOutcome::Retired { undelivered } => tracing::info!(undelivered, "retired"),
+    RetireOutcome::NotRegistered => {}
+}
+```
+
+([18 §Consumers](../18-fact-outbox.md#consumers))
+
 ## 4. Forward to a broker (optional)
 
 Proxima has no broker client. If your deployment needs NATS or Kafka, publish
@@ -79,10 +109,11 @@ and clean them after an erase, use `origin_scope_for_host()` and
 
 ```sh
 psql "$DATABASE_URL" -c \
-  "select state, count(*) from proxima_core.publication_outbox group by 1"
+  "select consumer, state, count(*) from proxima_core.publication_delivery group by 1, 2"
 ```
 
-Rows move `pending` → `published`. For the same behaviour under test, run the
+Each consumer's lanes move `pending` → `published`; a record in
+`publication_outbox` turns `published` once all its lanes have. For the same behaviour under test, run the
 in-process suite against a Postgres:
 
 ```sh
@@ -96,9 +127,9 @@ passing vacuously.
 ## 6. Follow goal changes (a scheduler)
 
 A host that runs queued work for Goals (a wake scheduler) learns of goal writes
-from the same intake. With `outbox_intake` set, every goal write delivers one
-`core/goal-change-v1` event: set, modify, each decomposed child, pause, resume,
-abandon and achieve. Without an intake no change Fact is written.
+from the same intake. With an outbox consumer configured, every goal write
+delivers one `core/goal-change-v1` event: set, modify, each decomposed child,
+pause, resume, abandon and achieve. Without one no change Fact is written.
 
 ```json
 { "series": "<uuid>", "goal": "G:<uuid>", "prior": "G:<uuid>", "revision": 2,
@@ -110,9 +141,10 @@ abandon and achieve. Without an intake no change Fact is written.
   (ready or waiting to retry). Running work finishes either way.
 - After `abandon` or `achieve` the goal is terminal: drop what you queued.
 - Deliveries can be reordered (a retried record arrives after later ones), so
-  key by `series` and apply an event only if its `revision` is greater than the
-  last `revision` you applied for that series. `goal` versions are identifiers,
-  not an order.
+  key by `event.position`'s `subject` (the `series`) and apply an event only if
+  its `sequence` (the `revision`) is greater than the last one you applied for
+  that subject. `goal` versions are identifiers, not an order
+  ([18 §Ordering](../18-fact-outbox.md#ordering)).
 - Proxima already admits no new run for a goal that is not Active; `pending`
   covers the work you had queued before the pause.
 
@@ -160,7 +192,7 @@ if envelope.event_type == "core/goal-change-v1" {
 - The attribute rides on every Fact that context captures, not only goal
   changes. The row holds personal data, so your erase must reach it.
 - Replay and reordering: a replayed write adds no row, so the first writer keeps
-  the write; order rows by `revision` per `series`, not by arrival.
+  the write; order rows by `sequence` per `subject`, not by arrival.
 
 Contract: [18 §Who wrote what](../18-fact-outbox.md#who-wrote-what).
 
@@ -168,12 +200,12 @@ Contract: [18 §Who wrote what](../18-fact-outbox.md#who-wrote-what).
 
 | Signal | Meaning | Action |
 |---|---|---|
-| `pending` count climbing | no intake configured, or the intake keeps failing | check the boot report (`Feature::OutboxPublisher`), then the intake's own errors; the drain logs a warn-level line per failed pass |
+| `pending` count climbing | no intake configured, an intake that keeps failing, or a consumer that is registered but no longer configured | check the boot report (`Feature::OutboxPublisher`, which names the consumers) and the boot warning for unconfigured ones, then the intake's own errors; the drain logs a warn-level line per failed pass, with `consumer=`. Retire a consumer you no longer run |
 | `CapacityExhausted` on write (HTTP 503) | unpublished backlog hit `PROXIMA_OUTBOX_MAX_PENDING` | find out why delivery stopped and fix THAT; raising the cap hides real backpressure |
 | `PayloadTooLarge` on write | export exceeds `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | shrink the payload or raise the Proxima capture cap |
 | one record's `attempts` climbing while others deliver | a single record the intake keeps refusing, or captured bytes that are not an envelope; the claim order demoted it so it no longer blocks the queue | for the latter, read the `error`-level line naming its event id; for the former, your intake's own log |
 | boot fails `SourceUnbound` | a listenable type is registered with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
-| boot fails naming `core/goal-change-v1` | an `outbox_intake` is set, which makes goal changes listenable, with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
+| boot fails naming `core/goal-change-v1` | an outbox consumer is configured, which makes goal changes listenable, with no `PROXIMA_PUBLICATION_SOURCE` | set the producer identity URI |
 | duplicate deliveries | expected: at-least-once | deduplicate on the CloudEvent `id` (`F:<uuid>`) |
 
 ### Reclaiming database storage
@@ -185,6 +217,7 @@ otherwise:
 export PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=604800   # a week; minimum 60
 ```
 
-It deletes only records that are already `published` and older than the
-horizon, in bounded batches beside the drain loop. A `pending` or `claimed`
-record is never touched, at any horizon, at any age.
+It deletes only records that are already `published` (delivered to every
+consumer) and older than the horizon, in bounded batches beside the drain loop.
+A record some consumer is still owed is never touched, at any horizon, at any
+age.

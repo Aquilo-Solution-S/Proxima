@@ -626,11 +626,14 @@ where
         // the outbox primary key — and, if it somehow did not, would put a
         // second copy of one Fact on the wire.
         if let Some(plan) = input.publication {
+            let position =
+                crate::verbs::publication_outbox::next_series_position(tx, outcome.handle).await?;
             crate::verbs::publication_outbox::capture_publication_in_tx(
                 tx,
                 owner.stored_owner_id(),
                 outcome.memory_id.into_inner(),
                 plan,
+                position,
             )
             .await?;
         }

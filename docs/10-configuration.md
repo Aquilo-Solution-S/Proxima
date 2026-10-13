@@ -27,7 +27,7 @@ host injects for vector retrieval.
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
-| Fact outbox publisher | binary-wide | `outbox_intake(..)` on the builder, no env and no cargo feature; capture itself is not configurable (see [18](18-fact-outbox.md)) |
+| Fact outbox publisher | binary-wide | `outbox_intake(..)` / `outbox_consumer(name, ..)` on the builder, no env and no cargo feature; capture itself is not configurable (see [18](18-fact-outbox.md)) |
 | source credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, edge kinds, prompts,
@@ -111,7 +111,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every captured CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
-| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an `outbox_intake` is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a `pending` or `claimed` record whatever its age. |
+| `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an outbox consumer is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a record some consumer has not received, whatever its age. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
@@ -137,7 +137,7 @@ enable flags, no spawn calls.
 | `mcp` | bind address | `PROXIMA_MCP_BIND` | `mcp_bind(..)` | — | — |
 | `flavor-workers` | a linked flavor's `FlavorBundle::spawn_workers` returns ≥1 | — | — | — | — |
 | `embedding-worker` | embedding client or router; startup reconcile, then drain | host-built (`proxima-mcp`: `PROXIMA_EMBED_*`) | `embed_client(..)` / `embedding_router(..)` | — | `feature_control(Feature::EmbeddingWorker)` |
-| `outbox-publisher` | an intake | — (no env var) | `outbox_intake(Arc<dyn DurableIntake>)` | — | `feature_control(Feature::OutboxPublisher)` |
+| `outbox-publisher` | an outbox consumer | — (no env var) | `outbox_intake(Arc<dyn DurableIntake>)` (the consumer `default`), `outbox_consumer(ConsumerName, Arc<dyn DurableIntake>)` | — | `feature_control(Feature::OutboxPublisher)`, one handle over every consumer's drain |
 | `published-record-prune` | publisher runs ∧ retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | `published_retention(..)` | — | — |
 
 - Config: one typed section per feature, from env (`from_env` /

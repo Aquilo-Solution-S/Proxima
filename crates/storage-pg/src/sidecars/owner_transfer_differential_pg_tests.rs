@@ -692,6 +692,16 @@ pub async fn dump_database(
     .await?;
     let mut out = String::new();
     for (table, rows) in relations {
+        // 0026 added the outbox consumer registry and per-consumer delivery
+        // lanes after the pinned baseline. Neither carries an owner column; a
+        // transfer moves the record they hang off, which the outbox section
+        // compares, and `publication_outbox_pg_tests` pins the lanes.
+        if matches!(
+            table.as_str(),
+            "publication_consumer" | "publication_delivery"
+        ) {
+            continue;
+        }
         out.push_str(&format!("## proxima_core.{table} ({})\n", rows.len()));
         for row in rows {
             let mut row: Value = serde_json::from_str(&row)?;
@@ -719,6 +729,13 @@ pub async fn dump_database(
                 object.remove("origins");
                 object.remove("refs");
                 object.insert("goal_refs".to_owned(), Value::Null);
+            }
+            if table == "memory_head"
+                && let Some(object) = row.as_object_mut()
+            {
+                // 0026 added each series' publication position after the
+                // pinned baseline; `publication_outbox_pg_tests` asserts it.
+                object.remove("publication_sequence");
             }
             if table == "goal"
                 && let Some(object) = row.as_object_mut()
