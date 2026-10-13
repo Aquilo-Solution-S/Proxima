@@ -108,7 +108,7 @@ jobs:
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
           tool: git-cliff@2.13.1
       - name: release-note configuration
@@ -274,7 +274,7 @@ jobs:
         # taiki-e/install-action@v2. The tool is an input, not the `@nextest`
         # tag: a pinned commit names no tool, and a dependabot bump of the pin
         # then installs nothing.
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
           tool: nextest
       # One feature set, one build. Every feature-gated target (the REST
