@@ -1,14 +1,18 @@
-//! The outbox drain: a host-provided [`DurableIntake`] receives every captured
-//! Fact in this process (docs/18 §Delivery).
+//! The outbox drains: each host-provided [`DurableIntake`], registered under a
+//! consumer name, receives every captured Fact in this process (docs/18
+//! §Delivery, §Consumers).
 //!
-//! One loop claims a batch of records, calls [`DurableIntake::accept`] once
-//! per record, and then marks the record published or hands its claim back:
+//! One loop per consumer claims a batch of that consumer's lanes, calls
+//! [`DurableIntake::accept`] once per record, and then marks the lane
+//! delivered or hands its claim back. Drains share nothing but the record: a
+//! consumer that fails or lags holds only its own lanes, and a record is
+//! published once every consumer's lane is.
 //!
 //! - **Outcomes.** `accept` returning `Ok` (`Accepted` or `Rejected`) is a
 //!   decision the intake made durable, so the record is marked published. An
 //!   [`IntakeError`](proxima_core::publication::intake::IntakeError), an
 //!   `accept` that outlives its timeout, or captured bytes that do not parse
-//!   release the claim. The only way a record leaves `pending`/`claimed` is
+//!   release the claim. The only way a lane leaves `pending`/`claimed` is
 //!   `PublicationOutboxPort::mark_published`, fenced on the claim token.
 //! - **Per-record isolation.** A record that fails is released and the pass
 //!   carries on with the rest of the batch. A pass reports a failure only when
@@ -33,7 +37,8 @@ use proxima_core::QuiesceGate;
 use proxima_core::publication::intake::{DurableIntake, ReceivedEvent};
 use proxima_core::quiesce::{Checkpoint, GateWorker};
 use proxima_core::storage_ports::publication::{
-    AckOutcome, ClaimedPublication, PublicationOutboxPort, PublisherId, ReleaseOutcome,
+    AckOutcome, ClaimedPublication, ConsumerName, PublicationOutboxPort, PublisherId,
+    ReleaseOutcome,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -127,9 +132,10 @@ enum Flow {
     HandBack,
 }
 
-/// The claim → accept → mark loop over one outbox and one intake.
+/// The claim → accept → mark loop over one consumer's lanes and its intake.
 pub(crate) struct Drain {
     outbox: Arc<dyn PublicationOutboxPort>,
+    consumer: ConsumerName,
     intake: Arc<dyn DurableIntake>,
     settings: Settings,
     hook: Arc<dyn AfterAccept>,
@@ -138,12 +144,14 @@ pub(crate) struct Drain {
 impl Drain {
     pub(crate) fn new(
         outbox: Arc<dyn PublicationOutboxPort>,
+        consumer: ConsumerName,
         intake: Arc<dyn DurableIntake>,
         settings: Settings,
         hook: Arc<dyn AfterAccept>,
     ) -> Self {
         Self {
             outbox,
+            consumer,
             intake,
             settings,
             hook,
@@ -172,6 +180,7 @@ impl Drain {
                 }
                 Err(failure) => {
                     tracing::warn!(
+                        consumer = %self.consumer,
                         failure_category = ?failure,
                         "in-process outbox delivery failed; the records stay pending and are retried"
                     );
@@ -211,6 +220,7 @@ impl Drain {
         let claimed = self
             .outbox
             .claim(
+                &self.consumer,
                 &self.settings.publisher_id,
                 self.settings.batch,
                 self.settings.lease,
@@ -272,6 +282,7 @@ impl Drain {
         // its text can quote the payload.
         let event = ReceivedEvent::from_record(record).map_err(|error| {
             tracing::error!(
+                consumer = %self.consumer,
                 event_id = %record.event_id,
                 parse_error = ?error.classify(),
                 "a captured envelope is not a CloudEvents envelope; the record is released \
@@ -298,13 +309,14 @@ impl Drain {
         }
         match self
             .outbox
-            .mark_published(record.id, record.claim)
+            .mark_published(&self.consumer, record.id, record.claim)
             .await
             .map_err(|_| Failure::Storage)?
         {
             AckOutcome::Published | AckOutcome::AlreadyPublished => Ok(Flow::Delivered),
             AckOutcome::StaleClaim => {
                 tracing::info!(
+                    consumer = %self.consumer,
                     event_id = %record.event_id,
                     "the mark was fenced out by a newer claim"
                 );
@@ -317,7 +329,11 @@ impl Drain {
     /// the lease expires on its own, which is the whole reason releases are an
     /// optimization rather than a correctness requirement.
     async fn release(&self, record: &ClaimedPublication) {
-        match self.outbox.release(record.id, record.claim).await {
+        match self
+            .outbox
+            .release(&self.consumer, record.id, record.claim)
+            .await
+        {
             Ok(
                 ReleaseOutcome::Released
                 | ReleaseOutcome::AlreadyPublished
@@ -325,6 +341,7 @@ impl Drain {
             ) => {}
             Err(_) => {
                 tracing::warn!(
+                    consumer = %self.consumer,
                     failure_category = ?Failure::Storage,
                     "releasing a claim failed; the lease expiry still returns it"
                 );
@@ -344,26 +361,40 @@ fn next_backoff(current: Duration, floor: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_BACKOFF).max(floor)
 }
 
-/// Spawn the drain beside `housekeeping` (the retained-record prune), under
-/// the same pause control as every claim-based feature.
+/// Spawn one task per drain beside `housekeeping` (the retained-record
+/// prune), each under its own pause gate, returned in `drains` order.
 ///
-/// `housekeeping` starts at once; a quiesce does not pause it, because it
-/// claims no queue row.
+/// Each drain runs as its own task so a consumer whose `accept` blocks holds
+/// up only itself. `housekeeping` starts at once; a quiesce does not pause
+/// it, because it claims no queue row. The returned handle finishes when all
+/// of them have, and aborting it aborts every drain.
 pub(crate) fn spawn<F, Fut>(
-    drain: Drain,
+    drains: Vec<Drain>,
     cancel: CancellationToken,
     housekeeping: F,
-) -> (QuiesceGate, JoinHandle<()>)
+) -> (Vec<QuiesceGate>, JoinHandle<()>)
 where
     F: FnOnce(CancellationToken) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let (gate, worker) = QuiesceGate::new();
+    let (gates, workers): (Vec<_>, Vec<_>) = drains
+        .into_iter()
+        .map(|drain| {
+            let (gate, worker) = QuiesceGate::new();
+            (gate, (drain, worker))
+        })
+        .unzip();
     let task = tokio::spawn(async move {
+        let mut running = tokio::task::JoinSet::new();
+        for (drain, worker) in workers {
+            let cancel = cancel.clone();
+            running.spawn(async move { drain.run(&cancel, worker).await });
+        }
         let housekeeping = housekeeping(cancel.clone());
-        tokio::join!(drain.run(&cancel, worker), housekeeping);
+        let drains = async move { while running.join_next().await.is_some() {} };
+        tokio::join!(drains, housekeeping);
     });
-    (gate, task)
+    (gates, task)
 }
 
 #[cfg(test)]

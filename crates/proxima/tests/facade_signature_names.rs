@@ -222,11 +222,19 @@ facade_names! {
         both_tiers: [],
     }
 
-    // Needed by `RuntimeBuilder::outbox_intake`, `RuntimeConfig::outbox_intake` and the intake a
+    // Needed by `RuntimeBuilder::outbox_intake`, `RuntimeConfig::outbox_consumers` and the intake a
     // host implements for it: `DurableIntake::accept` takes a `ReceivedEvent` (and
     // `ReceivedEvent::identity`) and returns `Intake` or `IntakeError`.
     outbox_intake {
         host_only: [CloudEventEnvelope, DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent],
+        both_tiers: [],
+    }
+
+    // Needed by `RuntimeBuilder::outbox_consumer`, `RuntimeConfig::outbox_consumers`,
+    // `BuiltProxima::outbox_consumers` (`PublicationConsumerPort::retire` returns
+    // `RetireOutcome`) and `ReceivedEvent::position`.
+    outbox_consumers {
+        host_only: [ConsumerName, ConsumerNameError, OutboxConsumers, PublicationConsumerPort, RetireOutcome, SubjectPosition, SubjectPositionError],
         both_tiers: [],
     }
 

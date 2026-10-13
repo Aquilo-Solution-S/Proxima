@@ -360,6 +360,23 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         };
         assert_eq!(counts().await?, (8, 8), "one Fact and one record per write");
 
+        // Every record's position is its goal series and the change's
+        // revision, so a consumer orders one goal's changes without reading
+        // anything but the envelope.
+        let positions: Vec<(Uuid, i32, Vec<u8>)> = sqlx::query_as(
+            "SELECT c.series, c.revision, p.envelope
+               FROM proxima_core.goal_change_v1 AS c
+               JOIN proxima_core.publication_outbox AS p ON p.t = c.t",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert_eq!(positions.len(), 8);
+        for (series, revision, envelope) in positions {
+            let envelope: serde_json::Value = serde_json::from_slice(&envelope)?;
+            assert_eq!(envelope["subject"], series.to_string());
+            assert_eq!(envelope["sequence"], format!("{revision:020}"));
+        }
+
         let replay = pg.transition_goal_atomic(&pause, &permit).await?;
         assert!(replay.idempotent_replay);
         assert_eq!(counts().await?, (8, 8), "a replay writes neither");

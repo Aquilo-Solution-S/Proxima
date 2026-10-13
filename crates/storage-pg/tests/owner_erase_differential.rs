@@ -697,6 +697,12 @@ pub const DROPPED_TABLES: &[&str] = &[
     // semantics have focused publication-origin PG oracles; this differential
     // continues to compare only relations available to both implementations.
     "publication_origin",
+    // Added after the baseline by 0026: the consumer registry and a record's
+    // per-consumer delivery lanes. `publication_outbox_pg_tests` pins them; a
+    // lane is deleted with its record by cascade, which the outbox section
+    // here already witnesses.
+    "publication_consumer",
+    "publication_delivery",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;
@@ -709,6 +715,9 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0025 added the Goal prompt text after this frozen baseline; the
     // export and erase of it are asserted directly in `goal_text.rs`.
     ("goal", "text"),
+    // 0026 added each series' publication position after this frozen
+    // baseline; `publication_outbox_pg_tests` asserts it directly.
+    ("memory_head", "publication_sequence"),
 ];
 
 fn names_relation(table: &str, relation: &str) -> bool {

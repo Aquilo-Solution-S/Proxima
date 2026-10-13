@@ -123,6 +123,18 @@ const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
          identical for every owner and about none of them. Erasing it would \
          orphan every broker message already stamped with it.",
     ),
+    (
+        "proxima_core.publication_consumer",
+        "The deployment's registry of outbox consumers — operator \
+         configuration, platform-written, identical for every owner and about \
+         none of them.",
+    ),
+    (
+        "proxima_core.publication_delivery",
+        "Delivery bookkeeping of a publication_outbox record, one lane per \
+         consumer: no owner column and no content. It is deleted with its \
+         record (ON DELETE CASCADE), so the record's surface reaches it.",
+    ),
 ];
 
 #[tokio::test]

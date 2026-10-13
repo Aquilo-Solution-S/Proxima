@@ -1,10 +1,12 @@
 //! The goal-change Fact: what a goal write did, as an ordinary core Fact.
 //!
-//! A goal write is an action, and an action is a Fact (docs/05). Every write
-//! that inserts a goal row also writes one `core/goal-change-v1` Fact in the
-//! same transaction. The Fact is listenable, so a host that drains the
-//! outbox sees goal writes on the same feed as every other Fact (docs/18
-//! §Goal changes).
+//! A goal write is an action, and an action is a Fact (docs/05). While the
+//! runtime has an outbox consumer, every write that inserts a goal row also
+//! writes one `core/goal-change-v1` Fact in the same transaction, and the
+//! schema is listenable, so the consumers see goal writes on the same feed as
+//! every other Fact (docs/18 §Goal changes). `GoalChangeV1::LISTENABLE` is
+//! `false` because listenability is a runtime fact here, not a type one:
+//! `FlavorRegistry::publish_goal_changes` turns it on before freeze.
 //!
 //! Storage composes the payload inside the goal transaction, because the new
 //! version's `t` and the series handle are minted there.
@@ -209,8 +211,9 @@ impl GoalChange {
 /// Ordering is the consumer's: a failed delivery is retried after later
 /// records, so a resume can arrive before the pause it follows. Key by
 /// `series` and apply an event only if its `revision` is greater than the
-/// last one applied for that series. `goal` versions are identifiers, not an
-/// order: a version's `t` comes from the database clock.
+/// last one applied for that series; the envelope carries the same pair as
+/// `subject` and `sequence` (docs/18 §Ordering). `goal` versions are
+/// identifiers, not an order: a version's `t` comes from the database clock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalChangeV1 {
     pub series: uuid::Uuid,
@@ -226,10 +229,11 @@ pub struct GoalChangeV1 {
 impl FactPayload for GoalChangeV1 {
     const SCHEMA_ID: &'static str = "core/goal-change-v1";
     const SCHEMA_VERSION: u32 = 1;
-    // Core always registers the schema, so a stored Fact is readable. A
-    // runtime that drains the outbox turns this on before freeze
-    // (`FlavorRegistry::publish_goal_changes`): without an intake there is
-    // nobody to tell, and a goal write stays as it was.
+    /// `false` as a type constant, listenable at runtime: core always
+    /// registers the schema, so a stored Fact is readable, and a runtime with
+    /// at least one outbox consumer turns it on before freeze
+    /// (`FlavorRegistry::publish_goal_changes`). With no consumer there is
+    /// nobody to tell, and a goal write stays as it was.
     const LISTENABLE: bool = false;
 
     fn receipt_key(&self) -> Vec<u8> {

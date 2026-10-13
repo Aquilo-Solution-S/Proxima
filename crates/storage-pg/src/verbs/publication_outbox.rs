@@ -1,25 +1,35 @@
 //! The publication outbox: capture inside the Fact's transaction, and the
 //! host-only drain over what was captured (issue #305).
 //!
-//! Three parts that must not be confused. [`capture_publication_in_tx`]
+//! Four parts that must not be confused. [`capture_publication_in_tx`]
 //! runs inside the caller's Fact transaction and is the only writer of a
-//! captured event; the [`PublicationOutboxPort`] impl below runs in a
-//! publisher process and only ever moves a record through its delivery
-//! lifecycle; the [`PublicationRetentionPort`] impl reclaims records that
-//! were already DELIVERED. Neither of the first two deletes anything, and
-//! the third cannot touch an undelivered record: an expired lease makes a
-//! record deliverable again, never destroys it, and an event that has not
-//! reached its intake leaves this table only through compliance erasure.
+//! captured event and of its delivery lanes, one per registered consumer;
+//! the [`PublicationOutboxPort`] impl below runs in a publisher process and
+//! only ever moves one consumer's lane through its delivery lifecycle; the
+//! [`PublicationRetentionPort`] impl reclaims records that were already
+//! DELIVERED to every consumer; the [`PublicationConsumerPort`] impl
+//! registers consumers and retires them. None of the first two deletes
+//! anything, the third cannot touch an undelivered record, and only a retire
+//! cancels a lane that was not delivered: an expired lease makes a lane
+//! deliverable again, never destroys it.
+//!
+//! A record's own `state` is the aggregate of its lanes: `published` exactly
+//! when no lane is undelivered. Every statement that can make the last lane
+//! delivered or go away (a mark, a retire) settles the aggregate in the same
+//! transaction, under the record's row lock.
 //!
 //! [`PublicationRetentionPort`]: proxima_core::storage_ports::publication::PublicationRetentionPort
 
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use proxima_core::publication::{PublicationError, PublicationLimits, PublicationPlan};
+use proxima_core::publication::{
+    PublicationError, PublicationLimits, PublicationPlan, SubjectPosition,
+};
 use proxima_core::storage_ports::publication::{
-    AckOutcome, ClaimToken, ClaimedPublication, OriginScope, PublicationOriginEligibility,
-    PublicationOriginEligibilityPort, PublicationOutboxPort, PublisherId, ReleaseOutcome,
+    AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, OriginScope, PublicationConsumerPort,
+    PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
+    PublisherId, ReleaseOutcome, RetireOutcome,
 };
 use proxima_core::{OwnerRefKind, SealedPublication, StorageError};
 use sqlx::{Postgres, Row, Transaction};
@@ -27,6 +37,41 @@ use uuid::Uuid;
 
 use crate::PgStorage;
 use crate::error::{internal, map_err};
+
+/// The next position in the series `handle`: its publication sequence,
+/// incremented. The caller holds the series lock (every Fact admission takes
+/// it before materializing), so two writes to one series never read the same
+/// value, and the column's trigger refuses to let it go back.
+///
+/// # Errors
+///
+/// Storage errors from the update; a missing head is a constraint violation,
+/// since the admission that calls this just wrote it.
+pub(crate) async fn next_series_position(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: Uuid,
+) -> Result<SubjectPosition, StorageError> {
+    let sequence: i64 = sqlx::query_scalar(
+        "UPDATE proxima_core.memory_head
+            SET publication_sequence = publication_sequence + 1
+          WHERE handle = $1
+      RETURNING publication_sequence",
+    )
+    .bind(handle)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "publication capture requires the series head its admission just wrote".into(),
+        )
+    })?;
+    let sequence = u64::try_from(sequence)
+        .ok()
+        .and_then(std::num::NonZeroU64::new)
+        .ok_or_else(|| internal("publication_sequence is not positive after an increment"))?;
+    Ok(SubjectPosition::new(handle, sequence))
+}
 
 /// Capture one listenable Fact's event in the transaction that admits it.
 ///
@@ -37,6 +82,12 @@ use crate::error::{internal, map_err};
 /// of the three is an `Err` the caller propagates, and the caller's
 /// transaction is dropped — which is the whole point: a Fact that could not
 /// capture its event was never written.
+///
+/// The record gets one delivery lane per consumer registered as of this
+/// statement, read and written in ONE statement so the set it fans out to is
+/// the set it read. With no consumer registered there is nobody to owe the
+/// event to, and the record is published at once rather than held against
+/// the pending ceiling forever.
 ///
 /// # Errors
 ///
@@ -54,9 +105,10 @@ pub(crate) async fn capture_publication_in_tx(
     owner_id: Uuid,
     t: Uuid,
     plan: &PublicationPlan,
+    position: SubjectPosition,
 ) -> Result<(), StorageError> {
     refuse_when_full(tx, &plan.limits).await?;
-    let sealed = SealedPublication::seal(plan, t).map_err(StorageError::from)?;
+    let sealed = SealedPublication::seal(plan, t, position).map_err(StorageError::from)?;
     let schema_version = i32::try_from(sealed.schema_version.into_inner()).map_err(|_| {
         StorageError::ConstraintViolation("schema version does not fit an integer column".into())
     })?;
@@ -77,6 +129,26 @@ pub(crate) async fn capture_publication_in_tx(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    let lanes = sqlx::query(
+        "INSERT INTO proxima_core.publication_delivery (t, consumer)
+         SELECT $1, name FROM proxima_core.publication_consumer",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    if lanes == 0 {
+        sqlx::query(
+            "UPDATE proxima_core.publication_outbox
+                SET state = 'published', published_at = now()
+              WHERE t = $1",
+        )
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
     let captured = sqlx::query_as::<_, (proxima_core::OwnerRefKind, Option<String>)>(
         "SELECT owner.kind, memory.source_id
            FROM proxima_core.memory memory
@@ -174,12 +246,15 @@ async fn refuse_when_full(
     }))
 }
 
-/// Claim deliverable records: fewest attempts first, then oldest `t`.
+/// Claim one consumer's deliverable lanes: fewest attempts first, then
+/// oldest `t`.
 ///
-/// Deliverable is `pending`, or `claimed` with an expired lease. There is
-/// no cursor and no watermark on purpose: a transaction that commits after
-/// a later one is simply `pending` on the next call, where an advancing
-/// high-water mark would have stepped over it forever.
+/// Deliverable is a lane of THIS consumer that is `pending`, or `claimed`
+/// with an expired lease. Another consumer's lanes are not read, so its
+/// failures and its lag cannot hold this one. There is no cursor and no
+/// watermark on purpose: a transaction that commits after a later one is
+/// simply `pending` on the next call, where an advancing high-water mark
+/// would have stepped over it forever.
 ///
 /// `attempts ASC` before `t ASC` is head-of-line-blocking insurance. Under
 /// `t` alone, one record the intake will never accept is re-claimed at the
@@ -188,64 +263,68 @@ async fn refuse_when_full(
 /// failing record behind every fresher one after its first failure, so a
 /// poison record costs one slot per pass instead of the whole queue. Within
 /// one attempt count the order is still `t`, so the ordinary case — every
-/// record on attempt 1 — is exactly the old oldest-first order.
+/// record on attempt 1 — is oldest first. That demotion is also why
+/// delivery order is not commit order (docs/18 §Ordering).
 ///
-/// The partial index `publication_outbox_pending_idx` still serves this
-/// statement's PREDICATE (`state <> 'published'` is implied by the two
-/// disjuncts). What it no longer supplies is the sort: `attempts` is not in
-/// it, so the plan is an index scan feeding a sort. That sort is over the
-/// undelivered backlog only, which `max_pending` bounds — the same set the
-/// capacity probe already bounds — and a covering index for it would be a
-/// migration this slice does not ship.
+/// `publication_delivery_pending_idx` (`consumer, attempts, t` over the
+/// undelivered lanes) serves both the predicate and the sort. `FOR UPDATE OF
+/// lane` locks the lane only: a record row stays free for the other
+/// consumers' marks.
 const CLAIM_SQL: &str = "WITH claimed AS (
-             SELECT t
-              FROM proxima_core.publication_outbox
-              WHERE (state = 'pending'
-                 OR (state = 'claimed' AND lease_expires_at < now()))
-               AND EXISTS (
+             SELECT lane.t
+               FROM proxima_core.publication_delivery lane
+               JOIN proxima_core.publication_outbox record ON record.t = lane.t
+              WHERE lane.consumer = $4
+                AND (lane.state = 'pending'
+                  OR (lane.state = 'claimed' AND lane.lease_expires_at < now()))
+                AND EXISTS (
                     SELECT 1 FROM proxima_core.publication_origin origin
                     JOIN proxima_core.owners original_owner
                       ON original_owner.owner_id = origin.original_owner_id
-                   WHERE origin.t = proxima_core.publication_outbox.t
-                     AND origin.original_owner_id = proxima_core.publication_outbox.owner_id
+                   WHERE origin.t = record.t
+                     AND origin.original_owner_id = record.owner_id
                      AND origin.original_owner_kind = original_owner.kind
-               )
-               AND NOT EXISTS (
+                )
+                AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.erased_pin_target erased
-                     WHERE erased.t = proxima_core.publication_outbox.t
-               )
-              ORDER BY attempts ASC, t ASC
-              FOR UPDATE SKIP LOCKED
+                     WHERE erased.t = record.t
+                )
+              ORDER BY lane.attempts ASC, lane.t ASC
+              FOR UPDATE OF lane SKIP LOCKED
               LIMIT $1
          ),
          leased AS (
-         UPDATE proxima_core.publication_outbox p
+         UPDATE proxima_core.publication_delivery lane
             SET state = 'claimed',
                 claim_token = uuidv7(),
                 claimed_by = $2,
                 lease_expires_at = now() + make_interval(secs => $3),
-                attempts = least(p.attempts + 1, 2147483647)
-           FROM claimed, proxima_core.owners o
-          WHERE p.t = claimed.t
-            AND o.owner_id = p.owner_id
-        RETURNING p.t,
-                  p.event_id,
-                  p.owner_id,
-                  o.kind::text AS owner_kind,
-                  p.schema_id,
-                  p.schema_version,
-                  p.event_type,
-                  p.envelope,
-                  p.envelope_digest,
-                  p.attempts,
-                  p.claim_token,
-                  p.lease_expires_at
+                attempts = least(lane.attempts + 1, 2147483647)
+           FROM claimed
+          WHERE lane.t = claimed.t
+            AND lane.consumer = $4
+        RETURNING lane.t, lane.attempts, lane.claim_token, lane.lease_expires_at
          )
          -- The batch is handed back in the same order it was chosen. An
          -- UPDATE ... RETURNING emits rows in whatever order the executor
          -- produced them, so without this the publisher's send order would
          -- be an accident of the plan rather than the queue discipline.
-         SELECT * FROM leased ORDER BY attempts ASC, t ASC";
+         SELECT p.t,
+                p.event_id,
+                p.owner_id,
+                o.kind::text AS owner_kind,
+                p.schema_id,
+                p.schema_version,
+                p.event_type,
+                p.envelope,
+                p.envelope_digest,
+                leased.attempts,
+                leased.claim_token,
+                leased.lease_expires_at
+           FROM leased
+           JOIN proxima_core.publication_outbox p ON p.t = leased.t
+           JOIN proxima_core.owners o ON o.owner_id = p.owner_id
+          ORDER BY leased.attempts ASC, leased.t ASC";
 
 /// Shortest lease a claim may take.
 ///
@@ -260,6 +339,7 @@ const MIN_CLAIM_LEASE: Duration = Duration::from_secs(1);
 impl PublicationOutboxPort for PgStorage {
     async fn claim(
         &self,
+        consumer: &ConsumerName,
         publisher: &PublisherId,
         limit: NonZeroU32,
         lease: Duration,
@@ -278,6 +358,7 @@ impl PublicationOutboxPort for PgStorage {
             .bind(i64::from(limit.get()))
             .bind(publisher.as_str())
             .bind(lease.as_secs_f64())
+            .bind(consumer.as_str())
             .fetch_all(tx.as_mut())
             .await
             .map_err(map_err)?;
@@ -287,30 +368,34 @@ impl PublicationOutboxPort for PgStorage {
 
     async fn mark_published(
         &self,
+        consumer: &ConsumerName,
         id: Uuid,
         claim: ClaimToken,
     ) -> Result<AckOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
-            "UPDATE proxima_core.publication_outbox
+            "UPDATE proxima_core.publication_delivery
                 SET state = 'published',
                     published_at = now(),
                     claim_token = NULL,
                     claimed_by = NULL,
                     lease_expires_at = NULL
               WHERE t = $1
+                AND consumer = $2
                 AND state = 'claimed'
-                AND claim_token = $2",
+                AND claim_token = $3",
         )
         .bind(id)
+        .bind(consumer.as_str())
         .bind(claim.into_inner())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
         let outcome = if result.rows_affected() > 0 {
+            settle_records(&mut tx, &[id]).await?;
             AckOutcome::Published
         } else {
-            match current_state(tx.as_mut(), id).await? {
+            match current_lane_state(tx.as_mut(), id, consumer).await? {
                 Some(state) if state == "published" => AckOutcome::AlreadyPublished,
                 _ => AckOutcome::StaleClaim,
             }
@@ -318,19 +403,26 @@ impl PublicationOutboxPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
     }
 
-    async fn release(&self, id: Uuid, claim: ClaimToken) -> Result<ReleaseOutcome, StorageError> {
+    async fn release(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+    ) -> Result<ReleaseOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
-            "UPDATE proxima_core.publication_outbox
+            "UPDATE proxima_core.publication_delivery
                 SET state = 'pending',
                     claim_token = NULL,
                     claimed_by = NULL,
                     lease_expires_at = NULL
               WHERE t = $1
+                AND consumer = $2
                 AND state = 'claimed'
-                AND claim_token = $2",
+                AND claim_token = $3",
         )
         .bind(id)
+        .bind(consumer.as_str())
         .bind(claim.into_inner())
         .execute(tx.as_mut())
         .await
@@ -338,7 +430,7 @@ impl PublicationOutboxPort for PgStorage {
         let outcome = if result.rows_affected() > 0 {
             ReleaseOutcome::Released
         } else {
-            match current_state(tx.as_mut(), id).await? {
+            match current_lane_state(tx.as_mut(), id, consumer).await? {
                 Some(state) if state == "published" => ReleaseOutcome::AlreadyPublished,
                 _ => ReleaseOutcome::StaleClaim,
             }
@@ -355,6 +447,118 @@ impl PublicationOutboxPort for PgStorage {
         .await
         .map_err(map_err)?;
         crate::owner_scope::finish_transaction(tx, Ok(count.try_into().unwrap_or(0))).await
+    }
+}
+
+/// Mark published each of `records` that has no undelivered lane left.
+///
+/// Locks the records FIRST, in a statement of its own, and decides in the
+/// next one. Under READ COMMITTED that next statement takes a fresh snapshot
+/// after the lock is held, so two consumers marking the last two lanes of one
+/// record serialize on it and the second sees the first's lane: one of them
+/// settles the record, never neither.
+async fn settle_records(
+    tx: &mut Transaction<'_, Postgres>,
+    records: &[Uuid],
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "SELECT 1 FROM proxima_core.publication_outbox
+          WHERE t = ANY($1) AND state <> 'published'
+          ORDER BY t
+            FOR UPDATE",
+    )
+    .bind(records)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.publication_outbox record
+            SET state = 'published', published_at = now()
+          WHERE record.t = ANY($1)
+            AND record.state <> 'published'
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.publication_delivery lane
+                 WHERE lane.t = record.t AND lane.state <> 'published'
+            )",
+    )
+    .bind(records)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+#[async_trait::async_trait]
+impl PublicationConsumerPort for PgStorage {
+    async fn register(&self, consumer: &ConsumerName) -> Result<(), StorageError> {
+        let mut tx = self.platform_transaction().await?;
+        let result = sqlx::query(
+            "INSERT INTO proxima_core.publication_consumer (name) VALUES ($1)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(consumer.as_str())
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)
+        .map(|_| ());
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
+    async fn registered(&self) -> Result<Vec<ConsumerName>, StorageError> {
+        let mut tx = self.platform_transaction().await?;
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM proxima_core.publication_consumer ORDER BY name")
+                .fetch_all(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        // The CHECK constraint spells the same rule as `ConsumerName::new`,
+        // so a refusal here means a row was written around both.
+        let result = names
+            .into_iter()
+            .map(|name| ConsumerName::new(name).map_err(internal))
+            .collect();
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
+    /// One transaction: block every lane write, drop the consumer (its lanes
+    /// go with it, by cascade), settle the records it was the last to owe.
+    ///
+    /// The `SHARE` lock on the lanes is what makes the settle complete. A
+    /// capture or a mark that is already writing lanes finishes first; one
+    /// that starts later waits, and then reads a consumer set without this
+    /// consumer. Without it a capture could read the set before the delete,
+    /// fan a lane out to the retired consumer after it, and leave a record
+    /// nobody will ever settle. Retiring is an operator act, so holding up
+    /// listenable writes for the length of one delete is the cheap side.
+    async fn retire(&self, consumer: &ConsumerName) -> Result<RetireOutcome, StorageError> {
+        let mut tx = self.platform_transaction().await?;
+        sqlx::query("LOCK TABLE proxima_core.publication_delivery IN SHARE MODE")
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        let owed: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.publication_delivery
+              WHERE consumer = $1 AND state <> 'published'",
+        )
+        .bind(consumer.as_str())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        let removed = sqlx::query("DELETE FROM proxima_core.publication_consumer WHERE name = $1")
+            .bind(consumer.as_str())
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?
+            .rows_affected();
+        let outcome = if removed == 0 {
+            RetireOutcome::NotRegistered
+        } else {
+            settle_records(&mut tx, &owed).await?;
+            RetireOutcome::Retired {
+                undelivered: owed.len().try_into().unwrap_or(u64::MAX),
+            }
+        };
+        crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
     }
 }
 
@@ -449,7 +653,9 @@ impl PgStorage {
 
 /// Operator-only retention of DELIVERED records (issue #305, review R7).
 ///
-/// The predicate is written twice over — `state = 'published'` and
+/// DELIVERED means to every consumer: the record's `state` is the aggregate
+/// of its lanes, and its lanes go with it by cascade. The predicate is
+/// written twice over — `state = 'published'` and
 /// `published_at < now() - interval` — and the second is not redundant:
 /// `publication_outbox_published_chk` makes `published_at` NOT NULL exactly
 /// when the state is `published`, so a row in any other state has a NULL
@@ -486,17 +692,23 @@ impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgSt
     }
 }
 
-/// The record's delivery state, or `None` when no record with that `t`
-/// exists (compliance erasure destroyed it, or it never existed).
-async fn current_state(
+/// One consumer's lane state on a record, or `None` when there is no such
+/// lane (compliance erasure destroyed the record, the consumer was retired,
+/// or it never existed).
+async fn current_lane_state(
     connection: &mut sqlx::PgConnection,
     id: Uuid,
+    consumer: &ConsumerName,
 ) -> Result<Option<String>, StorageError> {
-    sqlx::query_scalar("SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1")
-        .bind(id)
-        .fetch_optional(connection)
-        .await
-        .map_err(map_err)
+    sqlx::query_scalar(
+        "SELECT state::text FROM proxima_core.publication_delivery
+          WHERE t = $1 AND consumer = $2",
+    )
+    .bind(id)
+    .bind(consumer.as_str())
+    .fetch_optional(connection)
+    .await
+    .map_err(map_err)
 }
 
 /// Decode one claimed row, with NO repair of a value the database should

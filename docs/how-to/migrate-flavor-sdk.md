@@ -1,5 +1,25 @@
 # Migrate the Flavor SDK
 
+## v0.0.28
+
+Pin all Proxima Rust dependencies to the same `v0.0.28` tag. One additive core
+migration, `0026_v032_outbox_consumers.sql`; boot applies it ([migrations
+§v0.0.28](migrations.md#v0028)). **Breaking, no shims**: the Fact outbox
+delivers to named consumers and every event carries its place in its series.
+A host that only calls `outbox_intake(..)` and implements `DurableIntake`
+compiles unchanged, and its single intake is the consumer `default`.
+
+| Removed / changed | Upgrade |
+|---|---|
+| `RuntimeConfig.outbox_intake: Option<Arc<dyn DurableIntake>>` | Replaced by `outbox_consumers: OutboxConsumers`. A struct literal uses `OutboxConsumers::default()` for none; the builders' `outbox_intake(..)` and the new `outbox_consumer(ConsumerName, ..)` fill it |
+| `PublicationOutboxPort::claim`, `mark_published`, `release` (a host's own drain, a test double) | Each takes `consumer: &ConsumerName` first. A drain that stands in for the old single drain passes `&ConsumerName::default()` |
+| `ReceivedEvent { .. }` built by hand | Add `position: Option<SubjectPosition>` (`None` for an envelope without `subject`/`sequence`) |
+| `SealedPublication::seal(plan, t)` | Takes a third argument, `SubjectPosition` |
+| `PublicationExtensions::with("sequence", ..)` | Now refused (`SubstrateAttributeName`): the substrate sets `sequence`. Rename the attribute |
+| Wire | Every captured event carries `subject` (its series, a bare UUID) and `sequence` (20-digit position, from 1) after `time` ([18 §Ordering](../18-fact-outbox.md#ordering)). An intake that rejects unknown attributes must accept them. Goal-change events carry `subject` = `data.series` and `sequence` = `data.revision` |
+| Record state | `publication_outbox.state` is the aggregate of the lanes and is never `claimed`; read `publication_delivery` for one consumer's state. A host that queried `state = 'claimed'` on the record reads the lanes instead |
+| New | `RuntimeBuilder::outbox_consumer` / `Proxima::outbox_consumer`; `BuiltProxima::outbox_consumers()` / `RunningProxima::outbox_consumers()` returning `Arc<dyn PublicationConsumerPort>` (`register`, `registered`, `retire -> RetireOutcome`); `ConsumerName`, `ConsumerNameError`, `OutboxConsumers`, `SubjectPosition`, `SubjectPositionError`, all exported from `proxima` ([18 §Consumers](../18-fact-outbox.md#consumers)) |
+
 ## v0.0.27
 
 Pin all Proxima Rust dependencies to the same `v0.0.27` tag. One additive core

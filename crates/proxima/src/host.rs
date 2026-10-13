@@ -186,6 +186,8 @@ pub use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an
 // out-of-tree blocker, so it is re-exported beside the error itself.
+/// The configured consumers, as [`RuntimeConfig::outbox_consumers`] holds them.
+pub use crate::runtime_config::OutboxConsumers;
 /// `proxima::host::testkit` kept as a path to [`crate::testkit`].
 #[cfg(feature = "testkit")]
 pub use crate::testkit;
@@ -199,9 +201,12 @@ pub use crate::testkit;
 pub use proxima_core::UPLOADED_BLOB_SCHEMA_ID;
 /// The intake contract: what a host implements to receive captured Facts.
 ///
-/// [`RuntimeBuilder::outbox_intake`] hands the runtime one [`DurableIntake`],
-/// and the runtime calls it once per captured event, in this process
-/// (docs/18). No cargo feature and no broker client is involved.
+/// [`RuntimeBuilder::outbox_consumer`] hands the runtime a [`DurableIntake`]
+/// per named consumer ([`RuntimeBuilder::outbox_intake`] is the consumer
+/// `default`), and the runtime calls each once per captured event, in this
+/// process (docs/18). No cargo feature and no broker client is involved.
+/// [`SubjectPosition`] is [`ReceivedEvent::position`], the per-series order a
+/// consumer applies events in.
 pub use proxima_core::publication::intake::{
     CloudEventEnvelope, DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent,
 };
@@ -216,6 +221,7 @@ pub use proxima_core::publication::{
     PublicationConfig, PublicationError, PublicationLimits, PublicationSource,
     PublicationSourceError,
 };
+pub use proxima_core::publication::{SubjectPosition, SubjectPositionError};
 /// The host-only outbox drain contract.
 ///
 /// The claim, mark and release surface the runtime's own drain uses, exported
@@ -225,8 +231,8 @@ pub use proxima_core::publication::{
 /// `StoragePorts`, `Engine` and `ToolCtx`: a flavor that could claim an
 /// outbox record could delay or suppress an export.
 pub use proxima_core::storage_ports::publication::{
-    AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
-    PublisherIdError, ReleaseOutcome,
+    AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, ConsumerNameError,
+    PublicationOutboxPort, PublisherId, PublisherIdError, ReleaseOutcome,
 };
 /// This installation's identity and the host-only provenance check.
 ///
@@ -238,6 +244,12 @@ pub use proxima_core::storage_ports::publication::{
 pub use proxima_core::storage_ports::publication::{
     OriginScope, PublicationOriginEligibility, PublicationOriginEligibilityPort,
 };
+/// Registering and retiring outbox consumers.
+///
+/// [`BuiltProxima::outbox_consumers`] returns the port. Host-only and held
+/// beside the boot authorities, not on [`ProximaHost`]: retiring a consumer
+/// cancels every delivery it was still owed.
+pub use proxima_core::storage_ports::publication::{PublicationConsumerPort, RetireOutcome};
 pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,

@@ -31,8 +31,9 @@ pub enum Feature {
     /// Starts when an embedding client or router is configured: startup
     /// reconcile, then drain.
     EmbeddingWorker,
-    /// Starts when an intake is configured (`outbox_intake`): the captured
-    /// outbox is delivered to it in this process.
+    /// Starts when an outbox consumer is configured (`outbox_intake` /
+    /// `outbox_consumer`): the captured outbox is delivered to each, in this
+    /// process, by one drain per consumer.
     OutboxPublisher,
     /// Starts when the publisher runs AND a retention horizon is configured
     /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` / `published_retention`).
@@ -86,15 +87,18 @@ impl Feature {
 /// let (gate, _worker) = proxima_core::QuiesceGate::new();
 /// let _ = proxima::FeatureControl::new(proxima::Feature::EmbeddingWorker, gate);
 /// ```
+///
+/// The publisher runs one drain per consumer; its handle pauses, resumes and
+/// reports them together.
 #[derive(Debug, Clone)]
 pub struct FeatureControl {
     feature: Feature,
-    gate: QuiesceGate,
+    gates: Vec<QuiesceGate>,
 }
 
 impl FeatureControl {
-    pub(crate) const fn new(feature: Feature, gate: QuiesceGate) -> Self {
-        Self { feature, gate }
+    pub(crate) const fn new(feature: Feature, gates: Vec<QuiesceGate>) -> Self {
+        Self { feature, gates }
     }
 
     /// The feature this handle controls.
@@ -125,7 +129,35 @@ impl FeatureControl {
     /// while the call is pending; [`FeatureControlError::Resumed`] when
     /// [`Self::resume`] reopens the gate while the call is pending.
     pub async fn quiesce(&self) -> Result<(), FeatureControlError> {
-        self.gate.quiesce().await
+        // Polled together, in place: the first poll closes every gate, so
+        // the status reads `Quiescing` at once and the pause costs the
+        // slowest drain's record in flight, not the sum of them.
+        let mut pauses: Vec<_> = self
+            .gates
+            .iter()
+            .map(|gate| (Box::pin(gate.quiesce()), None))
+            .collect();
+        std::future::poll_fn(|cx| {
+            let mut waiting = false;
+            for (pause, outcome) in &mut pauses {
+                if outcome.is_none() {
+                    match pause.as_mut().poll(cx) {
+                        std::task::Poll::Ready(settled) => *outcome = Some(settled),
+                        std::task::Poll::Pending => waiting = true,
+                    }
+                }
+            }
+            if waiting {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        })
+        .await;
+        pauses
+            .into_iter()
+            .filter_map(|(_, outcome)| outcome)
+            .fold(Ok(()), Result::and)
     }
 
     /// Reopen the gate and wake the worker, which claims again at once. It
@@ -136,14 +168,34 @@ impl FeatureControl {
     ///
     /// [`FeatureControlError::Stopped`] when the feature has stopped.
     pub fn resume(&self) -> Result<(), FeatureControlError> {
-        self.gate.resume()
+        // Every gate reopens even when one has stopped.
+        self.gates
+            .iter()
+            .map(QuiesceGate::resume)
+            .fold(Ok(()), Result::and)
     }
 
     /// Where the feature is in its pause/resume cycle. Says nothing about
-    /// queue depth.
+    /// queue depth. Across several drains: `Stopped` when any has stopped,
+    /// `Running` or `Quiescent` when all are, `Quiescing` in between.
     #[must_use]
     pub fn status(&self) -> FeatureStatus {
-        self.gate.status()
+        let statuses: Vec<FeatureStatus> = self.gates.iter().map(QuiesceGate::status).collect();
+        if statuses.contains(&FeatureStatus::Stopped) {
+            FeatureStatus::Stopped
+        } else if statuses
+            .iter()
+            .all(|status| *status == FeatureStatus::Running)
+        {
+            FeatureStatus::Running
+        } else if statuses
+            .iter()
+            .all(|status| *status == FeatureStatus::Quiescent)
+        {
+            FeatureStatus::Quiescent
+        } else {
+            FeatureStatus::Quiescing
+        }
     }
 }
 
@@ -271,8 +323,11 @@ pub(crate) struct Features {
     pub(crate) report: BootReport,
     workers: Vec<FlavorWorker>,
     embedding: Option<(QuiesceGate, JoinHandle<()>)>,
-    publisher: Option<(QuiesceGate, JoinHandle<()>)>,
+    publisher: Option<Publisher>,
 }
+
+/// The outbox publisher's task and one pause gate per consumer drain.
+type Publisher = (Vec<QuiesceGate>, JoinHandle<()>);
 
 impl std::fmt::Debug for Features {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -295,14 +350,14 @@ impl Features {
     /// that claims queue rows through a gate. The match names every feature,
     /// so a new one must decide whether it claims.
     pub(crate) fn feature_control(&self, feature: Feature) -> Option<FeatureControl> {
-        let gate = match feature {
-            Feature::EmbeddingWorker => self.embedding.as_ref().map(|(gate, _)| gate),
-            Feature::OutboxPublisher => self.publisher.as_ref().map(|(gate, _)| gate),
+        let gates = match feature {
+            Feature::EmbeddingWorker => self.embedding.as_ref().map(|(gate, _)| vec![gate.clone()]),
+            Feature::OutboxPublisher => self.publisher.as_ref().map(|(gates, _)| gates.clone()),
             // Serving continues by definition; the other two claim no
             // queue row through the runtime's gate.
             Feature::Mcp | Feature::FlavorWorkers | Feature::PublishedRecordPrune => None,
         }?;
-        Some(FeatureControl::new(feature, gate.clone()))
+        Some(FeatureControl::new(feature, gates))
     }
 
     /// Join every started task. The caller cancelled their token first.
@@ -392,13 +447,10 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
 /// The publisher, and the prune that rides on it.
 fn start_publisher(
     inputs: &FeatureInputs<'_>,
-) -> (
-    Option<(QuiesceGate, JoinHandle<()>)>,
-    FeatureDecision,
-    FeatureDecision,
-) {
+) -> (Option<Publisher>, FeatureDecision, FeatureDecision) {
     let horizon = inputs.config.published_retention;
-    let Some(intake) = inputs.config.outbox_intake.clone() else {
+    let consumers = &inputs.config.outbox_consumers;
+    if consumers.is_empty() {
         let prune = match horizon {
             Some(_) => "a retention is configured but the outbox publisher is off",
             None => {
@@ -410,11 +462,11 @@ fn start_publisher(
             None,
             FeatureDecision::off(
                 Feature::OutboxPublisher,
-                "no intake configured (outbox_intake)",
+                "no intake configured (outbox_intake / outbox_consumer)",
             ),
             FeatureDecision::off(Feature::PublishedRecordPrune, prune),
         );
-    };
+    }
     let retention = horizon.map(|older_than| PublicationRetention {
         port: inputs.publication.retention.clone(),
         older_than,
@@ -434,20 +486,30 @@ fn start_publisher(
              published_retention)",
         ),
     };
-    let drain = Drain::new(
-        inputs.publication.outbox.clone(),
-        intake,
-        Settings::new(),
-        Arc::new(Proceed),
-    );
-    let publisher = in_process_outbox::spawn(drain, inputs.cancel.child_token(), move |cancel| {
+    let drains = consumers
+        .iter()
+        .map(|(name, intake)| {
+            Drain::new(
+                inputs.publication.outbox.clone(),
+                name.clone(),
+                intake.clone(),
+                Settings::new(),
+                Arc::new(Proceed),
+            )
+        })
+        .collect();
+    let publisher = in_process_outbox::spawn(drains, inputs.cancel.child_token(), move |cancel| {
         prune_published_records(retention, cancel)
     });
+    let names: Vec<String> = consumers.names().map(ToString::to_string).collect();
     (
         Some(publisher),
         FeatureDecision::started(
             Feature::OutboxPublisher,
-            "an intake is configured (outbox_intake)",
+            format!(
+                "an intake is configured (outbox_intake / outbox_consumer): {}",
+                names.join(", ")
+            ),
         ),
         prune,
     )

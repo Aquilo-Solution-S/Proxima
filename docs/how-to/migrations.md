@@ -13,6 +13,37 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.28
+
+Existing v0.0.27 databases upgrade in place, in version order. The release
+ships one additive core migration and no flavor migration. Stop every older
+binary before it runs: an older drain's claim fails on
+`publication_outbox_no_claim_chk` from then on, and a claim one held is handed
+back by the backfill.
+
+| Lane | Migration |
+|---|---|
+| Core | `0026_v032_outbox_consumers.sql`: `proxima_core.publication_consumer (name, registered_at)` seeded with `default`; `proxima_core.publication_delivery`, one lane per (record, consumer) with its own state, claim, lease, attempts and published mark, the checks `publication_delivery_claim_chk` and `publication_delivery_published_chk`, and the partial index `publication_delivery_pending_idx`; `publication_outbox_no_claim_chk CHECK (state <> 'claimed')`; `memory_head.publication_sequence bigint NOT NULL DEFAULT 0` with `memory_head_publication_sequence_chk`, and `memory_head_t_only` replaced so it also refuses a decrease |
+
+**Consumers (`_v032_`).** Delivery state moves from the record onto
+per-consumer lanes ([18 §Consumers](../18-fact-outbox.md#consumers)). Every
+record that is not `published` gets one `pending` lane of `default`, keeping
+its `attempts`, and a `claimed` record is set back to `pending` (its lease
+would have expired anyway). The record's own claim columns stay and are unused
+from here on. `publication_delivery` is owner-RLS class `fk_parent` of its
+record; `publication_consumer` is class `ownerless`, with the metadata read
+policy, because a capture reads the consumer set in the writer's owner scope.
+Both go through the 0024 per-table building blocks.
+
+**Series position (`_v032_`).** `publication_sequence` counts the listenable
+events a series has captured; every existing head starts at `0`, so the first
+event captured after the upgrade is `sequence` 1 ([18 §Ordering](../18-fact-outbox.md#ordering)).
+Records captured before carry no `subject`/`sequence`.
+
+Re-running the file changes nothing: tables, columns and indexes are created
+only when missing, the seed and the backfill skip what exists, the check is
+dropped and added again, and the RLS appliers replace their own policies.
+
 ## v0.0.27
 
 Existing v0.0.26 databases upgrade in place, in version order. The release

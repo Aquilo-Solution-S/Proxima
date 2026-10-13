@@ -490,6 +490,8 @@ pub(crate) async fn persist_goal_change_fact(
             .map_err(map_err)?;
     let revision = u32::try_from(revision)
         .map_err(|error| StorageError::Internal(format!("goal revision: {error}")))?;
+    let revision_position = std::num::NonZeroU32::new(revision)
+        .ok_or_else(|| StorageError::Internal("goal revision: the series has no version".into()))?;
     let payload = SidecarPayload::fact(GoalChangeV1 {
         series: prepared.handle,
         goal: GoalId::new(prepared.t),
@@ -535,11 +537,19 @@ pub(crate) async fn persist_goal_change_fact(
         .writing(&draft)
         .insert_memory_sidecar(tx, outcome.memory_id, &payload)
         .await?;
+    // The event is about the goal, not about the change Fact's own series:
+    // its position is the goal version's revision, counted under the goal
+    // series lock above.
+    let position = proxima_core::publication::SubjectPosition::new(
+        prepared.handle,
+        std::num::NonZeroU64::from(revision_position),
+    );
     crate::verbs::publication_outbox::capture_publication_in_tx(
         tx,
         prepared.owner_id,
         outcome.memory_id.into_inner(),
         &plan,
+        position,
     )
     .await
 }

@@ -5,6 +5,7 @@ use std::time::Duration;
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::PublicationConfig;
 use proxima_core::publication::intake::DurableIntake;
+use proxima_core::storage_ports::publication::ConsumerName;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
     FlavorServices, Owner, OwnerAccessPort, RequestHeaders, RevalidationConfig, ToolScope,
@@ -79,7 +80,7 @@ pub struct RuntimeBuilder {
     /// keeps published records forever, which is both the default and what
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
-    outbox_intake: Option<Arc<dyn DurableIntake>>,
+    outbox_consumers: OutboxConsumers,
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// A second participant was registered; [`Self::resolve`] refuses.
     duplicate_host_state_participant: bool,
@@ -195,7 +196,7 @@ impl RuntimeBuilder {
                 .or(base.embedding_runtime_policy),
             publication: self.publication.or(base.publication),
             published_retention: self.published_retention.or(base.published_retention),
-            outbox_intake: self.outbox_intake.or(base.outbox_intake),
+            outbox_consumers: base.outbox_consumers.overlaid_by(self.outbox_consumers),
             duplicate_host_state_participant: self.duplicate_host_state_participant
                 || base.duplicate_host_state_participant
                 || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
@@ -277,10 +278,12 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Deliver the captured outbox to `intake`, in this process: set, the
-    /// outbox publisher starts and calls [`DurableIntake::accept`] once per
-    /// captured event (docs/18 §Delivery). Unset, nothing drains the outbox:
-    /// Facts are still captured, the backlog is bounded by
+    /// Deliver the captured outbox to `intake`, in this process: the
+    /// one-consumer case of [`Self::outbox_consumer`], registered as the
+    /// consumer `default` ([`ConsumerName::DEFAULT`]). Set, the outbox
+    /// publisher starts and calls [`DurableIntake::accept`] once per captured
+    /// event (docs/18 §Delivery). With no consumer configured nothing drains
+    /// the outbox: Facts are still captured, the backlog is bounded by
     /// `max_pending`, and a later boot with an intake delivers it.
     ///
     /// Delivery is at-least-once: a crash between `accept` and the outbox
@@ -301,8 +304,26 @@ impl RuntimeBuilder {
     /// [`ReceivedEvent::id`]: proxima_core::publication::intake::ReceivedEvent::id
     /// [`IntakeError`]: proxima_core::publication::intake::IntakeError
     #[must_use]
-    pub fn outbox_intake(mut self, intake: Arc<dyn DurableIntake>) -> Self {
-        self.outbox_intake = Some(intake);
+    pub fn outbox_intake(self, intake: Arc<dyn DurableIntake>) -> Self {
+        self.outbox_consumer(ConsumerName::default(), intake)
+    }
+
+    /// Deliver the captured outbox to `intake` as the consumer `name`, in
+    /// this process (docs/18 §Consumers).
+    ///
+    /// Each configured consumer gets its own drain and its own delivery lane
+    /// per record: every listenable Fact captured after the consumer was first
+    /// registered reaches it at least once, whatever the other consumers do.
+    /// One that fails or lags holds back only its own lanes. Boot registers
+    /// every configured name; a name stays registered — and keeps being owed
+    /// every new record — until a host retires it
+    /// ([`crate::BuiltProxima::outbox_consumers`]). A later call for the same
+    /// name replaces the earlier intake.
+    ///
+    /// The delivery contract is [`Self::outbox_intake`]'s, per consumer.
+    #[must_use]
+    pub fn outbox_consumer(mut self, name: ConsumerName, intake: Arc<dyn DurableIntake>) -> Self {
+        self.outbox_consumers.0.insert(name, intake);
         self
     }
 
@@ -938,7 +959,7 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: publication.clone(),
             published_retention: self.published_retention,
-            outbox_intake: self.outbox_intake,
+            outbox_consumers: self.outbox_consumers,
         };
         config.validate()?;
         Ok((config, parts))
@@ -1032,13 +1053,49 @@ pub struct RuntimeConfig {
     /// the engine never sees it, and the only port that can act on it is
     /// host-held.
     pub published_retention: Option<Duration>,
-    /// The host intake the captured outbox is delivered to, in this process
-    /// ([`RuntimeBuilder::outbox_intake`]).
+    /// The host intakes the captured outbox is delivered to, in this
+    /// process, by consumer name ([`RuntimeBuilder::outbox_consumer`],
+    /// [`RuntimeBuilder::outbox_intake`]).
     ///
-    /// `None` — the default — leaves the outbox captured and undrained,
+    /// Empty — the default — leaves the outbox captured and undrained,
     /// which is a safe state: nothing is lost, the backlog is bounded, and
     /// a later boot with an intake delivers the same records.
-    pub outbox_intake: Option<Arc<dyn DurableIntake>>,
+    pub outbox_consumers: OutboxConsumers,
+}
+
+/// The configured outbox consumers, by name, in name order.
+#[derive(Clone, Default)]
+pub struct OutboxConsumers(std::collections::BTreeMap<ConsumerName, Arc<dyn DurableIntake>>);
+
+impl OutboxConsumers {
+    /// Whether any consumer is configured: the outbox publisher's start
+    /// rule, and what makes `core/goal-change-v1` listenable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every configured consumer and its intake, in name order.
+    pub fn iter(&self) -> impl Iterator<Item = (&ConsumerName, &Arc<dyn DurableIntake>)> {
+        self.0.iter()
+    }
+
+    /// The configured names, in order.
+    pub fn names(&self) -> impl Iterator<Item = &ConsumerName> {
+        self.0.keys()
+    }
+
+    /// `self`, with every name `overlay` configures replaced by its intake.
+    fn overlaid_by(mut self, overlay: Self) -> Self {
+        self.0.extend(overlay.0);
+        self
+    }
+}
+
+impl std::fmt::Debug for OutboxConsumers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1078,6 +1135,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
+            .field("outbox_consumers", &self.outbox_consumers)
             .finish_non_exhaustive()
     }
 }
@@ -1536,7 +1594,7 @@ mod tests {
         RuntimeConfig {
             publication: PublicationConfig::default(),
             published_retention: None,
-            outbox_intake: None,
+            outbox_consumers: OutboxConsumers::default(),
             database_url: "postgres://localhost/proxima".to_string(),
             platform_database_url: None,
             s3: None,

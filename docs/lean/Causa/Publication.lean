@@ -23,6 +23,12 @@ What this module carries:
   G5  at-least-once SAFETY only: `duplicates_share_identity`.
   G6  retention reclaims DELIVERED records only: `prunePublished`, with
       `prune_never_removes_undelivered` and `prune_keeps_recent_deliveries`.
+  G7  per-consumer delivery (doc 18 §Consumers). `Delivery` and `Step` are
+      the state machine of one LANE, one per (record, consumer); a record's
+      own delivery is their aggregate, `.published` only once every lane is
+      (ASSERTED `AggregateSound`). `lane_step_leaves_other_consumers`,
+      `retire_removes_only_that_consumer`, `retire_removes_that_consumer`,
+      `prune_never_removes_owed`.
 
 DELIBERATELY EXCLUDED — do not read an absence here as a claim:
 
@@ -34,6 +40,10 @@ DELIBERATELY EXCLUDED — do not read an absence here as a claim:
     schedule, or a temporal operator. The kernel has no trace vocabulary at
     all, so there is nothing to state it in. Carried by the publisher-recovery
     tests. Only the safety half of at-least-once is proved here.
+  * ORDER. Delivery is not in commit order, and each event carries its
+    series position (`subject`, `sequence`) instead. "A later commit to a
+    series carries a higher position" needs a commit order, which the kernel
+    does not have either. Carried by the storage-pg position tests.
 -/
 
 import Causa.Flavor
@@ -257,6 +267,76 @@ theorem prune_keeps_recent_deliveries
   subst heq
   exact Nat.lt_irrefl now (Nat.lt_of_lt_of_le hfresh hold)
 
+/-! G7 — per-consumer delivery (doc 18 §Consumers). -/
+
+/-- A registered consumer, by name. The registry is runtime state, never a
+    kernel table; the kernel needs names only to tell lanes apart. -/
+structure Consumer where
+  name : String
+
+/-- One consumer's delivery of one record. A lane reuses `Delivery` and
+    `Step`: it has exactly the state machine a record had before consumers. -/
+structure Lane where
+  t        : MemoryId
+  consumer : Consumer
+  delivery : Delivery
+
+def advanceLane (l : Lane) (d : Delivery) : Lane := { l with delivery := d }
+
+/-- One lane moves, keyed by its record and its consumer; every other lane
+    stays as it was. -/
+def laneStep (ls : Set Lane) (l : Lane) (d : Delivery) : Set Lane :=
+  fun x => (x ∈ ls ∧ ¬ (x.t = l.t ∧ x.consumer = l.consumer)) ∨ x = advanceLane l d
+
+/-- Retire: the consumer's lanes go, delivered or not; every other lane
+    stays. Records are untouched: a record only it still owed becomes settled. -/
+def retire (ls : Set Lane) (c : Consumer) : Set Lane :=
+  fun x => x ∈ ls ∧ x.consumer ≠ c
+
+/-- Every lane the record has is delivered. -/
+def Settled (ls : Set Lane) (t : MemoryId) : Prop :=
+  ∀ l : Lane, l ∈ ls → l.t = t → ∃ p : Instant, l.delivery = .published p
+
+/-- ASSERTED, like `OutboxValid`: a record is `.published` only once every
+    lane is. Storage settles the aggregate in the transaction that delivers
+    or retires the last lane; the kernel cannot observe that write. -/
+def AggregateSound (rs : Set Record) (ls : Set Lane) : Prop :=
+  ∀ r : Record, r ∈ rs → (∃ p : Instant, record_delivery r = .published p) →
+    Settled ls (record_t r)
+
+/-- G7 — a consumer's claim, mark, release or expiry moves only its own
+    lane: it cannot deliver, take or hold up another consumer's. -/
+theorem lane_step_leaves_other_consumers
+    (ls : Set Lane) (l : Lane) (d : Delivery) (x : Lane)
+    (hx : x ∈ ls) (hc : x.consumer ≠ l.consumer) : x ∈ laneStep ls l d :=
+  Or.inl ⟨hx, fun h => hc h.2⟩
+
+/-- G7 — retiring a consumer keeps every other consumer's lanes … -/
+theorem retire_removes_only_that_consumer
+    (ls : Set Lane) (c : Consumer) (x : Lane)
+    (hx : x ∈ ls) (hc : x.consumer ≠ c) : x ∈ retire ls c :=
+  ⟨hx, hc⟩
+
+/-- … and removes all of its own, so no record stays owed to a consumer that
+    no longer exists. -/
+theorem retire_removes_that_consumer
+    (ls : Set Lane) (c : Consumer) (x : Lane) (hc : x.consumer = c) :
+    x ∉ retire ls c :=
+  fun h => h.2 hc
+
+/-- G7 — retention waits for EVERY consumer: a record with one lane still
+    undelivered survives every horizon, whatever the other lanes say. -/
+theorem prune_never_removes_owed
+    (rs : Set Record) (ls : Set Lane) (horizon now : Instant)
+    (hagg : AggregateSound rs ls) (r : Record) (hr : r ∈ rs)
+    (l : Lane) (hl : l ∈ ls) (hlt : l.t = record_t r)
+    (howed : ∀ p : Instant, l.delivery ≠ .published p) :
+    r ∈ prunePublished rs horizon now := by
+  refine ⟨hr, ?_⟩
+  rintro ⟨p, hp, _⟩
+  obtain ⟨q, hq⟩ := hagg r hr ⟨p, hp⟩ l hl hlt
+  exact howed q hq
+
 #print axioms record_id_is_fact_t
 #print axioms owner_follows_fact
 #print axioms step_preserves_capture
@@ -270,5 +350,9 @@ theorem prune_keeps_recent_deliveries
 #print axioms selected_erasure_removes_the_selected
 #print axioms prune_never_removes_undelivered
 #print axioms prune_keeps_recent_deliveries
+#print axioms lane_step_leaves_other_consumers
+#print axioms retire_removes_only_that_consumer
+#print axioms retire_removes_that_consumer
+#print axioms prune_never_removes_owed
 
 end Causa.Publication

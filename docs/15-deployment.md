@@ -534,7 +534,7 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 
 | Concern | Deployment rule |
 |---|---|
-| delivery | in process, to the intake the host passes to `outbox_intake(..)`; no broker, no cargo feature, no env var. Without an intake the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)) |
+| delivery | in process, to the intakes the host passes to `outbox_intake(..)` / `outbox_consumer(name, ..)`, one drain per consumer; no broker, no cargo feature, no env var. Without one the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)). A consumer removed from the configuration stays registered until it is retired ([18 §Consumers](18-fact-outbox.md#consumers)) |
 | the shipped `proxima-mcp` binary | supplies no intake, so its outbox is captured and not drained: a deployment that registers a listenable type must embed Proxima in a host that supplies one, or the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
 | forwarding to a broker | **host-owned.** A host that forwards from its intake provisions the broker's topology, storage, capacity, permissions and retention itself; Proxima sees only that `accept` returned ([18 §Forwarding to a broker](18-fact-outbox.md#forwarding-to-a-broker)) |
 | capacity | `PROXIMA_OUTBOX_MAX_PENDING` is the database-side bound and fails listenable writes with `CapacityExhausted` (HTTP **503**). A stalled intake (including a full broker behind it) shows up here |
