@@ -192,10 +192,13 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
 ///
 /// It does not begin, commit or roll back, and sets no scope: it reads what the
 /// connection's scope lets it read, which is every group on a platform-scoped
-/// transaction. A row inserted earlier in the same open transaction is
-/// visible. There is no bool probe: ask for the role and use
-/// [`Role::manages`] or its ceilings, because a membership bit does not
-/// authorize a write (`Causa.Authorization` `may_write`).
+/// transaction. The owner registry is read the same way: an owner scope that
+/// does not admit the subject's own id hides the row that refuses a
+/// group-registered subject, so resolve on a platform-scoped transaction. A
+/// row inserted earlier in the same open transaction is visible. There is no
+/// bool probe: ask for the role and use [`Role::manages`] or its ceilings,
+/// because a membership bit does not authorize a write
+/// (`Causa.Authorization` `may_write`).
 ///
 /// # Errors
 ///

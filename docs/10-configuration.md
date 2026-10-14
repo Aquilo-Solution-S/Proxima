@@ -308,7 +308,9 @@ give their join. A subject registered as a group is refused with
 keeps its personal role. The registry kind is read in the membership query. They begin, commit and
 set nothing, and read what the connection's scope allows: every group on a
 platform-scoped transaction, the groups the membership read policy admits
-under an owner scope. A row inserted earlier in the same transaction is
+under an owner scope. The owner registry is read under the same policy, so an
+owner scope that does not admit the subject's own id hides the row that would
+refuse a group-registered subject: resolve on a platform-scoped transaction. A row inserted earlier in the same transaction is
 visible. There is no bool probe: a membership bit does not authorize a write
 (Lean `Causa.Authorization` `may_write`); ask for the role and use
 `Role::manages` or its ceilings. `PgOwnerAccessResolver` is these two functions
