@@ -1,4 +1,4 @@
-use proxima_core::{Owner, OwnerRefKind, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -137,7 +137,7 @@ async fn reconcile_embeddings_on_connection(
 
     let owner_ids: Option<Vec<uuid::Uuid>> = options
         .owners
-        .map(|owners| owners.iter().copied().map(Owner::stored_owner_id).collect());
+        .map(|owners| owners.iter().copied().map(OwnerId::into_inner).collect());
     let row: (i64, i64) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
         .bind(options.space.model_id())
         .bind(limit)
@@ -162,7 +162,7 @@ async fn reconcile_embeddings_on_connection(
 }
 
 const EMBEDDING_OWNER_PAGE_SQL: &str = "
-SELECT kind, owner_id
+SELECT owner_id
   FROM proxima_core.owners
  WHERE ($1::uuid IS NULL OR owner_id > $1)
  ORDER BY owner_id ASC
@@ -181,25 +181,21 @@ SELECT kind, owner_id
 pub(crate) async fn embedding_owner_page(
     pool: &PgPool,
     platform: Option<&crate::PgPlatformScope>,
-    after: Option<Owner>,
+    after: Option<OwnerId>,
     limit: i64,
-) -> Result<Vec<Owner>, StorageError> {
+) -> Result<Vec<OwnerId>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
         return Ok(Vec::new());
     }
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
-    let result = sqlx::query_as::<_, (OwnerRefKind, uuid::Uuid)>(EMBEDDING_OWNER_PAGE_SQL)
-        .bind(after.map(Owner::stored_owner_id))
+    let result = sqlx::query_scalar::<_, uuid::Uuid>(EMBEDDING_OWNER_PAGE_SQL)
+        .bind(after.map(OwnerId::into_inner))
         .bind(limit)
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)
-        .map(|rows| {
-            rows.into_iter()
-                .map(|(kind, id)| kind.with_uuid(id))
-                .collect()
-        });
+        .map(|rows| rows.into_iter().map(OwnerId::new).collect());
     crate::owner_scope::finish_transaction(tx, result).await
 }
 

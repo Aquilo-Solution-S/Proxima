@@ -6,7 +6,6 @@ use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerS
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use sqlx::{Connection, Postgres, Transaction};
@@ -25,7 +24,7 @@ pub async fn export_owner_bundle(
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerExportBundle, StorageError> {
     let owner = auth.audit().owner();
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     let mut conn = if let Some(scope) = platform {
         scope.detached_connection().await?
@@ -61,7 +60,7 @@ async fn export_owner_bundle_snapshot(
     conn: &mut sqlx::postgres::PgConnection,
     platform: Option<&crate::PgPlatformScope>,
     auth: &ExportAuthorization,
-    owner: proxima_core::OwnerRef,
+    owner: proxima_core::OwnerId,
     owner_id: uuid::Uuid,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
@@ -170,7 +169,7 @@ fn validate_lifecycle_dispatch(
 async fn invoke_host_lifecycle_export(
     tx: &mut Transaction<'_, Postgres>,
     surfaces: &OwnerSurfaces,
-    owner: proxima_core::OwnerRef,
+    owner: proxima_core::OwnerId,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
     tables: &mut BTreeMap<String, Vec<Value>>,
 ) -> Result<(), StorageError> {

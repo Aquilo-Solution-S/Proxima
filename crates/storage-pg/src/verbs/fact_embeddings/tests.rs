@@ -14,7 +14,7 @@ mod pg_tests {
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
         AccessKind, AuthPath, AuthzContext, EmbeddingMode, Engine, EntityId, EntityKind,
-        FactIngestPort, FlavorRegistry, GroupId, InputContractId, MemoryTarget, Owner,
+        FactIngestPort, FlavorRegistry, GroupId, InputContractId, MemoryTarget, OwnerId,
         ProtocolError, SchemaId, SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
@@ -129,14 +129,10 @@ mod pg_tests {
         }
     }
 
-    async fn owner_fact_write_permit(owner: &Owner) -> Result<OwnerWritePermit, StorageError> {
-        let Owner::Personal(user_id) = owner else {
-            return Err(StorageError::Internal(
-                "fact embedding test helper expects a personal owner".into(),
-            ));
-        };
+    async fn owner_fact_write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError> {
+        let user_id = owner.as_user();
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let authz = AuthzContext::for_subject(*user_id, AuthPath::HostBearer);
+        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
         engine
             .authorize_owner_write(&authz, owner, AccessKind::Fact)
             .await
@@ -151,7 +147,7 @@ mod pg_tests {
     /// `assert_memory_declares_sidecar` refuses.
     async fn ingest_note_fact(
         pg: &crate::PgStorage,
-        owner: &Owner,
+        owner: &OwnerId,
         draft: &FactWriteCommand,
         embedding_spaces: &[EmbeddingSpace],
         title: &str,
@@ -833,7 +829,7 @@ mod pg_tests {
         pg: &crate::PgStorage,
     ) -> Result<BackfillProgress, Box<dyn std::error::Error>> {
         let owner = owner_fixture();
-        let foreign_owner = Owner::Personal(proxima_core::UserId::new(Uuid::now_v7()));
+        let foreign_owner = OwnerId::from(proxima_core::UserId::new(Uuid::now_v7()));
         let foreign = backfill_note(pg, &foreign_owner, "foreign earlier Fact", None).await?;
         let earlier = backfill_note(
             pg,
@@ -872,9 +868,7 @@ mod pg_tests {
             .with_embedding_router(routed(RecordingBatchEmbedding {
                 batch_widths: Arc::default(),
             }));
-        let Owner::Personal(user_id) = owner else {
-            return Err("backfill fixture owner must be personal".into());
-        };
+        let user_id = owner.as_user();
         let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
         let mut enqueued = Vec::new();
         for _ in 0..3 {
@@ -894,7 +888,7 @@ mod pg_tests {
                 "SELECT count(*) FROM proxima_core.embedding_jobs
                   WHERE owner_id = $1 AND entity_id = $2 AND model_id = 'stub-fact-embed'",
             )
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .bind(later.into_inner())
             .fetch_one(pool)
             .await?,
@@ -904,7 +898,7 @@ mod pg_tests {
 
     async fn backfill_note(
         pg: &crate::PgStorage,
-        owner: &Owner,
+        owner: &OwnerId,
         text: &str,
         model: Option<&str>,
     ) -> Result<MemoryId, StorageError> {
@@ -1001,7 +995,7 @@ mod pg_tests {
                 &cold,
                 &object_key,
                 t,
-                owner.stored_owner_id(),
+                owner.into_inner(),
             )
             .await?;
             forget_tx.commit().await?;
@@ -1197,7 +1191,7 @@ mod pg_tests {
             let pool = pg.pool_for_tests();
             let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             let stale = claims[0].clone();
-            let destination = Owner::Group(GroupId::new(Uuid::now_v7()));
+            let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
             let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
 
@@ -1220,7 +1214,7 @@ mod pg_tests {
             .bind(stale.job_id)
             .fetch_one(pool)
             .await?;
-            assert_eq!(job_owner, destination.stored_owner_id());
+            assert_eq!(job_owner, destination.into_inner());
             assert_eq!(job_token, Some(stale.claim_token));
 
             assert_eq!(
@@ -1441,7 +1435,7 @@ mod pg_tests {
     }
 
     fn derived_request(
-        owner: Owner,
+        owner: OwnerId,
         origins: &[MemoryId],
         text: String,
     ) -> Result<DerivedMemory, ProtocolError> {
@@ -1472,7 +1466,7 @@ mod pg_tests {
     /// Fact for the derived write to declare.
     async fn capped_authoring_fixture(
         pg: &crate::PgStorage,
-        owner: &Owner,
+        owner: &OwnerId,
         max_chars: usize,
     ) -> Result<
         (
@@ -1483,9 +1477,7 @@ mod pg_tests {
         ),
         Box<dyn std::error::Error>,
     > {
-        let Owner::Personal(user_id) = owner else {
-            return Err("fixture owner is personal".into());
-        };
+        let user_id = owner.as_user();
         let mut draft = fact_draft("origin");
         draft.schema_id = SchemaId::new("core/agent-note-v1".into());
         let origin = ingest_note_fact(pg, owner, &draft, &[], "origin", "origin").await?;
@@ -1498,7 +1490,7 @@ mod pg_tests {
                 max_chars,
                 offered: offered.clone(),
             }));
-        let authz = AuthzContext::for_subject(*user_id, AuthPath::HostBearer);
+        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
         Ok((engine, authz, origin.memory_id, offered))
     }
 

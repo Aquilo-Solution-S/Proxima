@@ -9,11 +9,11 @@ use proxima_code::testkit::{
     advance_stage, mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
 };
 use proxima_code::{FileClassCounts, RunStage, RunStatus, StageCounters};
-use proxima_core::Owner;
+use proxima_core::OwnerId;
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
-async fn register_test_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
+async fn register_test_repo(pool: &sqlx::PgPool, owner: &OwnerId, repo_id: Uuid) {
     register_repo(
         pool,
         None,

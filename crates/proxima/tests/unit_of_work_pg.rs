@@ -74,7 +74,7 @@ fn mcp_call(tool: &str, actor: &str) -> McpCallLoggedV1 {
     }
 }
 
-fn admin_authz_for(owner: proxima_core::Owner) -> AuthzContext {
+fn admin_authz_for(owner: proxima_core::OwnerId) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(
         AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
@@ -87,7 +87,7 @@ fn admin_authz_for(owner: proxima_core::Owner) -> AuthzContext {
 }
 
 fn typed_goal_request(
-    owner: proxima_core::Owner,
+    owner: proxima_core::OwnerId,
     assignment: MemoryId,
     evidence: Vec<GoalEvidenceRef>,
     request_id: &str,

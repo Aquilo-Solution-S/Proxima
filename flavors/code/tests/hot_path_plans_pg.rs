@@ -125,7 +125,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             .bind(None::<String>)
             .bind(20_i64)
             .bind("")
-            .bind(vec![owner.stored_owner_id()])
+            .bind(vec![owner.into_inner()])
             .bind(None::<String>)
             .bind(true)
             .fetch_one(&mut *tx)
@@ -188,7 +188,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             ),
         ] {
             let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
-            let owner_ids = vec![owner.stored_owner_id()];
+            let owner_ids = vec![owner.into_inner()];
             // SQL-POLICY: fixed-fragment
             let query = sqlx::query_scalar(sqlx::AssertSqlSafe(explain));
             let plan: serde_json::Value = if label == "chunk" {
@@ -249,7 +249,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
             ("summary-ranked", summary_search_sql_for_tests()),
         ] {
             let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
-            let owner_ids = vec![owner.stored_owner_id()];
+            let owner_ids = vec![owner.into_inner()];
             // SQL-POLICY: fixed-fragment
             let query = sqlx::query_scalar(sqlx::AssertSqlSafe(explain));
             let plan: serde_json::Value = if label == "commit-ranked" {
@@ -285,7 +285,7 @@ async fn code_hot_path_plans_use_expected_indexes() {
         let heads_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {heads}");
         // SQL-POLICY: fixed-fragment
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(heads_explain))
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .bind(repo_id)
             .bind(FileRevisionV1::SCHEMA_ID)
             .bind(vec!["src/lib.rs".to_string()])
@@ -411,15 +411,14 @@ fn gin_index_cond(plan: &serde_json::Value) -> Option<String> {
 /// are in place.
 async fn seed_chunk_corpus(
     pool: &sqlx::PgPool,
-    owner: &proxima_core::Owner,
+    owner: &proxima_core::OwnerId,
     repo_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -427,7 +426,7 @@ async fn seed_chunk_corpus(
          SELECT uuidv7(), 'fact', 'proxima-code/code-chunk-v1', $1, uuidv7()
            FROM generate_series(1, $2)",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(CORPUS_ROWS)
     .execute(pool)
     .await?;
@@ -457,7 +456,7 @@ async fn seed_chunk_corpus(
                 ARRAY['proxima_code.code_chunk_v1']
            FROM ids",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
@@ -483,7 +482,7 @@ async fn seed_chunk_corpus(
                             'fn needle_' || n || ' let needle straw ' || n)
            FROM ids",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .execute(&mut *stamped)
     .await?;

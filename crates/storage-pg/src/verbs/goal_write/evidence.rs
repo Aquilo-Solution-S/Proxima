@@ -1,6 +1,6 @@
 use super::{
-    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet, MemoryId, Owner,
-    Postgres, StorageError, SystemOrigin, Transaction, map_err,
+    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet, MemoryId,
+    OwnerId, Postgres, StorageError, SystemOrigin, Transaction, map_err,
 };
 
 pub(super) fn validate_operator_goal_evidence(
@@ -31,7 +31,7 @@ pub(super) fn validate_operator_goal_evidence(
 
 pub(super) async fn validate_evidence_in_owner(
     tx: &mut Transaction<'_, Postgres>,
-    _owner: &Owner,
+    _owner: &OwnerId,
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let mut seen = HashSet::with_capacity(evidence.len());
@@ -83,7 +83,7 @@ pub(super) async fn validate_evidence_in_owner(
 /// a cooled or missing target into a shorter successor statement.
 pub(super) async fn load_goal_evidence_exact(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     goal_id: GoalId,
 ) -> Result<Option<Vec<GoalEvidenceRef>>, StorageError> {
     let ids: Option<Vec<uuid::Uuid>> = sqlx::query_scalar(
@@ -92,7 +92,7 @@ pub(super) async fn load_goal_evidence_exact(
           WHERE t = $1 AND owner_id = $2",
     )
     .bind(goal_id.into_inner())
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;

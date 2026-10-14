@@ -6,7 +6,7 @@
 
 use crate::error::ProtocolError;
 use crate::verbs::query::SidecarAtom;
-use crate::{MemoryId, Owner, SchemaId};
+use crate::{MemoryId, OwnerId, SchemaId};
 
 /// Series one call may erase, the selection's reference closure included.
 pub const MAX_ERASE_SERIES_PER_CALL: usize = 256;
@@ -92,7 +92,7 @@ pub enum EraseMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesEraseReceipt {
     pub flavor_id: &'static str,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub mode: EraseMode,
     /// Every version erased, ascending by `t`.
     pub versions: Vec<MemoryId>,

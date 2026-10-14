@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{AccessKind, AuthzContext, Owner};
+use proxima_core::{AccessKind, AuthzContext, OwnerId};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -50,7 +50,7 @@ pub(super) fn validate_prepare(
 /// read access is `may_read(owner, Fact)` — the same per-kind role ceiling the
 /// write gate uses, not a coarser "any accessible principal" check that a
 /// Goal-only-read role could slip through.
-pub(super) fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(), BlobError> {
+pub(super) fn ensure_owner_access(ctx: &AuthzContext, owner: &OwnerId) -> Result<(), BlobError> {
     if ctx.may_read(owner, AccessKind::Fact) {
         Ok(())
     } else {
@@ -67,7 +67,7 @@ pub(super) fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(
 /// or canonical cited-blob rows in the group's namespace.
 pub(super) fn ensure_owner_write_access(
     ctx: &AuthzContext,
-    owner: &Owner,
+    owner: &OwnerId,
 ) -> Result<(), BlobError> {
     if ctx.may_write(owner, AccessKind::Fact) {
         Ok(())
@@ -90,7 +90,7 @@ pub(super) fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerRef, UserId};
+    use proxima_core::{OwnerId, UserId};
 
     use super::super::testkit::prepare_req;
     use super::*;
@@ -110,16 +110,16 @@ mod tests {
 
     #[test]
     fn owner_access_gate_allows_accessible_owner() {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
         ensure_owner_access(&ctx, &owner).expect("accessible owner passes");
     }
 
     #[test]
     fn owner_access_gate_denies_foreign_owner() {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
-        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let err = ensure_owner_access(&ctx, &foreign).expect_err("foreign owner denied");
         assert!(matches!(err, BlobError::Denied(_)));
     }
@@ -131,7 +131,7 @@ mod tests {
     fn owner_write_gate_denies_read_only_group_viewer() {
         use proxima_core::{GroupId, Role};
         let subject = UserId::new(Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let ctx = AuthzContext::for_subject_with_role(
             subject,
             [(group, Role::viewer())],
@@ -148,13 +148,13 @@ mod tests {
     fn owner_write_gate_allows_editor_group_and_self() {
         use proxima_core::{GroupId, Role};
         let subject = UserId::new(Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let ctx = AuthzContext::for_subject_with_role(
             subject,
             [(group, Role::editor())],
             proxima_core::AuthPath::HostBearer,
         );
         ensure_owner_write_access(&ctx, &group).expect("editor can write the group");
-        ensure_owner_write_access(&ctx, &OwnerRef::Personal(subject)).expect("self is writable");
+        ensure_owner_write_access(&ctx, &OwnerId::from(subject)).expect("self is writable");
     }
 }

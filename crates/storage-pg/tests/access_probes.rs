@@ -8,7 +8,7 @@
 //! transaction, and they leave that transaction open and usable.
 
 use proxima_core::{
-    AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, UserId,
+    AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -23,8 +23,12 @@ async fn seed_membership<'e>(
     relation: Relation,
 ) {
     sqlx::query(
-        "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
-         VALUES ($1, $2, $3)",
+        "WITH registered AS (
+              INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+              ON CONFLICT (owner_id) DO NOTHING
+          )
+          INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+          VALUES ($1, $2, $3)",
     )
     .bind(group.into_inner())
     .bind(member.into_inner())
@@ -99,7 +103,7 @@ async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
                 );
                 assert_eq!(
                     group_role(&mut conn, who, group).await?,
-                    probed.role_for(&OwnerRef::Group(group)),
+                    probed.role_for(&OwnerId::from(group)),
                     "group_role must equal the same subject's map entry"
                 );
             }
@@ -107,19 +111,16 @@ async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
 
         // The values themselves, so equality cannot be two wrong answers.
         let roles = roles_for_subject(&mut conn, subject).await?;
+        assert_eq!(roles.role_for(&OwnerId::from(single)), Some(Role::editor()));
         assert_eq!(
-            roles.role_for(&OwnerRef::Group(single)),
-            Some(Role::editor())
-        );
-        assert_eq!(
-            roles.role_for(&OwnerRef::Group(joined)),
+            roles.role_for(&OwnerId::from(joined)),
             Some(Role::viewer().join(Role::ingest()))
         );
         assert_eq!(
-            roles.role_for(&OwnerRef::Group(promoted)),
+            roles.role_for(&OwnerId::from(promoted)),
             Some(Role::admin())
         );
-        assert_eq!(roles.role_for(&OwnerRef::Group(strangers_only)), None);
+        assert_eq!(roles.role_for(&OwnerId::from(strangers_only)), None);
         assert_eq!(
             group_role(&mut conn, subject, joined).await?,
             Some(Role::viewer().join(Role::ingest()))
@@ -133,11 +134,11 @@ async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
 
         // A Personal owner is never an answer beyond the subject's own.
         assert_eq!(
-            roles.role_for(&OwnerRef::Personal(subject)),
+            roles.role_for(&OwnerId::from(subject)),
             Some(Role::personal())
         );
-        assert_eq!(roles.role_for(&OwnerRef::Personal(stranger)), None);
-        assert_eq!(roles.role_for(&OwnerRef::Personal(loner)), None);
+        assert_eq!(roles.role_for(&OwnerId::from(stranger)), None);
+        assert_eq!(roles.role_for(&OwnerId::from(loner)), None);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -166,7 +167,7 @@ async fn a_probe_sees_the_callers_open_transaction_and_leaves_it_usable() {
         assert_eq!(
             roles_for_subject(&mut tx, subject)
                 .await?
-                .role_for(&OwnerRef::Group(team)),
+                .role_for(&OwnerId::from(team)),
             Some(Role::viewer())
         );
         assert_eq!(resolver.resolve_group_role(subject, team).await?, None);

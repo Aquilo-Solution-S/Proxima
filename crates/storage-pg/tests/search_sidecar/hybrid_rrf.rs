@@ -13,7 +13,7 @@ fn assert_score(actual: f32, expected: f32) {
     );
 }
 
-fn hybrid_request(owner: OwnerRef, query: &str) -> MemorySearchRequest {
+fn hybrid_request(owner: OwnerId, query: &str) -> MemorySearchRequest {
     let mut req = search_req(owner, query);
     req.mode = SearchMode::Hybrid;
     let mut values = vec![0.0; 1024];
@@ -35,7 +35,7 @@ fn hits_by_id(
 async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult {
     let (pg, _guard) = fresh_pg("hybrid_rrf_legs").await;
     let pool = pg.pool_for_tests();
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let rescue = seed_note(pool, owner, "Partial result", "quartz").await?;
     let semantic = seed_note(pool, owner, "Concept result", "Unrelated vocabulary").await?;
     let both = seed_note(pool, owner, "Exact result", "quartz nebula").await?;
@@ -43,7 +43,7 @@ async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult
     seed_embedding(pool, owner, semantic, &embed_vector()).await?;
     seed_embedding(pool, owner, both, &embed_vector_xy(0.8, 0.6)).await?;
     seed_embedding(pool, owner, zero, &embed_vector_xy(0.0, 1.0)).await?;
-    let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let foreign = seed_note(pool, other_owner, "quartz nebula", "quartz nebula").await?;
     seed_embedding(pool, other_owner, foreign, &embed_vector()).await?;
     let projection = note_projection();
@@ -105,7 +105,7 @@ async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult
 async fn hybrid_min_score_keeps_either_raw_leg_and_drops_both_below_floor() -> TestResult {
     let (pg, _guard) = fresh_pg("hybrid_rrf_floor").await;
     let pool = pg.pool_for_tests();
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let lexical = seed_note(pool, owner, "Lexical winner", "quartz nebula").await?;
     let semantic = seed_note(pool, owner, "Semantic winner", "Unrelated vocabulary").await?;
     let both_low = seed_note(pool, owner, "Weak winner", "quartz").await?;
@@ -148,10 +148,10 @@ async fn hybrid_min_score_keeps_either_raw_leg_and_drops_both_below_floor() -> T
     Ok(())
 }
 
-async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<Vec<Uuid>, sqlx::Error> {
+async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerId) -> Result<Vec<Uuid>, sqlx::Error> {
     let ids: Vec<_> = (0..1_001).map(|_| Uuid::now_v7()).collect();
     sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
     let mut stamped = pool.begin().await?;
@@ -160,7 +160,7 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<Vec<U
          SELECT t, t, 'fact', 'core/agent-note-v1', $2 FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
@@ -169,7 +169,7 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<Vec<U
                 ARRAY['proxima_core.agent_note_v1'] FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
@@ -191,7 +191,7 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<Vec<U
 #[tokio::test]
 async fn hybrid_cursor_pages_end_at_fixed_window_in_both_orders() -> TestResult {
     let (pg, _guard) = fresh_pg("hybrid_rrf_window").await;
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let mut ids = seed_window_notes(pg.pool_for_tests(), owner).await?;
     ids.sort_unstable_by(|a, b| b.cmp(a));
     let expected: BTreeSet<_> = ids[..1_000].iter().copied().collect();

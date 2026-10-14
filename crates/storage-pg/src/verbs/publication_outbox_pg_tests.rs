@@ -26,8 +26,8 @@ use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
-    AccessKind, EntityId, FactIngestPort, FactPayload, GroupId, MemoryId, Owner, OwnerRef,
-    SchemaId, SchemaVersion, SidecarPayload, SourceId, StorageError, UserId,
+    AccessKind, EntityId, FactIngestPort, FactPayload, GroupId, MemoryId, OwnerId, SchemaId,
+    SchemaVersion, SidecarPayload, SourceId, StorageError, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -41,18 +41,17 @@ fn source() -> PublicationSource {
     PublicationSource::new("urn:proxima:publication-outbox-tests").expect("a URN is absolute")
 }
 
-fn owner_fixture() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn owner_fixture() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
-async fn register_owner(pool: &sqlx::PgPool, owner: &Owner) {
+async fn register_owner(pool: &sqlx::PgPool, owner: &OwnerId) {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
+         VALUES ($1, 'personal'::proxima_core.owner_kind)
          ON CONFLICT (owner_id) DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
+    .bind(owner.into_inner())
     .execute(pool)
     .await
     .expect("owner registers");
@@ -65,7 +64,7 @@ fn probe(note: &str) -> ListenableProbeV1 {
     }
 }
 
-fn draft_for(owner: Owner, payload: &ListenableProbeV1) -> PublicationDraft {
+fn draft_for(owner: OwnerId, payload: &ListenableProbeV1) -> PublicationDraft {
     PublicationDraft::new(
         ListenableProbeV1::schema_id(),
         SchemaVersion::new(ListenableProbeV1::SCHEMA_VERSION),
@@ -97,7 +96,7 @@ fn host_extensions() -> PublicationExtensions {
 /// test that wants a small ceiling has to say so where a deployment says
 /// so, on the plan travelling with the write.
 fn plan_for(
-    owner: Owner,
+    owner: OwnerId,
     payload: &ListenableProbeV1,
     limits: PublicationLimits,
 ) -> PublicationPlan {
@@ -130,7 +129,7 @@ fn fact_command(schema_id: &str, ingest_key: Option<&str>) -> FactWriteCommand {
     }
 }
 
-fn witness(owner: &Owner, command: FactWriteCommand) -> AuthorizedFactWrite {
+fn witness(owner: &OwnerId, command: FactWriteCommand) -> AuthorizedFactWrite {
     AuthorizedFactWrite::new_for_tests(
         OwnerWritePermit::new_for_tests(*owner, AccessKind::Fact),
         command,
@@ -143,7 +142,7 @@ fn witness(owner: &Owner, command: FactWriteCommand) -> AuthorizedFactWrite {
 /// flavor's Fact write takes.
 async fn ingest_listenable(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     payload: &ListenableProbeV1,
     ingest_key: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
@@ -152,7 +151,7 @@ async fn ingest_listenable(
 
 async fn ingest_listenable_with_source_id(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     payload: &ListenableProbeV1,
     source_id: Option<&str>,
 ) -> Result<FactIngestOutcome, StorageError> {
@@ -173,7 +172,7 @@ async fn ingest_listenable_with_source_id(
 /// The same route under an explicit deployment bound.
 async fn ingest_listenable_under(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     payload: &ListenableProbeV1,
     ingest_key: Option<&str>,
     limits: PublicationLimits,
@@ -188,7 +187,7 @@ async fn ingest_listenable_under(
 /// what core produces from an authorization context that carries them.
 async fn ingest_listenable_with_extensions(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     payload: &ListenableProbeV1,
     extensions: PublicationExtensions,
 ) -> Result<FactIngestOutcome, StorageError> {
@@ -210,7 +209,7 @@ async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
 async fn assert_ineligible_under_shared_fence(
     pg: &PgStorage,
     pool: &sqlx::PgPool,
-    owner: Owner,
+    owner: OwnerId,
     fact: MemoryId,
 ) {
     let mut tx = pool.begin().await.expect("begin late eligibility check");
@@ -232,12 +231,9 @@ async fn memory_rows(pool: &sqlx::PgPool) -> i64 {
         .expect("count reads")
 }
 
-async fn publication_origin(
-    pool: &sqlx::PgPool,
-    t: Uuid,
-) -> Option<(Uuid, String, Option<String>)> {
+async fn publication_origin(pool: &sqlx::PgPool, t: Uuid) -> Option<(Uuid, Option<String>)> {
     sqlx::query_as(
-        "SELECT original_owner_id, original_owner_kind::text, source_id
+        "SELECT original_owner_id, source_id
            FROM proxima_core.publication_origin WHERE t = $1",
     )
     .bind(t)
@@ -289,8 +285,8 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     assert_eq!(outbox_rows(&pool).await, 1);
     assert_eq!(
         publication_origin(&pool, t).await,
-        Some((owner.stored_owner_id(), "personal".into(), None)),
-        "a fresh listenable Fact captures its typed original owner and known source absence"
+        Some((owner.into_inner(), None)),
+        "a fresh listenable Fact captures its original owner and known source absence"
     );
 
     // The envelope is the exact `CloudEvents` document, in the declared key
@@ -355,7 +351,7 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
 async fn a_group_capture_keeps_its_typed_original_owner_and_native_source() {
     let (pg, db) = fresh_pg("pub_capture_group_origin").await;
     let pool = pg.pool_for_tests().clone();
-    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
     register_owner(&pool, &owner).await;
 
     let outcome = ingest_listenable(&pg, &owner, &probe("group capture"), Some("group-origin-1"))
@@ -363,11 +359,7 @@ async fn a_group_capture_keeps_its_typed_original_owner_and_native_source() {
         .expect("a group Fact with a native source commits");
     assert_eq!(
         publication_origin(&pool, outcome.memory_id.into_inner()).await,
-        Some((
-            owner.stored_owner_id(),
-            "group".into(),
-            Some("probe/source".into())
-        )),
+        Some((owner.into_inner(), Some("probe/source".into()))),
         "fresh capture preserves the group kind and native source"
     );
 
@@ -386,9 +378,11 @@ async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness
         .expect("capture");
     let t = published.memory_id.into_inner();
 
+    // The same uuid under another kind is no longer a different owner: an
+    // owner is its bare id, so the wrong owners are other ids.
     for wrong_owner in [
-        OwnerRef::Group(GroupId::new(Uuid::now_v7())),
-        OwnerRef::Group(GroupId::new(owner.stored_owner_id())),
+        OwnerId::from(GroupId::new(Uuid::now_v7())),
+        OwnerId::from(UserId::new(Uuid::now_v7())),
     ] {
         let mut wrong_owner_tx = pool.begin().await.expect("begin wrong-owner check");
         crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut wrong_owner_tx)
@@ -419,7 +413,7 @@ async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness
         .expect("hard delete writes the core witness");
     assert_eq!(
         publication_origin(&pool, t).await.unwrap().0,
-        owner.stored_owner_id()
+        owner.into_inner()
     );
 
     let mut witnessed_tx = pool.begin().await.expect("begin witnessed check");
@@ -873,7 +867,7 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
 /// Migration 0025: `publication_outbox_published_chk` ties
 /// `state = 'published'` to `published_at` alone, from either side; the mark
 /// that published `published` wrote no broker receipt.
-async fn published_is_exactly_published_at(pg: &PgStorage, owner: &Owner, published: Uuid) {
+async fn published_is_exactly_published_at(pg: &PgStorage, owner: &OwnerId, published: Uuid) {
     let pool = pg.pool_for_tests();
     let pending = ingest_listenable(pg, owner, &probe("still pending"), None)
         .await
@@ -957,10 +951,8 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     let (pg, db) = fresh_pg("pub_eligibility_uow").await;
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
-    let OwnerRef::Personal(user_id) = owner else {
-        unreachable!("the fixture is a personal owner")
-    };
-    let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let user_id = owner.as_user();
+    let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
     register_owner(&pool, &owner).await;
     register_owner(&pool, &group).await;
     let fact = ingest_listenable(&pg, &owner, &probe("same transaction"), Some("race-key"))
@@ -987,7 +979,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
             .fetch_one(&pool)
             .await
             .expect("transferred Fact remains live"),
-        group.stored_owner_id()
+        group.into_inner()
     );
 
     // Model the GT UnitOfWork's entry fence. Eligibility and the following
@@ -1108,7 +1100,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
             .fetch_one(&pool)
             .await
             .expect("source erase keeps the transferred Fact"),
-        group.stored_owner_id(),
+        group.into_inner(),
         "revoking original source metadata does not hard-erase the live Fact"
     );
 
@@ -1141,11 +1133,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     assert_ne!(reused.memory_id.into_inner(), t);
     assert_eq!(
         publication_origin(&pool, reused.memory_id.into_inner()).await,
-        Some((
-            owner.stored_owner_id(),
-            "personal".into(),
-            Some("probe/source".into())
-        )),
+        Some((owner.into_inner(), Some("probe/source".into()))),
         "the source name has no permanent stop marker"
     );
     let mut reuse_check = pool.begin().await.expect("begin reused-source check");
@@ -1187,9 +1175,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     .await
     .expect("capture whole-owner Fact")
     .memory_id;
-    let Owner::Personal(whole_user) = whole_owner else {
-        unreachable!("fixture is personal")
-    };
+    let whole_user = whole_owner.as_user();
     let whole_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
         user_id: whole_user,
         drop_event_id: "whole-owner-first".into(),
@@ -1202,7 +1188,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     // Source erase first after transfer: the live physical Fact remains at B,
     // but the original A admission can no longer pass the late check.
     let source_owner = owner_fixture();
-    let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
     register_owner(&pool, &destination).await;
     let source_id = SourceId::new("source-erase-first");
     let source_fact = ingest_listenable_with_source_id(
@@ -1226,9 +1212,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
         .await
         .expect("transfer to current owner")
     );
-    let Owner::Personal(source_user) = source_owner else {
-        unreachable!("fixture is personal")
-    };
+    let source_user = source_owner.as_user();
     let source_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
         user_id: source_user,
         source_id: source_id.clone(),
@@ -1249,7 +1233,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
             .fetch_one(&pool)
             .await
             .expect("source-erased transferred Fact remains live"),
-        destination.stored_owner_id()
+        destination.into_inner()
     );
     assert_ineligible_under_shared_fence(&pg, &pool, source_owner, source_fact).await;
 
@@ -1290,10 +1274,8 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
     let (pg, db) = fresh_pg("pub_pruned_origin_erase").await;
     let pool = pg.pool_for_tests().clone();
     let original_owner = owner_fixture();
-    let OwnerRef::Personal(user_id) = original_owner else {
-        unreachable!("the fixture owner is personal")
-    };
-    let current_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let user_id = original_owner.as_user();
+    let current_owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
     register_owner(&pool, &original_owner).await;
     register_owner(&pool, &current_owner).await;
 
@@ -1332,11 +1314,7 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
     assert_eq!(outbox_rows(&pool).await, 0);
     assert_eq!(
         publication_origin(&pool, t).await,
-        Some((
-            original_owner.stored_owner_id(),
-            "personal".into(),
-            Some("probe/source".into())
-        )),
+        Some((original_owner.into_inner(), Some("probe/source".into()))),
         "body pruning retains exact original-owner/source identity"
     );
 
@@ -1364,7 +1342,7 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
             .fetch_one(&pool)
             .await
             .expect("transferred Fact survives original-source revocation"),
-        current_owner.stored_owner_id()
+        current_owner.into_inner()
     );
 
     let mut check = pool.begin().await.expect("begin late-delivery check");
@@ -1393,12 +1371,8 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     let pool = pg.pool_for_tests().clone();
     let original = owner_fixture();
     let destination = owner_fixture();
-    let Owner::Personal(original_user) = original else {
-        unreachable!("the fixture owner is personal")
-    };
-    let Owner::Personal(destination_user) = destination else {
-        unreachable!("the fixture owner is personal")
-    };
+    let original_user = original.as_user();
+    let destination_user = destination.as_user();
     register_owner(&pool, &original).await;
     register_owner(&pool, &destination).await;
 
@@ -1498,7 +1472,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
             .fetch_one(&pool)
             .await
             .expect("source-revoked Fact remains live"),
-        destination.stored_owner_id()
+        destination.into_inner()
     );
 
     let overlap_source = SourceId::new("overlap-source");
@@ -1558,7 +1532,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     assert_eq!(absent_counts.get("publication_origins"), 0);
     assert_eq!(
         publication_origin(&pool, unrelated.memory_id.into_inner()).await,
-        Some((original.stored_owner_id(), "personal".into(), None)),
+        Some((original.into_inner(), None)),
         "an unmatched source scope preserves unrelated original attribution"
     );
 
@@ -1656,7 +1630,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     );
     assert_eq!(
         publication_origin(&pool, unrelated.memory_id.into_inner()).await,
-        Some((original.stored_owner_id(), "personal".into(), None)),
+        Some((original.into_inner(), None)),
         "destination erase leaves an unrelated A original intact"
     );
     assert_eq!(
@@ -1698,7 +1672,7 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
     );
     assert_eq!(
         publication_origin(&pool, t).await,
-        Some((owner.stored_owner_id(), "personal".into(), None)),
+        Some((owner.into_inner(), None)),
         "cooling preserves its payload-free publication origin"
     );
     let mut cold_check = pool.begin().await.expect("begin cooled eligibility check");
@@ -1807,9 +1781,7 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
         }
     }
 
-    let Owner::Personal(user_id) = erased_owner else {
-        panic!("the fixture owner is personal");
-    };
+    let user_id = erased_owner.as_user();
     let auth = proxima_core::owner_inverse::EraseAuthorization::new_for_tests(
         proxima_core::owner_inverse::OwnerEraseTarget::PersonalOwner {
             user_id,
@@ -1854,7 +1826,7 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
     );
     assert_eq!(
         publication_origin(&pool, survivor.memory_id.into_inner()).await,
-        Some((bystander.stored_owner_id(), "personal".into(), None)),
+        Some((bystander.into_inner(), None)),
         "whole-owner erase removes source-free origins only for that owner"
     );
 

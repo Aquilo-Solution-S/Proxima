@@ -2,7 +2,7 @@ use proxima::flavor::{GoalPayload, PayloadKeyBuilder};
 use proxima::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
     GoalWakeToolId, GoalWakeTrigger, IdempotencyKey, ListWakeCandidatesReadRequest, MemoryId,
-    OwnerRef, SystemOrigin,
+    OwnerId, SystemOrigin,
 };
 use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion, ToolId, UserId};
 
@@ -24,7 +24,7 @@ impl GoalPayload for FacadeGoalPayload {
 
 #[test]
 fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
 
     let write = GoalPayloadWrite::from_payload(
@@ -75,7 +75,7 @@ fn facade_reexports_wake_surface_for_embedded_hosts() {
     )
     .expect("wake config validates through facade re-export");
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let request = GoalCreateRequest::product(
         owner,
         GoalAssignmentTarget::perspective(MemoryId::new(uuid::Uuid::now_v7())),

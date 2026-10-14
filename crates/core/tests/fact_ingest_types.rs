@@ -3,7 +3,7 @@
 use proxima_core::verbs::fact_ingest::{
     Citation, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SourceId, UserId};
+use proxima_core::{OwnerId, SchemaId, SchemaVersion, SourceId, UserId};
 use uuid::Uuid;
 
 fn fresh_command() -> FactWriteCommand {
@@ -38,7 +38,7 @@ fn fresh_command() -> FactWriteCommand {
 
 #[test]
 fn receipt_id_is_deterministic_for_stamped_owner() {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let command = fresh_command();
     let h1 = command.receipt_id_for_owner(owner);
     let h2 = command.receipt_id_for_owner(owner);

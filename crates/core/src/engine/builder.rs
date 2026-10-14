@@ -249,7 +249,7 @@ mod tests {
                     .expect("supported lane"),
             ));
 
-        let owner = crate::Owner::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let owner = crate::OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7()));
         let route = engine.embedding_route(&owner).await.expect("route");
         let result = route
             .current_client()

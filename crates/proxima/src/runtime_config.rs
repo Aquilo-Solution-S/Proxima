@@ -9,7 +9,7 @@ use proxima_core::storage_ports::OwnerDropProofHandle;
 use proxima_core::storage_ports::publication::ConsumerName;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
-    FlavorServices, Owner, OwnerAccessPort, RequestHeaders, RevalidationConfig, ToolScope,
+    FlavorServices, OwnerAccessPort, OwnerId, RequestHeaders, RevalidationConfig, ToolScope,
     is_loopback_host,
 };
 use proxima_mcp_server::{
@@ -55,7 +55,7 @@ pub struct RuntimeBuilder {
     database_url: Option<String>,
     platform_database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
-    owner: Option<Owner>,
+    owner: Option<OwnerId>,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
@@ -241,7 +241,7 @@ impl RuntimeBuilder {
 
     /// Set the engine `Owner` (= principal) explicitly.
     #[must_use]
-    pub fn owner(mut self, owner: Owner) -> Self {
+    pub fn owner(mut self, owner: OwnerId) -> Self {
         self.owner = Some(owner);
         self
     }
@@ -1002,7 +1002,7 @@ pub struct RuntimeConfig {
     pub database_url: String,
     pub platform_database_url: Option<String>,
     pub s3: Option<S3RuntimeConfig>,
-    pub owner: Option<Owner>,
+    pub owner: Option<OwnerId>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
@@ -1489,7 +1489,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
-    use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerRef};
+    use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
 
     use super::*;
     use crate::company_owner;
@@ -1503,8 +1503,8 @@ mod tests {
         }
     }
 
-    fn owner(id: uuid::Uuid) -> Owner {
-        OwnerRef::Group(GroupId::new(id))
+    fn owner(id: uuid::Uuid) -> OwnerId {
+        OwnerId::from(GroupId::new(id))
     }
 
     struct NoopParticipant;

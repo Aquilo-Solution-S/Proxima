@@ -3,7 +3,7 @@ use std::time::SystemTime;
 use crate::access::AccessKind;
 use crate::authz::DelegationRuntimeBinding;
 use crate::error::ProtocolError;
-use crate::{Owner, OwnerScope};
+use crate::{OwnerId, OwnerScope};
 
 struct DelegatedWriteGuard {
     runtime_binding: DelegationRuntimeBinding,
@@ -16,10 +16,10 @@ struct DelegatedWriteGuard {
 /// stamped owner from this permit rather than accepting caller-supplied owner
 /// authority.
 pub struct OwnerWritePermit {
-    owner: Owner,
+    owner: OwnerId,
     access_kind: AccessKind,
     owner_scope: Option<OwnerScope>,
-    transfer_destination: Option<crate::OwnerRef>,
+    transfer_destination: Option<crate::OwnerId>,
     delegated: Option<DelegatedWriteGuard>,
     _private: (),
 }
@@ -28,7 +28,7 @@ pub struct OwnerWritePermit {
 /// It describes the caller or maintenance path and grants no authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostStateWriteOrigin {
-    OwnerAuthorized { principal: crate::OwnerRef },
+    OwnerAuthorized { principal: crate::OwnerId },
     Maintenance,
 }
 
@@ -37,7 +37,7 @@ pub enum HostStateWriteOrigin {
 /// command table subset, carries no access kind, cannot authorize ordinary
 /// cognitive writes, and has no conversion back to that permit.
 pub struct HostStateWritePermit {
-    owner: Owner,
+    owner: OwnerId,
     participant_id: crate::storage_ports::HostStateParticipantId,
     tables: &'static [crate::storage_ports::StateSurfaceName],
     origin: HostStateWriteOrigin,
@@ -59,7 +59,7 @@ impl std::fmt::Debug for HostStateWritePermit {
 impl HostStateWritePermit {
     #[must_use]
     pub(crate) const fn new(
-        owner: Owner,
+        owner: OwnerId,
         participant_id: crate::storage_ports::HostStateParticipantId,
         tables: &'static [crate::storage_ports::StateSurfaceName],
         origin: HostStateWriteOrigin,
@@ -75,7 +75,7 @@ impl HostStateWritePermit {
 
     /// Owner stamped by the engine for this host-state operation.
     #[must_use]
-    pub const fn owner(&self) -> &Owner {
+    pub const fn owner(&self) -> &OwnerId {
         &self.owner
     }
 
@@ -124,7 +124,7 @@ impl OwnerWritePermit {
     /// Test-only constructor. Engine remains the production mint.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub const fn new_for_tests(owner: Owner, access_kind: AccessKind) -> Self {
+    pub const fn new_for_tests(owner: OwnerId, access_kind: AccessKind) -> Self {
         Self {
             owner,
             access_kind,
@@ -137,7 +137,7 @@ impl OwnerWritePermit {
 
     #[must_use]
     pub(crate) fn new(
-        owner: Owner,
+        owner: OwnerId,
         access_kind: AccessKind,
         owner_scope: Option<OwnerScope>,
     ) -> Self {
@@ -153,7 +153,7 @@ impl OwnerWritePermit {
 
     #[must_use]
     pub(crate) fn new_delegated(
-        owner: Owner,
+        owner: OwnerId,
         access_kind: AccessKind,
         runtime_binding: DelegationRuntimeBinding,
         expires_at: SystemTime,
@@ -200,7 +200,7 @@ impl OwnerWritePermit {
     }
 
     #[must_use]
-    pub const fn owner(&self) -> &Owner {
+    pub const fn owner(&self) -> &OwnerId {
         &self.owner
     }
 
@@ -209,13 +209,13 @@ impl OwnerWritePermit {
         self.access_kind
     }
 
-    pub(crate) fn authorize_transfer_to(&mut self, destination: crate::OwnerRef) {
+    pub(crate) fn authorize_transfer_to(&mut self, destination: crate::OwnerId) {
         self.transfer_destination = Some(destination);
     }
 
     /// Destination independently consented by the engine's transfer gate.
     #[must_use]
-    pub fn transfer_destination(&self) -> Option<crate::OwnerRef> {
+    pub fn transfer_destination(&self) -> Option<crate::OwnerId> {
         self.transfer_destination
     }
 

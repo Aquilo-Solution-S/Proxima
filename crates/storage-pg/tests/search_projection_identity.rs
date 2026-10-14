@@ -82,7 +82,7 @@ use proxima_core::verbs::query::{
     TagMatch,
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
-use proxima_core::{OwnerRef, UserId};
+use proxima_core::{OwnerId, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -118,8 +118,8 @@ fn det_uuid(seq: u64) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-fn owner_at(index: usize) -> OwnerRef {
-    OwnerRef::Personal(UserId::new(det_uuid(9_000 + index as u64)))
+fn owner_at(index: usize) -> OwnerId {
+    OwnerId::from(UserId::new(det_uuid(9_000 + index as u64)))
 }
 
 /// Word pool chosen so term frequency, document length and stop words all
@@ -178,7 +178,7 @@ struct Derivation {
 ///
 /// `seq` starts at 1_000 so no derivation can collide with a note's `t` at
 /// any corpus size this file is run at.
-fn derivations(per_owner: usize) -> Vec<(OwnerRef, Derivation)> {
+fn derivations(per_owner: usize) -> Vec<(OwnerId, Derivation)> {
     let mut out = Vec::with_capacity(OWNERS * per_owner);
     let mut seq = 1_000_u64;
     for index in 0..per_owner {
@@ -208,7 +208,7 @@ fn derivations(per_owner: usize) -> Vec<(OwnerRef, Derivation)> {
 }
 
 /// `owners * notes_per_owner` notes, deterministic in every field.
-fn corpus(notes_per_owner: usize) -> Vec<(OwnerRef, Note)> {
+fn corpus(notes_per_owner: usize) -> Vec<(OwnerId, Note)> {
     let mut out = Vec::with_capacity(OWNERS * notes_per_owner);
     let mut seq = 0_u64;
     for note_index in 0..notes_per_owner {
@@ -384,7 +384,7 @@ async fn seed(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(owner_at(owner_index).stored_owner_id())
+        .bind(owner_at(owner_index).into_inner())
         .execute(pool)
         .await?;
     }
@@ -392,7 +392,7 @@ async fn seed(
     // that names a sidecar table it has no row in is refused at COMMIT.
     let mut stamped = pool.begin().await?;
     for (index, (owner, note)) in corpus(notes_per_owner).into_iter().enumerate() {
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         admit(&mut stamped, owner_id, note.t, "fact", NOTE_SCHEMA, &[]).await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -408,7 +408,7 @@ async fn seed(
         project(&mut stamped, note.t, NOTE_SCHEMA, language_for(index)).await?;
     }
     for (index, (owner, derivation)) in derivations(derivations_per_owner).into_iter().enumerate() {
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         admit(
             &mut stamped,
             owner_id,
@@ -440,7 +440,7 @@ async fn seed(
     stamped.commit().await
 }
 
-fn request(read_owners: Vec<OwnerRef>, query: &str, order: SearchOrder) -> MemorySearchRequest {
+fn request(read_owners: Vec<OwnerId>, query: &str, order: SearchOrder) -> MemorySearchRequest {
     MemorySearchRequest {
         owner: read_owners[0],
         read_owners,
@@ -1012,7 +1012,7 @@ async fn seed_note_revision(
 /// [`STARVED_HANDLES`] two-revision note handles, one live note and one
 /// live derivation, all under one owner.
 async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    let owner_id = owner_at(0).stored_owner_id();
+    let owner_id = owner_at(0).into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
@@ -1257,7 +1257,7 @@ const KIND_PROBE_FILLER: usize = 6;
 /// abstraction-kind rows reach the projection scan and only admission knows
 /// they are doomed.
 async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    let owner_id = owner_at(0).stored_owner_id();
+    let owner_id = owner_at(0).into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",

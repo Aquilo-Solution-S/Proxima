@@ -73,7 +73,7 @@ pub fn cold_backend_matches(store_backend: &str, row_backend: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OwnerRef, UserId};
+    use crate::{OwnerId, UserId};
 
     /// The cold key carries the Memory version id and nothing else. A
     /// transfer rewrites `cooled.owner_id`; if the key mentioned the owner
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn cold_key_is_owner_free_and_golden() {
         let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");
-        let owner = OwnerRef::Personal(UserId::new(
+        let owner = OwnerId::from(UserId::new(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
         ));
 
@@ -90,6 +90,6 @@ mod tests {
             cold_object_key(t),
             "cold/00000000-0000-0000-0000-000000000003"
         );
-        assert!(!cold_object_key(t).contains(&owner.stable_key_uuid().to_string()));
+        assert!(!cold_object_key(t).contains(&owner.into_inner().to_string()));
     }
 }

@@ -12,7 +12,7 @@ use crate::llm::{
 };
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::EmbeddingJobHandle;
-use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner};
+use crate::{EmbeddableEntityRef, EntityKind, MemoryId, OwnerId};
 
 /// Liveness probe after a provider refuses a batch.
 ///
@@ -41,13 +41,13 @@ const MAX_EMBEDDING_BACKOFF: std::time::Duration = std::time::Duration::from_min
 /// their jobs.
 ///
 /// One Owner's broken endpoint must not stall the queue for every other
-/// Owner, and must not be hammered either: its claims are released and it
+/// owner, and must not be hammered either: its claims are released and it
 /// waits `worker_interval`, doubling per consecutive failure up to
 /// [`MAX_EMBEDDING_BACKOFF`]. A successful batch clears it. In memory only:
 /// a restart retries every Owner once.
 #[derive(Debug, Default)]
 pub(crate) struct EmbeddingBackoff {
-    owners: std::sync::Mutex<std::collections::HashMap<Owner, OwnerBackoff>>,
+    owners: std::sync::Mutex<std::collections::HashMap<OwnerId, OwnerBackoff>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,14 +57,16 @@ struct OwnerBackoff {
 }
 
 impl EmbeddingBackoff {
-    fn owners(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<Owner, OwnerBackoff>> {
+    fn owners(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<OwnerId, OwnerBackoff>> {
         self.owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Owners whose delay has not passed.
-    fn blocked(&self) -> Vec<Owner> {
+    fn blocked(&self) -> Vec<OwnerId> {
         let now = tokio::time::Instant::now();
         self.owners()
             .iter()
@@ -74,7 +76,7 @@ impl EmbeddingBackoff {
     }
 
     /// Record a failure; returns how long the Owner now waits.
-    fn fail(&self, owner: Owner, base: std::time::Duration) -> std::time::Duration {
+    fn fail(&self, owner: OwnerId, base: std::time::Duration) -> std::time::Duration {
         let mut owners = self.owners();
         let cap = MAX_EMBEDDING_BACKOFF.max(base);
         let delay = owners
@@ -91,7 +93,7 @@ impl EmbeddingBackoff {
         delay
     }
 
-    fn succeed(&self, owner: &Owner) {
+    fn succeed(&self, owner: &OwnerId) {
         self.owners().remove(owner);
     }
 }
@@ -173,7 +175,7 @@ impl Engine {
     /// The router's [`EmbeddingRouteError`]; callers fail closed on it.
     pub async fn embedding_route(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
         let Some(router) = &self.embedding_router else {
             return Ok(EmbeddingRoute::none());
@@ -192,11 +194,11 @@ impl Engine {
     /// stays in the log.
     pub(in crate::engine) async fn write_route(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<EmbeddingRoute, ProtocolError> {
         self.embedding_route(owner).await.map_err(|err| {
             tracing::warn!(
-                owner = %owner.external_key(),
+                owner = %owner.to_string(),
                 error = %err,
                 "embedding route refused"
             );
@@ -207,10 +209,10 @@ impl Engine {
     /// `owner`'s route for a search: a route the host refuses reads as
     /// [`EmbeddingRoute::none`], so the search runs without a semantic arm
     /// instead of failing.
-    pub async fn search_route(&self, owner: &Owner) -> EmbeddingRoute {
+    pub async fn search_route(&self, owner: &OwnerId) -> EmbeddingRoute {
         self.embedding_route(owner).await.unwrap_or_else(|err| {
             tracing::warn!(
-                owner = %owner.external_key(),
+                owner = %owner.to_string(),
                 error = %err,
                 "embedding route refused; searching without a semantic arm"
             );
@@ -231,7 +233,7 @@ impl Engine {
     /// this is a no-op for it, not a forced vector.
     pub async fn ensure_fact_embedding(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         self.ensure_memory_embedding(owner, EntityKind::Fact, memory_id)
@@ -241,7 +243,7 @@ impl Engine {
 
     async fn ensure_memory_embedding(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         entity_kind: EntityKind,
         memory_id: MemoryId,
     ) -> Result<bool, StorageError> {
@@ -258,7 +260,7 @@ impl Engine {
     async fn embed_claimed_memory(
         &self,
         client: &BoundEmbeddingClient,
-        owner: &Owner,
+        owner: &OwnerId,
         entity_kind: EntityKind,
         memory_id: MemoryId,
     ) -> Result<EmbedStep, StorageError> {
@@ -318,7 +320,7 @@ impl Engine {
     pub async fn backfill_missing_embeddings(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        owner: &OwnerId,
         limit: usize,
     ) -> Result<usize, ProtocolError> {
         self.operation_authority(authz)?;
@@ -489,7 +491,7 @@ impl Engine {
         claims: Vec<EmbeddingJobClaim>,
         outcome: &mut EmbeddingDrainOutcome,
     ) -> Result<Vec<(EmbeddingJobClaim, String)>, StorageError> {
-        let items: Vec<(Owner, EntityKind, MemoryId)> = claims
+        let items: Vec<(OwnerId, EntityKind, MemoryId)> = claims
             .iter()
             .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
             .collect();
@@ -517,7 +519,7 @@ impl Engine {
     /// Embed one Owner's claims through that Owner's route, space by space.
     async fn drain_owner_batch(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         batch: Vec<(EmbeddingJobClaim, String)>,
         policy: crate::EmbeddingRuntimePolicy,
         outcome: &mut EmbeddingDrainOutcome,
@@ -559,14 +561,14 @@ impl Engine {
     /// its route or provider failed, and none of them was tried.
     async fn back_off_owner(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         policy: crate::EmbeddingRuntimePolicy,
         claims: &[EmbeddingJobClaim],
         reason: &str,
     ) -> Result<(), StorageError> {
         let retry_in = self.embedding_backoff.fail(owner, policy.worker_interval());
         tracing::warn!(
-            owner = %owner.external_key(),
+            owner = %owner.to_string(),
             ?retry_in,
             reason,
             "embedding owner backed off; releasing its jobs"
@@ -878,7 +880,7 @@ impl Engine {
         }
         let maintenance = &self.storage.owner_inverse.embedding_maintenance;
         let mut budget = limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT);
-        let mut after: Option<Owner> = None;
+        let mut after: Option<OwnerId> = None;
         while budget > 0 {
             let page = maintenance
                 .embedding_owner_page(
@@ -890,7 +892,7 @@ impl Engine {
             let Some(last) = page.last().copied() else {
                 break;
             };
-            let mut routed: Vec<(EmbeddingSpace, Owner)> = Vec::new();
+            let mut routed: Vec<(EmbeddingSpace, OwnerId)> = Vec::new();
             for owner in &page {
                 match self.embedding_route(owner).await {
                     Ok(route) => routed.extend(
@@ -900,7 +902,7 @@ impl Engine {
                             .map(|space| (space, *owner)),
                     ),
                     Err(err) => tracing::warn!(
-                        owner = %owner.external_key(),
+                        owner = %owner.to_string(),
                         error = %err,
                         "embedding route refused; not reconciling this owner"
                     ),
@@ -910,7 +912,7 @@ impl Engine {
                 if budget <= 0 {
                     break;
                 }
-                let owners: Vec<Owner> = owners.into_iter().map(|(_, owner)| owner).collect();
+                let owners: Vec<OwnerId> = owners.into_iter().map(|(_, owner)| owner).collect();
                 let outcome = maintenance
                     .reconcile_embeddings(
                         crate::EmbeddingReconcileOptions {
@@ -952,7 +954,7 @@ impl Engine {
     /// route `owner`.
     pub async fn embedding_coverage(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<Vec<crate::EmbeddingSpaceCoverage>, StorageError> {
         let route = self.embedding_route(owner).await?;
         let rows = self
@@ -1006,7 +1008,7 @@ impl Engine {
     /// the purge, which leave earlier batches committed.
     pub async fn purge_embedding_spaces(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<crate::EmbeddingPurgeOutcome, StorageError> {
         const BATCH: i64 = 1_000;
         if self.embedding_router.is_none() {

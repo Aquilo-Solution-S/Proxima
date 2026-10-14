@@ -31,7 +31,7 @@ use proxima_core::storage_ports::publication::{
     PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
     PublisherId, ReleaseOutcome, RetireOutcome,
 };
-use proxima_core::{OwnerRefKind, SealedPublication, StorageError};
+use proxima_core::{SealedPublication, StorageError};
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -149,8 +149,8 @@ pub(crate) async fn capture_publication_in_tx(
         .await
         .map_err(map_err)?;
     }
-    let captured = sqlx::query_as::<_, (proxima_core::OwnerRefKind, Option<String>)>(
-        "SELECT owner.kind, memory.source_id
+    let captured = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT memory.source_id
            FROM proxima_core.memory memory
            JOIN proxima_core.owners owner ON owner.owner_id = memory.owner_id
           WHERE memory.t = $1
@@ -169,13 +169,12 @@ pub(crate) async fn capture_publication_in_tx(
     })?;
     sqlx::query(
         "INSERT INTO proxima_core.publication_origin
-             (t, original_owner_id, original_owner_kind, source_id)
-         VALUES ($1, $2, $3, $4)",
+             (t, original_owner_id, source_id)
+         VALUES ($1, $2, $3)",
     )
     .bind(t)
     .bind(owner_id)
-    .bind(captured.0)
-    .bind(captured.1)
+    .bind(captured)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -283,7 +282,6 @@ const CLAIM_SQL: &str = "WITH claimed AS (
                       ON original_owner.owner_id = origin.original_owner_id
                    WHERE origin.t = record.t
                      AND origin.original_owner_id = record.owner_id
-                     AND origin.original_owner_kind = original_owner.kind
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.erased_pin_target erased
@@ -312,7 +310,6 @@ const CLAIM_SQL: &str = "WITH claimed AS (
          SELECT p.t,
                 p.event_id,
                 p.owner_id,
-                o.kind::text AS owner_kind,
                 p.schema_id,
                 p.schema_version,
                 p.event_type,
@@ -566,7 +563,7 @@ impl PublicationConsumerPort for PgStorage {
 impl PublicationOriginEligibilityPort for PgStorage {
     async fn check_committed(
         &self,
-        original_owner: proxima_core::OwnerRef,
+        original_owner: proxima_core::OwnerId,
         fact_id: proxima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
         let mut tx = self.platform_transaction().await?;
@@ -581,7 +578,7 @@ impl PublicationOriginEligibilityPort for PgStorage {
     async fn check_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        original_owner: proxima_core::OwnerRef,
+        original_owner: proxima_core::OwnerId,
         fact_id: proxima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
         // The caller's UnitOfWork holds the lifecycle-wide shared fence from
@@ -590,14 +587,13 @@ impl PublicationOriginEligibilityPort for PgStorage {
         // commit. Opening a nested pool transaction here would split the
         // eligibility decision from that write and permit a time-of-check race.
         super::forget::lock_lifecycle_targets_tx(tx, &[fact_id.into_inner()]).await?;
-        let (owner_kind, owner_id) = original_owner.columns();
+        let owner_id = original_owner.into_inner();
         let eligible: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                 SELECT 1
                   FROM proxima_core.publication_origin origin
                  WHERE origin.t = $1
                    AND origin.original_owner_id = $2
-                   AND origin.original_owner_kind = $3
                    AND NOT EXISTS (
                        SELECT 1 FROM proxima_core.erased_pin_target erased
                         WHERE erased.t = origin.t
@@ -606,7 +602,6 @@ impl PublicationOriginEligibilityPort for PgStorage {
         )
         .bind(fact_id.into_inner())
         .bind(owner_id)
-        .bind(owner_kind)
         .fetch_one(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -715,8 +710,7 @@ async fn current_lane_state(
 /// not have been able to store.
 ///
 /// Every fallback this could take would be a lie the publisher then ships:
-/// an unrecognised `owner_kind` read as `personal` routes a group's event
-/// onto a personal subject, and a negative `schema_version` or `attempts`
+/// a negative `schema_version` or `attempts`
 /// read as `0` reports a contract version and a retry count that were never
 /// written. None of these is reachable through the write path — the enum is
 /// a SQL enum, the two integers are written from `u32`s — so reaching one
@@ -724,16 +718,6 @@ async fn current_lane_state(
 /// the record rather than to publish a plausible reconstruction of it.
 fn claimed_from_row(row: &sqlx::postgres::PgRow) -> Result<ClaimedPublication, StorageError> {
     let id: Uuid = row.try_get("t").map_err(internal)?;
-    let owner_kind: String = row.try_get("owner_kind").map_err(internal)?;
-    let owner_kind = match owner_kind.as_str() {
-        "personal" => OwnerRefKind::Personal,
-        "group" => OwnerRefKind::Group,
-        other => {
-            return Err(StorageError::Internal(format!(
-                "publication {id} names owner kind {other:?}, which is not a known owner kind"
-            )));
-        }
-    };
     let digest: Vec<u8> = row.try_get("envelope_digest").map_err(internal)?;
     let digest: [u8; 32] = digest.try_into().map_err(|_| {
         StorageError::Internal("captured envelope digest is not 32 bytes".to_string())
@@ -754,7 +738,6 @@ fn claimed_from_row(row: &sqlx::postgres::PgRow) -> Result<ClaimedPublication, S
         id,
         event_id: row.try_get("event_id").map_err(internal)?,
         owner_id: row.try_get("owner_id").map_err(internal)?,
-        owner_kind,
         schema_id: row.try_get("schema_id").map_err(internal)?,
         schema_version,
         event_type: row.try_get("event_type").map_err(internal)?,

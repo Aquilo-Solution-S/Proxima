@@ -2,7 +2,7 @@
 //! integrity routine hands the runtime caller its own `app.proxima_scope` back,
 //! both on normal return and after a refusal caught by a savepoint.
 
-use proxima_core::{Credentials, GroupId, OwnerRef, OwnerRoles, Role, UserId};
+use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
 use proxima_storage_pg::begin_owner_transaction;
 use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
@@ -242,7 +242,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     let verifier = super::SyntheticVerifier {
         roles: OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(GroupId::new(owner)), Role::admin())],
+            [(OwnerId::from(GroupId::new(owner)), Role::admin())],
         )
         .unwrap(),
     };

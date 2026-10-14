@@ -6,8 +6,7 @@ use aws_sdk_s3::config::Region;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId,
-    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerRef, Proxima, Role, ToolScope,
-    UserId,
+    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ToolScope, UserId,
 };
 use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
 use proxima_core::error::{ErrorCode, ProtocolError};
@@ -99,7 +98,7 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
         ..S3RuntimeConfig::from_env()?
     };
     let group = GroupId::new(Uuid::now_v7());
-    let owner = OwnerRef::Group(group);
+    let owner = OwnerId::from(group);
     let initial = boot(database, owner, Some(config.clone())).await?;
     let authz = host_context(owner, AuthPath::HostBearer);
     let note = AgentNoteV1 {
@@ -198,7 +197,7 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
 async fn observe_unconfigured_hydration(
     database: &str,
     boot: &BuiltProxima,
-    owner: OwnerRef,
+    owner: OwnerId,
     memory_id: MemoryId,
     config: &S3RuntimeConfig,
     cold_key: &str,
@@ -273,8 +272,9 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
     create_db(&database).await?;
     let result = async {
         let group = GroupId::new(Uuid::now_v7());
-        let owner = OwnerRef::Group(group);
+        let owner = OwnerId::from(group);
         let boot = boot(&database, owner, None).await?;
+        register_group(&admin_pool(&database).await?, group).await?;
         assert!(boot.host().blobs().is_none());
         let authz = host_context(owner, AuthPath::HostBearer);
         boot.host()
@@ -335,7 +335,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         ..S3RuntimeConfig::from_env()?
     };
     let group = GroupId::new(Uuid::now_v7());
-    let owner = OwnerRef::Group(group);
+    let owner = OwnerId::from(group);
     let initial = boot(database, owner, Some(config.clone())).await?;
     let store = initial
         .host()
@@ -429,7 +429,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
 
 async fn recover_and_cleanup(
     database: &str,
-    owner: OwnerRef,
+    owner: OwnerId,
     config: &S3RuntimeConfig,
     canonical: &str,
     canonical_debt: Option<&str>,
@@ -517,7 +517,7 @@ impl FlavorApp for CoreApp {
 
 async fn boot(
     database: &str,
-    owner: OwnerRef,
+    owner: OwnerId,
     s3: Option<S3RuntimeConfig>,
 ) -> TestResult<BuiltProxima> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
@@ -538,7 +538,7 @@ async fn stop(boot: BuiltProxima) {
     pool.close().await;
 }
 
-fn host_context(owner: OwnerRef, path: AuthPath) -> AuthzContext {
+fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
     // Group authority is an explicit trusted-host subject role. A bare
     // single_owner(group) intentionally grants no access.
     proxima_core::test_fixtures::authenticated_context(
@@ -658,7 +658,7 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
     };
-    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let host = boot(database, owner, Some(config.clone())).await?;
     let cold = host
         .host()
@@ -688,7 +688,7 @@ async fn observe_missing_cold(database: &str) -> TestResult<MissingColdObservati
 async fn run_missing_cold(
     database: &str,
     host: &BuiltProxima,
-    owner: OwnerRef,
+    owner: OwnerId,
     config: &S3RuntimeConfig,
     owned_keys: &mut Vec<String>,
 ) -> TestResult<MissingColdObservation> {
@@ -766,7 +766,7 @@ async fn run_missing_cold(
 async fn admit_cold_note(
     host: &BuiltProxima,
     authz: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     label: &str,
     owned_keys: &mut Vec<String>,
 ) -> TestResult<(MemoryId, AgentNoteV1)> {
@@ -805,4 +805,17 @@ async fn admit_cold_note(
         return Err("actual cold bytes must contain the admitted typed body".into());
     }
     Ok((fact.memory_id, note))
+}
+
+/// Register `group` as a Group, the way a host creates one before writing
+/// under it: the group erase path admits only a registered Group.
+async fn register_group(pool: &sqlx::PgPool, group: GroupId) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(pool)
+    .await
+    .map(drop)
 }

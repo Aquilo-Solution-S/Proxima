@@ -18,8 +18,8 @@ use proxima_core::mcp::{
     ToolReply,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
-    OwnerRef, ScopeKey, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
+    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId, OwnerId,
+    ScopeKey, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
 };
 
 /// `CARGO_PKG_NAME` is `proxima-core` inside core's own `tests/`, so the
@@ -124,7 +124,7 @@ fn frozen() -> Arc<FlavorRegistryFrozen> {
 }
 
 fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     McpToolCtx {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
@@ -143,7 +143,7 @@ fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
 }
 
 fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
-    let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
     McpToolCtx {
         owner,
         authz: AuthzContext::for_subject_with_role(

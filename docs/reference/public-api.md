@@ -93,7 +93,7 @@ source scan (not kept) found 49 types that SDK signatures name and
 `proxima::flavor` does not, and they are not exported yet. Through the
 `flavor::authorized_read` functions: `AuthzContext`, `Engine`. Through registry,
 tool and storage accessors: `AccessKind`, `AccessError`, `Relation`, `Role`,
-`Owner`, `OwnerRefKind`, `ToolScope`, `CapabilityTag`, `StorageError`,
+`OwnerId`, `ToolScope`, `CapabilityTag`, `StorageError`,
 `TrimmedLenViolation`, `HostStateCommand`, `HostStateOutcome`. Through the write
 path: `WritePermit`, `OwnerWritePermit`, `PublicationPlan`, `Citation`,
 `FactReceiptDraft`, `AuthorizedNodeLinks`, `AuthorizedInlineCitedObject`,
@@ -147,21 +147,17 @@ Unsupported:
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
-## Owner External Keys
+## Owner Ids
 
-| OwnerRef | External key |
-|---|---|
-| `OwnerRef::Personal(UserId)` | `personal:<uuid>` |
-| `OwnerRef::Group(GroupId)` | `group:<uuid>` |
-
-Personal and Group are the only owner kinds. Every owner carries a UUID —
-there is no id-less owner — so `OwnerRef::columns()` returns
-`(OwnerRefKind, Uuid)` and `OwnerRefKind::with_uuid(Uuid)` is total.
+An owner is `OwnerId(Uuid)`, `From<UserId>` and `From<GroupId>`. Its wire
+form is the bare hyphenated UUID; the old `personal:<uuid>` / `group:<uuid>`
+spellings are refused. The kind (user or group) is not part of the id: it
+lives only in `proxima_core.owners.kind`.
 
 | Helper | Import | Contract |
 |---|---|---|
-| `OwnerRef::external_key()` | `proxima::OwnerRef` / `proxima_core::OwnerRef` | format the canonical runtime/API key |
-| `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical `personal:`/`group:` keys; any other prefix or a bare kind is invalid |
+| `Display` / `FromStr` | `proxima::OwnerId` / `proxima_core::OwnerId` | print and parse the bare hyphenated UUID; anything else is `OwnerIdParseError` |
+| `into_inner()`, `as_user()`, `as_group()` | `proxima::OwnerId` | the id as a `Uuid`, `UserId` or `GroupId`; a typed view, not a kind check |
 
 ## Roles
 
@@ -207,7 +203,7 @@ so Content reuse never crosses a limit.
 
 | Item | Contract |
 |---|---|
-| `OwnerWritePermit` | sealed storage-tier proof: `(OwnerRef, AccessKind)`; constructor is not public |
+| `OwnerWritePermit` | sealed storage-tier proof: `(OwnerId, AccessKind)`; constructor is not public |
 | minting path | `Engine::authorize_owner_write(authz, owner, kind)` after server-resolved owner access |
 | `AuthPath::System` | writes only through a context `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` built from this Engine's witness; any other System context is refused |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
@@ -538,7 +534,7 @@ execution or activity log projector):
 
 | Rule | Contract |
 |---|---|
-| owner | write under the tenant's `OwnerRef::Group(GroupId)`, not `OwnerRef::Personal(UserId)`. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
+| owner | write under the tenant's group id (`OwnerId::from(GroupId)`), not a user's own id. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
 | target-owner ingest | resolve the worker subject to roles; call `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`. The explicit destination is authorized without narrowing the caller's read access. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |

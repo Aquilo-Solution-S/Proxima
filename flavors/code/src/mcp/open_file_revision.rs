@@ -1,5 +1,5 @@
 use proxima_core::mcp::ToolEffect;
-use proxima_core::{AccessKind, Owner, Tool, ToolCtx, ToolError};
+use proxima_core::{AccessKind, OwnerId, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -154,7 +154,7 @@ impl Tool for CodeOpenFileRevisionTool {
 /// One repo-relative path, resolved against the caller's read set. Both head
 /// reads below are scoped by exactly this triple.
 struct HeadFileScope<'a> {
-    read_owners: &'a [Owner],
+    read_owners: &'a [OwnerId],
     repo_id: uuid::Uuid,
     file_path: &'a str,
 }

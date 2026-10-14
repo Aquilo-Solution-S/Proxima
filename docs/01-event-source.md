@@ -8,20 +8,25 @@ Receipt-backed Facts trace to a source identity. Receiptless Fact writes are val
 
 ## Owner — scoping primitive
 
-Every Memory and Goal carries an `OwnerRef`: the stable owner handle.
-Roles are resolved by the host and passed to Core as server-built access context.
+Every Memory and Goal carries an `OwnerId`: the stable owner handle, one
+UUID. Roles are resolved by the host and passed to Core as server-built
+access context.
 
 ```rust
-enum OwnerRef {
-    Personal(UserId),           // personal owner
-    Group(GroupId),             // group owner
-}
+struct OwnerId(Uuid);          // From<UserId>, From<GroupId>
 ```
+
+A resolved owner is always a group; a user is the personal group whose only
+member is that user, and its owner id is the user's own id. The kind (user or
+group) lives only in the registry `proxima_core.owners.kind`, never in a type,
+a wire format or a hash. One role rule: the subject's own id holds
+`Role::personal()`, which never manages; any other owner holds the subject's
+membership role, or none.
 
 **Organizations are not an ontology concept** (renegotiated
 2026-06-11, org out of the kernel; previously `Owner` was a
-`{ principal, org_id }` record). The Owner=OwnerRef
-collapse removed the tenant field from Core entirely: `OwnerRef` is the row-scoping
+`{ principal, org_id }` record). The owner collapse removed the tenant
+field from Core entirely: `OwnerId` is the row-scoping
 handle. Tenancy / billing attribution is a flavor/app concern, not part
 of Core access, **identity**, or storage. Operator gates, edge scoping,
 and dedup keys compare owner handles; the same user under two tenants is
@@ -51,13 +56,13 @@ v1 constraints:
   whose membership auto-syncs with org membership. No organization owner
   variant.
 
-No per-memory ACL or `AccessGrant` layer exists. Cross-owner access is represented by server-resolved group membership / `OwnerRoles` over concrete `OwnerRef`s.
+No per-memory ACL or `AccessGrant` layer exists. Cross-owner access is represented by server-resolved group membership / `OwnerRoles` over concrete `OwnerId`s.
 
 There is no universal-read lane. A caller's read set is exactly its own
 personal owner plus the groups it belongs to; nothing is readable by
 everyone. Content meant to be shared lives under a group owner.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`); there is no Edge table.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerId`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`); there is no Edge table.
 
 ### Owner resolution — the host's trust boundary
 

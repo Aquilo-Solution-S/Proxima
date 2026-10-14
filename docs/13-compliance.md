@@ -289,7 +289,7 @@ transaction.
 Per-entity hydration and forget retain their existing per-`t`/handle contract.
 A flavor-owned lifecycle scope narrower than a source is declared, and the
 substrate fences it the same way in one namespace
-(`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`): a
+(`proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`): a
 scope erase takes that fence exclusively before it selects, and every
 admission that persists a payload declaring the scope takes it shared before
 its handle/`t` locks and reruns the declaration's liveness probe under it —

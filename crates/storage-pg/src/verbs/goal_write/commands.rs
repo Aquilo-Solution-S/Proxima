@@ -538,7 +538,7 @@ mod lifecycle_lock_tests {
         GoalTopologyWrite,
     };
     use proxima_core::{
-        AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, OwnerRef, SchemaId, SchemaVersion,
+        AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, OwnerId, SchemaId, SchemaVersion,
         SimpleTextGoalV1, StorageError, UserId,
     };
     use proxima_pg_testkit::{db_url, drop_db};
@@ -636,7 +636,7 @@ mod lifecycle_lock_tests {
 
     async fn run_concurrent_successor_race(
         pool: &sqlx::PgPool,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         handle: Uuid,
         expected_prior_t: Option<Uuid>,
         first_request_id: &str,
@@ -725,7 +725,7 @@ mod lifecycle_lock_tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
             pg.run_before_owner_rls_migrations().await?;
-            let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             let first = pg.ingest_fact_atomic(&permit, &fact(), None).await?;
             let second = pg.ingest_fact_atomic(&permit, &fact(), None).await?;
@@ -829,7 +829,7 @@ mod lifecycle_lock_tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
             pg.run_before_owner_rls_migrations().await?;
-            let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
             let pool = pg.pool_for_tests();
 
             let mut create_tx = pool.begin().await?;
@@ -895,7 +895,7 @@ mod lifecycle_lock_tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
             pg.run_before_owner_rls_migrations().await?;
-            let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let target = pg.ingest_fact_atomic(&permit, &fact(), None).await?;
             let pool = pg.pool_for_tests();
@@ -978,7 +978,7 @@ mod lifecycle_lock_tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&url).await?;
             pg.run_before_owner_rls_migrations().await?;
-            let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let assignment = grounded_perspective(&pg, &permit).await?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();

@@ -2,7 +2,7 @@
 //! are computed from the seeded records, independently of the SQL builder.
 
 use proxima_core::verbs::query::{EntityKind, QueryCursor, QueryRequest, SupersessionStatus};
-use proxima_core::{Credentials, GroupId, MemoryId, OwnerRef, OwnerRoles, Role, SchemaId, UserId};
+use proxima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, SchemaId, UserId};
 use proxima_storage_pg::{begin_owner_transaction, verbs::query::memory_page_sql_for_tests};
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
@@ -228,8 +228,8 @@ async fn paged_query_preserves_filters_history_and_scope_before_limit() {
         roles: OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
             [
-                (OwnerRef::Group(GroupId::new(owners[0])), Role::viewer()),
-                (OwnerRef::Group(GroupId::new(owners[1])), Role::ingest()),
+                (OwnerId::from(GroupId::new(owners[0])), Role::viewer()),
+                (OwnerId::from(GroupId::new(owners[1])), Role::ingest()),
             ],
         )
         .unwrap(),

@@ -73,7 +73,7 @@ pub use proxima_core::cold_object_key;
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerRef, OwnerRefKind, UserId};
+    use proxima_core::{OwnerId, UserId};
 
     use super::*;
 
@@ -81,9 +81,8 @@ mod tests {
     /// appears in a key.
     #[test]
     fn minted_keys_carry_no_owner_component_at_all() {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let owner_kind = OwnerRefKind::of(&owner);
-        let owner_key_id = owner.stable_key_uuid().to_string();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let owner_key_id = owner.into_inner().to_string();
         let upload_id = Uuid::now_v7();
         let t = Uuid::now_v7();
 
@@ -93,10 +92,9 @@ mod tests {
             cold_object_key(t),
         ] {
             assert!(!key.contains(&owner_key_id), "{key} leaks the owner id");
-            assert!(
-                !key.contains(owner_kind.as_str()),
-                "{key} leaks the owner kind"
-            );
+            for kind in ["personal", "group"] {
+                assert!(!key.contains(kind), "{key} leaks an owner kind word");
+            }
         }
 
         assert_eq!(

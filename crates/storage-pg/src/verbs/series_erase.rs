@@ -21,7 +21,7 @@ use proxima_core::verbs::own_erase::{
     SeriesEraseOutcome, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesEraseReport,
     SeriesEraseRequest, SeriesSelection,
 };
-use proxima_core::{MemoryId, Owner, StorageError};
+use proxima_core::{MemoryId, OwnerId, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -555,10 +555,10 @@ pub(crate) async fn erase_series(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     context: &crate::PgHostStateEraseContext,
-    owner: &Owner,
+    owner: &OwnerId,
     request: &SeriesEraseRequest<'_>,
 ) -> Result<(SeriesEraseOutcome, ColdPurgePlan), StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let pairs = reference_pairs(tx, &context.surfaces).await?;
     let (footprint, more_remaining) =
         match resolve_footprint(tx, sidecars, &pairs, owner_id, request).await? {

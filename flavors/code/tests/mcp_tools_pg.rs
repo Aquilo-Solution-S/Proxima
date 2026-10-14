@@ -24,7 +24,7 @@ use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    FlavorServices, MemoryId, Owner, schema_only_key,
+    FlavorServices, MemoryId, OwnerId, schema_only_key,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -2198,7 +2198,7 @@ async fn run_tool<T: McpTool>(
     Ok(serde_json::to_value(output)?)
 }
 
-fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+fn ctx(pg: PgStorage, owner: OwnerId, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
@@ -2223,7 +2223,7 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
 /// `McpToolHost` builds for `code_retry_execution_request` callers.
 fn shell_ctx(
     pg: PgStorage,
-    owner: Owner,
+    owner: OwnerId,
     registry: Arc<FlavorRegistryFrozen>,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
@@ -2249,7 +2249,7 @@ fn shell_ctx(
 
 async fn seed_active_goal_activation(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     self_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
@@ -2279,7 +2279,7 @@ async fn seed_active_goal_activation(
 
 async fn seed_perspective(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
@@ -2330,7 +2330,7 @@ impl FactPayload for GoalActivationFixture {
 /// Mint a prior execution-request Fact + sidecar row that a retry targets.
 async fn ingest_execution_request_fixture(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     request_key: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -2423,7 +2423,7 @@ async fn work_item_bundle_admits_results_before_rendering_them()
 
 async fn ingest_execution_result_fixture(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     work_requested_memory_id: Uuid,
     summary: &str,
@@ -2584,7 +2584,7 @@ impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
 /// on ingest and the semantic arm has something to search.
 fn embedding_ctx(
     pg: PgStorage,
-    owner: Owner,
+    owner: OwnerId,
     registry: Arc<FlavorRegistryFrozen>,
     router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
 ) -> McpToolCtx {
@@ -2612,7 +2612,7 @@ fn embedding_ctx(
 /// [`TopicEmbedding`] while sharing no content word with the topic query.
 async fn ingest_topic_repo(
     fixture: &TestDb,
-    owner: Owner,
+    owner: OwnerId,
     registry: &Arc<FlavorRegistryFrozen>,
     temp: &TempDir,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -2622,7 +2622,7 @@ async fn ingest_topic_repo(
 /// [`ingest_topic_repo`] embedding through `router`.
 async fn ingest_topic_repo_with(
     fixture: &TestDb,
-    owner: Owner,
+    owner: OwnerId,
     registry: &Arc<FlavorRegistryFrozen>,
     temp: &TempDir,
     router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
@@ -2652,7 +2652,7 @@ async fn ingest_topic_repo_with(
 /// Register and ingest a repo of `files`, embedded through `router`.
 async fn ingest_embedded_repo(
     fixture: &TestDb,
-    owner: Owner,
+    owner: OwnerId,
     registry: &Arc<FlavorRegistryFrozen>,
     temp: &TempDir,
     router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
@@ -2870,7 +2870,7 @@ async fn hybrid_without_an_embedding_model_answers_lexically_and_says_so()
 
 async fn fact_memory_in_tx(
     tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &str,
     sidecars: &[&str],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -2882,7 +2882,7 @@ async fn fact_memory_in_tx(
 /// the stamp is a row `sidecar_tables` cannot reach.
 async fn fact_memory_on_handle_in_tx(
     tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &str,
     handle: Option<Uuid>,
     sidecars: &[&str],
@@ -2903,7 +2903,7 @@ async fn fact_memory_on_handle_in_tx(
 
 async fn abstraction_memory(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     payload: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let t = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
@@ -3028,17 +3028,16 @@ async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
 /// not occur rather than the behaviour it means to test.
 async fn register_repo_row(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_code.repos
-            (owner_kind, owner_id, repo_id, canonical_path, display_name, created_at)
-         VALUES ($1, $2, $3, $4, $5, now())
-         ON CONFLICT (owner_kind, owner_id, repo_id) DO NOTHING",
+            (owner_id, repo_id, canonical_path, display_name, created_at)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (owner_id, repo_id) DO NOTHING",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
     .bind(format!("/fixtures/{repo_id}"))
@@ -3050,7 +3049,7 @@ async fn register_repo_row(
 
 async fn ingest_file_revision(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     file_path: &str,
     indexed_commit_sha: &str,
@@ -3089,7 +3088,7 @@ async fn ingest_file_revision(
 
 async fn ingest_code_chunk(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     file_path: &str,
     chunk_index: i32,
@@ -3120,7 +3119,7 @@ struct ChunkFixture<'a> {
 
 async fn ingest_code_chunk_with_type(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     chunk: ChunkFixture<'_>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let file_revision =
@@ -3173,7 +3172,7 @@ async fn ingest_code_chunk_with_type(
 
 async fn existing_file_revision_handle(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Option<Uuid>, Box<dyn std::error::Error>> {
@@ -3186,7 +3185,7 @@ async fn existing_file_revision_handle(
             AND fr.repo_id = $2
             AND fr.file_path = $3",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .bind(file_path)
     .fetch_optional(pool)
@@ -3195,7 +3194,7 @@ async fn existing_file_revision_handle(
 
 async fn latest_file_revision(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Option<(Uuid, FileState)>, Box<dyn std::error::Error>> {
@@ -3208,7 +3207,7 @@ async fn latest_file_revision(
             AND fr.repo_id = $2
             AND fr.file_path = $3",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .bind(file_path)
     .fetch_optional(pool)
@@ -3217,7 +3216,7 @@ async fn latest_file_revision(
 
 async fn ensure_present_file_revision(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -3238,7 +3237,7 @@ async fn ensure_present_file_revision(
 
 async fn code_chunk_memory_in_tx(
     stamped: &mut sqlx::Transaction<'static, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     handle: Uuid,
     origins: &[Uuid],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -3259,7 +3258,7 @@ async fn code_chunk_memory_in_tx(
 
 async fn ingest_commit(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     sha: &str,
     message: &str,
@@ -3301,7 +3300,7 @@ async fn ingest_commit(
 
 async fn ingest_commit_summary(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     commit_sha: &str,
     summary: &str,
@@ -3559,7 +3558,7 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
 /// Poll `proxima-code_get_ingest_run` until `run_id` is terminal.
 async fn await_terminal_run(
     fixture: &TestDb,
-    owner: Owner,
+    owner: OwnerId,
     registry: &Arc<FlavorRegistryFrozen>,
     run_id: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

@@ -23,7 +23,7 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind, RenderBands,
 };
-use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
+use proxima_core::{OwnerId, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning};
@@ -61,7 +61,7 @@ fn test_semantic(vector: Vec<f32>) -> proxima_core::SpaceVector {
     .expect("1024-wide test vector")
 }
 
-fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {
+fn search_req(owner: OwnerId, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
         owner,
         read_owners: vec![owner],
@@ -116,7 +116,7 @@ async fn project(
 
 async fn seed_note(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     title: &str,
     body: &str,
 ) -> Result<Uuid, sqlx::Error> {
@@ -125,13 +125,13 @@ async fn seed_note(
 
 async fn seed_note_lang(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     title: &str,
     body: &str,
     language: Option<&str>,
     tags: &[&str],
 ) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
@@ -252,12 +252,12 @@ fn docs_projection() -> MemorySearchProjection {
 
 async fn seed_docs_note(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     origin_t: Uuid,
     text: &str,
     tags: &[&str],
 ) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
@@ -328,7 +328,7 @@ async fn seed_docs_note(
 
 async fn seed_embedding(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     t: Uuid,
     vector: &pgvector::Vector,
 ) -> Result<(), sqlx::Error> {
@@ -339,7 +339,7 @@ async fn seed_embedding(
     )
     .bind(t)
     .bind(vector)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -348,7 +348,7 @@ async fn seed_embedding(
          VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     Ok(())
@@ -366,8 +366,8 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
 
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let ours = seed_note(
             pool,
             owner,
@@ -484,8 +484,8 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let ours = seed_note(pool, owner, "zebra", "owner-local zebra needle").await?;
         for i in 0..25 {
             seed_note(
@@ -523,8 +523,8 @@ async fn tagged_search_scans_flavor_sidecars() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let owner_id = owner.stored_owner_id();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let owner_id = owner.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal')
@@ -656,7 +656,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
             pool,
             owner,
@@ -703,7 +703,7 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
         sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
             .execute(pool)
@@ -786,7 +786,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
         let initial_default_is_english: bool =
             sqlx::query_scalar("SELECT proxima_core.lexical_config() = 'english'::regconfig")
@@ -879,7 +879,7 @@ async fn semantic_search_respects_until() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
@@ -888,7 +888,7 @@ async fn semantic_search_respects_until() {
         )
         .bind(t)
         .bind(embed_vector())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -897,7 +897,7 @@ async fn semantic_search_respects_until() {
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -960,7 +960,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         let pg = PgStorage::connect_with_config(&url, pool_config, PgTuning::default()).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let near = seed_note(pool, owner, "Near", "semantic neighbour body").await?;
         seed_embedding(pool, owner, near, &embed_vector()).await?;
         let far = seed_note(pool, owner, "Far", "another neighbour body").await?;
@@ -1027,7 +1027,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let tagged_t = seed_note_lang(
             pool,
             owner,
@@ -1046,7 +1046,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             )
             .bind(t)
             .bind(embed_vector())
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .execute(pool)
             .await?;
             sqlx::query(
@@ -1055,7 +1055,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
                  VALUES ($1, 'test-embed', 1024, 1, $2)",
             )
             .bind(t)
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .execute(pool)
             .await?;
         }
@@ -1140,12 +1140,12 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         create_docs_search_surface(pool).await?;
@@ -1307,7 +1307,7 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
         // Three notes, strictly increasing in `t` — uuidv7 is millisecond
         // precision, so the sleeps are what make "strictly".
@@ -1390,7 +1390,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
             pool,
             owner,
@@ -1493,12 +1493,12 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         seed_note_lang(
@@ -1541,12 +1541,12 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query("INSERT INTO proxima_core.lexical_languages (config) VALUES ('german')")
@@ -1567,7 +1567,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
              VALUES ($1, 'core/agent-note-v1', $2, ''::tsvector, 'german'::regconfig)",
         )
         .bind(memory_id)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(&mut *writer)
         .await?;
 
@@ -1632,8 +1632,8 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let owner_id = owner.stored_owner_id();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let owner_id = owner.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",

@@ -19,7 +19,7 @@ use proxima_code::testkit::{build_engine, register_repo};
 use proxima_code::{CommitV1, RepoScope};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, ErrorCode, FactPayload,
-    FactWrite, GroupId, MemoryId, Owner, OwnerRef, Role, SchemaId, SeriesHandle, UserId,
+    FactWrite, GroupId, MemoryId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
@@ -47,10 +47,10 @@ async fn harness() -> Harness {
     }
 }
 
-fn personal() -> (Owner, AuthzContext) {
+fn personal() -> (OwnerId, AuthzContext) {
     let user = UserId::new(Uuid::now_v7());
     (
-        OwnerRef::Personal(user),
+        OwnerId::from(user),
         AuthzContext::for_subject(user, AuthPath::HostBearer),
     )
 }
@@ -82,7 +82,7 @@ fn commit_schema() -> SchemaId {
     SchemaId::new(CommitV1::SCHEMA_ID.into())
 }
 
-async fn registered_repo(pool: &sqlx::PgPool, owner: &Owner) -> Uuid {
+async fn registered_repo(pool: &sqlx::PgPool, owner: &OwnerId) -> Uuid {
     let repo_id = Uuid::now_v7();
     register_repo(
         pool,
@@ -101,7 +101,7 @@ async fn registered_repo(pool: &sqlx::PgPool, owner: &Owner) -> Uuid {
 async fn ingest(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     payload: &CommitV1,
     handle: Option<SeriesHandle>,
 ) -> MemoryId {
@@ -148,7 +148,7 @@ async fn footprint(pool: &sqlx::PgPool, ts: &[MemoryId]) -> [i64; 5] {
 async fn erase(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     selection: SeriesSelection,
     mode: EraseMode,
 ) -> Result<SeriesEraseReceipt, SeriesEraseError> {
@@ -447,7 +447,7 @@ async fn a_selection_outside_the_flavor_the_owner_or_the_role_is_refused_before_
             other => panic!("core is not a flavor that erases its own series: {other:?}"),
         }
 
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         for role in [Role::ingest(), Role::editor()] {
             let below_admin = AuthzContext::for_subject_with_role(
                 UserId::new(Uuid::now_v7()),

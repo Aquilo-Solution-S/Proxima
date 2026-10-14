@@ -126,8 +126,7 @@ impl ScopeSurfaces {
     }
 }
 
-/// `SELECT EXISTS(SELECT 1 FROM <table> WHERE <kind> = $1 AND <owner> = $2
-/// AND <id> = $3)`.
+/// `SELECT EXISTS(SELECT 1 FROM <table> WHERE <owner> = $1 AND <id> = $2)`.
 ///
 /// Deliberately NOT `FOR SHARE`: the fence, not a row lock, is what holds
 /// the answer still for the life of the transaction, and a row lock here
@@ -135,13 +134,11 @@ impl ScopeSurfaces {
 /// second time.
 fn generate_probe(decl: &ScopeDecl) -> Result<Arc<str>, String> {
     let table = PgIdent::table(decl.registry_table).map_err(|err| err.to_string())?;
-    let owner_kind = PgIdent::column(decl.owner_kind_column).map_err(|err| err.to_string())?;
     let owner_id = PgIdent::column(decl.owner_id_column).map_err(|err| err.to_string())?;
     let id = PgIdent::column(decl.id_column).map_err(|err| err.to_string())?;
     Ok(Arc::from(format!(
-        "SELECT EXISTS(\n    SELECT 1\n      FROM {}\n     WHERE {} = $1 AND {} = $2 AND {} = $3\n)",
+        "SELECT EXISTS(\n    SELECT 1\n      FROM {}\n     WHERE {} = $1 AND {} = $2\n)",
         table.as_str(),
-        owner_kind.as_str(),
         owner_id.as_str(),
         id.as_str(),
     )))
@@ -158,7 +155,6 @@ mod tests {
         kind: KIND,
         registry_table: "proxima_code.repos",
         id_column: "repo_id",
-        owner_kind_column: "owner_kind",
         owner_id_column: "owner_id",
     };
 
@@ -169,9 +165,9 @@ mod tests {
     fn the_probe_spells_only_what_the_declaration_names() {
         let sql = generate_probe(&DECL).expect("the shipped declaration splices");
         assert!(sql.contains("FROM proxima_code.repos"));
-        assert!(sql.contains("owner_kind = $1"));
-        assert!(sql.contains("owner_id = $2"));
-        assert!(sql.contains("repo_id = $3"));
+        assert!(!sql.contains("owner_kind"));
+        assert!(sql.contains("owner_id = $1"));
+        assert!(sql.contains("repo_id = $2"));
 
         let renamed = generate_probe(&ScopeDecl {
             id_column: "book_id",
@@ -180,7 +176,7 @@ mod tests {
         })
         .expect("a renamed declaration splices");
         assert!(renamed.contains("FROM shelf.books"));
-        assert!(renamed.contains("book_id = $3"));
+        assert!(renamed.contains("book_id = $2"));
         assert!(!renamed.contains("repo_id"));
     }
 

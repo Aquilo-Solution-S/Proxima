@@ -4,7 +4,7 @@ use super::{Engine, pipeline::WritePermit};
 use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::{Cursor, Owner};
+use crate::{Cursor, OwnerId};
 
 impl Engine {
     /// Load the owner-scoped opaque cursor for `source`.
@@ -19,7 +19,7 @@ impl Engine {
     pub async fn load_source_cursor(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        owner: &OwnerId,
         source: &str,
     ) -> Result<Option<Cursor>, ProtocolError> {
         let permit = self.authorize_write(authz, owner, AccessKind::Fact).await?;
@@ -52,7 +52,7 @@ impl Engine {
     pub async fn store_source_cursor(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        owner: &OwnerId,
         source: &str,
         cursor: &Cursor,
     ) -> Result<(), ProtocolError> {
@@ -87,7 +87,7 @@ impl Engine {
     pub async fn source_cursor_age(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        owner: &OwnerId,
         source: &str,
     ) -> Result<Option<Duration>, ProtocolError> {
         let owner = self

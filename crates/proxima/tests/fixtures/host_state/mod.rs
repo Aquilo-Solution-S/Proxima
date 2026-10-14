@@ -11,7 +11,9 @@ use proxima::flavor::{
     FlavorRegistryError, ForgetRule, KeyShape, NamedMigrator, ProjectionDecl, Surface,
     TransferRule,
 };
-use proxima::{AppInfo, FlavorApp, HostStateCommand, HostStateReply, HostStateWriteOrigin, Owner};
+use proxima::{
+    AppInfo, FlavorApp, HostStateCommand, HostStateReply, HostStateWriteOrigin, OwnerId,
+};
 use proxima_core::storage_ports::{
     HostStateParticipantId, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
@@ -120,29 +122,29 @@ pub struct ExecutionRow {
 #[derive(Debug, Clone)]
 pub enum FixtureHostCommand {
     Create {
-        owner: Owner,
+        owner: OwnerId,
         invocation_id: MemoryId,
     },
     Finalize {
-        owner: Owner,
+        owner: OwnerId,
         invocation_id: MemoryId,
     },
     Read {
-        owner: Owner,
+        owner: OwnerId,
         invocation_id: MemoryId,
     },
     CreateWithPayloadOwner {
-        owner: Owner,
-        payload_owner: Owner,
+        owner: OwnerId,
+        payload_owner: OwnerId,
         invocation_id: MemoryId,
     },
     CreateWithPayloadSavedBy {
-        owner: Owner,
-        saved_by: Owner,
+        owner: OwnerId,
+        saved_by: OwnerId,
         invocation_id: MemoryId,
     },
     InsertDeferredInvalid {
-        owner: Owner,
+        owner: OwnerId,
         invocation_id: MemoryId,
     },
 }
@@ -172,7 +174,7 @@ impl HostStateCommand for FixtureHostCommand {
     const TABLES: &'static [StateSurfaceName] = TABLES;
     type Outcome = FixtureHostResult;
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         match *self {
             Self::Create { owner, .. }
             | Self::Finalize { owner, .. }
@@ -185,7 +187,7 @@ impl HostStateCommand for FixtureHostCommand {
 }
 
 pub struct AuxiliaryHostCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl HostStateCommand for AuxiliaryHostCommand {
@@ -193,13 +195,13 @@ impl HostStateCommand for AuxiliaryHostCommand {
     const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new(AUXILIARY_TABLE)];
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
 
 pub struct DuplicateTablesCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl HostStateCommand for DuplicateTablesCommand {
@@ -210,13 +212,13 @@ impl HostStateCommand for DuplicateTablesCommand {
     ];
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
 
 pub struct EmptyTablesCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl HostStateCommand for EmptyTablesCommand {
@@ -224,7 +226,7 @@ impl HostStateCommand for EmptyTablesCommand {
     const TABLES: &'static [StateSurfaceName] = EMPTY_TABLES;
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
@@ -297,7 +299,7 @@ impl PgHostStateParticipant for UndeclaredDescriptorParticipant {
 
 #[derive(Debug, Clone)]
 pub struct InvalidBindingCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl HostStateCommand for InvalidBindingCommand {
@@ -305,19 +307,19 @@ impl HostStateCommand for InvalidBindingCommand {
     const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new("proxima_core.memory")];
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct UnknownParticipantCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 #[derive(Debug, Clone)]
 pub struct CoreStateSurfaceCommand {
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl HostStateCommand for CoreStateSurfaceCommand {
@@ -325,7 +327,7 @@ impl HostStateCommand for CoreStateSurfaceCommand {
     const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new("proxima_core.goal")];
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
@@ -335,7 +337,7 @@ impl HostStateCommand for UnknownParticipantCommand {
     const TABLES: &'static [StateSurfaceName] = TABLES;
     type Outcome = ();
 
-    fn owner(&self) -> Owner {
+    fn owner(&self) -> OwnerId {
         self.owner
     }
 }
@@ -508,9 +510,9 @@ async fn create(
     tx: &mut Transaction<'_, Postgres>,
     permit: &HostStateWritePermit,
     invocation_id: MemoryId,
-    payload_saved_by: Option<Owner>,
+    payload_saved_by: Option<OwnerId>,
 ) -> Result<HostStateReply, StorageError> {
-    let (kind, owner_id) = permit.owner().columns();
+    let owner_id = permit.owner().into_inner();
     // Same-transaction probe: a second connection cannot see the Fact
     // ingested earlier in this unit. A participant that uses another
     // pooled connection fails this SELECT and cannot create the row.
@@ -524,30 +526,20 @@ async fn create(
     if fact_visible.is_none() {
         return Ok(HostStateReply::refused(FixtureHostResult::Missing));
     }
-    let (principal_kind, principal_id, maintenance_origin) = permit_origin_columns(permit);
-    let (payload_saved_by_kind, payload_saved_by_id) = match payload_saved_by {
-        Some(owner) => {
-            let (kind, id) = owner.columns();
-            (Some(kind), Some(id))
-        }
-        None => (None, None),
-    };
+    let (principal_id, maintenance_origin) = permit_origin_columns(permit);
+    let payload_saved_by_id = payload_saved_by.map(OwnerId::into_inner);
     let inserted = sqlx::query(
         "INSERT INTO host_fixture.execution
-             (invocation_id, owner_kind, owner_id, status, version,
-              principal_kind, principal_id, maintenance_origin,
-              payload_saved_by_kind, payload_saved_by_id)
-         VALUES ($1, $2, $3, 'created', 1, $4, $5, $6, $7, $8)
+             (invocation_id, owner_id, status, version,
+              principal_id, maintenance_origin, payload_saved_by_id)
+         VALUES ($1, $2, 'created', 1, $3, $4, $5)
          ON CONFLICT (invocation_id) DO NOTHING
          RETURNING version",
     )
     .bind(invocation_id.into_inner())
-    .bind(kind)
     .bind(owner_id)
-    .bind(principal_kind)
     .bind(principal_id)
     .bind(maintenance_origin)
-    .bind(payload_saved_by_kind)
     .bind(payload_saved_by_id)
     .fetch_optional(&mut **tx)
     .await
@@ -566,19 +558,17 @@ async fn finalize(
     permit: &HostStateWritePermit,
     invocation_id: MemoryId,
 ) -> Result<HostStateReply, StorageError> {
-    let (kind, owner_id) = permit.owner().columns();
-    let (principal_kind, principal_id, maintenance_origin) = permit_origin_columns(permit);
+    let owner_id = permit.owner().into_inner();
+    let (principal_id, maintenance_origin) = permit_origin_columns(permit);
     let updated: Option<i32> = sqlx::query_scalar(
         "UPDATE host_fixture.execution
          SET status = 'finalized', version = version + 1,
-             principal_kind = $4, principal_id = $5, maintenance_origin = $6
-         WHERE invocation_id = $1 AND owner_kind = $2 AND owner_id = $3 AND status = 'created'
+             principal_id = $3, maintenance_origin = $4
+         WHERE invocation_id = $1 AND owner_id = $2 AND status = 'created'
          RETURNING version",
     )
     .bind(invocation_id.into_inner())
-    .bind(kind)
     .bind(owner_id)
-    .bind(principal_kind)
     .bind(principal_id)
     .bind(maintenance_origin)
     .fetch_optional(&mut **tx)
@@ -593,15 +583,12 @@ async fn finalize(
     conflict_or_applied(tx, permit, invocation_id, false).await
 }
 
-fn permit_origin_columns(
-    permit: &HostStateWritePermit,
-) -> (Option<proxima_core::OwnerRefKind>, Option<Uuid>, bool) {
+fn permit_origin_columns(permit: &HostStateWritePermit) -> (Option<Uuid>, bool) {
     match permit.origin() {
         HostStateWriteOrigin::OwnerAuthorized { principal } => {
-            let (kind, id) = principal.columns();
-            (Some(kind), Some(id), false)
+            (Some(principal.into_inner()), false)
         }
-        HostStateWriteOrigin::Maintenance => (None, None, true),
+        HostStateWriteOrigin::Maintenance => (None, true),
     }
 }
 
@@ -610,13 +597,12 @@ async fn read(
     permit: &HostStateWritePermit,
     invocation_id: MemoryId,
 ) -> Result<HostStateReply, StorageError> {
-    let (kind, owner_id) = permit.owner().columns();
+    let owner_id = permit.owner().into_inner();
     let row = sqlx::query(
         "SELECT invocation_id, status, version FROM host_fixture.execution
-         WHERE invocation_id = $1 AND owner_kind = $2 AND owner_id = $3",
+         WHERE invocation_id = $1 AND owner_id = $2",
     )
     .bind(invocation_id.into_inner())
-    .bind(kind)
     .bind(owner_id)
     .fetch_optional(&mut **tx)
     .await
@@ -635,13 +621,12 @@ async fn conflict_or_applied(
     invocation_id: MemoryId,
     creating: bool,
 ) -> Result<HostStateReply, StorageError> {
-    let (kind, owner_id) = permit.owner().columns();
+    let owner_id = permit.owner().into_inner();
     let row = sqlx::query(
         "SELECT status, version FROM host_fixture.execution
-         WHERE invocation_id = $1 AND owner_kind = $2 AND owner_id = $3",
+         WHERE invocation_id = $1 AND owner_id = $2",
     )
     .bind(invocation_id.into_inner())
-    .bind(kind)
     .bind(owner_id)
     .fetch_optional(&mut **tx)
     .await

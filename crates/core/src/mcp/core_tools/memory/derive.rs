@@ -361,7 +361,7 @@ pub(crate) struct DerivationPlan {
 /// name a layer this `kind` cannot be derived from — see [`operator_shape`].
 pub(crate) fn plan_derivation(
     ctx: &McpToolCtx,
-    owner: &crate::Owner,
+    owner: &crate::OwnerId,
     kind: DerivedKind,
     authored: AuthoredDerivation,
     sources: &[(MemoryId, MemoryHandleClass)],
@@ -453,12 +453,9 @@ pub(crate) fn map_derive_authoring_error(err: crate::error::ProtocolError) -> Mc
     err.into()
 }
 
-pub(crate) fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
-    let principal_kind = crate::OwnerRefKind::of(owner);
-    let principal_id = owner.stable_key_uuid();
+pub(crate) fn derived_memory_id(owner: &crate::OwnerId, kind: &str, key: &str) -> uuid::Uuid {
+    let principal_id = owner.into_inner();
     let mut buf = Vec::with_capacity(96 + key.len());
-    buf.extend_from_slice(principal_kind.as_str().as_bytes());
-    buf.push(0);
     buf.extend_from_slice(principal_id.as_bytes());
     buf.push(0);
     buf.extend_from_slice(kind.as_bytes());

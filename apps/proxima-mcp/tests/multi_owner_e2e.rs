@@ -20,8 +20,8 @@ use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, Owner, OwnerAccessPort,
-    OwnerRef, Relation, Role, ToolScope, UserId,
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, OwnerAccessPort, OwnerId,
+    Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
@@ -48,8 +48,8 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let subject_b = UserId::new(Uuid::now_v7());
     let group_a = GroupId::new(Uuid::now_v7());
     let group_b = GroupId::new(Uuid::now_v7());
-    let owner_a = OwnerRef::Group(group_a);
-    let owner_b = OwnerRef::Group(group_b);
+    let owner_a = OwnerId::from(group_a);
+    let owner_b = OwnerId::from(group_b);
     let owner_access: Arc<dyn OwnerAccessPort> =
         Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
             &runtime_url,
@@ -228,8 +228,8 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
 
     let source_group = GroupId::new(Uuid::now_v7());
     let destination_group = GroupId::new(Uuid::now_v7());
-    let source: Owner = OwnerRef::Group(source_group);
-    let destination: Owner = OwnerRef::Group(destination_group);
+    let source: OwnerId = OwnerId::from(source_group);
+    let destination: OwnerId = OwnerId::from(destination_group);
 
     // Three callers, one per authorization shape under test.
     let both_sides = UserId::new(Uuid::now_v7());
@@ -362,7 +362,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
                 .await?;
         assert_eq!(
             landed,
-            destination.stored_owner_id(),
+            destination.into_inner(),
             "the series must live at the destination owner after the transfer"
         );
 
@@ -447,7 +447,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
                 .await?;
         assert_eq!(
             unmoved,
-            source.stored_owner_id(),
+            source.into_inner(),
             "a refused transfer must not move the series"
         );
 
@@ -493,7 +493,7 @@ fn rpc_error_message(body: &serde_json::Value) -> Result<String, Box<dyn std::er
 
 async fn grant_member(
     storage: &PgStorage,
-    owner: Owner,
+    owner: OwnerId,
     group: GroupId,
     member: UserId,
     relation: Relation,
@@ -507,7 +507,7 @@ async fn grant_member(
 
 async fn revoke_member(
     storage: &PgStorage,
-    owner: Owner,
+    owner: OwnerId,
     group: GroupId,
     member: UserId,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -516,7 +516,7 @@ async fn revoke_member(
     Ok(())
 }
 
-async fn membership_permit(owner: Owner) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
+async fn membership_permit(owner: OwnerId) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     let authz =
         proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
@@ -724,6 +724,6 @@ fn tool_names(body: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn owner_header(owner: Owner) -> String {
-    owner.external_key()
+fn owner_header(owner: OwnerId) -> String {
+    owner.to_string()
 }

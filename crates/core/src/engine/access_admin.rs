@@ -5,7 +5,7 @@ use crate::authz::{
 use crate::error::ProtocolError;
 use crate::owner_inverse::OwnerEraseTarget;
 use crate::storage::StorageError;
-use crate::{GroupId, OwnerRef, UserId};
+use crate::{GroupId, OwnerId, UserId};
 
 use super::Engine;
 
@@ -46,8 +46,8 @@ impl Engine {
         }
 
         let bootstrap_member_authz = AuthzContext::for_subject(first_admin, AuthPath::System);
-        let group_owner = OwnerRef::Group(group);
-        let member_principal = OwnerRef::Personal(first_admin);
+        let group_owner = OwnerId::from(group);
+        let member_principal = OwnerId::from(first_admin);
         self.veto_and_observe_access_admin(
             &bootstrap_member_authz,
             &group_owner,
@@ -80,10 +80,10 @@ impl Engine {
         member: UserId,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
-        let member_principal = OwnerRef::Personal(member);
+        let member_principal = OwnerId::from(member);
         self.veto_and_observe_access_admin(
             authz,
             &group_owner,
@@ -121,10 +121,10 @@ impl Engine {
         group: GroupId,
         member: UserId,
     ) -> Result<(), ProtocolError> {
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
-        let member_principal = OwnerRef::Personal(member);
+        let member_principal = OwnerId::from(member);
         let current_relations = self
             .storage()
             .access_admin
@@ -175,7 +175,7 @@ impl Engine {
         member: UserId,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
         self.veto_and_observe_access_admin(
@@ -185,7 +185,7 @@ impl Engine {
             AuthzOperation::Membership {
                 change: MembershipChange::Remove,
                 group,
-                member: OwnerRef::Personal(member),
+                member: OwnerId::from(member),
                 relation,
             },
         )?;
@@ -218,7 +218,7 @@ impl Engine {
         from: Relation,
         to: Relation,
     ) -> Result<(), ProtocolError> {
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
         if from == to {
@@ -227,7 +227,7 @@ impl Engine {
                 "must differ from the relation being replaced",
             ));
         }
-        let member_principal = OwnerRef::Personal(member);
+        let member_principal = OwnerId::from(member);
         for (change, relation) in [
             (MembershipChange::Remove, from),
             (MembershipChange::Add, to),
@@ -273,7 +273,7 @@ impl Engine {
         limit: u32,
         after: Option<(UserId, Relation)>,
     ) -> Result<GroupMemberPage, ProtocolError> {
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         self.authorize_owner_admin(authz, &group_owner).await?;
         let fetch = i64::from(limit).saturating_add(1);
         let mut members = self
@@ -336,7 +336,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         entity: EntityId,
-        to_owner: OwnerRef,
+        to_owner: OwnerId,
     ) -> Result<(), ProtocolError> {
         self.operation_authority(authz)?;
         if matches!(entity, EntityId::Goal(_)) {
@@ -345,7 +345,9 @@ impl Engine {
                 "goals do not transfer",
             ));
         }
-        if !matches!(to_owner, OwnerRef::Group(_)) {
+        // The one role rule: the caller's own id holds the personal role,
+        // which never manages, so it can never consent as a destination.
+        if authz.subject().map(OwnerId::from) == Some(to_owner) {
             return Err(ProtocolError::invalid_argument(
                 "to_owner",
                 "transfer destination must be a group owner: receiving-side consent is \
@@ -369,7 +371,7 @@ impl Engine {
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
 
         let mut permit = self.authorize_owner_admin(authz, &current_owner).await?;
-        if matches!(current_owner, OwnerRef::Group(_)) {
+        if authz.subject().map(OwnerId::from) != Some(current_owner) {
             require_group_manage(authz, &current_owner)?;
         }
         // Receiving side: the destination consents by the caller holding
@@ -458,7 +460,7 @@ impl Engine {
     async fn authorize_transfer_destination(
         &self,
         authz: &AuthzContext,
-        to_owner: &OwnerRef,
+        to_owner: &OwnerId,
     ) -> Result<(), ProtocolError> {
         if authz.role_for_owner(to_owner).is_some() {
             self.authorize_owner_admin(authz, to_owner).await?;
@@ -490,7 +492,7 @@ impl Engine {
     async fn authorize_transfer_destination_out_of_band(
         &self,
         authz: &AuthzContext,
-        to_owner: &OwnerRef,
+        to_owner: &OwnerId,
     ) -> Result<(), ProtocolError> {
         let refused = || ProtocolError::forbidden("requires manage on this owner");
         if matches!(authz.auth_path(), AuthPath::Delegated | AuthPath::Denied)
@@ -505,11 +507,11 @@ impl Engine {
             .storage()
             .access_admin
             .owner_access_read
-            .resolve_membership(authz.owner_scope(), &OwnerRef::Personal(subject))
+            .resolve_membership(authz.owner_scope(), &OwnerId::from(subject))
             .await
             .map_err(|err| storage_error("resolve_membership", &err))?;
         let consents = memberships.iter().any(|row| {
-            if OwnerRef::Group(row.group) != *to_owner {
+            if OwnerId::from(row.group) != *to_owner {
                 return false;
             }
             let role = row.relation.role();
@@ -521,8 +523,8 @@ impl Engine {
     fn veto_and_observe_access_admin(
         &self,
         authz: &AuthzContext,
-        requested: &OwnerRef,
-        resolved: &OwnerRef,
+        requested: &OwnerId,
+        resolved: &OwnerId,
         operation: AuthzOperation,
     ) -> Result<(), ProtocolError> {
         let input = AuthzInput {
@@ -553,7 +555,7 @@ impl Engine {
 /// but `manage = false` — and pass the write gate. Consult `may_manage`
 /// explicitly so only roles with `manage = true` (e.g. `Role::admin`) mutate
 /// membership or move a group-owned entity to another owner.
-fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerRef) -> Result<(), ProtocolError> {
+fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerId) -> Result<(), ProtocolError> {
     if authz.may_manage(group_owner) {
         Ok(())
     } else {
@@ -564,7 +566,7 @@ fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerRef) -> Result<
 fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
     authz
         .subject()
-        .map_or_else(|| authz.principal().stable_key_uuid(), UserId::into_inner)
+        .map_or_else(|| authz.principal().into_inner(), UserId::into_inner)
 }
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
@@ -590,7 +592,7 @@ mod tests {
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,
     };
-    use crate::{EntityId, ErrorCode, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
+    use crate::{EntityId, ErrorCode, FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
     use uuid::Uuid;
 
     /// The destination gate has two paths and they must never merge.
@@ -612,7 +614,7 @@ mod tests {
     async fn a_carried_role_that_cannot_manage_never_falls_through_to_the_membership_row() {
         let subject = UserId::new(Uuid::now_v7());
         let destination_group = GroupId::new(Uuid::now_v7());
-        let destination = OwnerRef::Group(destination_group);
+        let destination = OwnerId::from(destination_group);
         let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
 
         let engine = || {
@@ -623,12 +625,12 @@ mod tests {
                             Vec::new(),
                         )),
                         observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                        member: OwnerRef::Personal(subject),
+                        member: OwnerId::from(subject),
                         group: destination_group,
                         // Real, sufficient, receiving-side consent, sitting
                         // in storage for every case in this test.
                         membership_relation: Relation::Admin,
-                        home_owner: Some(OwnerRef::Personal(subject)),
+                        home_owner: Some(OwnerId::from(subject)),
                         entity_readable: true,
                         memory_kind: None,
                         goal_evidence: None,
@@ -749,7 +751,7 @@ mod tests {
             MembershipStorage {
                 observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                member: OwnerRef::Personal(member),
+                member: OwnerId::from(member),
                 group,
                 membership_relation: Relation::Viewer,
                 home_owner: None,
@@ -764,7 +766,7 @@ mod tests {
         );
         let authz = AuthzContext::for_subject_with_role(
             admin,
-            [(OwnerRef::Group(group), Role::admin())],
+            [(OwnerId::from(group), Role::admin())],
             AuthPath::HostBearer,
         );
 
@@ -845,7 +847,7 @@ mod tests {
     fn admin_of(group: GroupId) -> AuthzContext {
         AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(group), Role::admin())],
+            [(OwnerId::from(group), Role::admin())],
             AuthPath::HostBearer,
         )
     }
@@ -991,7 +993,7 @@ mod tests {
             .expect("write==read is a valid role");
         let write_only_authz = AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(group), write_only)],
+            [(OwnerId::from(group), write_only)],
             AuthPath::HostBearer,
         );
         let (engine, seen) = relation_engine(group, member, None);
@@ -1033,12 +1035,12 @@ mod tests {
     fn membership_storage_with_home(
         member: UserId,
         group: GroupId,
-        home_owner: Option<OwnerRef>,
+        home_owner: Option<OwnerId>,
     ) -> MembershipStorage {
         MembershipStorage {
             observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            member: OwnerRef::Personal(member),
+            member: OwnerId::from(member),
             group,
             membership_relation: Relation::Viewer,
             home_owner,
@@ -1057,7 +1059,7 @@ mod tests {
         let caller = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         let goal = crate::EntityId::Goal(crate::GoalId::new(Uuid::now_v7()));
-        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
 
         // The default engine has no storage: reaching the owner lookup would
         // surface Internal, so InvalidArgument proves the gate fired first.
@@ -1081,7 +1083,7 @@ mod tests {
         let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
 
         let err = engine
-            .transfer_to_owner(&authz, entity, OwnerRef::Personal(caller))
+            .transfer_to_owner(&authz, entity, OwnerId::from(caller))
             .await
             .expect_err("a personal owner cannot grant receiving-side consent");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
@@ -1096,7 +1098,7 @@ mod tests {
     async fn access_admin_transfer_collapses_missing_and_foreign_to_not_found() {
         let caller = UserId::new(Uuid::now_v7());
         let source_group = GroupId::new(Uuid::now_v7());
-        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
 
@@ -1108,7 +1110,7 @@ mod tests {
             .await
             .expect_err("an absent entity must not be transferable");
 
-        let foreign_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let mut foreign_storage =
             membership_storage_with_home(caller, source_group, Some(foreign_owner));
         // The storage double models a real row outside the caller's read set.
@@ -1131,7 +1133,7 @@ mod tests {
         use crate::access::AccessCeiling;
 
         let group = GroupId::new(Uuid::now_v7());
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let caller = UserId::new(Uuid::now_v7());
         let member = UserId::new(Uuid::now_v7());
         let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
@@ -1145,7 +1147,7 @@ mod tests {
             AuthPath::HostBearer,
         );
         let destination = GroupId::new(Uuid::now_v7());
-        let destination_owner = OwnerRef::Group(destination);
+        let destination_owner = OwnerId::from(destination);
         let admin_authz = AuthzContext::for_subject_with_role(
             caller,
             [
@@ -1253,9 +1255,9 @@ mod tests {
     #[tokio::test]
     async fn access_admin_transfer_resolves_a_narrowed_destination_out_of_band() {
         let source = GroupId::new(Uuid::now_v7());
-        let source_owner = OwnerRef::Group(source);
+        let source_owner = OwnerId::from(source);
         let destination = GroupId::new(Uuid::now_v7());
-        let destination_owner = OwnerRef::Group(destination);
+        let destination_owner = OwnerId::from(destination);
         let caller = UserId::new(Uuid::now_v7());
         let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
 
@@ -1278,7 +1280,7 @@ mod tests {
                             Vec::new(),
                         )),
                         observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                        member: OwnerRef::Personal(caller),
+                        member: OwnerId::from(caller),
                         group: destination,
                         membership_relation: relation,
                         home_owner: Some(source_owner),
@@ -1331,7 +1333,7 @@ mod tests {
     #[tokio::test]
     async fn access_admin_transfer_refuses_a_delegated_context_before_the_membership_lookup() {
         let source = GroupId::new(Uuid::now_v7());
-        let source_owner = OwnerRef::Group(source);
+        let source_owner = OwnerId::from(source);
         let destination = GroupId::new(Uuid::now_v7());
         let caller = UserId::new(Uuid::now_v7());
         let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
@@ -1343,7 +1345,7 @@ mod tests {
                 MembershipStorage {
                     observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                     observed_kind_loads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                    member: OwnerRef::Personal(caller),
+                    member: OwnerId::from(caller),
                     group: destination,
                     membership_relation: Relation::Admin,
                     home_owner: Some(source_owner),
@@ -1367,7 +1369,7 @@ mod tests {
         );
 
         let denied = engine
-            .transfer_to_owner(&delegated, entity, OwnerRef::Group(destination))
+            .transfer_to_owner(&delegated, entity, OwnerId::from(destination))
             .await
             .expect_err("a raw delegated context is not Engine authority");
         assert_eq!(denied.code, ErrorCode::Forbidden);

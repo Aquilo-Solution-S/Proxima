@@ -95,7 +95,7 @@ touches only its command's declared tables.
 The same boot-frozen participant may supply erase and export callbacks for its
 declared lifecycle surfaces. The frozen request names whole-owner, source, or
 exact-physical-Fact scope; exact physical IDs and original-publication copy
-locators `(OwnerRef, MemoryId)` are separate typed selections. A source erase
+locators `(OwnerId, MemoryId)` are separate typed selections. A source erase
 can therefore remove a copy captured by an owner before transfer, while an
 exact Fact erase removes copies of that physical `t` across original owners.
 Only an authorized core hard erase issues the latter selection: whole-owner,

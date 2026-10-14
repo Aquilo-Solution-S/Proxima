@@ -137,7 +137,7 @@ async fn query_stopwords_use_configured_dictionaries_and_ignore_unknown_words()
 async fn lexical_search_uses_dominant_german_stopwords_for_english_rows()
 -> Result<(), Box<dyn std::error::Error>> {
     use proxima_core::storage_ports::MemoryReadPort;
-    use proxima_core::{OwnerRef, UserId};
+    use proxima_core::{OwnerId, UserId};
     use uuid::Uuid;
 
     let (pg, _guard) = fresh_pg("german_english_query").await;
@@ -145,7 +145,7 @@ async fn lexical_search_uses_dominant_german_stopwords_for_english_rows()
     sqlx::query("INSERT INTO proxima_core.lexical_languages VALUES ('german')")
         .execute(pool)
         .await?;
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let wanted = super::seed_note(
         pool,
         owner,

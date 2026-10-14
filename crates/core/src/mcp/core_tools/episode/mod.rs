@@ -199,7 +199,7 @@ struct EpisodeWrite<'a> {
     ctx: &'a McpToolCtx,
     uow: UnitOfWork<'a>,
     bind: &'a BindSet,
-    owner: crate::Owner,
+    owner: crate::OwnerId,
     act_id: MemoryId,
     slots: EpisodeSlots,
     bound: Vec<String>,

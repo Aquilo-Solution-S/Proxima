@@ -241,7 +241,7 @@ fn resolve_item_dependencies(
 /// admission.
 async fn ingest_plan_item(
     uow: &mut UnitOfWork<'_>,
-    owner: proxima_core::Owner,
+    owner: proxima_core::OwnerId,
     repo_id: uuid::Uuid,
     item: ExecutionPlanItemArgs,
     depends_on_memory_ids: Vec<uuid::Uuid>,

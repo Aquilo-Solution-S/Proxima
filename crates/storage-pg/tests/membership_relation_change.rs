@@ -16,7 +16,7 @@ use proxima_core::authz::{
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
 use proxima_core::{
     AccessCeiling, AccessKind, AuthPath, AuthzContext, Engine, ErrorCode, FlavorRegistry, GroupId,
-    OwnerRef, Relation, Role, StorageError, UserId,
+    OwnerId, Relation, Role, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -107,7 +107,7 @@ impl Harness {
             .expect("bootstrap");
         let admin_authz = AuthzContext::for_subject_with_role(
             admin,
-            [(OwnerRef::Group(group), Role::admin())],
+            [(OwnerId::from(group), Role::admin())],
             AuthPath::HostBearer,
         );
         Self {
@@ -122,7 +122,7 @@ impl Harness {
     }
 
     fn permit(&self) -> OwnerWritePermit {
-        OwnerWritePermit::new_for_tests(OwnerRef::Group(self.group), AccessKind::Goal)
+        OwnerWritePermit::new_for_tests(OwnerId::from(self.group), AccessKind::Goal)
     }
 
     /// A member holding exactly `relations`.
@@ -461,7 +461,7 @@ async fn a_caller_with_write_but_without_manage_is_refused_by_both_methods() {
         .expect("write == read is a valid role");
     let caller = AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
-        [(OwnerRef::Group(h.group), write_only)],
+        [(OwnerId::from(h.group), write_only)],
         AuthPath::HostBearer,
     );
 
@@ -487,7 +487,7 @@ async fn a_permit_for_another_group_is_refused_by_both_port_methods() {
     let h = Harness::new(None).await;
     let member = h.member_with(&[Relation::Admin]).await;
     let other = OwnerWritePermit::new_for_tests(
-        OwnerRef::Group(GroupId::new(Uuid::now_v7())),
+        OwnerId::from(GroupId::new(Uuid::now_v7())),
         AccessKind::Goal,
     );
 

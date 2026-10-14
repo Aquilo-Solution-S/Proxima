@@ -1,7 +1,7 @@
 //! Work bound for owner-scoped memory pages under the shipped RLS policies.
 
 use proxima_core::verbs::query::{EntityKind, QueryRequest};
-use proxima_core::{Credentials, GroupId, OwnerRef, OwnerRoles, Role, UserId};
+use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
 use proxima_storage_pg::{begin_owner_transaction, verbs::query::memory_page_sql_for_tests};
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
@@ -169,7 +169,7 @@ async fn owner_paged_memory_work_is_bounded_after_filters() {
     let roles = owners
         .iter()
         .copied()
-        .map(|id| (OwnerRef::Group(GroupId::new(id)), Role::viewer()))
+        .map(|id| (OwnerId::from(GroupId::new(id)), Role::viewer()))
         .collect::<Vec<_>>();
     let verifier = super::SyntheticVerifier {
         roles: OwnerRoles::for_subject(UserId::new(Uuid::now_v7()), roles).unwrap(),

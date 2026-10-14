@@ -157,3 +157,21 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         }
     }
 }
+
+/// Register `group` as a group in `proxima_core.owners`, the way a host
+/// creates one before writing under it. Idempotent; an id already
+/// registered as a user is a `Conflict`.
+///
+/// # Errors
+///
+/// Storage errors from the registration.
+pub async fn register_group_for_tests(
+    pool: &sqlx::PgPool,
+    group: proxima_core::GroupId,
+) -> Result<(), proxima_core::StorageError> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|err| proxima_core::StorageError::Unavailable(err.to_string()))?;
+    crate::access::owner_columns::register_group(&mut conn, group).await
+}

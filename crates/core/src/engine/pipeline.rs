@@ -1,3 +1,4 @@
+use crate::OwnerId;
 use crate::access::{AccessKind, EntityId, Role};
 use crate::authz::{
     AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, EngineAuthority,
@@ -5,7 +6,6 @@ use crate::authz::{
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
-use crate::{Owner, OwnerRef};
 
 use super::Engine;
 
@@ -17,12 +17,12 @@ pub struct WritePermit {
 }
 
 impl WritePermit {
-    pub(in crate::engine) fn authorize_transfer_to(&mut self, destination: OwnerRef) {
+    pub(in crate::engine) fn authorize_transfer_to(&mut self, destination: OwnerId) {
         self.owner_write.authorize_transfer_to(destination);
     }
 
     #[must_use]
-    pub fn owner(&self) -> &OwnerRef {
+    pub fn owner(&self) -> &OwnerId {
         self.owner_write.owner()
     }
 
@@ -65,12 +65,12 @@ pub(in crate::engine) const ENTRY_NOT_FOUND_MESSAGE: &str = "entry not found";
 /// module's authorization gates can mint it.
 #[derive(Debug)]
 pub struct EntryReadPermit {
-    owner: OwnerRef,
+    owner: OwnerId,
 }
 
 impl EntryReadPermit {
     #[must_use]
-    pub fn owner(&self) -> &OwnerRef {
+    pub fn owner(&self) -> &OwnerId {
         &self.owner
     }
 }
@@ -90,7 +90,7 @@ impl Engine {
     pub async fn authorize_owner_write(
         &self,
         authz: &AuthzContext,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         kind: AccessKind,
     ) -> Result<OwnerWritePermit, ProtocolError> {
         Ok(self
@@ -106,7 +106,7 @@ impl Engine {
     pub(in crate::engine) async fn authorize_write<A>(
         &self,
         authority: &A,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         kind: AccessKind,
     ) -> Result<WritePermit, ProtocolError>
     where
@@ -125,7 +125,7 @@ impl Engine {
     pub(in crate::engine) async fn authorize_write_limit<A>(
         &self,
         authority: &A,
-        owner: &OwnerRef,
+        owner: &OwnerId,
     ) -> Result<WritePermit, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -148,7 +148,7 @@ impl Engine {
     pub(in crate::engine) async fn authorize_owner_admin<A>(
         &self,
         authority: &A,
-        owner: &OwnerRef,
+        owner: &OwnerId,
     ) -> Result<WritePermit, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -159,7 +159,7 @@ impl Engine {
     fn write_permit<A>(
         &self,
         authority: &A,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         operation: AuthzOperation,
     ) -> Result<WritePermit, ProtocolError>
     where
@@ -198,9 +198,9 @@ impl Engine {
     pub(in crate::engine) async fn authorize_owner_read<A>(
         &self,
         authority: &A,
-        owner: &Owner,
+        owner: &OwnerId,
         kind: AccessKind,
-    ) -> Result<Owner, ProtocolError>
+    ) -> Result<OwnerId, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
@@ -218,16 +218,16 @@ impl Engine {
     fn gate(
         &self,
         authz: &AuthzContext,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         operation: AuthzOperation,
         redeemed_phase: bool,
-    ) -> Result<OwnerRef, ProtocolError> {
+    ) -> Result<OwnerId, ProtocolError> {
         if authz.auth_path() == AuthPath::Delegated && !redeemed_phase {
             return Err(ProtocolError::forbidden(
                 "raw delegated authorization contexts are not Engine authority",
             ));
         }
-        let refuse = |resolved: &OwnerRef, outcome, err| {
+        let refuse = |resolved: &OwnerId, outcome, err| {
             let input = AuthzInput {
                 authz,
                 requested: owner,
@@ -289,7 +289,7 @@ impl Engine {
     pub(in crate::engine) async fn authorize_read<A>(
         &self,
         authority: &A,
-    ) -> Result<Vec<OwnerRef>, ProtocolError>
+    ) -> Result<Vec<OwnerId>, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
@@ -348,7 +348,7 @@ impl Engine {
     }
 }
 
-fn allows(authz: &AuthzContext, owner: &OwnerRef, operation: &AuthzOperation) -> bool {
+fn allows(authz: &AuthzContext, owner: &OwnerId, operation: &AuthzOperation) -> bool {
     match *operation {
         AuthzOperation::Read { kind } => authz.may_read(owner, kind),
         AuthzOperation::Write { kind } => authz.may_write(owner, kind),
@@ -380,7 +380,7 @@ mod tests {
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
-    use crate::{FlavorRegistry, GroupId, MemoryId, Owner, OwnerRef, UserId};
+    use crate::{FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
 
     use super::super::MembershipStorage;
     use super::Engine;
@@ -407,20 +407,20 @@ mod tests {
             .with_storage_ports(storage.storage_ports())
     }
 
-    fn owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
-    fn group_owner() -> Owner {
-        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    fn group_owner() -> OwnerId {
+        OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    fn storage(member: OwnerRef, group: GroupId) -> MembershipStorage {
+    fn storage(member: OwnerId, group: GroupId) -> MembershipStorage {
         storage_with_relation(member, group, Relation::Viewer)
     }
 
     fn storage_with_relation(
-        member: OwnerRef,
+        member: OwnerId,
         group: GroupId,
         membership_relation: Relation,
     ) -> MembershipStorage {
@@ -441,9 +441,9 @@ mod tests {
     }
 
     fn storage_with_entity(
-        member: OwnerRef,
+        member: OwnerId,
         group: GroupId,
-        home_owner: Option<OwnerRef>,
+        home_owner: Option<OwnerId>,
         entity_readable: bool,
     ) -> MembershipStorage {
         MembershipStorage {
@@ -462,35 +462,33 @@ mod tests {
         }
     }
 
-    fn granted_context(owner: &Owner) -> ResolvedAuthz {
+    fn granted_context(owner: &OwnerId) -> ResolvedAuthz {
         AuthzContext::single_owner(owner, AuthPath::HostBearer)
     }
 
     /// Server-resolved caller holding `relation` on `group` (group access now
     /// flows from host-resolved `OwnerRoles`, not from a per-request membership
     /// storage lookup).
-    fn member_context(owner: &Owner, group: GroupId, relation: Relation) -> ResolvedAuthz {
-        let OwnerRef::Personal(subject) = owner else {
-            panic!("member_context requires a personal owner");
-        };
+    fn member_context(owner: &OwnerId, group: GroupId, relation: Relation) -> ResolvedAuthz {
+        let subject = owner.as_user();
         AuthzContext::for_subject_with_role(
-            *subject,
-            [(OwnerRef::Group(group), relation.role())],
+            subject,
+            [(OwnerId::from(group), relation.role())],
             AuthPath::HostBearer,
         )
     }
 
     #[derive(Debug)]
     struct StaticResolver {
-        resolved: Owner,
+        resolved: OwnerId,
     }
 
     impl OwnerResolver for StaticResolver {
         fn resolve(
             &self,
             _authz: &AuthzContext,
-            _requested: &Owner,
-        ) -> Result<Owner, ProtocolError> {
+            _requested: &OwnerId,
+        ) -> Result<OwnerId, ProtocolError> {
             Ok(self.resolved)
         }
     }
@@ -571,7 +569,7 @@ mod tests {
         ];
         for role in roles {
             let subject = UserId::new(uuid::Uuid::now_v7());
-            let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+            let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
             let authz =
                 AuthzContext::for_subject_with_role(subject, [(group, role)], AuthPath::HostBearer);
             for kind in AccessKind::ALL {
@@ -613,9 +611,7 @@ mod tests {
     async fn a_system_context_writes_only_when_for_system_built_it() {
         let (engine, authority) = engine().into_system_authority();
         let owner = owner();
-        let OwnerRef::Personal(subject) = owner else {
-            unreachable!("owner() is personal")
-        };
+        let subject = owner.as_user();
         let roles = crate::OwnerRoles::for_subject(subject, []).expect("roles");
 
         let permit = engine
@@ -656,7 +652,7 @@ mod tests {
     async fn authorize_write_denies_viewer_for_editor() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = OwnerRef::Group(g1);
+        let g1_owner = OwnerId::from(g1);
         let engine = engine_with_ports(storage(p, g1));
         let authz = member_context(&p, g1, Relation::Viewer);
 
@@ -672,7 +668,7 @@ mod tests {
     async fn authorize_write_allows_editor_member_for_group() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = OwnerRef::Group(g1);
+        let g1_owner = OwnerId::from(g1);
         let engine = engine_with_ports(storage_with_relation(p, g1, Relation::Editor));
         let authz = member_context(&p, g1, Relation::Editor);
 
@@ -721,7 +717,7 @@ mod tests {
     async fn authorize_read_returns_personal_and_groups() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let g1_owner = OwnerRef::Group(g1);
+        let g1_owner = OwnerId::from(g1);
         let engine = engine_with_ports(storage(p, g1));
         let authz = member_context(&p, g1, Relation::Viewer);
 

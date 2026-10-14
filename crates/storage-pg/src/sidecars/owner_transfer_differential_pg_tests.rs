@@ -102,7 +102,7 @@ use crate::verbs::memory_timeseries::ingest_fact_timeseries;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
+    AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -126,15 +126,15 @@ pub struct Corpus {
     pub mount: MemoryId,
     /// A goal series. Transfer must refuse it and change nothing.
     pub goal: Uuid,
-    pub source: OwnerRef,
-    pub destination: OwnerRef,
+    pub source: OwnerId,
+    pub destination: OwnerId,
     /// The third owner the corpus seeds. Nothing reads the handle: the dump
     /// covers every owner in the database, so the bystander's rows are
     /// asserted by the golden rather than by a caller of this field. Kept
     /// because the corpus's third participant is part of what the gate says
     /// it covers.
     #[expect(dead_code, reason = "seeded participant, asserted through the dump")]
-    pub bystander: OwnerRef,
+    pub bystander: OwnerId,
     /// Stable baseline labels for the upload ids that actually mint objects.
     /// The live rows use canonical `objects/<upload_id>` locators; only the
     /// normalized dump substitutes these historical labels.
@@ -185,7 +185,7 @@ fn note(title: &str) -> SidecarPayload {
 /// leg unwitnessed.
 async fn write_note(
     pool: &PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     source: Option<(&str, &str)>,
     handle: Option<Uuid>,
     blob_id: Option<Uuid>,
@@ -209,16 +209,12 @@ async fn write_note(
     Ok((outcome.memory_id, outcome.handle))
 }
 
-async fn owner_row(pool: &PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
-    let kind = match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    };
+async fn owner_row(pool: &PgPool, owner: OwnerId, kind: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT (owner_id) DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(kind)
     .execute(pool)
     .await?;
@@ -227,7 +223,7 @@ async fn owner_row(pool: &PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
 
 async fn blob_row(
     pool: &PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     hash: u8,
     baseline_object_key: &str,
 ) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
@@ -236,7 +232,7 @@ async fn blob_row(
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(&content_hash)
     .fetch_one(pool)
     .await?;
@@ -251,7 +247,7 @@ async fn blob_row(
                  TIMESTAMPTZ '2030-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')",
     )
     .bind(upload_id)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(&object_key)
     .bind(blob_id)
     .bind(vec![31u8; 32])
@@ -277,7 +273,7 @@ fn destination_route() -> [proxima_core::EmbeddingSpace; 1] {
     )]
 }
 
-async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn std::error::Error>> {
+async fn embed(pool: &PgPool, t: Uuid, owner: OwnerId) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
              (entity_id, model_id, dim, embedding_version, vec, owner_id)
@@ -285,7 +281,7 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn st
     )
     .bind(t)
     .bind(embed_vector())
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -294,7 +290,7 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn st
          VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -302,7 +298,7 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerRef) -> Result<(), Box<dyn st
          VALUES ($1, 'test-embed', 1024, $2)",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     Ok(())
@@ -353,11 +349,11 @@ async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error
 /// bytes — and every row of its is a row both implementations must leave
 /// exactly alone.
 pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
-    let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-    let bystander = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    owner_row(pool, source).await?;
-    owner_row(pool, bystander).await?;
+    let source = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
+    let bystander = OwnerId::from(UserId::new(Uuid::now_v7()));
+    owner_row(pool, source, "personal").await?;
+    owner_row(pool, bystander, "personal").await?;
     // The DESTINATION's owners row is deliberately NOT pre-created for the
     // first transfer: minting it is `ensure_owner_row`'s job inside the
     // transfer transaction, and a differential that pre-created it would
@@ -374,7 +370,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     object_key_labels.insert(mount_upload, "objects/mount".to_owned());
     // The destination already holds these bytes under the same
     // (schema_id, content_hash): case 1, remap rather than move.
-    owner_row(pool, destination).await?;
+    owner_row(pool, destination, "group").await?;
     let (_, destination_upload) =
         blob_row(pool, destination, 22, "objects/dedupe-destination").await?;
     object_key_labels.insert(destination_upload, "objects/dedupe-destination".to_owned());
@@ -434,7 +430,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
                      false, $3)",
         )
         .bind(second.into_inner())
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(vec![41u8; 32])
         .execute(pool)
         .await?;
@@ -457,7 +453,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
                      TIMESTAMPTZ '2026-02-04 00:00:00Z')",
         )
         .bind(third.into_inner())
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(format!("{{\"probe\":\"{n}\"}}"))
         .bind(vec![43u8; 32])
         .execute(pool)
@@ -475,7 +471,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/agent-note-v1', $2) RETURNING content_id",
     )
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .bind(vec![11u8; 32])
     .fetch_one(pool)
     .await?;
@@ -483,7 +479,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/agent-note-v1', $2) RETURNING content_id",
     )
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .bind(vec![12u8; 32])
     .fetch_one(pool)
     .await?;
@@ -545,7 +541,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
                  false, $3)",
     )
     .bind(bystander_t.into_inner())
-    .bind(bystander.stored_owner_id())
+    .bind(bystander.into_inner())
     .bind(vec![42u8; 32])
     .execute(pool)
     .await?;
@@ -554,15 +550,11 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     for (owner, source_name) in [(source, "src-a"), (source, "src-b"), (bystander, "src-a")] {
         sqlx::query(
             "INSERT INTO proxima_core.source_cursors
-                 (owner_kind, owner_id, source, cursor, updated_at)
-             VALUES ($1::proxima_core.owner_kind, $2, $3, $4,
+                 (owner_id, source, cursor, updated_at)
+             VALUES ($1, $2, $3,
                      TIMESTAMPTZ '2026-03-03 00:00:00Z')",
         )
-        .bind(match owner {
-            OwnerRef::Personal(_) => "personal",
-            OwnerRef::Group(_) => "group",
-        })
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(source_name)
         .bind(vec![51u8; 8])
         .execute(pool)
@@ -570,25 +562,22 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     }
     sqlx::query(
         "INSERT INTO proxima_core.delegated_authority_grants
-             (delegation_id, subject_user_id, owner_kind, owner_id, tool_name,
+             (delegation_id, subject_user_id, owner_id, tool_name,
               read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
-         VALUES ($1, $2, 'personal'::proxima_core.owner_kind, $3, 'core_remember',
+         VALUES ($1, $2, $3, 'core_remember',
                  'fact', 'fact', TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
                  TIMESTAMPTZ '2026-01-01 00:00:00Z')",
     )
     .bind(Uuid::now_v7())
-    .bind(match source {
-        OwnerRef::Personal(user) => user.into_inner(),
-        OwnerRef::Group(_) => unreachable!("source is personal"),
-    })
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
+    .bind(source.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.cold_purge_pending (owner_id, object_key, enqueued_at)
          VALUES ($1, 'cold/never-drained', TIMESTAMPTZ '2026-04-04 00:00:00Z')",
     )
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .execute(pool)
     .await
     .ok();
@@ -601,7 +590,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
          VALUES ($1, 'fact_schema', 'core/agent-note-v1', ARRAY['core.remember'], 'wake')
          RETURNING wake_id",
     )
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .fetch_one(pool)
     .await?;
     sqlx::query(
@@ -609,7 +598,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
          VALUES ($1, 'core/task-goal-v1', $2, $1)",
     )
     .bind(goal_handle)
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .execute(pool)
     .await?;
     let goal_t: Uuid = sqlx::query_scalar(
@@ -618,7 +607,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
          VALUES ($1, $1, $2, 'a goal', 'Active', 'req-1', $3) RETURNING t",
     )
     .bind(goal_handle)
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .bind(wake_id)
     .fetch_one(pool)
     .await?;
@@ -627,7 +616,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
          VALUES ($1, $2, 'goal', 'goal sketch')",
     )
     .bind(goal_t)
-    .bind(source.stored_owner_id())
+    .bind(source.into_inner())
     .execute(pool)
     .await?;
     // A goal-keyed embedding: `entity_id` is an entity t, not a memory t,

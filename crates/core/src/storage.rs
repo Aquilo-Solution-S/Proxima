@@ -14,7 +14,7 @@ use crate::{
     AbstractionPayload, CitedObjectPayload, FactPayload, GoalPayload, PayloadReference,
     PerspectivePayload,
 };
-use crate::{EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId, SchemaVersion};
+use crate::{EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -477,7 +477,7 @@ pub struct AuthorDerivedRequest<'a> {
     /// It allocates the actual admission `t` separately. Use the returned
     /// [`AuthorDerivedOutcome::memory_id`] to address the memory.
     pub memory_id: MemoryId,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub kind: EntityKind,
     pub text: String,
     pub schema_id: SchemaId,
@@ -534,7 +534,7 @@ pub struct AuthorDerivedOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingJobClaim {
     pub job_id: Uuid,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub entity_kind: EntityKind,
     pub entity_id: MemoryId,
     pub space: crate::EmbeddingSpace,

@@ -7,7 +7,6 @@ use crate::access::EntityId;
 use crate::mcp::{
     CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
-use crate::owner::parse_external_key;
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 
 pub const CORE_TRANSFER_ACTIONS: &[CoreActionMeta] = &[CoreActionMeta {
@@ -32,7 +31,7 @@ pub struct TransferToOwnerArgs {
     /// The memory to move: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`. Goals do not
     /// transfer.
     pub entity: String,
-    /// Destination owner key, `group:<uuid>`: a group the caller manages.
+    /// Destination owner id, a bare `<uuid>`: a group the caller manages.
     pub to_owner: String,
 }
 
@@ -64,8 +63,7 @@ impl McpTool for CoreTransferTool {
             match args {
                 CoreTransferArgs::TransferToOwner(args) => {
                     let entity = resolve_transferable_entity(&ctx, &args.entity)?;
-                    let to_owner = parse_external_key(&args.to_owner)
-                        .map_err(|err| McpToolError::InvalidInput(format!("to_owner: {err}")))?;
+                    let to_owner = parse_to_owner(&args.to_owner)?;
                     engine
                         .transfer_to_owner(&ctx.authz, entity, to_owner)
                         .await?;
@@ -74,6 +72,12 @@ impl McpTool for CoreTransferTool {
             }
         })
     }
+}
+
+/// The destination owner from the wire: the bare id, and nothing else.
+fn parse_to_owner(raw: &str) -> Result<crate::OwnerId, McpToolError> {
+    raw.parse::<crate::OwnerId>()
+        .map_err(|err| McpToolError::InvalidInput(format!("to_owner: {err}")))
 }
 
 /// Resolve a wire reference to a memory or goal entity. Goal references
@@ -93,7 +97,22 @@ fn resolve_transferable_entity(ctx: &McpToolCtx, raw: &str) -> Result<EntityId, 
 mod tests {
     use crate::mcp::{McpTool, McpToolError, validate_action_args};
 
-    use super::CoreTransferTool;
+    use super::{CoreTransferTool, parse_to_owner};
+
+    #[test]
+    fn an_old_kind_prefixed_to_owner_is_refused() {
+        let id = uuid::Uuid::now_v7();
+        for raw in [format!("group:{id}"), format!("personal:{id}")] {
+            assert!(
+                matches!(parse_to_owner(&raw), Err(McpToolError::InvalidInput(_))),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            parse_to_owner(&id.to_string()).expect("bare id"),
+            crate::OwnerId::new(id)
+        );
+    }
 
     #[test]
     fn transfer_requires_entity_and_destination() {
@@ -127,8 +146,8 @@ mod tests {
             &serde_json::json!({
                 "action": "transfer_to_owner",
                 "entity": "F:00000000-0000-0000-0000-000000000001",
-                "to_owner": "group:00000000-0000-0000-0000-000000000002",
-                "group": "group:00000000-0000-0000-0000-000000000002"
+                "to_owner": "00000000-0000-0000-0000-000000000002",
+                "group": "00000000-0000-0000-0000-000000000002"
             }),
         )
         .expect_err("extra fields are rejected");

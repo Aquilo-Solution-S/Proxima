@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{GoalId, GroupId, MemoryId, OwnerRef, UserId};
+use crate::{GoalId, GroupId, MemoryId, OwnerId, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AccessKind {
@@ -258,36 +258,35 @@ impl Role {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerRoles {
     subject: UserId,
-    roles: HashMap<OwnerRef, Role>,
+    roles: HashMap<OwnerId, Role>,
 }
 
 impl OwnerRoles {
-    /// A Group named more than once (a member holding several relations in
-    /// one group) resolves to the [`Role::join`] of its roles, whatever order
-    /// the resolver yields them in.
+    /// The one role rule: the owner equal to the subject's own id holds
+    /// [`Role::personal`]; any other owner holds the subject's membership role
+    /// in it, or nothing. A Group named more than once (a member holding
+    /// several relations in one group) resolves to the [`Role::join`] of its
+    /// roles, whatever order the resolver yields them in.
     ///
     /// # Errors
     ///
-    /// Returns [`AccessError::DerivedOwnerOverride`] if the resolver tries to
-    /// provide Personal roles; those are derived by the kernel rules.
+    /// Returns [`AccessError::DerivedOwnerOverride`] if the resolver names the
+    /// subject's own id; its role is derived by the kernel rule.
     pub fn for_subject<I>(subject: UserId, group_roles: I) -> Result<Self, AccessError>
     where
-        I: IntoIterator<Item = (OwnerRef, Role)>,
+        I: IntoIterator<Item = (OwnerId, Role)>,
     {
+        let own = OwnerId::from(subject);
         let mut roles = HashMap::new();
-        roles.insert(OwnerRef::Personal(subject), Role::personal());
+        roles.insert(own, Role::personal());
         for (owner, role) in group_roles {
-            match owner {
-                OwnerRef::Group(_) => {
-                    roles
-                        .entry(owner)
-                        .and_modify(|held: &mut Role| *held = held.join(role))
-                        .or_insert(role);
-                }
-                OwnerRef::Personal(_) => {
-                    return Err(AccessError::DerivedOwnerOverride);
-                }
+            if owner == own {
+                return Err(AccessError::DerivedOwnerOverride);
             }
+            roles
+                .entry(owner)
+                .and_modify(|held: &mut Role| *held = held.join(role))
+                .or_insert(role);
         }
         Ok(Self { subject, roles })
     }
@@ -297,12 +296,14 @@ impl OwnerRoles {
     /// `role` is the resolver's whole answer for `group` (its relations
     /// already joined, as [`Self::for_subject`] joins them), so it replaces an
     /// earlier entry rather than joining it: a later answer after a demotion is
-    /// never widened by the stale one. Typed on [`GroupId`] because Personal
-    /// roles are derived by the kernel rules and cannot be resolved, so the
-    /// fold has nothing to refuse.
+    /// never widened by the stale one. The subject's own id is a kernel rule,
+    /// never a resolver's answer, so an answer naming it is dropped.
     #[must_use]
     pub fn with_group_role(mut self, group: GroupId, role: Role) -> Self {
-        self.roles.insert(OwnerRef::Group(group), role);
+        let owner = OwnerId::from(group);
+        if owner != OwnerId::from(self.subject) {
+            self.roles.insert(owner, role);
+        }
         self
     }
 
@@ -312,7 +313,7 @@ impl OwnerRoles {
     }
 
     #[must_use]
-    pub(crate) fn scoped_to(subject: UserId, owner: OwnerRef, role: Role) -> Self {
+    pub(crate) fn scoped_to(subject: UserId, owner: OwnerId, role: Role) -> Self {
         let mut roles = HashMap::new();
         roles.insert(owner, role);
         Self { subject, roles }
@@ -321,51 +322,60 @@ impl OwnerRoles {
     #[must_use]
     pub fn empty_for_subject(subject: UserId) -> Self {
         let mut roles = HashMap::new();
-        roles.insert(OwnerRef::Personal(subject), Role::personal());
+        roles.insert(OwnerId::from(subject), Role::personal());
         Self { subject, roles }
     }
 
+    /// Whether `owner` is the subject's own id.
     #[must_use]
-    pub fn role_for(&self, owner: &OwnerRef) -> Option<Role> {
-        match *owner {
-            OwnerRef::Personal(user) if user != self.subject => None,
-            _ => self.roles.get(owner).copied(),
-        }
+    pub fn is_own(&self, owner: &OwnerId) -> bool {
+        *owner == OwnerId::from(self.subject)
     }
 
     #[must_use]
-    pub fn may_read(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn role_for(&self, owner: &OwnerId) -> Option<Role> {
+        self.roles.get(owner).copied()
+    }
+
+    #[must_use]
+    pub fn may_read(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         self.role_for(owner).is_some_and(|role| role.may_read(kind))
     }
 
     #[must_use]
-    pub fn may_write(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn may_write(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         self.role_for(owner)
             .is_some_and(|role| role.may_write(kind))
     }
 
+    /// A personal owner never manages: the subject's own id is refused before
+    /// any role is read.
     #[must_use]
-    pub fn may_manage(&self, owner: &OwnerRef) -> bool {
-        match owner {
-            OwnerRef::Personal(_) => false,
-            OwnerRef::Group(_) => self.role_for(owner).is_some_and(Role::manages),
-        }
+    pub fn may_manage(&self, owner: &OwnerId) -> bool {
+        !self.is_own(owner) && self.role_for(owner).is_some_and(Role::manages)
     }
 
+    /// Owners readable at `kind`, the subject's own id first, then by id: the
+    /// order of memory spaces.
     #[must_use]
-    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
-        self.roles
-            .iter()
-            .filter_map(|(owner, role)| role.may_read(kind).then_some(*owner))
-            .collect()
+    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
+        self.ordered(|role| role.may_read(kind))
     }
 
+    /// Owners writable at `kind`, ordered as [`Self::readable_owners`].
     #[must_use]
-    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
-        self.roles
+    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
+        self.ordered(|role| role.may_write(kind))
+    }
+
+    fn ordered(&self, keep: impl Fn(Role) -> bool) -> Vec<OwnerId> {
+        let mut owners: Vec<OwnerId> = self
+            .roles
             .iter()
-            .filter_map(|(owner, role)| role.may_write(kind).then_some(*owner))
-            .collect()
+            .filter_map(|(owner, role)| keep(*role).then_some(*owner))
+            .collect();
+        owners.sort_by_key(|owner| (!self.is_own(owner), *owner));
+        owners
     }
 }
 
@@ -406,7 +416,7 @@ pub trait OwnerAccessPort: Send + Sync {
         Ok(self
             .resolve_roles_for_subject(subject)
             .await?
-            .role_for(&OwnerRef::Group(group)))
+            .role_for(&OwnerId::from(group)))
     }
 }
 
@@ -461,20 +471,28 @@ pub struct MembershipRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OwnerRefKind;
 
+    /// The one role rule: the subject's own id is personal, another user's id
+    /// is no role, and a group is the membership role.
     #[test]
-    fn owner_refs_are_stable_handles_not_resolved_roles() {
-        let user = UserId::new(uuid::Uuid::now_v7());
+    fn a_subject_reads_its_own_owner_as_personal_and_another_users_as_none() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let other = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
+        let roles =
+            OwnerRoles::for_subject(subject, [(OwnerId::from(group), Role::viewer())]).unwrap();
 
         assert_eq!(
-            OwnerRefKind::of(&OwnerRef::Personal(user)),
-            OwnerRefKind::Personal
+            roles.role_for(&OwnerId::from(subject)),
+            Some(Role::personal())
         );
+        assert_eq!(roles.role_for(&OwnerId::from(other)), None);
+        assert!(!roles.may_read(&OwnerId::from(other), AccessKind::Fact));
+        assert_eq!(roles.role_for(&OwnerId::from(group)), Some(Role::viewer()));
         assert_eq!(
-            OwnerRefKind::of(&OwnerRef::Group(group)),
-            OwnerRefKind::Group
+            roles.readable_owners(AccessKind::Fact).first(),
+            Some(&OwnerId::from(subject)),
+            "the subject's own space comes first"
         );
     }
 
@@ -502,13 +520,13 @@ mod tests {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let other = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(group);
+        let owner = OwnerId::from(group);
 
         let roles = OwnerRoles::for_subject(subject, [(owner, Role::editor())]).unwrap();
 
-        assert!(roles.may_write(&OwnerRef::Personal(subject), AccessKind::Goal));
-        assert!(!roles.may_manage(&OwnerRef::Personal(subject)));
-        assert!(!roles.may_read(&OwnerRef::Personal(other), AccessKind::Fact));
+        assert!(roles.may_write(&OwnerId::from(subject), AccessKind::Goal));
+        assert!(!roles.may_manage(&OwnerId::from(subject)));
+        assert!(!roles.may_read(&OwnerId::from(other), AccessKind::Fact));
 
         assert!(roles.may_write(&owner, AccessKind::Perspective));
         assert!(!roles.may_write(&owner, AccessKind::Goal));
@@ -518,8 +536,7 @@ mod tests {
     fn owner_roles_reject_personal_overrides() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         assert!(
-            OwnerRoles::for_subject(subject, [(OwnerRef::Personal(subject), Role::admin())])
-                .is_err()
+            OwnerRoles::for_subject(subject, [(OwnerId::from(subject), Role::admin())]).is_err()
         );
     }
 
@@ -531,7 +548,7 @@ mod tests {
         let mapped = GroupId::new(uuid::Uuid::now_v7());
         let unmapped = GroupId::new(uuid::Uuid::now_v7());
         let port = EagerOnlyAccess {
-            roles: OwnerRoles::for_subject(subject, [(OwnerRef::Group(mapped), Role::editor())])
+            roles: OwnerRoles::for_subject(subject, [(OwnerId::from(mapped), Role::editor())])
                 .unwrap(),
         };
 
@@ -581,7 +598,7 @@ mod tests {
     #[test]
     fn several_relations_in_one_group_resolve_to_their_join() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         for rows in [
             [Role::admin(), Role::viewer()],
             [Role::viewer(), Role::admin()],
@@ -608,17 +625,14 @@ mod tests {
             .unwrap()
             .with_group_role(group, Role::viewer())
             .with_group_role(group, Role::editor());
+        assert_eq!(roles.role_for(&OwnerId::from(group)), Some(Role::editor()));
         assert_eq!(
-            roles.role_for(&OwnerRef::Group(group)),
-            Some(Role::editor())
-        );
-        assert_eq!(
-            roles.role_for(&OwnerRef::Personal(subject)),
+            roles.role_for(&OwnerId::from(subject)),
             Some(Role::personal())
         );
         let demoted = roles.with_group_role(group, Role::viewer());
         assert_eq!(
-            demoted.role_for(&OwnerRef::Group(group)),
+            demoted.role_for(&OwnerId::from(group)),
             Some(Role::viewer()),
             "a later answer after a demotion is not widened by the stale one"
         );

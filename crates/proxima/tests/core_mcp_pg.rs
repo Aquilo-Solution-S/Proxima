@@ -13,7 +13,7 @@ use proxima::{
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AuthPath, CitedObjectPayload, ColdObjectStore, FlavorRegistry, FlavorRegistryFrozen, GroupId,
-    MemoryId, Owner, OwnerRef, Relation, Replay, Role, ToolEffect, UserId, provider_safe_tool_name,
+    MemoryId, OwnerId, Relation, Replay, Role, ToolEffect, UserId, provider_safe_tool_name,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use proxima_storage_pg::PgStorage;
@@ -144,7 +144,7 @@ mod embedding_failure_regressions {
     async fn prepare_fact(
         built: &proxima::BuiltProxima,
         router: &TestEmbeddingRouter,
-        owner: Owner,
+        owner: OwnerId,
     ) -> TestResult<String> {
         let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
@@ -182,7 +182,7 @@ mod embedding_failure_regressions {
     async fn exercise(
         built: &proxima::BuiltProxima,
         router: &TestEmbeddingRouter,
-        owner: Owner,
+        owner: OwnerId,
     ) -> TestResult<Observed> {
         let tools = built.host().core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
@@ -418,15 +418,8 @@ fn palette_of(ids: &[&str]) -> ToolScope {
     )
 }
 
-fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
-    let authz = match *owner {
-        OwnerRef::Personal(subject) => AuthzContext::for_subject(subject, AuthPath::HostBearer),
-        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(*owner, Role::admin())],
-            AuthPath::HostBearer,
-        ),
-    };
+fn host_authz(owner: &OwnerId, tool_scope: ToolScope) -> ResolvedAuthz {
+    let authz = AuthzContext::for_subject(owner.as_user(), AuthPath::HostBearer);
     proxima_core::test_fixtures::authenticated_context(authz.with_tool_scope(tool_scope))
 }
 
@@ -434,13 +427,11 @@ fn verified(authz: AuthzContext) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(authz)
 }
 
-fn space_authz(subject: OwnerRef, owners: Vec<Owner>, group_role: Role) -> ResolvedAuthz {
-    let OwnerRef::Personal(user) = subject else {
-        panic!("space auth test subjects must be users");
-    };
+fn space_authz(subject: OwnerId, owners: Vec<OwnerId>, group_role: Role) -> ResolvedAuthz {
+    let user = subject.as_user();
     let roles = owners
         .into_iter()
-        .filter(|owner| matches!(owner, OwnerRef::Group(_)))
+        .filter(|owner| *owner != subject)
         .map(|owner| (owner, group_role));
     verified(AuthzContext::for_subject_with_role(
         user,
@@ -451,16 +442,12 @@ fn space_authz(subject: OwnerRef, owners: Vec<Owner>, group_role: Role) -> Resol
 
 async fn seed_group_membership(
     pg: &PgStorage,
-    space_owner: &OwnerRef,
+    space_owner: &OwnerId,
     relation: Relation,
-    subject: &OwnerRef,
+    subject: &OwnerId,
 ) {
-    let OwnerRef::Group(group) = space_owner else {
-        panic!("group membership can only seed group-owned spaces");
-    };
-    let OwnerRef::Personal(user) = subject else {
-        panic!("group membership can only seed user members");
-    };
+    let group = space_owner.as_group();
+    let user = subject.as_user();
     let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     let authz = verified(AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
@@ -471,7 +458,7 @@ async fn seed_group_membership(
         .authorize_owner_write(&authz, space_owner, proxima_core::AccessKind::Goal)
         .await
         .expect("seed group membership permit");
-    pg.add_group_member(&permit, *group, *user, relation, Uuid::now_v7())
+    pg.add_group_member(&permit, group, user, relation, Uuid::now_v7())
         .await
         .expect("seed group membership");
 }
@@ -479,7 +466,7 @@ async fn seed_group_membership(
 async fn server_issued_group_space_selector(
     tools: &CoreMcpTools,
     authz: AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
 ) -> String {
     let spaces = call_test_model_tool(
         tools,
@@ -503,7 +490,7 @@ async fn server_issued_group_space_selector(
 async fn call_test_model_tool(
     tools: &CoreMcpTools,
     authz: AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, CoreMcpError> {
@@ -515,7 +502,7 @@ async fn call_test_model_tool(
 async fn read_test_model_resource(
     tools: &CoreMcpTools,
     authz: AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     uri: &str,
 ) -> Result<serde_json::Value, CoreMcpError> {
     tools
@@ -534,8 +521,8 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
     );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
@@ -607,8 +594,8 @@ async fn shared_space_include_body_uses_shared_owner() {
     );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
@@ -702,8 +689,8 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
     );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
@@ -1590,7 +1577,7 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
 
 /// A bound principal, as the OIDC subject map produces for a configured
 /// runner.
-fn trusted_host_authz(owner: &Owner, trusted_model_id: &str) -> ResolvedAuthz {
+fn trusted_host_authz(owner: &OwnerId, trusted_model_id: &str) -> ResolvedAuthz {
     host_authz(owner, ToolScope::All)
         .with_trusted_model_id(trusted_model_id)
         .expect("a well-formed runner id binds")
@@ -2122,7 +2109,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
 
 async fn ensure_fact_embedding_for_handle(
     engine: &proxima_core::Engine,
-    owner: &Owner,
+    owner: &OwnerId,
     handle: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let memory_id = handle
@@ -2158,9 +2145,9 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let author = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(author);
+        let owner = OwnerId::from(author);
         let group = GroupId::new(Uuid::now_v7());
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let member = UserId::new(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
@@ -2212,7 +2199,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
                 .await?;
         assert_eq!(
             transferred_owner,
-            group_owner.stored_owner_id(),
+            group_owner.into_inner(),
             "a transfer keeps the same t and moves owner to the destination"
         );
         let still_private: i64 = sqlx::query_scalar(
@@ -2220,7 +2207,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
               WHERE t = $1 AND owner_id = $2",
         )
         .bind(memory_id)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(&admin_pool)
         .await?;
         assert_eq!(still_private, 0);
@@ -2292,7 +2279,7 @@ async fn core_forget_cools_a_remembered_fact() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())

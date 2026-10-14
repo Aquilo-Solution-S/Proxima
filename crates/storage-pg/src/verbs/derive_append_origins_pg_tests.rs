@@ -16,7 +16,7 @@ use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerRef, SchemaId,
+    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerId, SchemaId,
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -42,7 +42,7 @@ fn draft(kind: &str) -> FactWriteCommand {
 }
 
 fn derived_draft(
-    owner: OwnerRef,
+    owner: OwnerId,
     memory_id: Uuid,
     operator_kind: MemoryOperatorKind,
     kind: EntityKind,
@@ -129,7 +129,7 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
         let pool = pg.pool_for_tests();
 

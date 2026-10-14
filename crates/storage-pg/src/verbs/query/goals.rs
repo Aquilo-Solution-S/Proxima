@@ -99,7 +99,6 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
                 {created_at} AS created_at, \
                 {set_at} AS set_at, \
                 h.schema_id, \
-                o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 g.owner_id, g.title, g.text, g.state, \
                 g.dependency_t AS dependency_goal_ids, \
                 g.assignment_t AS assignment, \

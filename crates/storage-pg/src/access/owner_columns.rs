@@ -1,11 +1,10 @@
-//! Direct `OwnerRef` column helpers.
+//! Direct `OwnerId` column helpers.
 
 use proxima_core::flavor::TransferLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::scope::ScopeKind;
 use proxima_core::{
-    AccessKind, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError,
-    UserId,
+    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
@@ -48,35 +47,30 @@ pub(crate) async fn lock_host_lifecycle_fence_shared_session(
 
 pub(crate) async fn lock_owner_fence_exclusive_session(
     conn: &mut sqlx::postgres::PgConnection,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences_session(conn, std::slice::from_ref(owner), true).await
 }
 
 async fn lock_owner_fences_session(
     conn: &mut sqlx::postgres::PgConnection,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
     exclusive: bool,
 ) -> Result<(), StorageError> {
     if owners.is_empty() {
         return Ok(());
     }
-    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
-    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
-    keys.dedup();
-    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
-    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let ids = owner_fence_ids(owners);
     let query = if exclusive {
         sqlx::query(
-            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
         )
     } else {
         sqlx::query(
-            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
         )
     };
     query
-        .bind(&kinds)
         .bind(&ids)
         .execute(&mut *conn)
         .await
@@ -89,15 +83,18 @@ use crate::verbs::fact_embeddings::{
     RouteSpaces, enqueue_series_head_in_tx, purge_series_embedding_spaces_in_tx,
 };
 
-#[must_use]
-pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
-    owner.columns()
+/// Sorted, deduplicated owner UUIDs: the canonical order every multi-owner
+/// fence acquisition takes.
+fn owner_fence_ids(owners: &[OwnerId]) -> Vec<uuid::Uuid> {
+    let mut ids: Vec<uuid::Uuid> = owners.iter().map(|owner| owner.into_inner()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 /// The owner admission fence is a distinct advisory-lock namespace from
-/// lifecycle keys and Memory series handles.  Its key includes the owner kind
-/// as well as the UUID: an identity accidentally reused across owner kinds
-/// must not share a serialization lane. Memory, Goal and wake admission hold
+/// lifecycle keys and Memory series handles. Its key is the owner id alone
+/// (`proxima-owner-fence:<uuid>`): one id is one owner. Memory, Goal and wake admission hold
 /// this lock in shared mode. Source-scoped erase also holds it shared while
 /// taking its source fence exclusively; whole-owner erase takes the
 /// single-owner fence exclusively. Multi-owner transfers use the separate
@@ -109,7 +106,7 @@ pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
 /// advisory lock.
 pub async fn lock_owner_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, std::slice::from_ref(owner), false).await
 }
@@ -122,7 +119,7 @@ pub async fn lock_owner_fence_shared_tx(
 /// with the move.
 pub(crate) async fn lock_owner_fences_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, owners, false).await
 }
@@ -130,7 +127,7 @@ pub(crate) async fn lock_owner_fences_shared_tx(
 /// Acquire an exclusive owner fence for the whole-owner erase boundary.
 pub(crate) async fn lock_owner_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, std::slice::from_ref(owner), true).await
 }
@@ -145,22 +142,22 @@ pub(crate) async fn lock_owner_fence_exclusive_tx(
 /// from forming an owner-fence cycle.
 pub(crate) async fn lock_owner_fences_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, owners, true).await
 }
 
 const LOCK_OWNER_FENCES_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
-           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+           hashtextextended('proxima-owner-fence:' || i::text, 0)
        )
-  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+  FROM unnest($1::uuid[]) AS f(i)";
 
 const LOCK_OWNER_FENCES_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
-           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+           hashtextextended('proxima-owner-fence:' || i::text, 0)
        )
-  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+  FROM unnest($1::uuid[]) AS f(i)";
 
 /// The one owner-fence acquisition. The four entry points above differ only in
 /// arity and lock mode; the key, the ordering rule and the bind chain are
@@ -172,21 +169,16 @@ SELECT pg_advisory_xact_lock(
 /// the same reasoning written on `forget::lock_advisory_ids_tx`: a bare
 /// `Function Scan` yields elements in array order, and both lock functions are
 /// `VOLATILE` + `PARALLEL RESTRICTED`, so the projection is evaluated once per
-/// element, in order. Two parallel arrays carry the key because it spans kind
-/// and id, and `unnest` over several arrays advances them together.
+/// element, in order.
 async fn lock_owner_fences(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
     exclusive: bool,
 ) -> Result<(), StorageError> {
     if owners.is_empty() {
         return Ok(());
     }
-    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
-    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
-    keys.dedup();
-    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
-    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let ids = owner_fence_ids(owners);
     let sql = if exclusive {
         LOCK_OWNER_FENCES_EXCLUSIVE_SQL
     } else {
@@ -194,7 +186,6 @@ async fn lock_owner_fences(
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
-        .bind(&kinds)
         .bind(&ids)
         .execute(&mut **tx)
         .await
@@ -206,7 +197,7 @@ async fn lock_owner_fences(
 /// the key, so a source label shared by two owners never serializes them.
 pub(crate) async fn lock_source_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<(), StorageError> {
     lock_source_fence(tx, owner, source, false).await
@@ -216,7 +207,7 @@ pub(crate) async fn lock_source_fence_shared_tx(
 /// owner's shared fence, preserving owner -> source ordering.
 pub(crate) async fn lock_source_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<(), StorageError> {
     lock_source_fence(tx, owner, source, true).await
@@ -224,22 +215,21 @@ pub(crate) async fn lock_source_fence_exclusive_tx(
 
 const LOCK_SOURCE_FENCE_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
-           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+           hashtextextended('proxima-source-fence:' || $1::text || ':' || $2, 0)
        )";
 
 const LOCK_SOURCE_FENCE_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
-           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+           hashtextextended('proxima-source-fence:' || $1::text || ':' || $2, 0)
        )";
 
 /// One key, one bind chain; only the lock function differs by mode.
 async fn lock_source_fence(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
     exclusive: bool,
 ) -> Result<(), StorageError> {
-    let (kind, owner_id) = owner_binds(owner);
     let sql = if exclusive {
         LOCK_SOURCE_FENCE_EXCLUSIVE_SQL
     } else {
@@ -247,8 +237,7 @@ async fn lock_source_fence(
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
-        .bind(kind.as_str())
-        .bind(owner_id)
+        .bind(owner.into_inner())
         .bind(source)
         .execute(&mut **tx)
         .await
@@ -267,7 +256,7 @@ async fn lock_source_fence(
 /// separates a scope's erase from a write into that same scope. This key
 /// does.
 ///
-/// Key: `proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`.
+/// Key: `proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`.
 /// The scope KIND leads because two flavors' scopes must not collide on a
 /// shared uuid, and the owner portion is repeated for the reason the source
 /// fence repeats it: a scope id that somehow appeared under two owners must
@@ -283,7 +272,7 @@ async fn lock_source_fence(
 const LOCK_SCOPE_FENCE_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
            hashtextextended(
-               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               'proxima-scope-fence:' || $1 || ':' || $2::text || ':' || $3::text,
                0
            )
        )";
@@ -291,7 +280,7 @@ SELECT pg_advisory_xact_lock_shared(
 const LOCK_SCOPE_FENCE_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
            hashtextextended(
-               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               'proxima-scope-fence:' || $1 || ':' || $2::text || ':' || $3::text,
                0
            )
        )";
@@ -309,7 +298,7 @@ SELECT pg_advisory_xact_lock(
 pub async fn lock_scope_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_scope_fence(tx, kind, owner, scope_id, false).await
@@ -330,7 +319,7 @@ pub async fn lock_scope_fence_shared_tx(
 pub async fn lock_scope_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_scope_fence(tx, kind, owner, scope_id, true).await
@@ -343,11 +332,10 @@ pub async fn lock_scope_fence_exclusive_tx(
 async fn lock_scope_fence(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
     exclusive: bool,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
     let sql = if exclusive {
         LOCK_SCOPE_FENCE_EXCLUSIVE_SQL
     } else {
@@ -356,8 +344,7 @@ async fn lock_scope_fence(
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
         .bind(kind.as_str())
-        .bind(owner_kind.as_str())
-        .bind(owner_id)
+        .bind(owner.into_inner())
         .bind(scope_id)
         .execute(&mut **tx)
         .await
@@ -449,54 +436,88 @@ pub(crate) async fn blob_upload_object_keys(
     .map_err(map_err)
 }
 
-/// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
+/// Register `owner` in `proxima_core.owners` if it is not registered yet.
 ///
-/// The only production owners upsert. Memory / goal / wake / citation /
-/// cited-blob writes all go through this so an `owner_id` reused under a
-/// different kind cannot silently keep the first kind.
+/// The only production owners upsert on the data path. Memory / goal / wake /
+/// citation / cited-blob writes all go through this. A group is registered
+/// when it is created ([`register_group`]), so an id a write reaches unregistered
+/// is a user seen for the first time and is registered as `personal`. A
+/// registered id keeps the kind it was registered with: the registry is never
+/// rewritten from a write.
 ///
 /// # Errors
 ///
-/// [`StorageError::ConstraintViolation`] when `owner_id` already exists
-/// with a different kind. Other storage errors from the upsert.
+/// Storage errors from the upsert.
 pub async fn ensure_owner_row(
     conn: &mut sqlx::PgConnection,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<uuid::Uuid, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let owner_kind = OwnerRefKind::of(owner).as_str();
-    // Two statements: `owners` is append-only (no UPDATE), and a CTE that
-    // `DO NOTHING` then SELECTs shares one snapshot — a concurrent first
-    // insert waits, then neither arm sees the committed row (`RowNotFound`
-    // on complete_upload under concurrency). The SELECT is a new statement
-    // so it sees the row the waiter just conflicted with.
-    let inserted: Option<String> = sqlx::query_scalar(
+    let owner_id = owner.into_inner();
+    // `owners` is append-only (no UPDATE): a concurrent first insert waits
+    // on the conflict, then does nothing.
+    sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING
-         RETURNING kind::text",
+         VALUES ($1, 'personal')
+         ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner_id)
-    .bind(owner_kind)
-    .fetch_optional(&mut *conn)
+    .execute(&mut *conn)
     .await
     .map_err(map_err)?;
-    let existing = match inserted {
-        Some(kind) => kind,
-        None => {
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-                .bind(owner_id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(map_err)?
-        }
-    };
-    if existing != owner_kind {
-        return Err(StorageError::ConstraintViolation(
-            "owners.kind conflict for owner_id".into(),
-        ));
-    }
     Ok(owner_id)
+}
+
+/// Register `group` as a group, eagerly, when it is created.
+///
+/// # Errors
+///
+/// [`StorageError::Conflict`] when the id is already registered as a user.
+/// Other storage errors from the upsert.
+pub(crate) async fn register_group(
+    conn: &mut sqlx::PgConnection,
+    group: GroupId,
+) -> Result<(), StorageError> {
+    let group_id = group.into_inner();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    if registered_group_on_connection(conn, group).await? {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict(
+            "owner id is registered as a user, not a group".into(),
+        ))
+    }
+}
+
+/// Whether `group` is registered as a group in `proxima_core.owners`.
+///
+/// One of the three readers of the registry's kind: the forwarder policy asks
+/// it through [`crate::PgOwnerAccessResolver::is_registered_group`].
+///
+/// # Errors
+///
+/// Storage errors from the probe.
+pub(crate) async fn registered_group_on_connection(
+    conn: &mut sqlx::PgConnection,
+    group: GroupId,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.owners
+              WHERE owner_id = $1 AND kind = 'group'
+         )",
+    )
+    .bind(group.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)
 }
 
 /// # Errors
@@ -504,11 +525,9 @@ pub async fn ensure_owner_row(
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn resolve_membership<'e>(
     executor: impl sqlx::PgExecutor<'e>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<Vec<MembershipRow>, StorageError> {
-    let OwnerRef::Personal(user) = owner else {
-        return Ok(Vec::new());
-    };
+    let user = owner.as_user();
 
     let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
         "SELECT group_id, relation
@@ -564,6 +583,7 @@ pub(crate) async fn bootstrap_group_admin(
             None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
         };
         lock_group_membership_tx(&mut tx, group_id).await?;
+        register_group(&mut tx, group_id).await?;
         let inserted = sqlx::query(
             "INSERT INTO proxima_core.group_memberships
                 (group_id, member_user_id, relation)
@@ -595,9 +615,13 @@ pub(crate) async fn bootstrap_group_admin(
     .await
 }
 
+/// Adding a member to an id never seen before creates the group, so the
+/// id is registered as a group first.
+///
 /// # Errors
 ///
-/// Returns `Internal` on sqlx failure.
+/// [`StorageError::Conflict`] when the id is registered as a user: a
+/// membership names a group, never a user. `Internal` on sqlx failure.
 pub(crate) async fn add_group_member(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
@@ -610,6 +634,7 @@ pub(crate) async fn add_group_member(
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
         lock_group_membership_tx(&mut tx, group_id).await?;
+        register_group(&mut tx, group_id).await?;
         sqlx::query(
             "INSERT INTO proxima_core.group_memberships
                 (group_id, member_user_id, relation)
@@ -862,8 +887,8 @@ pub(crate) async fn list_group_members_page<'e>(
 pub(crate) async fn visible_home_owner<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
-    read_owners: &[OwnerRef],
-) -> Result<Option<(OwnerRef, AccessKind)>, StorageError> {
+    read_owners: &[OwnerId],
+) -> Result<Option<(OwnerId, AccessKind)>, StorageError> {
     if read_owners.is_empty() {
         return Ok(None);
     }
@@ -871,14 +896,14 @@ pub(crate) async fn visible_home_owner<'e>(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     // The entity discriminant is authorization data. Memory visibility spans
     // the hot spine and the cooled identity table, while Goal visibility stays
     // on its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
-    let row: Option<(OwnerRefKind, uuid::Uuid, String)> = match entity {
+    let row: Option<(uuid::Uuid, String)> = match entity {
         EntityId::Memory(memory_id) => {
             sqlx::query_as(
                 "WITH candidates AS (
@@ -886,9 +911,8 @@ pub(crate) async fn visible_home_owner<'e>(
                      UNION
                      SELECT owner_id, kind FROM proxima_core.cooled WHERE t = $1
                  )
-                 SELECT o.kind::text::proxima_core.owner_kind, c.owner_id, c.kind::text
+                 SELECT c.owner_id, c.kind::text
                    FROM candidates c
-                   JOIN proxima_core.owners o ON o.owner_id = c.owner_id
                   WHERE c.owner_id = ANY($2::uuid[])
                     AND NOT EXISTS (
                         SELECT 1
@@ -903,9 +927,8 @@ pub(crate) async fn visible_home_owner<'e>(
         }
         EntityId::Goal(goal_id) => {
             sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id, 'goal'
+                "SELECT g.owner_id, 'goal'
                FROM proxima_core.goal g
-               JOIN proxima_core.owners o ON o.owner_id = g.owner_id
               WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])",
             )
             .bind(goal_id.into_inner())
@@ -916,7 +939,7 @@ pub(crate) async fn visible_home_owner<'e>(
     }
     .map_err(map_err)?;
 
-    row.map(|(owner_kind, id, kind)| Ok((owner_kind.with_uuid(id), access_kind(&kind)?)))
+    row.map(|(id, kind)| Ok((OwnerId::new(id), access_kind(&kind)?)))
         .transpose()
 }
 
@@ -982,7 +1005,7 @@ pub(crate) async fn transfer_to_owner(
     permit: &proxima_core::storage_ports::OwnerWritePermit,
     surfaces: &OwnerSurfaces,
     entity: EntityId,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let from_owner = *permit.owner();
@@ -1005,7 +1028,7 @@ pub(crate) async fn transfer_to_owner(
             "transfer destination is the current owner".into(),
         ));
     }
-    let from_id = from_owner.stored_owner_id();
+    let from_id = from_owner.into_inner();
     with_bounded_retry(move || async move {
         let mut tx =
             crate::platform_scope::begin_owner_lifecycle_transaction(pool, platform, permit)
@@ -1079,7 +1102,7 @@ async fn transfer_memory_t(
     surfaces: &OwnerSurfaces,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
@@ -1266,7 +1289,7 @@ async fn transfer_memory_handle(
     requested_t: uuid::Uuid,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     // The destination's `owners` row is not seeded anywhere, so mint it (or
@@ -2119,17 +2142,16 @@ async fn transfer_content_for_handle(
 pub(crate) async fn home_owner<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
-) -> Result<Option<OwnerRef>, StorageError> {
+) -> Result<Option<OwnerId>, StorageError> {
     // The entity discriminant is authorization data, exactly as in
     // `visible_home_owner`. A union over both spines on the bare uuid lets a
     // caller relabel a Memory as a Goal (or vice versa) and resolve the owner
     // space off the wrong spine, so each arm asks its own spine only.
-    let row: Option<(OwnerRefKind, uuid::Uuid)> = match entity {
+    let row: Option<uuid::Uuid> = match entity {
         EntityId::Memory(memory_id) => {
-            sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+            sqlx::query_scalar(
+                "SELECT m.owner_id
                FROM proxima_core.memory m
-               JOIN proxima_core.owners o ON o.owner_id = m.owner_id
               WHERE m.t = $1",
             )
             .bind(memory_id.into_inner())
@@ -2137,10 +2159,9 @@ pub(crate) async fn home_owner<'e>(
             .await
         }
         EntityId::Goal(goal_id) => {
-            sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+            sqlx::query_scalar(
+                "SELECT g.owner_id
                FROM proxima_core.goal g
-               JOIN proxima_core.owners o ON o.owner_id = g.owner_id
               WHERE g.t = $1",
             )
             .bind(goal_id.into_inner())
@@ -2150,7 +2171,7 @@ pub(crate) async fn home_owner<'e>(
     }
     .map_err(map_err)?;
 
-    Ok(row.map(|(kind, id)| kind.with_uuid(id)))
+    Ok(row.map(OwnerId::new))
 }
 
 #[cfg(test)]

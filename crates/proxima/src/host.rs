@@ -17,7 +17,7 @@ pub use crate::migrations::{
     flavor_ledger_table, is_flavor_ledger_id, pending_migrations, preflight_without_migrations,
     run_core_and_flavor_migrations,
 };
-pub use crate::owner_access::ForwarderPolicy;
+pub use crate::owner_access::{ForwarderPolicy, GroupRegistry};
 pub use crate::proxima_host::ProximaHost;
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
@@ -271,10 +271,9 @@ pub use proxima_core::{
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
     FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
-    Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
-    Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, SourceId, StorageError,
-    ToolName, ToolScope, UserId, canonical_json_bytes, env_value, parse_external_key,
-    provider_safe_tool_name,
+    OwnerAccessPort, OwnerId, OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId,
+    ScopeKey, ScopeKeyError, SourceId, StorageError, ToolName, ToolScope, UserId,
+    canonical_json_bytes, env_value, provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, Owner, OwnerAccessPort, OwnerRef,
+    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerId,
     ToolScope, authenticate,
 };
 
@@ -42,13 +42,13 @@ fn parse_wire_token(raw: &str) -> WireToken {
 /// disagree with it.
 #[derive(Debug, Clone)]
 pub struct McpAuthContext {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub authz: AuthzContext,
 }
 
 impl McpAuthContext {
     #[must_use]
-    fn bound(authz: AuthzContext, owner: Owner) -> Self {
+    fn bound(authz: AuthzContext, owner: OwnerId) -> Self {
         Self { owner, authz }
     }
 }
@@ -59,18 +59,18 @@ pub(crate) struct ResolvedAuth {
 }
 
 impl ResolvedAuth {
-    pub(crate) fn narrowed_to_owner(self, owner: Owner) -> Option<McpAuthContext> {
+    pub(crate) fn narrowed_to_owner(self, owner: OwnerId) -> Option<McpAuthContext> {
         let authz = self.authz.narrowed_to_owner(owner)?;
         Some(McpAuthContext::bound(authz, owner))
     }
 
     /// The owner the host named for a request that selects none.
-    pub(crate) const fn default_owner(&self) -> Option<Owner> {
+    pub(crate) const fn default_owner(&self) -> Option<OwnerId> {
         self.authz.default_owner()
     }
 
     /// Whether the eager map already carries the selected owner.
-    fn carries(&self, owner: Owner) -> bool {
+    fn carries(&self, owner: OwnerId) -> bool {
         self.authz.role_for_owner(&owner).is_some()
     }
 
@@ -159,7 +159,7 @@ impl McpEdgeAuth {
         self
     }
 
-    pub async fn resolve(&self, raw_bearer: &str, owner: Owner) -> Option<McpAuthContext> {
+    pub async fn resolve(&self, raw_bearer: &str, owner: OwnerId) -> Option<McpAuthContext> {
         let resolved = self.resolve_unbound(raw_bearer).await?;
         self.narrow_to_owner(resolved, owner).await
     }
@@ -167,21 +167,21 @@ impl McpEdgeAuth {
     /// Bind an authenticated request to its selected owner through the one
     /// narrowing path. The eager map is what authentication pre-filled; a
     /// Group it lacks takes the loop through the port and rejoins the map
-    /// before [`ResolvedAuth::narrowed_to_owner`] reads it. A Personal
-    /// owner cannot take that loop — the port is typed on `GroupId` — and a
-    /// Group the map carries never needs to.
+    /// before [`ResolvedAuth::narrowed_to_owner`] reads it. The subject's
+    /// own id is always in the map, so it never takes that loop, and neither
+    /// does an owner the map already carries. Any other id is asked of the
+    /// port as a group; an id that is not a registered group earns no role.
     pub(crate) async fn narrow_to_owner(
         &self,
         resolved: ResolvedAuth,
-        owner: Owner,
+        owner: OwnerId,
     ) -> Option<McpAuthContext> {
-        let resolved = match owner {
-            OwnerRef::Group(group) if !resolved.carries(owner) => {
-                resolved
-                    .filled_from(self.owner_access.as_deref(), group)
-                    .await?
-            }
-            OwnerRef::Group(_) | OwnerRef::Personal(_) => resolved,
+        let resolved = if resolved.carries(owner) {
+            resolved
+        } else {
+            resolved
+                .filled_from(self.owner_access.as_deref(), owner.as_group())
+                .await?
         };
         resolved.narrowed_to_owner(owner)
     }
@@ -219,30 +219,30 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use proxima_core::{
-        AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId, OwnerRef,
+        AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId, OwnerId,
         Relation, Role, UserId,
     };
     use uuid::Uuid;
 
-    fn fake_owner() -> Owner {
-        OwnerRef::Personal(fake_user())
+    fn fake_owner() -> OwnerId {
+        OwnerId::from(fake_user())
     }
 
     fn fake_user() -> UserId {
         UserId::new(uuid::Uuid::now_v7())
     }
 
-    fn fake_group_owner() -> Owner {
-        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    fn fake_group_owner() -> OwnerId {
+        OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
     type TestAuthz = AuthzContext;
 
-    fn host_owner_context(owner: Owner) -> TestAuthz {
+    fn host_owner_context(owner: OwnerId) -> TestAuthz {
         AuthzContext::single_owner(&owner, AuthPath::HostBearer)
     }
 
-    fn host_group_context(subject: UserId, group_owner: Owner, role: Role) -> TestAuthz {
+    fn host_group_context(subject: UserId, group_owner: OwnerId, role: Role) -> TestAuthz {
         AuthzContext::for_subject_with_role(subject, [(group_owner, role)], AuthPath::HostBearer)
     }
 
@@ -388,7 +388,7 @@ mod tests {
         assert!(!ctx.authz.can_access_owner(&other));
         assert!(
             ctx.authz
-                .narrowed_to_owner(OwnerRef::Personal(subject))
+                .narrowed_to_owner(OwnerId::from(subject))
                 .is_none(),
             "a narrowed group witness cannot restore personal authority"
         );
@@ -428,7 +428,7 @@ mod tests {
         assert!(
             selected
                 .authz
-                .narrowed_to_owner(OwnerRef::Personal(subject))
+                .narrowed_to_owner(OwnerId::from(subject))
                 .is_none()
         );
     }
@@ -487,9 +487,7 @@ mod tests {
             .expect("viewer role on the configured owner still resolves");
         assert!(ctx.authz.can_access_owner(&owner));
 
-        let OwnerRef::Group(group) = owner else {
-            unreachable!("fake_group_owner is always a Group owner")
-        };
+        let group = owner.as_group();
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let err = engine
             .add_member(&ctx.authz, group, fake_user(), Relation::Editor)

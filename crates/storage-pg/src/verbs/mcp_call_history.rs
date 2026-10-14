@@ -22,7 +22,7 @@ pub(crate) async fn read_mcp_call_history_on_connection(
     connection: &mut PgConnection,
     req: &McpCallHistoryRequest,
 ) -> Result<McpCallHistoryResponse, StorageError> {
-    let owner_id = req.owner.stored_owner_id();
+    let owner_id = req.owner.into_inner();
     let limit = i64::from(req.limit.min(MAX_MCP_CALL_HISTORY_LIMIT));
     let predicate = if req.before.is_some() {
         "AND (COALESCE(uuid_extract_timestamp(fact.t), TIMESTAMPTZ '1970-01-01'), fact.t) < ($4, $5)"

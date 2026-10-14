@@ -123,7 +123,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             AND p.plan_key = $2
           ORDER BY m.t DESC",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(plan_key)
     .fetch_all(db.pg.pool_for_tests())
     .await
@@ -141,7 +141,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
 /// A Fact row the plan's payload may point at. Receiptless, which is legal
 /// for a seeded fixture and is all the index needs: the endpoint has to
 /// exist and be of the declared kind.
-async fn seed_fact(db: &TestDb, owner: proxima_core::Owner, _text: &str) -> Uuid {
+async fn seed_fact(db: &TestDb, owner: proxima_core::OwnerId, _text: &str) -> Uuid {
     let memory_id = Uuid::now_v7();
     common::seed_memory(
         db.pg.pool_for_tests(),

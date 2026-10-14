@@ -11,7 +11,7 @@ use crate::flavor::contract::{
 };
 use crate::mcp::RequestBehavior;
 use crate::{
-    CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
+    CapabilityTag, FlavorDescriptor, McpToolDescriptor, OwnerId, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SidecarPayload,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -886,8 +886,8 @@ impl FlavorRegistryFrozen {
     pub(crate) fn resolve_owner(
         &self,
         authz: &AuthzContext,
-        requested: &Owner,
-    ) -> Result<Owner, ProtocolError> {
+        requested: &OwnerId,
+    ) -> Result<OwnerId, ProtocolError> {
         match &self.owner_resolver {
             Some(resolver) => resolver.resolve(authz, requested),
             None => Ok(*requested),

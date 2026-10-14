@@ -334,13 +334,13 @@ theorem maintenance_without_fact_write (engine : EngineBinding)
     (owner requester : User) (distinct : requester ≠ owner) :
     (let registration : Registration := ⟨participant, [table]⟩
      let boot : Boot := ⟨engine, [table], some registration⟩
-     let command : Command := ⟨participant, [table], .personal owner⟩
+     let command : Command := ⟨participant, [table], owners.own owner⟩
      ∃ capability permit, mint boot boot.systemAuthority = some capability ∧
        authorize boot capability command = some permit ∧
-       permit.owner = .personal owner) ∧
-    ¬ may_write_in owners requester (.personal owner) .fact := by
-  refine ⟨(every_owner_supported engine participant table (.personal owner)).2, ?_⟩
-  apply (owner_state_non_member_denied owners requester (.personal owner) .fact ?_).2
+       permit.owner = owners.own owner) ∧
+    ¬ may_write_in owners requester (owners.own owner) .fact := by
+  refine ⟨(every_owner_supported engine participant table (owners.own owner)).2, ?_⟩
+  apply (owner_state_non_member_denied owners requester (owners.own owner) .fact ?_).2
   rw [owners.personal_resolves]
   exact Owner.ofUser_other distinct
 

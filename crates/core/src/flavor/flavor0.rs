@@ -911,7 +911,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.source_cursors",
-        key: KeyShape::Custom(&["owner_kind", "owner_id", "source"]),
+        key: KeyShape::Custom(&["owner_id", "source"]),
         owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByOwner,
@@ -931,7 +931,6 @@ const KERNEL_SURFACES: &[Surface] = &[
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&[
             "subject_user_id",
-            "owner_kind",
             "owner_id",
             "tool_name",
             "action_name",

@@ -10,7 +10,7 @@ use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EntityKind, QueryRequest};
-use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -46,7 +46,7 @@ async fn goal_write_replay_terminal_and_write_act() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
 
@@ -190,7 +190,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
 

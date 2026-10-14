@@ -1,5 +1,5 @@
 use proxima_core::{
-    DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, Owner, SeriesHandle, ToolCtx,
+    DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OwnerId, SeriesHandle, ToolCtx,
     ToolError, UnitOfWork,
 };
 use uuid::Uuid;
@@ -46,13 +46,13 @@ pub(super) fn default_plan_key(
 /// scalar. Re-issuing the same plan under the same principal reproduces
 /// this id by construction.
 pub(super) fn execution_plan_memory_id(
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     goal_activated_memory_id: MemoryId,
     plan_key: &str,
 ) -> MemoryId {
     let mut key = Vec::new();
-    key.extend_from_slice(owner.stable_key_uuid().as_bytes());
+    key.extend_from_slice(owner.into_inner().as_bytes());
     key.extend_from_slice(repo_id.as_bytes());
     key.extend_from_slice(goal_activated_memory_id.into_inner().as_bytes());
     key.extend_from_slice(plan_key.as_bytes());

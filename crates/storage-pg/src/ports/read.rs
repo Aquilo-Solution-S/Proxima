@@ -2,7 +2,7 @@ use proxima_core::read_models::{ChangeEventForWake, MemorySchemaSpec};
 use proxima_core::storage_ports::{ChangeEventPort, CitationPort};
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::query::FactCitationReadback;
-use proxima_core::{MemoryId, Owner, OwnerRef, StorageError};
+use proxima_core::{MemoryId, OwnerId, StorageError};
 
 use crate::{PgStorage, verbs};
 
@@ -11,7 +11,7 @@ impl ChangeEventPort for PgStorage {
     async fn change_history(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         req: &ChangeHistoryRequest,
     ) -> Result<ChangeHistoryResponse, StorageError> {
         let mut tx =
@@ -26,7 +26,7 @@ impl ChangeEventPort for PgStorage {
     async fn list_change_events_after(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         after: uuid::Uuid,
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -48,7 +48,7 @@ impl ChangeEventPort for PgStorage {
     async fn list_change_events_for_replay(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         after: uuid::Uuid,
         until: Option<uuid::Uuid>,
         limit: usize,
@@ -71,7 +71,7 @@ impl CitationPort for PgStorage {
     async fn facts_citing_object(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         cited_object_id: uuid::Uuid,
         schemas: &[MemorySchemaSpec],
         after: Option<proxima_core::verbs::query::FactCitationCursor>,
@@ -98,7 +98,7 @@ impl CitationPort for PgStorage {
     async fn citation_of_fact(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
         let mut tx =

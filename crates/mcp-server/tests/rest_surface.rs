@@ -23,9 +23,7 @@ use proxima_core::mcp::{Replay, ToolEffect};
 use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
-use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, ScopeKey, ToolScope, UserId,
-};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ToolScope, UserId};
 use proxima_core::{GroupId, access::Role};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use tower::ServiceExt;
@@ -255,7 +253,7 @@ fn palette_of(ids: &[&str]) -> ToolScope {
 /// A principal with full owner rights, so the owner-role gate never
 /// confounds a test about tool scope.
 fn auth(scope: ToolScope) -> McpAuthContext {
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
@@ -263,7 +261,7 @@ fn auth(scope: ToolScope) -> McpAuthContext {
 }
 
 fn viewer_auth(scope: ToolScope) -> McpAuthContext {
-    let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
     McpAuthContext {
         owner,
         authz: AuthzContext::for_subject_with_role(
@@ -641,7 +639,7 @@ const TRUSTED_MODEL: &str = "acme/runner-v3";
 /// A principal whose bearer token binds a model identity — what an OIDC
 /// subject map entry carrying `trusted_model_id` produces at this edge.
 fn trusted_auth() -> McpAuthContext {
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)

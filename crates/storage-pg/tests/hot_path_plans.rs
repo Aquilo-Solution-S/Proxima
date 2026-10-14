@@ -10,7 +10,7 @@ use proxima_core::verbs::query::{
     TagMatch,
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
-use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
+use proxima_core::{EdgeKind, OwnerId, SchemaId, UserId};
 use proxima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -36,7 +36,7 @@ fn note_projection() -> MemorySearchProjection {
         .clone()
 }
 
-fn search_req(owner: OwnerRef) -> MemorySearchRequest {
+fn search_req(owner: OwnerId) -> MemorySearchRequest {
     MemorySearchRequest {
         owner,
         read_owners: vec![owner],
@@ -66,11 +66,11 @@ fn unit_values(dim: EmbeddingDim) -> Vec<f32> {
 
 async fn seed_note(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     title: &str,
     body: &str,
 ) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
@@ -120,10 +120,10 @@ async fn seed_note(
 
 async fn seed_derived(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     origin: Uuid,
 ) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
@@ -176,8 +176,8 @@ const CORPUS_ROWS: i32 = 4_000;
 /// the admissions need a statement of their own too. The projection rows
 /// ride along with the sidecars, because referential integrity is an AFTER
 /// trigger.
-async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerId) -> Result<(), sqlx::Error> {
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
@@ -314,7 +314,7 @@ async fn hot_path_plans_use_expected_indexes() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let leaf = seed_note(pool, owner, "Needle title", "needle body").await?;
         let child = seed_derived(pool, owner, leaf).await?;
         sqlx::query(
@@ -324,7 +324,7 @@ async fn hot_path_plans_use_expected_indexes() {
         )
         .bind(leaf)
         .bind(pgvector::Vector::from(unit_values(EmbeddingDim::D1024)))
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -333,7 +333,7 @@ async fn hot_path_plans_use_expected_indexes() {
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
         .bind(leaf)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -341,14 +341,14 @@ async fn hot_path_plans_use_expected_indexes() {
              VALUES ($1, 'test-embed', 1024, $2, 'pending')",
         )
         .bind(leaf)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         // The situation the composite index exists for: a NEIGHBOUR owner
         // whose whole corpus matches the same query word. Without it the
         // table is two rows, every access path costs the same, and the
         // plan says nothing about the composite index at all.
-        let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
         seed_projection_corpus(pool, neighbour).await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
@@ -362,7 +362,7 @@ async fn hot_path_plans_use_expected_indexes() {
         .execute(pool)
         .await?;
 
-        let owner_ids = vec![owner.stored_owner_id()];
+        let owner_ids = vec![owner.into_inner()];
         let req = search_req(owner);
         let like = proxima_core::verbs::query::like_pattern(&req.query);
         let projection = note_projection();
@@ -678,7 +678,7 @@ async fn hot_path_plans_use_expected_indexes() {
         let nk_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {nk_sql}");
         // SQL-POLICY: PgIdent — production series-handle builder
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(nk_explain))
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .bind(projection.schema_id.as_str())
             .bind(note_key)
             .fetch_one(&mut *tx)

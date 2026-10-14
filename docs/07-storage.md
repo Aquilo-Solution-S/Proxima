@@ -76,7 +76,7 @@ owner of its key). Several owner relationships on one table become a mapping
 table each — own table, own single owner column, keyed to the parent. See
 09 §Sidecar Tables.
 
-Access uses server-resolved `OwnerRef` → roles. No org column.
+Access uses server-resolved `OwnerId` → roles. No org column.
 
 ### Runtime owner binding
 
@@ -334,7 +334,7 @@ payload names a `ScopeKind` and returns its scope id, a flavor contract
 declares that kind's registry table, id column and owner columns once, and
 freeze refuses a kind used without a declaration or declared twice. From the
 declaration storage generates one fence key
-(`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
+(`proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`) and
 one liveness probe over the named registry, spelling no name of its own.
 Every admission that persists a scoped payload — through `Engine`, a unit of
 work, `Engine::derive_memory`, or a sidecar/replay path — takes that fence shared in

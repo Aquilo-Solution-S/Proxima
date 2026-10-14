@@ -6,6 +6,8 @@ mod coarse_pin_lock;
 mod goal_text;
 #[path = "migrations/kind_rule.rs"]
 mod kind_rule;
+#[path = "migrations/owner_id.rs"]
+mod owner_id;
 #[path = "migrations/owner_rls_table.rs"]
 mod owner_rls_table;
 #[path = "migrations/query_stopwords.rs"]
@@ -15,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
-use proxima_core::{AccessKind, EntityId, GroupId, MemoryId, OwnerRef, UserId};
+use proxima_core::{AccessKind, EntityId, GroupId, MemoryId, OwnerId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -3442,7 +3444,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26,
+                23, 24, 25, 26, 27,
             ],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
@@ -3662,8 +3664,8 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
         // outbox's original owner even though the retained hot/cold Fact is
         // now owned by the group.
         let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        let original_owner = OwnerRef::Personal(UserId::new(original_personal));
-        let group_owner = OwnerRef::Group(GroupId::new(current_group));
+        let original_owner = OwnerId::from(UserId::new(original_personal));
+        let group_owner = OwnerId::from(GroupId::new(current_group));
         let transfer_permit = OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact);
         for t in [transferred, hot_transferred] {
             assert!(

@@ -1,6 +1,6 @@
 use super::{
     ChildGoalDraft, EvidenceTarget, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState,
-    MemoryId, Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, Transaction,
+    MemoryId, OwnerId, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, Transaction,
     map_err,
 };
 
@@ -15,10 +15,10 @@ type PriorRow = (
 
 pub(super) async fn load_prior_goal(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row: Option<PriorRow> = sqlx::query_as(
         "SELECT h.schema_id, g.title, g.text, g.state, g.assignment_t, g.dependency_t
                FROM proxima_core.goal g
@@ -50,7 +50,7 @@ pub(super) async fn load_prior_goal(
 
 pub(super) async fn validate_active_head(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     goal_id: GoalId,
 ) -> Result<(), StorageError> {
     let prior = load_prior_goal(tx, owner, goal_id).await?;
@@ -59,7 +59,7 @@ pub(super) async fn validate_active_head(
             "parent_goal must be Active".into(),
         ));
     }
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let is_head: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -119,7 +119,7 @@ fn evidence_refs(evidence: &[EvidenceTarget]) -> Vec<proxima_core::GoalEvidenceR
 }
 
 pub(super) fn draft_from_stored(
-    owner: &Owner,
+    owner: &OwnerId,
     stored: &StoredGoal,
     state: GoalState,
     supersedes: Option<GoalId>,
@@ -158,7 +158,7 @@ pub(super) fn draft_from_stored(
 }
 
 pub(super) struct DraftFromPayload<'a> {
-    pub(super) owner: &'a Owner,
+    pub(super) owner: &'a OwnerId,
     pub(super) payload: &'a GoalPayloadWrite,
     pub(super) state: GoalState,
     pub(super) assignment: MemoryId,
@@ -197,7 +197,7 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
 }
 
 pub(super) fn child_draft(
-    owner: &Owner,
+    owner: &OwnerId,
     parent_goal_id: GoalId,
     topology: &proxima_core::GoalTopologyWrite,
     authorship: &GoalAuthorship,

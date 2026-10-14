@@ -39,7 +39,7 @@ fn sdk_fact() -> FacadeFact {
 
 fn sdk_abstraction(
     target: proxima::MemoryTarget,
-    owner: proxima::OwnerRef,
+    owner: proxima::OwnerId,
     fact: MemoryId,
     origins: impl IntoIterator<Item = MemoryId>,
 ) -> Result<proxima::DerivedMemory, proxima::ProtocolError> {
@@ -1237,7 +1237,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
 
 async fn insert_raw_facade_fact(
     pool: &sqlx::PgPool,
-    owner: proxima::Owner,
+    owner: proxima::OwnerId,
     stamped_tables: &[&str],
     insert_primary_row: bool,
 ) -> Result<MemoryId, sqlx::Error> {
@@ -1274,20 +1274,19 @@ async fn insert_raw_facade_fact(
 
 async fn insert_raw_fact_admission(
     pool: &sqlx::PgPool,
-    owner: proxima::Owner,
+    owner: proxima::OwnerId,
     schema_id: &str,
     stamped_tables: &[&str],
 ) -> Result<MemoryId, sqlx::Error> {
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
+         VALUES ($1, 'personal'::proxima_core.owner_kind)
          ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
-    .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
     .execute(pool)
     .await?;
     sqlx::query(

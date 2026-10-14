@@ -523,7 +523,7 @@ impl Tool for CodeSearchChunksTool {
 /// transient outage into a hard paging failure. The split across two types
 /// is the statement of that distinction.
 struct ResolvedChunkQuery<'a> {
-    owner: proxima_core::Owner,
+    owner: proxima_core::OwnerId,
     query: &'a str,
     /// The mode the caller asked for, not the one that will run.
     requested_mode: ChunkSearchMode,
@@ -552,7 +552,7 @@ impl ResolvedChunkQuery<'_> {
     /// weight's bits can be.
     fn fingerprint(&self) -> String {
         let mut canon = vec![
-            serde_json::json!(self.owner.external_key()),
+            serde_json::json!(self.owner.to_string()),
             serde_json::json!(self.query),
             serde_json::json!(mode_label(self.requested_mode)),
             serde_json::json!(self.repo_id),
@@ -1000,7 +1000,7 @@ struct MatchScores {
 /// lexically would answer a question the caller did not ask.
 async fn resolve_query_embedding(
     engine: &proxima_core::Engine,
-    owner: &proxima_core::Owner,
+    owner: &proxima_core::OwnerId,
     mode: ChunkSearchMode,
     query: &str,
 ) -> Result<QueryEmbedding, ToolError> {
@@ -1433,7 +1433,7 @@ async fn load_call_edges(
 
 /// The call endpoints this caller may read.
 ///
-/// The index row belongs to the caller chunk's Owner; the callee it names
+/// The index row belongs to the caller chunk's owner; the callee it names
 /// does not. Both endpoints pass the same read check as any other memory, so
 /// an unreadable one comes back `null`, id and all.
 async fn readable_call_endpoints(

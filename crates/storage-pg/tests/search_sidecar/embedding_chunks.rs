@@ -20,7 +20,7 @@ fn chunk_query(dim: EmbeddingDim) -> SpaceVector {
 
 async fn seed_chunks(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     t: Uuid,
     dim: EmbeddingDim,
     vectors: &[pgvector::Vector],
@@ -36,7 +36,7 @@ async fn seed_chunks(
     .bind(t)
     .bind(width)
     .bind(vectors)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -46,7 +46,7 @@ async fn seed_chunks(
     )
     .bind(t)
     .bind(width)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     Ok(())
@@ -58,7 +58,7 @@ async fn seed_chunks(
 async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> TestResult {
     let (pg, _guard) = fresh_pg("last_embedding_chunk").await;
     let pool = pg.pool_for_tests();
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let target = seed_note(pool, owner, "Long document", "Unrelated vocabulary").await?;
     let other = seed_note(
         pool,
@@ -129,7 +129,7 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
 async fn chunk_clusters_do_not_spend_distinct_memory_limit_or_cursor() -> TestResult {
     let (pg, _guard) = fresh_pg("clustered_embedding_chunks").await;
     let pool = pg.pool_for_tests();
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let dim = EmbeddingDim::D1024;
     let first = seed_note(pool, owner, "Dominant", "Many embedding fragments").await?;
     seed_chunks(
@@ -194,7 +194,7 @@ async fn chunk_clusters_do_not_spend_distinct_memory_limit_or_cursor() -> TestRe
 async fn chunk_scan_stops_at_existing_cap_when_one_memory_dominates() -> TestResult {
     let (pg, _guard) = fresh_pg("embedding_chunk_cap").await;
     let pool = pg.pool_for_tests();
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let dim = EmbeddingDim::D1024;
     let first = seed_note(pool, owner, "Dominant", "One thousand matching fragments").await?;
     seed_chunks(

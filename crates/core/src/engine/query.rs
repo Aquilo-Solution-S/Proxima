@@ -15,8 +15,7 @@ use crate::verbs::query::{
     MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse, SidecarAtom,
 };
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
-use crate::{Owner, SchemaId};
-use crate::{OwnerRef, OwnerScope};
+use crate::{OwnerId, OwnerScope, SchemaId};
 
 impl Engine {
     /// docs/14 §"Schema" — binary-scoped, unauthenticated by
@@ -79,7 +78,7 @@ impl Engine {
     pub async fn authorized_read_owners(
         &self,
         authz: &AuthzContext,
-    ) -> Result<Vec<OwnerRef>, ProtocolError> {
+    ) -> Result<Vec<OwnerId>, ProtocolError> {
         self.authorize_read(authz).await
     }
 
@@ -191,7 +190,7 @@ impl Engine {
     pub async fn owned_series_handle(
         &self,
         authz: &AuthzContext,
-        owner: Owner,
+        owner: OwnerId,
         schema_id: &SchemaId,
         sidecar_table: &str,
         columns: &[(&str, SidecarAtom)],
@@ -222,7 +221,7 @@ pub(in crate::engine) async fn query_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
     schemas: &[MemorySchemaSpec],
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &QueryRequest,
 ) -> Result<QueryResponse, ProtocolError> {
     if req.limit == 0 {
@@ -262,7 +261,7 @@ fn validate_query_cursor(req: &QueryRequest) -> Result<(), ProtocolError> {
 pub(in crate::engine) async fn read_edges_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, ProtocolError> {
     if req.limit == 0 {
@@ -274,7 +273,7 @@ pub(in crate::engine) async fn read_edges_authorized(
 pub(in crate::engine) async fn edge_exists_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
     super::pin_read::edge_exists_from_nodes(&ports.memory_read, owner_scope, read_owners, req).await
@@ -283,7 +282,7 @@ pub(in crate::engine) async fn edge_exists_authorized(
 pub(in crate::engine) async fn walk_memory_lineage_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &MemoryLineageRequest,
 ) -> Result<MemoryLineageResponse, ProtocolError> {
     ports
@@ -296,7 +295,7 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
 pub(in crate::engine) async fn change_history_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &ChangeHistoryRequest,
 ) -> Result<ChangeHistoryResponse, ProtocolError> {
     if req.limit == 0 {
@@ -316,7 +315,7 @@ pub(in crate::engine) async fn change_history_authorized(
 pub(in crate::engine) async fn read_mcp_call_history_authorized(
     ports: &QueryStoragePorts,
     owner_scope: Option<&OwnerScope>,
-    owner: Owner,
+    owner: OwnerId,
     req: &McpCallHistoryRequest,
 ) -> Result<McpCallHistoryResponse, ProtocolError> {
     if req.limit == 0 {

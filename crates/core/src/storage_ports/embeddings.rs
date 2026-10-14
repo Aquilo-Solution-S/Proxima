@@ -2,14 +2,14 @@ pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
-use crate::{EmbeddableEntityRef, EmbeddingSpace, EntityKind, Owner, OwnerScope};
+use crate::{EmbeddableEntityRef, EmbeddingSpace, EntityKind, OwnerId, OwnerScope};
 
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
     /// Host embedding drain, admitted by the engine's sealed maintenance proof.
     async fn load_embedding_texts_for_host(
         &self,
-        items: &[(Owner, EntityKind, crate::MemoryId)],
+        items: &[(OwnerId, EntityKind, crate::MemoryId)],
         non_embeddable_schemas: &[String],
         _proof: OperatorMaintenanceProof,
     ) -> Result<Vec<Option<String>>, StorageError> {
@@ -30,7 +30,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     async fn load_embedding_text(
         &self,
         scope: Option<&OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         entity_kind: EntityKind,
         memory_id: crate::MemoryId,
         non_embeddable_schemas: &[String],
@@ -44,7 +44,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     async fn load_embedding_texts(
         &self,
         scope: Option<&OwnerScope>,
-        items: &[(Owner, EntityKind, crate::MemoryId)],
+        items: &[(OwnerId, EntityKind, crate::MemoryId)],
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError>;
 
@@ -58,7 +58,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     async fn list_facts_missing_embedding(
         &self,
         scope: Option<&OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         space: &EmbeddingSpace,
         limit: usize,
         non_embeddable_schemas: &[String],
@@ -74,7 +74,7 @@ pub trait EmbeddingWritePort: Send + Sync {
     /// engine embedding-write APIs instead.
     async fn insert_embedding(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         entity: EmbeddableEntityRef,
         vectors: &[crate::SpaceVector],
         proof: EmbeddingWriteProof,
@@ -141,7 +141,7 @@ pub trait EmbeddingJobPort: Send + Sync {
     async fn claim_pending_embedding_jobs(
         &self,
         limit: i64,
-        skip_owners: &[crate::Owner],
+        skip_owners: &[crate::OwnerId],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
@@ -220,7 +220,7 @@ pub trait EmbeddingJobPort: Send + Sync {
     async fn count_embedding_job_status(
         &self,
         scope: Option<&OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<EmbeddingJobStatusCounts, StorageError>;
 }
 
@@ -252,7 +252,7 @@ pub struct EmbeddingReconcileOptions<'a> {
     pub space: &'a EmbeddingSpace,
     /// Reconcile only these Owners' memories; `None` is every Owner. The
     /// engine names the Owners whose route names `space`.
-    pub owners: Option<&'a [crate::Owner]>,
+    pub owners: Option<&'a [crate::OwnerId]>,
     pub scope: EmbeddingReconcileScope,
     /// Required at the storage boundary. `None` is a constraint error.
     /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
@@ -355,16 +355,16 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
     /// pages every Owner to route it before reconciling.
     async fn embedding_owner_page(
         &self,
-        after: Option<crate::Owner>,
+        after: Option<crate::OwnerId>,
         limit: i64,
         proof: OperatorMaintenanceProof,
-    ) -> Result<Vec<crate::Owner>, StorageError>;
+    ) -> Result<Vec<crate::OwnerId>, StorageError>;
 
     /// `owner`'s state in every space it has vectors or jobs in, and in
     /// each of `spaces`, ordered by space.
     async fn embedding_coverage(
         &self,
-        owner: &crate::Owner,
+        owner: &crate::OwnerId,
         spaces: &[EmbeddingSpace],
         non_embeddable_schemas: &[String],
         proof: OperatorMaintenanceProof,
@@ -375,7 +375,7 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
     /// completes it as stale, and deleting it would fail that drain.
     async fn purge_embedding_spaces(
         &self,
-        owner: &crate::Owner,
+        owner: &crate::OwnerId,
         keep: &[EmbeddingSpace],
         limit: i64,
         proof: OperatorMaintenanceProof,

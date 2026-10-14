@@ -12,7 +12,7 @@ use bytes::Bytes;
 
 use crate::MemoryId;
 use crate::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
-use crate::owner::OwnerRef;
+use crate::owner::OwnerId;
 use crate::publication::{SubjectPosition, SubjectPositionError};
 use crate::storage_ports::publication::ClaimedPublication;
 
@@ -69,7 +69,7 @@ pub struct ReceivedEvent {
     /// The `CloudEvents` `id` (`F:<uuid>`) — the dedup key.
     pub id: String,
     /// The owner the Fact was written under, from the outbox row.
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     /// How many times the outbox record has been claimed for delivery, this
     /// claim included. `> 1` means an earlier claim did not end in the mark:
     /// its delivery failed or timed out, the process stopped before the mark,
@@ -236,7 +236,7 @@ impl ReceivedEvent {
         .map_err(<serde_json::Error as serde::de::Error>::custom)?;
         Ok(Self {
             id: record.event_id.clone(),
-            owner: record.owner_kind.with_uuid(record.owner_id),
+            owner: crate::OwnerId::new(record.owner_id),
             delivered_count: u64::from(record.attempts),
             raw: Bytes::copy_from_slice(&record.envelope),
             envelope,
@@ -266,7 +266,6 @@ mod tests {
             id: uuid::Uuid::nil(),
             event_id: "F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned(),
             owner_id: uuid::Uuid::from_u128(7),
-            owner_kind: crate::owner::OwnerRefKind::Group,
             schema_id: "probe/listenable".to_owned(),
             schema_version: 1,
             event_type: "probe/listenable-v1".to_owned(),
@@ -285,7 +284,7 @@ mod tests {
         assert_eq!(event.id, record.event_id);
         assert_eq!(
             event.owner,
-            OwnerRef::Group(crate::GroupId::new(uuid::Uuid::from_u128(7)))
+            OwnerId::from(crate::GroupId::new(uuid::Uuid::from_u128(7)))
         );
         assert_eq!(
             event.delivered_count, 2,
@@ -355,7 +354,7 @@ mod tests {
         let envelope = serde_json::from_slice(&raw).expect("envelope parses");
         ReceivedEvent {
             id: id.to_owned(),
-            owner: OwnerRef::Personal(crate::UserId::new(uuid::Uuid::nil())),
+            owner: OwnerId::from(crate::UserId::new(uuid::Uuid::nil())),
             delivered_count: 1,
             raw,
             envelope,

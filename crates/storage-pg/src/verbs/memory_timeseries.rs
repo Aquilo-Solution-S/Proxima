@@ -13,7 +13,7 @@
 use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{MemoryId, Owner, SidecarPayload, StorageError};
+use proxima_core::{MemoryId, OwnerId, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -42,7 +42,7 @@ pub struct MemoryRow {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryAdmissionDraft<'a> {
     pub(crate) natural_key: Option<&'a MemoryNaturalKey>,
-    pub(crate) owner: &'a Owner,
+    pub(crate) owner: &'a OwnerId,
     pub(crate) draft: &'a FactWriteCommand,
     pub(crate) origins: &'a [EdgeEndpoint],
     pub(crate) references: &'a [EdgeEndpoint],
@@ -85,7 +85,7 @@ pub(crate) enum PreparedMemoryAdmission {
 
 #[derive(Debug)]
 pub(crate) struct PreparedMemoryAdmissionNew {
-    owner: Owner,
+    owner: OwnerId,
     owner_id: Uuid,
     draft: FactWriteCommand,
     origins: Vec<Uuid>,
@@ -105,7 +105,7 @@ pub(crate) struct PreparedMemoryAdmissionNew {
 /// `content_id` is the owner-scoped payload (required for A/P).
 pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &FactWriteCommand,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
@@ -182,7 +182,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 /// goal-change table for a goal's change Fact.
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &FactWriteCommand,
     identity: (Uuid, Uuid),
     sidecar_tables: &[String],
@@ -232,22 +232,16 @@ pub(crate) async fn ingest_unpinned_fact_at(
 /// longer registered for `owner`.
 async fn fence_declared_scopes(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     scopes: &[ScopeFenceTarget],
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(owner);
+    let owner_id = owner.into_inner();
     for scope in scopes {
         crate::access::owner_columns::lock_scope_fence_shared_tx(tx, scope.kind, owner, scope.id)
             .await?;
-        // `owner_kind` binds as the TYPED `proxima_core.owner_kind`, not as
-        // its `&str`: every owner-kind column in the tree is that enum, and
-        // a text bind would compare a text against it and fail the operator
-        // lookup rather than the row test.
-        //
         // SQL-POLICY: generated
         let registered: bool =
             sqlx::query_scalar(sqlx::AssertSqlSafe(std::sync::Arc::clone(&scope.probe_sql)))
-                .bind(owner_kind)
                 .bind(owner_id)
                 .bind(scope.id)
                 .fetch_one(tx.as_mut())
@@ -275,7 +269,7 @@ async fn prepare_memory_admission_at(
     options: PreparationOptions<'_>,
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     let MemoryAdmissionDraft { owner, draft, .. } = admission;
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
 
     let source_id = draft.source_id.clone();
     let ingest_key = draft.ingest_key.clone();
@@ -417,7 +411,7 @@ async fn admission_handle(
 /// Runs after owner/source/scope fences and before handle/lifecycle locks.
 async fn resolve_natural_series_handle(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &proxima_core::SchemaId,
     key: &MemoryNaturalKey,
 ) -> Result<Option<Uuid>, StorageError> {
@@ -445,7 +439,7 @@ async fn resolve_natural_series_handle(
 
 /// Stable, domain-separated lock key only; never a stored memory or series ID.
 fn natural_key_lock(
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &proxima_core::SchemaId,
     key: &MemoryNaturalKey,
 ) -> i64 {
@@ -455,7 +449,7 @@ fn natural_key_lock(
     }
     let mut hash = blake3::Hasher::new();
     part(&mut hash, b"proxima-natural-series-lock-v1");
-    part(&mut hash, owner.stored_owner_id().as_bytes());
+    part(&mut hash, owner.into_inner().as_bytes());
     part(&mut hash, schema_id.as_str().as_bytes());
     part(&mut hash, key.sidecar_table.as_bytes());
     part(&mut hash, key.memory_key_column.as_bytes());

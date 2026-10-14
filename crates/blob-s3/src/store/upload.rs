@@ -9,7 +9,7 @@
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
-use proxima_core::{AuthzContext, Owner, OwnerRef};
+use proxima_core::{AuthzContext, OwnerId};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -273,7 +273,7 @@ impl CitedBlobStore {
     async fn load_upload_scoped(
         &self,
         scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<super::rows::UploadRow, BlobError> {
         let mut tx = begin_compatible_owner_transaction(&self.pool, scope)
@@ -289,7 +289,7 @@ impl CitedBlobStore {
     async fn load_staged_scoped(
         &self,
         scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<CitedBlobStaged, BlobError> {
@@ -519,7 +519,7 @@ impl CitedBlobStore {
     async fn stage_entry_shortcut(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
     ) -> Result<Option<CitedBlobStaged>, BlobError> {
@@ -584,7 +584,7 @@ impl CitedBlobStore {
     async fn record_stage_locator(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
         input: StageLocatorInput,
@@ -638,7 +638,7 @@ impl CitedBlobStore {
     async fn commit_stage_locator(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
         staged: &UploadedBlobPayload,
@@ -669,7 +669,7 @@ impl CitedBlobStore {
         .bind(&staged.content_hash[..])
         .bind(&staged.sha256[..])
         .bind(staged.etag.as_deref())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(upload_id)
         .execute(&mut *tx)
         .await
@@ -783,7 +783,7 @@ impl CitedBlobStore {
     async fn resolve_missing_pending(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         pending_key: &str,
     ) -> Result<Option<StageSource>, BlobError> {
@@ -826,12 +826,12 @@ impl CitedBlobStore {
     async fn repair_terminal_stage(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         terminal: UploadStatus,
         staged: &UploadedBlobPayload,
     ) -> Result<StageLocatorDecision, BlobError> {
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.blob_uploads \
                 SET object_key = $1, sha256 = $2, etag = $3 \
@@ -909,7 +909,7 @@ impl CitedBlobStore {
     pub async fn finish_upload(
         &self,
         ctx: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         blob_id: Uuid,
     ) -> Result<(), BlobError> {
@@ -932,7 +932,7 @@ impl CitedBlobStore {
     async fn commit_finish(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<String, BlobError> {
@@ -959,7 +959,7 @@ impl CitedBlobStore {
         .await
         .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
         let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         // The cited blob must be the object this upload actually staged. A
         // terminal row keeps its canonical bytes, so there is nothing to
         // restore here — only this identity to prove before publication.
@@ -1088,7 +1088,7 @@ impl CitedBlobStore {
     async fn commit_abort(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<AbortCommit, BlobError> {
         // Abort participates in the same owner fence as finish and transfer.
@@ -1140,7 +1140,7 @@ impl CitedBlobStore {
                 AND upload_id = $2 \
                 AND status = 'pending'",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(upload_id)
         .execute(&mut *tx)
         .await
@@ -1166,7 +1166,7 @@ impl CitedBlobStore {
     async fn cleanup_aborted_upload(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &proxima_core::Owner,
+        owner: &proxima_core::OwnerId,
         upload_id: Uuid,
     ) {
         // Re-read after the status transition so a finish that overtook the
@@ -1193,7 +1193,7 @@ impl CitedBlobStore {
 
 async fn complete_terminal_upload(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
     blob_id: Uuid,
 ) -> Result<(), BlobError> {
@@ -1206,7 +1206,7 @@ async fn complete_terminal_upload(
     )
     .bind(canonical_object_key(upload_id))
     .bind(blob_id)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(upload_id)
     .execute(&mut **tx)
     .await

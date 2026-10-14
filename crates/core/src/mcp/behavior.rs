@@ -404,7 +404,7 @@ mod tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerRef,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerId,
         ToolScope, UserId,
     };
 
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn owner_role_gate_allows_read_tools_and_rejects_write_tools_for_viewer() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(crate::GroupId::new(uuid::Uuid::now_v7()));
         let authz = AuthzContext::for_subject_with_role(
             subject,
             [(group, crate::Role::viewer())],
@@ -617,7 +617,7 @@ mod tests {
     }
 
     fn test_ctx(tool_scope: ToolScope) -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let authz =
             AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
         test_ctx_with_authz(owner, authz)
@@ -626,7 +626,7 @@ mod tests {
     /// A viewer on a group owner: may read, may not write.
     fn read_only_ctx() -> McpToolCtx {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(crate::GroupId::new(uuid::Uuid::now_v7()));
         let authz = AuthzContext::for_subject_with_role(
             subject,
             [(owner, crate::access::Role::viewer())],
@@ -685,7 +685,7 @@ mod tests {
         assert!(out.is_err(), "core_remember must stay denied for a viewer");
     }
 
-    fn test_ctx_with_authz(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
+    fn test_ctx_with_authz(owner: OwnerId, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz,
@@ -716,7 +716,7 @@ mod argv_scope_tests {
         McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, ScopeKey, ToolScope,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, ScopeKey, ToolScope,
         UserId,
     };
 
@@ -773,7 +773,7 @@ mod argv_scope_tests {
     /// the owner-role half of the gate is the only thing that can deny.
     fn argv_viewer_ctx() -> McpToolCtx {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(crate::GroupId::new(uuid::Uuid::now_v7()));
         let authz = AuthzContext::for_subject_with_role(
             subject,
             [(owner, crate::access::Role::viewer())],
@@ -784,13 +784,13 @@ mod argv_scope_tests {
     }
 
     fn argv_ctx(tool_scope: ToolScope) -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let authz =
             AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
         argv_ctx_with_authz(owner, authz)
     }
 
-    fn argv_ctx_with_authz(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
+    fn argv_ctx_with_authz(owner: OwnerId, authz: AuthzContext) -> McpToolCtx {
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
         McpToolCtx {
@@ -899,7 +899,7 @@ mod owner_role_tests {
     use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, ToolEffect};
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerRef, ScopeKey, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerId, ScopeKey, UserId,
     };
     use futures::future::BoxFuture;
     use std::sync::Arc;
@@ -948,7 +948,7 @@ mod owner_role_tests {
     }
 
     /// A group viewer: read on everything, write on nothing.
-    fn viewer_ctx(tool_owner: OwnerRef) -> McpToolCtx {
+    fn viewer_ctx(tool_owner: OwnerId) -> McpToolCtx {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
@@ -978,7 +978,7 @@ mod owner_role_tests {
     /// declaration is treated as WRITE.
     #[test]
     fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});
 
@@ -1041,7 +1041,7 @@ mod owner_role_tests {
     /// does not match any descriptor.
     #[test]
     fn a_tool_the_registry_never_saw_is_still_a_write() {
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});
         assert!(
@@ -1065,7 +1065,7 @@ mod visibility_tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerRef,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerId,
         ToolScope, UserId,
     };
 
@@ -1107,7 +1107,7 @@ mod visibility_tests {
     }
 
     fn ctx_over(registry: FlavorRegistry) -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)

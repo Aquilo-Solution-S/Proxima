@@ -1,7 +1,7 @@
 use proxima_core::storage_ports::InboundPinQuery;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    Edge, EdgeKind, EntityKind, GoalId, MemoryId, OwnerRef, PinNode, StorageError,
+    Edge, EdgeKind, EntityKind, GoalId, MemoryId, OwnerId, PinNode, StorageError,
     project_window_edges,
 };
 use sqlx::PgConnection;
@@ -39,7 +39,7 @@ impl PinNodeRow {
 /// in the raw reference carrier so the engine can redact them.
 pub(crate) async fn load_visible_goal_ids_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     goal_ids: &[GoalId],
 ) -> Result<Vec<GoalId>, StorageError> {
     if goal_ids.is_empty() || read_owners.is_empty() {
@@ -61,7 +61,7 @@ pub(crate) async fn load_visible_goal_ids_on_connection(
 /// Owner-scoped PK load of pin carriers.
 pub(crate) async fn load_pin_nodes_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     memory_ids: &[MemoryId],
 ) -> Result<Vec<PinNode>, StorageError> {
     if memory_ids.is_empty() || read_owners.is_empty() {
@@ -82,7 +82,7 @@ pub(crate) async fn load_pin_nodes_on_connection(
 /// Owner-scoped GIN page of rows that list any of `query.targets`.
 pub(crate) async fn load_inbound_pin_nodes_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     query: InboundPinQuery<'_>,
 ) -> Result<Vec<PinNode>, StorageError> {
     if query.targets.is_empty() || read_owners.is_empty() {
@@ -278,11 +278,11 @@ pub(super) fn query_edges(
     project_window_edges(&nodes, MAX_SNAPSHOT_EDGES)
 }
 
-fn owner_ids(read_owners: &[OwnerRef]) -> Vec<uuid::Uuid> {
+fn owner_ids(read_owners: &[OwnerId]) -> Vec<uuid::Uuid> {
     read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect()
 }
 

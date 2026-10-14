@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 
-use proxima_core::{Owner, SchemaId, StorageError};
+use proxima_core::{OwnerId, SchemaId, StorageError};
 use sqlx::PgExecutor;
 use uuid::Uuid;
 
@@ -20,11 +20,11 @@ use crate::error::map_err;
 
 /// Stored ids for the caller's read-owner set, always including `owner`
 /// itself so a caller that passes an empty set still sees its own rows.
-fn read_owner_ids(owner: Owner, read_owners: &[Owner]) -> Vec<Uuid> {
+fn read_owner_ids(owner: OwnerId, read_owners: &[OwnerId]) -> Vec<Uuid> {
     let mut ids: Vec<Uuid> = Vec::with_capacity(read_owners.len() + 1);
-    ids.push(owner.stored_owner_id());
+    ids.push(owner.into_inner());
     for candidate in read_owners {
-        let id = candidate.stored_owner_id();
+        let id = candidate.into_inner();
         if !ids.contains(&id) {
             ids.push(id);
         }
@@ -69,7 +69,7 @@ pub struct FileRevisionHeadRow {
 /// Returns `StorageError::Internal` on query failure.
 pub async fn owned_file_revision_heads<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_paths: &[String],
@@ -78,7 +78,7 @@ pub async fn owned_file_revision_heads<'e, E: PgExecutor<'e>>(
         return Ok(Vec::new());
     }
     sqlx::query_as(FILE_REVISION_HEADS_SQL)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(repo_id)
         .bind(schema_id.as_str())
         .bind(file_paths)
@@ -95,7 +95,7 @@ pub async fn owned_file_revision_heads<'e, E: PgExecutor<'e>>(
 /// Returns `StorageError::Internal` on query failure.
 pub async fn owned_present_file_revision_heads_except<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     repo_id: Uuid,
     keep_paths: &[String],
@@ -112,7 +112,7 @@ pub async fn owned_present_file_revision_heads_except<'e, E: PgExecutor<'e>>(
             AND NOT (fr.file_path = ANY($4))
           ORDER BY fr.file_path ASC",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .bind(schema_id.as_str())
     .bind(keep_paths)
@@ -129,13 +129,13 @@ pub async fn owned_present_file_revision_heads_except<'e, E: PgExecutor<'e>>(
 /// Returns `StorageError::Internal` on query failure.
 pub async fn readable_file_revision_head_ts<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
-    read_owners: &[Owner],
+    owner: OwnerId,
+    read_owners: &[OwnerId],
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Vec<Uuid>, StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let read_owner_ids = read_owner_ids(owner, read_owners);
     sqlx::query_scalar(
         "SELECT fr.t
@@ -177,7 +177,7 @@ pub struct ChunkSeriesHead {
 /// index. Returns `StorageError::Internal` on query failure.
 pub async fn owned_chunk_series_heads<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_path: &str,
@@ -193,7 +193,7 @@ pub async fn owned_chunk_series_heads<'e, E: PgExecutor<'e>>(
             AND h.schema_id = $4
           ORDER BY c.chunk_index ASC",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .bind(file_path)
     .bind(schema_id.as_str())
@@ -223,7 +223,7 @@ pub struct ChunkHeadClass {
 /// Returns `StorageError::Internal` on query failure.
 pub async fn owned_chunk_head_classes<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_paths: &[String],
@@ -245,7 +245,7 @@ pub async fn owned_chunk_head_classes<'e, E: PgExecutor<'e>>(
             AND c.file_path = ANY($4) \
           ORDER BY c.file_path, c.chunk_index",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(repo_id)
     .bind(schema_id.as_str())
     .bind(file_paths)
@@ -276,13 +276,13 @@ pub(crate) fn unique_chunk_series_heads(
 /// Returns `StorageError::Internal` on query failure.
 pub async fn readable_chunk_head_ts_for_file<'e, E: PgExecutor<'e>>(
     pool: E,
-    owner: Owner,
-    read_owners: &[Owner],
+    owner: OwnerId,
+    read_owners: &[OwnerId],
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Vec<Uuid>, StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let read_owner_ids = read_owner_ids(owner, read_owners);
     sqlx::query_scalar(
         "SELECT c.t

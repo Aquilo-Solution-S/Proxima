@@ -5,7 +5,7 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthPath, AuthzContext, CitedObjectPayload, FactPayload, FlavorRegistry, Owner, OwnerRef,
+    AuthPath, AuthzContext, CitedObjectPayload, FactPayload, FlavorRegistry, OwnerId,
     PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
@@ -54,8 +54,8 @@ fn json<T: Serialize>(value: &T) -> Vec<u8> {
     canonical_json_bytes(&value)
 }
 
-fn owner() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn owner() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 fn engine() -> Engine {
@@ -65,7 +65,7 @@ fn engine() -> Engine {
     Engine::new(registry.freeze_or_panic_for_tests())
 }
 
-fn draft(_owner: &Owner) -> FactWriteCommand {
+fn draft(_owner: &OwnerId) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: TestFact::schema_id(),

@@ -54,12 +54,12 @@ const WORK_ASSIGNMENT_NAMESPACE: Uuid = Uuid::from_bytes([
 /// same assignment lands on one memory rather than a pile of identical
 /// claims.
 fn work_assignment_memory_id(
-    owner: &proxima_core::Owner,
+    owner: &proxima_core::OwnerId,
     target_perspective_memory_id: proxima_core::MemoryId,
     work_item_memory_id: proxima_core::MemoryId,
 ) -> proxima_core::MemoryId {
     let mut key = Vec::with_capacity(48);
-    key.extend_from_slice(owner.stable_key_uuid().as_bytes());
+    key.extend_from_slice(owner.into_inner().as_bytes());
     key.extend_from_slice(target_perspective_memory_id.into_inner().as_bytes());
     key.extend_from_slice(work_item_memory_id.into_inner().as_bytes());
     proxima_core::MemoryId::new(Uuid::new_v5(&WORK_ASSIGNMENT_NAMESPACE, &key))

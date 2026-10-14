@@ -17,7 +17,7 @@ use proxima_core::storage_ports::{
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, FlavorRegistry,
-    GroupId, OwnerRef, Relation, StorageError, UserId,
+    GroupId, OwnerId, Relation, StorageError, UserId,
 };
 use sha2::Digest;
 use std::num::NonZeroU64;
@@ -56,23 +56,29 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 /// transaction deleted the rows it enumerated, so it could only ever report a
 /// vacuous success — the objects it was supposed to reach were unreachable by
 /// the time it looked.
-async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: OwnerRef) {
+async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: OwnerId) {
     use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
 
     let pg = pg.clone().with_cold(Arc::new(store.cold_store()));
     let surfaces = transfer_surfaces();
-    let outcome = match owner {
-        OwnerRef::Personal(user_id) => {
-            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-                user_id,
-                drop_event_id: "blob-s3-test-drop".into(),
-            });
-            OwnerInversePort::erase_personal_owner(&pg, &auth, user_id, &surfaces).await
-        }
-        OwnerRef::Group(group_id) => {
-            let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
-            OwnerInversePort::erase_group_owner(&pg, &auth, group_id, &surfaces).await
-        }
+    // The registry, not the caller, says which erase applies to this id.
+    let kind: String =
+        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+            .bind(owner.into_inner())
+            .fetch_one(pg.pool_for_tests())
+            .await
+            .expect("owner is registered");
+    let outcome = if kind == "personal" {
+        let user_id = owner.as_user();
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "blob-s3-test-drop".into(),
+        });
+        OwnerInversePort::erase_personal_owner(&pg, &auth, user_id, &surfaces).await
+    } else {
+        let group_id = owner.as_group();
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
+        OwnerInversePort::erase_group_owner(&pg, &auth, group_id, &surfaces).await
     }
     .expect("owner erase");
     assert!(
@@ -136,7 +142,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn prepare_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         filename: &str,
         mime: &str,
         byte_len: u64,
@@ -147,7 +153,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn stage_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError> {
         self.counters.stage_calls.fetch_add(1, Ordering::SeqCst);
@@ -157,7 +163,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn finish_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         cited_object_id: Uuid,
     ) -> Result<(), StorageError> {
@@ -168,7 +174,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn abort_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobUploadAborted, StorageError> {
         CitedBlobPort::abort_upload(&self.inner, authz, owner, upload_id).await
@@ -177,7 +183,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn read_url(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError> {
         CitedBlobPort::read_url(&self.inner, authz, owner, cited_object_id).await
@@ -186,7 +192,7 @@ impl CitedBlobPort for CountingBlobPort {
     async fn find_held_blobs(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         content_hashes: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, StorageError> {
         CitedBlobPort::find_held_blobs(&self.inner, authz, owner, content_hashes).await
@@ -209,7 +215,7 @@ async fn complete_via_engine(
     pg: &PgStorage,
     store: &CitedBlobStore,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     upload_id: &str,
 ) -> Result<UploadCompleted, ProtocolError> {
     let service =
@@ -224,7 +230,7 @@ async fn complete_via_engine_with_expectation(
     pg: &PgStorage,
     blobs: &CitedBlobService,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     upload_id: &str,
     expectation: &UploadCompletionExpectation,
 ) -> Result<UploadCompleted, ProtocolError> {
@@ -273,7 +279,7 @@ async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static 
         .expect("put object");
 }
 
-async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<bool, sqlx::Error> {
+async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerId) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -282,36 +288,28 @@ async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<boo
                 AND NOT granted
                 AND mode = 'ExclusiveLock'
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
-    .bind(match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    })
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(pool)
     .await
 }
 
 async fn owner_fence_exclusive(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: OwnerRef,
+    owner: OwnerId,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "SELECT pg_advisory_xact_lock(
-             hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+             hashtextextended('proxima-owner-fence:' || $1::text, 0)
          )",
     )
-    .bind(match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    })
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&mut **tx)
     .await
     .map(|_| ())
@@ -370,7 +368,7 @@ const UPLOAD_STATUS_PROBE_LOCK: i64 = 0x0055_504c_4f41_4453;
 
 async fn run_fenced_upload_transition<T, Fut>(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     expected_probe: i64,
     transition: Fut,
 ) -> Result<Result<T, BlobError>, Box<dyn std::error::Error>>
@@ -574,7 +572,7 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
          VALUES ('core/uploaded-blob-v1', $1, $2)
          RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(finish_content_hash)
     .fetch_one(&pool)
     .await
@@ -808,7 +806,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
             (SELECT count(*) FROM proxima_core.blob WHERE owner_id = $1),
             (SELECT count(*) FROM proxima_core.memory WHERE owner_id = $1)",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(&pool)
     .await?;
     assert_eq!(
@@ -866,7 +864,7 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
         .expect_err("stored metadata over caller ceiling");
     assert!(matches!(error, CitedBlobReadError::TooLarge { .. }));
 
-    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
     let error = store
         .collect_verified(
@@ -1014,7 +1012,7 @@ async fn staged_upload(
     store: &CitedBlobStore,
     config: &S3RuntimeConfig,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     filename: &str,
     body: &'static [u8],
 ) -> String {
@@ -1298,7 +1296,7 @@ async fn complete_upload_fixture(
     config: &S3RuntimeConfig,
     pool: &sqlx::PgPool,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
 ) -> Result<(String, String), BlobError> {
     let prepared = store
         .prepare_upload(
@@ -1405,14 +1403,8 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     // Every owner predicate passes. Only re-deriving the key from the
     // forged row's own `upload_id` — a server-minted primary key the
     // forger cannot choose — refuses it.
-    let own_owner_foreign_key = forge_uploaded_blob_row(
-        &pool,
-        owner.stored_owner_id(),
-        &config.bucket,
-        &genuine_key,
-        4,
-    )
-    .await;
+    let own_owner_foreign_key =
+        forge_uploaded_blob_row(&pool, owner.into_inner(), &config.bucket, &genuine_key, 4).await;
 
     for (case, forged_id) in [
         ("foreign bucket, own key", foreign_bucket),
@@ -1473,7 +1465,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
-    let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let source = OwnerId::from(UserId::new(Uuid::now_v7()));
     let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
     let (destination, dest_ctx) = group_destination();
 
@@ -1579,7 +1571,7 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
-    let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let source = OwnerId::from(UserId::new(Uuid::now_v7()));
     let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
     let (destination, dest_ctx) = group_destination();
 
@@ -1642,8 +1634,8 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
 /// group (group-manage is the receiving side's consent), and group access
 /// exists only as a subject's role — `single_owner` denies a bare group on
 /// purpose.
-fn group_destination() -> (OwnerRef, AuthzContext) {
-    let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+fn group_destination() -> (OwnerId, AuthzContext) {
+    let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let member = UserId::new(Uuid::now_v7());
     let ctx = AuthzContext::for_subject_with_role(
         member,
@@ -1667,7 +1659,7 @@ async fn upload_one_object(
     config: &S3RuntimeConfig,
     pool: &sqlx::PgPool,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     body: &'static [u8],
 ) -> Result<UploadedObject, BlobError> {
     let prepared = store
@@ -1729,7 +1721,7 @@ async fn head(
 async fn dest_ctx_reads(
     store: &CitedBlobStore,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     cited_object_id: Uuid,
 ) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
     store
@@ -1788,7 +1780,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         .expect("complete")
         .blob;
 
-    let owner_b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let owner_b = OwnerId::from(UserId::new(Uuid::now_v7()));
     let ctx_b = AuthzContext::single_owner(&owner_b, AuthPath::HostBearer);
 
     let err = store
@@ -2260,7 +2252,7 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     // THE ORACLE PROPERTY. A different owner asking about a digest that
     // genuinely exists gets the same answer as for one that does not:
     // nothing. Not a denial, which would itself confirm the artefact.
-    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
     let cross = store
         .find_held_blobs(&other_ctx, other, &[held_hash])
@@ -2306,8 +2298,8 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
 
 async fn assert_owner_reconcile_isolated(
     store: &CitedBlobStore,
-    healthy: (&AuthzContext, OwnerRef, Uuid),
-    lost: (&AuthzContext, OwnerRef, Uuid, &str),
+    healthy: (&AuthzContext, OwnerId, Uuid),
+    lost: (&AuthzContext, OwnerId, Uuid, &str),
 ) {
     let (owner_ctx, owner, healthy_id) = healthy;
     let (other_ctx, other, lost_id, lost_key) = lost;
@@ -2414,7 +2406,7 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let owner_id = Uuid::now_v7();
-    let owner = OwnerRef::Personal(UserId::new(owner_id));
+    let owner = OwnerId::from(UserId::new(owner_id));
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     // 1. HEALTHY: a real upload, left alone.
@@ -2424,7 +2416,7 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
             .expect("healthy upload");
 
     // 2. LOST: a real upload whose object is then deleted underneath it.
-    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
     let (lost_id, lost_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
@@ -2526,7 +2518,7 @@ async fn prepare_and_put_upload(
     store: &CitedBlobStore,
     config: &S3RuntimeConfig,
     ctx: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     filename: &str,
     mime: &str,
     body: &'static [u8],
@@ -3209,7 +3201,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     sqlx::query(
         "UPDATE proxima_core.blob_uploads\n            SET status = $3::proxima_core.blob_upload_status, aborted_at = now()\n          WHERE owner_id = $1 AND upload_id = $2",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(upload_uuid)
     .bind(terminal_sql)
     .execute(&pool)
@@ -3352,9 +3344,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     let erase_pg = pg.clone().with_cold(Arc::new(store.cold_store()));
     let erase_task = tokio::spawn(async move {
         use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget};
-        let OwnerRef::Personal(user_id) = owner else {
-            panic!("the fixture owner is personal");
-        };
+        let user_id = owner.as_user();
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "erase-before-put".into(),
@@ -3576,7 +3566,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         "DELETE FROM proxima_core.blob_uploads
           WHERE owner_id = $1 AND upload_id = $2",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(upload_uuid)
     .execute(&pool)
     .await
@@ -3708,7 +3698,7 @@ async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
     sqlx::query(
         "UPDATE proxima_core.blob_uploads\n            SET status = 'expired', error_message = 'upload expired'\n          WHERE owner_id = $1 AND upload_id = $2",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(Uuid::parse_str(&upload_id).expect("upload id"))
     .execute(&pool)
     .await

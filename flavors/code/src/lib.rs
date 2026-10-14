@@ -63,7 +63,7 @@ pub mod testkit {
         engine: &proxima_core::Engine,
         authz: &proxima_core::AuthzContext,
         store: &CodeFlavorStore,
-        owner: &proxima_core::Owner,
+        owner: &proxima_core::OwnerId,
         repo_id: uuid::Uuid,
     ) -> Result<crate::repos::RepoEraseReceipt, crate::repos::RepoRegistryError> {
         erase_repo(

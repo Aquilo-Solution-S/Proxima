@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use proxima_core::read_models::ChangeEventForWake;
-use proxima_core::{Owner, OwnerRef, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::Row;
 use sqlx::{PgConnection, PgPool};
 
@@ -88,7 +88,7 @@ fn now_unix_ms() -> u64 {
 /// Returns [`StorageError`] when the change-event read fails.
 pub async fn list_change_events_after(
     pool: &PgPool,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     after: uuid::Uuid,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -100,7 +100,7 @@ pub async fn list_change_events_after(
 /// Returns storage errors from query execution or invalid stored data.
 pub async fn list_change_events_after_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     after: uuid::Uuid,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
@@ -110,7 +110,7 @@ pub async fn list_change_events_after_on_connection(
     let owners: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace()?);
     let clause = if horizon.is_some() {
@@ -155,7 +155,7 @@ pub async fn list_change_events_after_on_connection(
 /// Returns [`StorageError`] when the change-event read fails.
 pub async fn list_change_events_for_replay(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     after: uuid::Uuid,
     until: Option<uuid::Uuid>,
     limit: usize,
@@ -168,12 +168,12 @@ pub async fn list_change_events_for_replay(
 /// Returns storage errors from query execution or invalid stored data.
 pub async fn list_change_events_for_replay_on_connection(
     connection: &mut PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     after: uuid::Uuid,
     until: Option<uuid::Uuid>,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-    let rows = sqlx::query("SELECT seq FROM proxima_core.announce WHERE owner_id = $1 AND seq > $2 AND ($3::uuid IS NULL OR seq <= $3) ORDER BY seq ASC LIMIT $4").bind(owner.stored_owner_id()).bind(after).bind(until).bind(i64::try_from(limit).unwrap_or(i64::MAX)).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let rows = sqlx::query("SELECT seq FROM proxima_core.announce WHERE owner_id = $1 AND seq > $2 AND ($3::uuid IS NULL OR seq <= $3) ORDER BY seq ASC LIMIT $4").bind(owner.into_inner()).bind(after).bind(until).bind(i64::try_from(limit).unwrap_or(i64::MAX)).fetch_all(&mut *connection).await.map_err(map_err)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let seq: uuid::Uuid = row.try_get("seq").map_err(map_err)?;

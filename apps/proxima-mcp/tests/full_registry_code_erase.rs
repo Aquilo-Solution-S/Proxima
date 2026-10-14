@@ -25,7 +25,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorServiceError,
-    FlavorServices, MemoryId, Owner, OwnerRef, OwnerRoles, SourceId, StorageError, UserId,
+    FlavorServices, MemoryId, OwnerId, OwnerRoles, SourceId, StorageError, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -286,11 +286,8 @@ async fn exercise_full_registry_erase(
         .await?;
     platform_pool.close().await;
 
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let subject = match owner {
-        OwnerRef::Personal(subject) => subject,
-        OwnerRef::Group(_) => unreachable!("fixture owner is personal"),
-    };
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let subject = owner.as_user();
     let authz = proxima_core::authenticate(
         &TrustedOwnerAuth(OwnerRoles::for_subject(subject, []).unwrap()),
         &Credentials::Bearer("full-registry-test".into()),
@@ -332,17 +329,17 @@ async fn exercise_full_registry_erase(
          VALUES ($1, $2, decode('cafe', 'hex'))",
     )
     .bind(fact_id)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&pool)
     .await?;
     let source = SourceId::new("full-registry-code-source");
     sqlx::query(
         "INSERT INTO proxima_core.publication_origin
-             (t, original_owner_id, original_owner_kind, source_id)
-         VALUES ($1, $2, 'personal', $3)",
+             (t, original_owner_id, source_id)
+         VALUES ($1, $2, $3)",
     )
     .bind(fact_id)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(source.as_str())
     .execute(&pool)
     .await?;
@@ -390,9 +387,7 @@ async fn exercise_full_registry_erase(
         .with_host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .with_sidecars(sidecars)
         .try_with_flavors(built.host().registry())?;
-    let Owner::Personal(user_id) = owner else {
-        unreachable!("fixture owner is personal")
-    };
+    let user_id = owner.as_user();
     let source_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
         user_id,
         source_id: source.clone(),
@@ -425,11 +420,11 @@ async fn exercise_full_registry_erase(
 
 async fn insert_code_fact(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     fact_id: Uuid,
     repo_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)

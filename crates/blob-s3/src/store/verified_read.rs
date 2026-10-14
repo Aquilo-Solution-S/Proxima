@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use proxima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobReadError, CitedBlobReadPort, VerifiedCitedBlob,
 };
-use proxima_core::{AuthzContext, OwnerRef};
+use proxima_core::{AuthzContext, OwnerId};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
@@ -114,7 +114,7 @@ impl CitedBlobReadPort for CitedBlobStore {
     async fn collect_verified(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: Uuid,
         max_bytes: NonZeroU64,
     ) -> Result<VerifiedCitedBlob, CitedBlobReadError> {
@@ -204,8 +204,8 @@ mod tests {
     async fn denial_happens_before_locator_lookup() {
         let store =
             CitedBlobStore::new(lazy_test_pool(), store_config(None, None)).expect("test store");
-        let allowed = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let denied = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let allowed = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let denied = OwnerId::from(UserId::new(Uuid::now_v7()));
         let authz = AuthzContext::single_owner(&allowed, AuthPath::HostBearer);
 
         let error = store

@@ -6,7 +6,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{
-    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef, SchemaId,
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerId, SchemaId,
     StorageError,
 };
 use sqlx::PgConnection;
@@ -69,7 +69,7 @@ pub fn descendant_hop_sql_for_tests() -> &'static str {
 
 pub(crate) async fn walk_memory_lineage_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &MemoryLineageRequest,
     projections: &[MemorySearchProjection],
 ) -> Result<MemoryLineageResponse, StorageError> {
@@ -84,7 +84,7 @@ pub(crate) async fn walk_memory_lineage_on_connection(
     let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let start = req.start_memory_id.into_inner();
     let depth = req.depth.clamp(1, 8);

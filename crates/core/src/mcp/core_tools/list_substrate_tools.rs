@@ -166,12 +166,12 @@ mod tests {
     use super::*;
     use crate::mcp::McpAuthorContext;
     use crate::protocol::{action as protocol_action, tool as protocol_tool};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn tool_catalog_exposes_action_level_metadata() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),

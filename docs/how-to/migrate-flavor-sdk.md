@@ -1,5 +1,23 @@
 # Migrate the Flavor SDK
 
+## v0.0.30
+
+Pin all Proxima Rust dependencies to the same `v0.0.30` tag. One additive core
+migration and one code-flavor migration; boot applies them ([migrations
+§v0.0.30](migrations.md#v0030)). **Breaking, no shims**: an owner is one owner
+id, a bare UUID.
+
+| Removed / changed | Upgrade |
+|---|---|
+| `OwnerRef` / `Owner` enum (`Personal(UserId)`, `Group(GroupId)`) | `OwnerId(Uuid)`. Build it with `OwnerId::from(user_id)`, `OwnerId::from(group_id)` or `OwnerId::new(uuid)`; read it with `into_inner()`, `as_user()`, `as_group()`. A `match` on the kind has no replacement: a role comes from `OwnerRoles` |
+| `OwnerRefKind`, `OwnerId::columns()`, `parse_external_key`, `external_key`, `OwnerExternalKeyParseError` | Removed. Bind the owner as one `uuid` column (`owner.into_inner()`); parse and print it with `FromStr` / `Display` (`OwnerIdParseError`) |
+| A flavor table keyed `(owner_kind, owner_id, ..)` | Key it on `owner_id` alone in a new migration |
+| `ScopeDecl.owner_kind_column` | Removed; a scope declares only its owner id column |
+| Roles | One rule: the subject's own id holds `Role::personal()` (never manages); any other owner holds its membership role or none |
+| `ForwarderPolicy::wrap(inner)` | `wrap(inner, groups)`, `groups: Arc<dyn GroupRegistry>`; the forwarder role applies only in a registered group |
+| Wire | Bare UUIDs everywhere an owner is named; `personal:` / `group:` are refused |
+| Hashes | Receipt, derived and interpretation ids hash the bare id: a replay across the upgrade does not deduplicate |
+
 ## v0.0.28
 
 Pin all Proxima Rust dependencies to the same `v0.0.28` tag. One additive core
@@ -33,7 +51,7 @@ time string now carry `time::OffsetDateTime` (same wire).
 
 | Removed / changed | Upgrade |
 |---|---|
-| `impl MemoryReadPort for T` | Add `async fn count_memories(&self, owner_scope: Option<&OwnerScope>, read_owners: &[OwnerRef]) -> Result<MemoryCounts, StorageError>`: current memories by kind over the owners the caller reads, one per series head and one per Goal head. Fill the count with `MemoryCounts::slot(kind)`; a stored kind that is not one of the four is `StorageError::Internal`, never skipped. A fake that holds no memories returns `Ok(MemoryCounts::default())` |
+| `impl MemoryReadPort for T` | Add `async fn count_memories(&self, owner_scope: Option<&OwnerScope>, read_owners: &[OwnerId]) -> Result<MemoryCounts, StorageError>`: current memories by kind over the owners the caller reads, one per series head and one per Goal head. Fill the count with `MemoryCounts::slot(kind)`; a stored kind that is not one of the four is `StorageError::Internal`, never skipped. A fake that holds no memories returns `Ok(MemoryCounts::default())` |
 | `GoalRow { .. }` built by hand (a fake `MemoryReadPort`, a test) | Add `text: Option<String>`, `set_at: time::OffsetDateTime` and `changed_at: time::OffsetDateTime`. `text` is this version's prompt text, `None` when unknown and never blank. `set_at` is the time of the series' first version (the least `t` of the `handle`) and is the same on every version; `changed_at` is the time of this version's `id`, equal to `set_at` on the first version. Both serialize as RFC 3339 strings; `text` deserializes to `None` when absent, the two times are required |
 | `GoalWriteCommand { .. }`, `write_goal` and `write_armed_goal` (`proxima_storage_pg::verbs::goal_timeseries`, `wake_timeseries`) | `write_goal` and `write_armed_goal` now need the `test-fixtures` feature: production writes go through the Goal write verbs (`create_goal_atomic` and the rest), which fill `text` and carry the prior version's text on a lifecycle write. `GoalWriteCommand` gains `text: Option<String>` after `title`: `Some` is stored as the version's text and must not be blank (the database refuses it with `goal_text_nonblank_chk`; [06 §Goal text](../06-goals-and-self.md#goal-text) defines blank); `None` stores NULL, unknown |
 | `SearchMemoryOutput.created_at`, `UploadPrepareOutput.expires_at`, `UploadReadUrlOutput.expires_at` (`proxima_core::mcp::core_tools::{search_memories, upload}`) | Now `time::OffsetDateTime` instead of a preformatted `String`. They serialize with `time::serde::rfc3339` to the same RFC 3339 strings, and the tool output schemas still declare a string, so the wire is unchanged. Code that read the `String` formats the value itself |
@@ -58,7 +76,7 @@ broker forwards to it from its own `DurableIntake`
 | `PublicationOutboxPort::mark_published(id, claim, &BrokerReceipt)` | `mark_published(&self, id: Uuid, claim: ClaimToken) -> Result<AckOutcome, StorageError>`. An implementation or fake drops the parameter; a caller stops building the receipt. `BrokerReceipt` is removed from `proxima_core::storage_ports::publication` and `proxima::host` |
 | `publication_outbox.published_stream`, `published_seq` | Kept, but no longer written: a record published in process leaves both `NULL`. `published_at` alone marks a published record (migration `0025` relaxes `publication_outbox_published_chk`) |
 | `proxima_outbox_nats::{DurableIntake, Intake, IntakeError, ReceivedEvent, EventIdentity, CloudEventEnvelope}` (gated by `outbox-nats`) | Now `proxima_core::publication::intake::{..}`, re-exported ungated as `proxima::{..}` and `proxima::host::{..}`. `EventIdentity` and `ReceivedEvent::identity()` are unchanged |
-| `ReceivedEvent { subject, stream_sequence, .. }` and `ReceivedEvent::parsed_subject(prefix)` | `subject`, `stream_sequence` and `parsed_subject` are gone. `owner: OwnerRef` replaces the subject's owner token, typed from the outbox row rather than parsed back out of a string. `delivered_count: u64` is now the record's `attempts` (this delivery included). A struct literal needs `owner` |
+| `ReceivedEvent { subject, stream_sequence, .. }` and `ReceivedEvent::parsed_subject(prefix)` | `subject`, `stream_sequence` and `parsed_subject` are gone. `owner: OwnerId` replaces the subject's owner token, typed from the outbox row rather than parsed back out of a string. `delivered_count: u64` is now the record's `attempts` (this delivery included). A struct literal needs `owner` |
 | `IntakeError { retry_after, .. }`, `IntakeError::retry_after(delay)` | Removed: nothing honours a redelivery hint in process. `IntakeError::new(message)` is unchanged; the drain releases the claim and backs off |
 | An envelope that does not parse | Was delivered under a synthetic `malformed:<hex>` id. Now logged at error level (event id and error class) and released; the intake is never called with it. It stays `pending` until an operator repairs it |
 

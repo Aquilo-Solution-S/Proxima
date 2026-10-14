@@ -76,10 +76,10 @@
 //!
 //! ```compile_fail
 //! use proxima::{
-//!     HostStateParticipantId, HostStateWriteOrigin, HostStateWritePermit, Owner, StateSurfaceName,
+//!     HostStateParticipantId, HostStateWriteOrigin, HostStateWritePermit, OwnerId, StateSurfaceName,
 //! };
 //! let _permit = HostStateWritePermit::new(
-//!     Owner::Personal(proxima::UserId::new(uuid::Uuid::nil())),
+//!     OwnerId::from(proxima::UserId::new(uuid::Uuid::nil())),
 //!     HostStateParticipantId::new("fixture"),
 //!     &[StateSurfaceName::new("fixture.state")],
 //!     HostStateWriteOrigin::Maintenance,
@@ -160,11 +160,11 @@ pub use proxima_core::authz::SystemAuthority;
 /// One Owner per embedded host: a Group principal.
 ///
 /// This is the single place embedded hosts construct `Owner`. `Owner` is
-/// `OwnerRef` and carries no org scalar: tenancy is a flavor/app concern,
+/// `OwnerId` and carries no org scalar: tenancy is a flavor/app concern,
 /// not a substrate one.
 #[must_use]
-pub fn company_owner(id: uuid::Uuid) -> Owner {
-    OwnerRef::Group(GroupId::new(id))
+pub fn company_owner(id: uuid::Uuid) -> OwnerId {
+    OwnerId::from(GroupId::new(id))
 }
 
 /// Persist one host-observed MCP tool call through an embedded engine.
@@ -176,7 +176,7 @@ pub fn company_owner(id: uuid::Uuid) -> Owner {
 /// # Errors
 ///
 /// Returns `Forbidden` when `authz` cannot access the log Owner or lacks an
-/// `Ingest`/write-capable owner role for that Owner; or `Internal` on storage
+/// `Ingest`/write-capable owner role for that owner; or `Internal` on storage
 /// failure.
 pub async fn log_mcp_call(
     engine: &Engine,
@@ -213,7 +213,7 @@ pub async fn read_mcp_call_history(
 pub async fn load_source_cursor(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: &Owner,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<Option<Cursor>, ProtocolError> {
     engine.load_source_cursor(authz, owner, source).await
@@ -228,7 +228,7 @@ pub async fn load_source_cursor(
 pub async fn store_source_cursor(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: &Owner,
+    owner: &OwnerId,
     source: &str,
     cursor: &Cursor,
 ) -> Result<(), ProtocolError> {
@@ -239,12 +239,13 @@ pub async fn store_source_cursor(
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::OwnerRef;
+    use proxima_core::OwnerId;
 
     #[test]
-    fn company_owner_is_group_scoped() {
+    fn company_owner_is_the_bare_company_id() {
         let id = uuid::Uuid::now_v7();
         let owner = super::company_owner(id);
-        assert!(matches!(owner, OwnerRef::Group(_)));
+        assert_eq!(owner, OwnerId::new(id));
+        assert_eq!(owner.as_group().into_inner(), id);
     }
 }

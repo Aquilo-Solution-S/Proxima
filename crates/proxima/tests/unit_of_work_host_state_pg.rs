@@ -16,7 +16,7 @@ use proxima::{
     AuthPath, AuthzContext, ErrorCode, HostStateOutcome, PgHostStateParticipant, Proxima, Role,
     ToolScope, company_owner,
 };
-use proxima_core::{AgentNoteV1, GroupId, Owner, UserId};
+use proxima_core::{AgentNoteV1, GroupId, OwnerId, UserId};
 use proxima_pg_testkit::db_url;
 use split_core_db::clone_split_core_db;
 use sqlx::PgPool;
@@ -34,25 +34,21 @@ fn note(title: &str) -> AgentNoteV1 {
     }
 }
 
-fn admin_authz_for(owner: Owner) -> AuthzContext {
-    let context = if matches!(owner, Owner::Personal(_)) {
-        AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-    } else {
-        AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(owner, Role::admin())],
-            AuthPath::HostBearer,
-        )
-        .narrowed_to_owner(owner)
-        .expect("an admin on exactly this owner narrows to it")
-    };
+fn admin_authz_for(owner: OwnerId) -> AuthzContext {
+    let context = AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(owner, Role::admin())],
+        AuthPath::HostBearer,
+    )
+    .narrowed_to_owner(owner)
+    .expect("an admin on exactly this owner narrows to it");
     proxima_core::test_fixtures::authenticated_context(context)
 }
 
 async fn boot_fixture(
     db_url: &str,
     platform_url: &str,
-    owner: Owner,
+    owner: OwnerId,
     participant: Option<Arc<dyn PgHostStateParticipant>>,
 ) -> Result<proxima::BuiltProxima, Box<dyn std::error::Error>> {
     let mut app = Proxima::<HostFixtureApp>::app()
@@ -108,32 +104,9 @@ async fn execution_status(
 async fn execution_provenance(
     pool: &PgPool,
     memory_id: proxima_core::MemoryId,
-) -> Result<
-    Option<(
-        String,
-        Uuid,
-        Option<String>,
-        Option<Uuid>,
-        bool,
-        Option<String>,
-        Option<Uuid>,
-    )>,
-    sqlx::Error,
-> {
-    sqlx::query_as::<
-        _,
-        (
-            String,
-            Uuid,
-            Option<String>,
-            Option<Uuid>,
-            bool,
-            Option<String>,
-            Option<Uuid>,
-        ),
-    >(
-        "SELECT owner_kind::text, owner_id, principal_kind::text, principal_id,
-                maintenance_origin, payload_saved_by_kind::text, payload_saved_by_id
+) -> Result<Option<(Uuid, Option<Uuid>, bool, Option<Uuid>)>, sqlx::Error> {
+    sqlx::query_as::<_, (Uuid, Option<Uuid>, bool, Option<Uuid>)>(
+        "SELECT owner_id, principal_id, maintenance_origin, payload_saved_by_id
          FROM host_fixture.execution WHERE invocation_id = $1",
     )
     .bind(memory_id.into_inner())
@@ -141,17 +114,13 @@ async fn execution_provenance(
     .await
 }
 
-fn owner_fence_label(owner: Owner) -> String {
-    let kind = match owner {
-        Owner::Personal(_) => "personal",
-        Owner::Group(_) => "group",
-    };
-    format!("proxima-owner-fence:{kind}:{}", owner.stored_owner_id())
+fn owner_fence_label(owner: OwnerId) -> String {
+    format!("proxima-owner-fence:{}", owner.into_inner())
 }
 
 async fn wait_for_owner_fence_wait(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let label = owner_fence_label(owner);
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -222,7 +191,7 @@ async fn advisory_integer_wait_reports_lock_event(
 
 async fn wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     test_lock_key: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let label = owner_fence_label(owner);
@@ -726,8 +695,8 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
         split_db.platform_url().to_owned(),
     );
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let group = Owner::Group(GroupId::new(Uuid::now_v7()));
-        let personal = Owner::Personal(UserId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
         let built = boot_fixture(&url, &platform_url, group, Some(participant.clone())).await?;
         let authority = built
@@ -787,18 +756,10 @@ async fn host_only_authority_is_engine_bound_owner_fixed_and_works_for_personal_
                 Some(("finalized".to_owned(), 2)),
                 "host-only mutation must commit for {owner:?} and be visible on another connection"
             );
-            let (target_kind, target_id) = owner.columns();
+            let target_id = owner.into_inner();
             assert_eq!(
                 execution_provenance(&observer, fact.memory_id).await?,
-                Some((
-                    target_kind.as_str().to_owned(),
-                    target_id,
-                    None,
-                    None,
-                    true,
-                    None,
-                    None,
-                )),
+                Some((target_id, None, true, None,)),
                 "maintenance stamps no ordinary principal and preserves the target owner"
             );
         }
@@ -976,7 +937,7 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
             .narrowed_to_owner(group)
             .expect("group editor is narrowed to its target owner"),
         );
-        assert_eq!(authz.principal(), Owner::Personal(editor));
+        assert_eq!(authz.principal(), OwnerId::from(editor));
         assert_ne!(authz.principal(), group);
 
         let engine = built.host().engine();
@@ -996,17 +957,14 @@ async fn ordinary_group_editor_provenance_is_not_target_or_command_metadata() {
         .await?;
         unit.commit().await?;
 
-        let (target_kind, target_id) = group.columns();
+        let target_id = group.into_inner();
         assert_eq!(
             execution_provenance(&admin_pool(&db_name).await?, fact.memory_id).await?,
             Some((
-                target_kind.as_str().to_owned(),
                 target_id,
-                Some("personal".to_owned()),
                 Some(editor.into_inner()),
                 false,
-                Some("group".to_owned()),
-                Some(group.stored_owner_id()),
+                Some(group.into_inner()),
             )),
             "the committed fixture row distinguishes target, caller stamp and fake payload"
         );
@@ -1070,7 +1028,7 @@ async fn opaque_payload_owner_mismatch_is_checked_inside_participant_before_sql(
     );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
-        let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let participant = Arc::new(HostFixtureParticipant::default());
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let authority = built
@@ -1174,7 +1132,8 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
         split_db.platform_url().to_owned(),
     );
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = Owner::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        register_group(&admin_pool(&db_name).await?, owner.as_group()).await?;
         let participant = Arc::new(HostFixtureParticipant::default());
         let built = boot_fixture(&url, &platform_url, owner, Some(participant.clone())).await?;
         let engine = built.host().engine();
@@ -1224,7 +1183,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
         let erase_authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
         let erase = tokio::spawn(async move {
             erase_engine
-                .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
+                .erase_group_owner(&erase_authz, GroupId::new(owner.into_inner()))
                 .await
         });
         wait_for_owner_fence_wait(&pool, owner)
@@ -1289,7 +1248,7 @@ async fn host_state_and_whole_owner_erase_wait_on_the_same_owner_fence_both_ways
         let erase_authz = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
         let erase = tokio::spawn(async move {
             erase_engine
-                .erase_group_owner(&erase_authz, GroupId::new(owner.stored_owner_id()))
+                .erase_group_owner(&erase_authz, GroupId::new(owner.into_inner()))
                 .await
         });
         wait_for_erase_holding_owner_fence_and_waiting_on_test_lock(&pool, owner, trigger_key)
@@ -1363,7 +1322,7 @@ mod dispatcher {
         AUXILIARY_TABLE, EXECUTION_TABLE, PARTICIPANT, WIDENED_TABLES,
     };
     use super::{
-        Arc, AuxiliaryHostCommand, ErrorCode, HostStateOutcome, Owner, PgHostStateParticipant,
+        Arc, AuxiliaryHostCommand, ErrorCode, HostStateOutcome, OwnerId, PgHostStateParticipant,
         PgPool, UserId, Uuid, admin_authz_for, admin_pool, boot_fixture, clone_split_core_db,
         company_owner, count_memory, db_url, note,
     };
@@ -1374,9 +1333,9 @@ mod dispatcher {
     /// Inserts one auxiliary row; its payload names `also_names` on top of
     /// the command owner.
     struct RecordAuxiliary {
-        owner: Owner,
+        owner: OwnerId,
         invocation_id: MemoryId,
-        also_names: Vec<Owner>,
+        also_names: Vec<OwnerId>,
     }
 
     impl HostStateCommand for RecordAuxiliary {
@@ -1384,20 +1343,20 @@ mod dispatcher {
         const TABLES: &'static [StateSurfaceName] = RECORD_TABLES;
         type Outcome = u64;
 
-        fn owner(&self) -> Owner {
+        fn owner(&self) -> OwnerId {
             self.owner
         }
     }
 
     impl HostStatePayloadOwners for RecordAuxiliary {
-        fn payload_owners(&self) -> Vec<Owner> {
+        fn payload_owners(&self) -> Vec<OwnerId> {
             self.also_names.clone()
         }
     }
 
     /// Counts the owner's execution rows. Names no payload owner.
     struct CountExecutions {
-        owner: Owner,
+        owner: OwnerId,
     }
 
     impl HostStateCommand for CountExecutions {
@@ -1405,13 +1364,13 @@ mod dispatcher {
         const TABLES: &'static [StateSurfaceName] = COUNT_TABLES;
         type Outcome = i64;
 
-        fn owner(&self) -> Owner {
+        fn owner(&self) -> OwnerId {
             self.owner
         }
     }
 
     impl HostStatePayloadOwners for CountExecutions {
-        fn payload_owners(&self) -> Vec<Owner> {
+        fn payload_owners(&self) -> Vec<OwnerId> {
             Vec::new()
         }
     }
@@ -1443,13 +1402,12 @@ mod dispatcher {
             command: AgreedCommand<RecordAuxiliary>,
         ) -> Result<HostStateOutcome<u64>, StorageError> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            let (kind, owner_id) = permit.owner().columns();
+            let owner_id = permit.owner().into_inner();
             let inserted = sqlx::query(
-                "INSERT INTO host_fixture.auxiliary (invocation_id, owner_kind, owner_id)
-                 VALUES ($1, $2, $3) ON CONFLICT (invocation_id) DO NOTHING",
+                "INSERT INTO host_fixture.auxiliary (invocation_id, owner_id)
+                 VALUES ($1, $2) ON CONFLICT (invocation_id) DO NOTHING",
             )
             .bind(command.invocation_id.into_inner())
-            .bind(kind)
             .bind(owner_id)
             .execute(&mut **tx)
             .await
@@ -1474,12 +1432,11 @@ mod dispatcher {
             _command: AgreedCommand<CountExecutions>,
         ) -> Result<HostStateOutcome<i64>, StorageError> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            let (kind, owner_id) = permit.owner().columns();
+            let owner_id = permit.owner().into_inner();
             let rows = sqlx::query_scalar(
                 "SELECT count(*)::bigint FROM host_fixture.execution
-                 WHERE owner_kind = $1 AND owner_id = $2",
+                 WHERE owner_id = $1",
             )
-            .bind(kind)
             .bind(owner_id)
             .fetch_one(&mut **tx)
             .await
@@ -1578,7 +1535,7 @@ mod dispatcher {
         );
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = company_owner(Uuid::now_v7());
-            let foreign = Owner::Personal(UserId::new(Uuid::now_v7()));
+            let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
             let calls = Calls::default();
             let built = boot_fixture(&url, &platform_url, owner, Some(dispatcher(&calls))).await?;
             let engine = built.host().engine();
@@ -1686,4 +1643,17 @@ mod dispatcher {
         .await;
         result.expect("unregistered command refusal");
     }
+}
+
+/// Register `group` as a Group, the way a host creates one before writing
+/// under it: the group erase path admits only a registered Group.
+async fn register_group(pool: &sqlx::PgPool, group: GroupId) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(pool)
+    .await
+    .map(drop)
 }

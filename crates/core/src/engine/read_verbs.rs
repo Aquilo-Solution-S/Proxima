@@ -13,7 +13,7 @@ use crate::verbs::query::{
     SearchCursor, SearchMode,
 };
 use crate::verbs::schema::{MemorySearchProjection, payload_entity_kind};
-use crate::{EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion};
+use crate::{EntityKind, MemoryId, OwnerId, SchemaId, SchemaVersion};
 
 use super::Engine;
 use super::pipeline::ENTRY_NOT_FOUND_MESSAGE;
@@ -64,7 +64,7 @@ pub struct GetMemoriesReadResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetGraphReadRequest {
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
 }
 
 #[derive(Debug, Clone)]
@@ -561,7 +561,7 @@ pub(in crate::engine) async fn search_authorized(
     search_projections: &[MemorySearchProjection],
     schemas: &[MemorySchemaSpec],
     owner_scope: Option<&crate::OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &SearchReadRequest,
 ) -> Result<SearchReadResponse, ProtocolError> {
     let mut effective = req.search.clone();
@@ -618,7 +618,7 @@ pub(in crate::engine) async fn search_authorized(
 pub(in crate::engine) async fn get_memory_authorized(
     ports: &ReadVerbStoragePorts,
     owner_scope: Option<&crate::OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     schemas: &[MemorySchemaSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
@@ -651,7 +651,7 @@ pub(in crate::engine) async fn get_memory_authorized(
 pub(in crate::engine) async fn get_graph_authorized(
     ports: &ReadVerbStoragePorts,
     owner_scope: Option<&crate::OwnerScope>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<GetGraphReadResponse, ProtocolError> {
     let job_status = ports
         .embedding_job
@@ -667,7 +667,7 @@ pub(in crate::engine) async fn get_graph_authorized(
 pub(in crate::engine) async fn list_change_events_authorized(
     ports: &ReadVerbStoragePorts,
     owner_scope: Option<&crate::OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &ListChangeEventsReadRequest,
 ) -> Result<ListChangeEventsReadResponse, ProtocolError> {
     let events = ports
@@ -681,7 +681,7 @@ pub(in crate::engine) async fn list_change_events_authorized(
 pub(in crate::engine) async fn read_fact_citation_authorized(
     ports: &ReadVerbStoragePorts,
     owner_scope: Option<&crate::OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, ProtocolError> {
     ports
@@ -694,7 +694,7 @@ pub(in crate::engine) async fn read_fact_citation_authorized(
 pub(in crate::engine) async fn facts_citing_object_authorized(
     ports: &ReadVerbStoragePorts,
     owner_scope: Option<&crate::OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &FactsCitingObjectReadRequest,
     schemas: &[MemorySchemaSpec],
 ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
@@ -723,7 +723,7 @@ mod tests {
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
     };
-    use crate::{Engine, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
+    use crate::{Engine, FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
 
     type ResolvedAuthz = AuthzContext;
 
@@ -736,15 +736,15 @@ mod tests {
         Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
-    fn owner() -> OwnerRef {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
-    fn group_owner() -> OwnerRef {
-        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    fn group_owner() -> OwnerId {
+        OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    fn search_req(owner: &OwnerRef) -> SearchReadRequest {
+    fn search_req(owner: &OwnerId) -> SearchReadRequest {
         SearchReadRequest {
             search: MemorySearchRequest {
                 owner: *owner,
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
-    fn granted_authz(owner: &OwnerRef) -> ResolvedAuthz {
+    fn granted_authz(owner: &OwnerId) -> ResolvedAuthz {
         AuthzContext::single_owner(owner, AuthPath::HostBearer)
     }
 

@@ -38,7 +38,7 @@ struct PgWriteSession {
 /// ran — the cold debt `commit` settles.
 struct SeriesEraseState {
     context: crate::PgHostStateEraseContext,
-    owner: proxima_core::Owner,
+    owner: proxima_core::OwnerId,
     pool: sqlx::PgPool,
     platform: Option<crate::PgPlatformScope>,
     ran: bool,
@@ -270,7 +270,7 @@ impl WriteSession for PgWriteSession {
         if !outcome.idempotent_replay {
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
-                authorized.owner_write_permit().owner().stored_owner_id(),
+                authorized.owner_write_permit().owner().into_inner(),
                 outcome.memory_id.into_inner(),
                 authorized.draft().kind.as_str(),
                 &verbs::sketch::sketch_line(
@@ -347,7 +347,7 @@ impl WriteSession for PgWriteSession {
             };
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
-                permit.owner().stored_owner_id(),
+                permit.owner().into_inner(),
                 outcome.memory_id.into_inner(),
                 kind,
                 &verbs::sketch::sketch_line(
@@ -436,7 +436,7 @@ impl WriteSession for PgWriteSession {
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         let owner = permit.owner();
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let t = memory_id.into_inner();
         // Ownership precondition, not a key ingredient: the cold key derives
         // from `t` alone, but a `t` the caller does not own must be NotFound

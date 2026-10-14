@@ -8,7 +8,7 @@ use proxima_core::flavor::ForgetLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{
     ColdObjectStore, MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus,
-    Owner, StorageError,
+    OwnerId, StorageError,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -106,7 +106,7 @@ pub(crate) struct Reach {
 impl Reach {
     pub(crate) fn of(permit: &proxima_core::storage_ports::OwnerWritePermit) -> Self {
         Self {
-            owner_id: permit.owner().stored_owner_id(),
+            owner_id: permit.owner().into_inner(),
             kinds: kinds_within(permit.access_kind()),
         }
     }
@@ -2507,7 +2507,7 @@ async fn apply_hydration(
 
 /// Insert the restored Memory row.
 ///
-/// Owner, blob and content come from the locked locator rather than from the
+/// owner, blob and content come from the locked locator rather than from the
 /// record: a transfer may remap exactly those three columns.
 /// `HydrationFailure::Rejected` is PostgreSQL refusing the record's own
 /// content, which is a typed per-item outcome; every other failure is a
@@ -3067,19 +3067,19 @@ pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     context: &crate::PgHostStateEraseContext,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
     context.lock_before_physical_erase(tx).await?;
     let surfaces = &context.surfaces;
     // Probe the series identity first. The handle lock is the first
     // serialization boundary; a missing target is not a successful no-op.
-    let probed_handle = probe_memory_handle_for_owner(tx, t, owner.stored_owner_id())
+    let probed_handle = probe_memory_handle_for_owner(tx, t, owner.into_inner())
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_memory_handles_tx(tx, &[probed_handle]).await?;
     lock_lifecycle_targets_tx(tx, &[t]).await?;
-    let handle = probe_memory_handle_for_owner(tx, t, owner.stored_owner_id())
+    let handle = probe_memory_handle_for_owner(tx, t, owner.into_inner())
         .await?
         .ok_or(StorageError::NotFound)?;
     if handle != probed_handle {
@@ -3094,7 +3094,7 @@ pub async fn erase_memory(
          LIMIT 1",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?
@@ -3107,7 +3107,7 @@ pub async fn erase_memory(
          )",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -3131,13 +3131,13 @@ pub async fn erase_memory(
          RETURNING object_key",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -3145,14 +3145,14 @@ pub async fn erase_memory(
         "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
     )
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
     delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -3162,7 +3162,7 @@ pub async fn erase_memory(
     sync_memory_head(tx, handle).await?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = $1 AND owner_id = $2")
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -3198,7 +3198,7 @@ pub async fn erase_memory(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          SELECT $1, 'erase', 'memory', $2, $3",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     // The series handle, not t: a ChangeHistory reader pages by handle, and a
     // t-shaped handle matches no series.
     .bind(handle)
@@ -3256,14 +3256,14 @@ pub async fn erase_memory_series(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     context: &crate::PgHostStateEraseContext,
-    owner: &Owner,
+    owner: &OwnerId,
     ts: &[Uuid],
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
     if ts.is_empty() {
         return Ok((0, ColdPurgePlan::default()));
     }
     context.lock_before_physical_erase(tx).await?;
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     // Capture handles and membership in one statement before waiting. The
     // membership is the generation witness: handles are reusable after a
     // complete erase, so a non-empty post-lock series disjoint from this
@@ -3276,10 +3276,10 @@ async fn erase_memory_series_after_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     context: &crate::PgHostStateEraseContext,
-    owner: &Owner,
+    owner: &OwnerId,
     before: MemorySeriesSnapshot,
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handles = before.handles();
     lock_memory_handles_tx(tx, &handles).await?;
     let after = snapshot_series_for_handles_tx(tx, owner_id, &handles).await?;
@@ -3331,17 +3331,15 @@ async fn erase_memory_series_after_snapshot(
 /// Returns storage errors from the expansion query.
 pub async fn expand_series_for_erase(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     ts: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if ts.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(
-        snapshot_series_for_erase_tx(tx, owner.stored_owner_id(), ts)
-            .await?
-            .versions(),
-    )
+    Ok(snapshot_series_for_erase_tx(tx, owner.into_inner(), ts)
+        .await?
+        .versions())
 }
 
 #[derive(Debug)]
@@ -3477,7 +3475,7 @@ SELECT c.handle, c.t FROM proxima_core.cooled c
 /// Returns storage errors from the query.
 pub async fn admissions_outside_owner(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     ts: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if ts.is_empty() {
@@ -3485,7 +3483,7 @@ pub async fn admissions_outside_owner(
     }
     sqlx::query_scalar(ADMISSIONS_OUTSIDE_OWNER_SQL)
         .bind(ts)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)
@@ -3548,7 +3546,7 @@ SELECT c.t
 /// Returns storage errors from the lock statement.
 pub async fn lock_admissions_for_erase(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     ts: &[Uuid],
 ) -> Result<(), StorageError> {
     if ts.is_empty() {
@@ -3567,7 +3565,7 @@ pub async fn lock_admissions_for_erase(
           ORDER BY handle",
     )
     .bind(ts)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -3582,7 +3580,7 @@ pub async fn lock_admissions_for_erase(
           ORDER BY t",
     )
     .bind(ts)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -3637,7 +3635,7 @@ const LOCK_ADMISSIONS_SQL: &str =
 /// Returns storage errors from the statement.
 pub async fn cited_blobs_locked_for_erase(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     ts: &[Uuid],
 ) -> Result<Vec<Uuid>, StorageError> {
     if ts.is_empty() {
@@ -3645,7 +3643,7 @@ pub async fn cited_blobs_locked_for_erase(
     }
     sqlx::query_scalar(CITED_BLOBS_LOCKED_SQL)
         .bind(ts)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)

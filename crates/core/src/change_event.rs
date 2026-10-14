@@ -10,7 +10,7 @@
 
 use uuid::Uuid;
 
-use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
+use crate::{GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EntityKind {
@@ -119,6 +119,6 @@ pub enum ChangeEventKind {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeEvent {
     pub seq: Uuid,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub kind: ChangeEventKind,
 }

@@ -6,7 +6,7 @@
 
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{OwnerId, UPLOADED_BLOB_SCHEMA_ID};
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -76,7 +76,7 @@ pub(super) struct BlobReadRecord {
 pub(super) async fn load_upload_optional(
     pool: &sqlx::PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<Option<UploadRow>, BlobError> {
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
@@ -91,10 +91,10 @@ pub(super) async fn load_upload_optional(
 
 pub(super) async fn load_upload_optional_on_connection(
     pool: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<Option<UploadRow>, BlobError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
                 status, blob_id, expires_at \
@@ -131,7 +131,7 @@ pub(super) async fn load_upload_optional_on_connection(
 /// transfer and citation admission.
 pub(super) async fn load_upload_for_update(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
     load_upload_optional_for_update(tx, owner, upload_id)
@@ -143,10 +143,10 @@ pub(super) async fn load_upload_for_update(
 /// terminal one rather than collapsing both into an error.
 pub(super) async fn load_upload_optional_for_update(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<Option<UploadRow>, BlobError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
                 status, blob_id, expires_at \
@@ -180,7 +180,7 @@ pub(super) async fn load_upload_optional_for_update(
 
 pub(super) async fn mark_upload_expired_on_connection(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<UploadStatus, BlobError> {
     proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
@@ -196,7 +196,7 @@ pub(super) async fn mark_upload_expired_on_connection(
         "UPDATE proxima_core.blob_uploads SET status = 'expired', error_message = 'upload expired'
           WHERE owner_id = $1 AND upload_id = $2 AND status = 'pending'",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(upload_id)
     .execute(&mut **tx)
     .await
@@ -206,11 +206,11 @@ pub(super) async fn mark_upload_expired_on_connection(
 
 pub(super) async fn load_staged_payload_on_connection(
     pool: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     upload_id: Uuid,
     blob_id: Uuid,
 ) -> Result<CitedBlobStaged, BlobError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row = sqlx::query(
         "SELECT b.content_hash, u.bucket, u.object_key, u.sha256, \
                 u.expected_byte_len AS byte_len, u.mime, u.filename, u.etag, \
@@ -266,7 +266,7 @@ fn hash32(bytes: &[u8], field: &str) -> Result<[u8; 32], BlobError> {
 
 pub(super) async fn find_held_blobs_on_connection(
     pool: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     content_hashes: &[[u8; 32]],
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
     const SQL: &str = with_live_blob_upload!(
@@ -280,7 +280,7 @@ pub(super) async fn find_held_blobs_on_connection(
             AND b.schema_id = $2
             AND b.content_hash = ANY($3::bytea[])"
     );
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let digests: Vec<Vec<u8>> = content_hashes.iter().map(|hash| hash.to_vec()).collect();
     let rows = sqlx::query(SQL)
         .bind(owner_id)
@@ -306,7 +306,7 @@ pub(super) async fn find_held_blobs_on_connection(
 
 pub(super) async fn load_blob_location_on_connection(
     pool: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     blob_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
     // The shared selection requires the blob and upload owners to agree:
@@ -320,7 +320,7 @@ pub(super) async fn load_blob_location_on_connection(
             AND b.owner_id = $2
             AND b.schema_id = $3"
     );
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     if let Some(row) = sqlx::query(SQL)
         .bind(blob_id)
         .bind(owner_id)
@@ -346,7 +346,7 @@ pub(super) async fn load_blob_location_on_connection(
 
 pub(super) async fn load_blob_read_record_on_connection(
     pool: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     blob_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
     const SQL: &str = with_live_blob_upload!(
@@ -359,7 +359,7 @@ pub(super) async fn load_blob_read_record_on_connection(
             AND b.owner_id = $2
             AND b.schema_id = $3"
     );
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row = sqlx::query(SQL)
         .bind(blob_id)
         .bind(owner_id)

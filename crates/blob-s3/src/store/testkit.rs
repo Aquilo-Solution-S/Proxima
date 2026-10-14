@@ -5,7 +5,7 @@
 //! what makes the config validation in `CitedBlobStore::new` assertable in
 //! a plain `cargo test`.
 
-use proxima_core::{OwnerRef, UserId};
+use proxima_core::{OwnerId, UserId};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ use crate::config::S3RuntimeConfig;
 
 pub(super) fn prepare_req(byte_len: u64) -> CitedBlobUploadPrepareTs {
     CitedBlobUploadPrepareTs {
-        owner: OwnerRef::Personal(UserId::new(Uuid::now_v7())),
+        owner: OwnerId::from(UserId::new(Uuid::now_v7())),
         filename: "test.pdf".into(),
         mime: "application/pdf".into(),
         byte_len,

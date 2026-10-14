@@ -17,7 +17,7 @@ use proxima_core::flavor::{
 use proxima_core::publication::{PublicationConfig, PublicationSource};
 use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{AuthzContext, Engine, Owner};
+use proxima_core::{AuthzContext, Engine, OwnerId};
 use split_core_db::clone_split_core_db;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -199,7 +199,7 @@ impl FlavorApp for PublisherApp {
     }
 }
 
-async fn capture(engine: &Arc<Engine>, authz: &AuthzContext, owner: Owner, note: &str) -> Uuid {
+async fn capture(engine: &Arc<Engine>, authz: &AuthzContext, owner: OwnerId, note: &str) -> Uuid {
     let probe = HealthProbeV1 {
         probe_id: Uuid::now_v7(),
         note: note.to_owned(),

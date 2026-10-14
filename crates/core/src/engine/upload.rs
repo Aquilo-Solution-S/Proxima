@@ -31,7 +31,7 @@ use crate::error::ProtocolError;
 use crate::storage_ports::{CitedBlobService, CitedBlobStaged, CitedBlobUploadCompleted};
 use crate::verbs::fact_ingest::{FactWriteCommand, InlineCitedObjectDraft};
 use crate::{
-    CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    CitedObjectPayload, FactIngestOutcome, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     UploadV1,
 };
 
@@ -154,7 +154,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
     ) -> Result<UploadCompleted, ProtocolError>
@@ -184,7 +184,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         expectation: &UploadCompletionExpectation,
@@ -207,7 +207,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         expectation: Option<&UploadCompletionExpectation>,
@@ -236,7 +236,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         staged: CitedBlobStaged,
@@ -412,7 +412,7 @@ mod tests {
         async fn prepare_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _filename: &str,
             _mime: &str,
             _byte_len: u64,
@@ -423,7 +423,7 @@ mod tests {
         async fn stage_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobStaged, StorageError> {
             self.stage_calls.fetch_add(1, Ordering::SeqCst);
@@ -433,7 +433,7 @@ mod tests {
         async fn finish_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
             _cited_object_id: uuid::Uuid,
         ) -> Result<(), StorageError> {
@@ -444,7 +444,7 @@ mod tests {
         async fn abort_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobUploadAborted, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -453,7 +453,7 @@ mod tests {
         async fn read_url(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _cited_object_id: uuid::Uuid,
         ) -> Result<CitedBlobReadUrl, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -462,7 +462,7 @@ mod tests {
         async fn find_held_blobs(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _content_hashes: &[[u8; 32]],
         ) -> Result<Vec<CitedBlobHeld>, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -483,7 +483,7 @@ mod tests {
             stage_calls: Arc::clone(&stage_calls),
             finish_calls: Arc::clone(&finish_calls),
         }));
-        let owner = crate::OwnerRef::Personal(UserId::new(uuid::Uuid::nil()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::nil()));
         let authority = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 

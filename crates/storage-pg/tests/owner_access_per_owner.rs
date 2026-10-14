@@ -9,7 +9,7 @@
 //! vocabulary. Personal owners are not a shape: the port is typed on
 //! `GroupId`, so they cannot be asked.
 
-use proxima_core::{GroupId, OwnerAccessPort, OwnerRef, Relation, Role, UserId};
+use proxima_core::{GroupId, OwnerAccessPort, OwnerId, Relation, Role, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
@@ -18,8 +18,12 @@ use uuid::Uuid;
 
 async fn seed_membership(pool: &sqlx::PgPool, group: GroupId, member: UserId, relation: Relation) {
     sqlx::query(
-        "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
-         VALUES ($1, $2, $3)",
+        "WITH registered AS (
+              INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+              ON CONFLICT (owner_id) DO NOTHING
+          )
+          INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+          VALUES ($1, $2, $3)",
     )
     .bind(group.into_inner())
     .bind(member.into_inner())
@@ -66,7 +70,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
             let probed = port.resolve_group_role(forwarder, group).await?;
             assert_eq!(
                 probed,
-                eager.role_for(&OwnerRef::Group(group)),
+                eager.role_for(&OwnerId::from(group)),
                 "per-group probe must equal the eager map for {group:?}"
             );
         }

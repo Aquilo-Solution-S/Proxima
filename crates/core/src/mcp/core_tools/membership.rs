@@ -12,7 +12,7 @@ use crate::mcp::{
     CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
-use crate::{GroupId, OwnerRef, UserId};
+use crate::{GroupId, UserId};
 
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the last
 /// `(member, relation)` pair under `c`. The fingerprint binds the group.
@@ -61,7 +61,7 @@ pub enum CoreMembershipArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddMemberArgs {
-    /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
+    /// Group space key from `core_memory_spaces`: the group's bare `<uuid>`.
     pub group: String,
     /// The user's UUID, bare: users take no handle prefix.
     pub member: String,
@@ -72,7 +72,7 @@ pub struct AddMemberArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RemoveMemberArgs {
-    /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
+    /// Group space key from `core_memory_spaces`: the group's bare `<uuid>`.
     pub group: String,
     /// The user's UUID, bare. Every relation they hold in the group goes.
     pub member: String,
@@ -80,7 +80,7 @@ pub struct RemoveMemberArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListMembersArgs {
-    /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
+    /// Group space key from `core_memory_spaces`: the group's bare `<uuid>`.
     pub group: String,
     /// Max members per page; default 50, values above 200 are clamped.
     #[serde(default)]
@@ -319,10 +319,17 @@ fn resolve_group(ctx: &McpToolCtx, raw: &str) -> Result<GroupId, McpToolError> {
             )));
         }
     };
-    match owner {
-        OwnerRef::Group(group) => Ok(group),
-        OwnerRef::Personal(_) => Err(McpToolError::InvalidInput("not a group".into())),
+    // The caller's own id is its personal owner, never a group. Whether any
+    // other id names a group is the registry's to say: a membership write
+    // under a user's id is refused by the database.
+    if ctx
+        .authz
+        .subject()
+        .is_some_and(|subject| owner == subject.into())
+    {
+        return Err(McpToolError::InvalidInput("not a group".into()));
     }
+    Ok(owner.as_group())
 }
 
 fn parse_user_id(raw: &str) -> Result<UserId, McpToolError> {
@@ -362,7 +369,7 @@ mod tests {
     use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
     use crate::mcp::{McpAuthorContext, validate_action_args};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId};
 
     use super::*;
 
@@ -429,18 +436,14 @@ mod tests {
         }
     }
 
-    fn ctx_with_principals(owner: OwnerRef, accessible: Vec<OwnerRef>) -> McpToolCtx {
-        let OwnerRef::Personal(subject) = owner else {
-            panic!("ctx_with_principals requires a personal owner");
-        };
+    fn ctx_with_principals(owner: OwnerId, accessible: Vec<OwnerId>) -> McpToolCtx {
+        let subject = owner.as_user();
         // Server-resolved: the caller manages (admin) every group it can
         // reach, plus its own personal owner.
         let group_roles = accessible
             .into_iter()
-            .filter_map(|principal| match principal {
-                OwnerRef::Group(_) => Some((principal, Role::admin())),
-                OwnerRef::Personal(_) => None,
-            });
+            .filter(|principal| *principal != OwnerId::from(subject))
+            .map(|principal| (principal, Role::admin()));
         McpToolCtx {
             owner,
             authz: AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
@@ -484,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_group_group_is_invalid_input() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_with_principals(owner, vec![owner]);
         let member = UserId::new(uuid::Uuid::now_v7());
         let engine = MockMembershipEngine::default();
@@ -527,9 +530,9 @@ mod tests {
     /// cursor, and the cursor fails closed against a different group.
     #[tokio::test]
     async fn list_members_pages_with_group_bound_cursor() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let group_owner = OwnerRef::Group(group);
+        let group_owner = OwnerId::from(group);
         let ctx = ctx_with_principals(owner, vec![group_owner]);
         let engine = MockMembershipEngine::default();
         let all: Vec<(UserId, Relation)> = (0..3)
@@ -589,7 +592,7 @@ mod tests {
         assert_eq!(walked, expected, "pages must cover every member once");
 
         // A cursor minted for one group must fail closed on another.
-        let other_group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let other_group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_with_principals(owner, vec![group_owner, other_group]);
         let err = execute_membership(
             &engine,

@@ -16,7 +16,6 @@ const fn scope_decl(registry_table: &'static str) -> crate::ScopeDecl {
         kind: FIXTURE_SCOPE,
         registry_table,
         id_column: "thing_id",
-        owner_kind_column: "owner_kind",
         owner_id_column: "owner_id",
     }
 }

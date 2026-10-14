@@ -99,7 +99,7 @@ impl AfterAccept for CrashAfterFirstAccept {
 struct World {
     db_name: String,
     built: crate::BuiltProxima,
-    owner: proxima_core::Owner,
+    owner: proxima_core::OwnerId,
     /// Platform scope: reads the outbox rows the runtime's own role cannot.
     pool: sqlx::PgPool,
 }

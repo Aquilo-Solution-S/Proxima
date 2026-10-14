@@ -16,7 +16,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::{
     AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, InputContractId, ModelId, OperatorId,
-    OwnerRef, PromptVersion, SchemaId, SchemaVersion, StorageError, UserId,
+    OwnerId, PromptVersion, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -55,7 +55,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
         let mut abs = draft("abstraction");
@@ -148,7 +148,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             Some(vec![fact.memory_id]),
             "Goal read must return its exact stored evidence vector"
         );
-        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         assert_eq!(
             pg.load_goal_evidence(None, &foreign, valid.goal_id).await?,
             None,

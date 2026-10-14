@@ -653,7 +653,7 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
     let admin = sqlx::PgPool::connect(&db.admin_url()).await.unwrap();
     for (row_owner, position) in [(owner, 1_i64), (other, 2_i64)] {
         sqlx::query("INSERT INTO kittest.sync_cursor(owner_id, position) VALUES ($1, $2)")
-            .bind(row_owner.stored_owner_id())
+            .bind(row_owner.into_inner())
             .bind(position)
             .execute(&admin)
             .await
@@ -672,7 +672,7 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
             .fetch_all(&mut *transaction)
             .await
             .unwrap();
-    assert_eq!(visible, vec![(owner.stored_owner_id(), 1)]);
+    assert_eq!(visible, vec![(owner.into_inner(), 1)]);
     transaction.rollback().await.unwrap();
     runtime.close().await;
     admin.close().await;

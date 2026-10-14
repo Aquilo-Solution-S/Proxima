@@ -9,7 +9,7 @@
 //! `h.t` are the kernel tables' own keys and are fixed.
 
 use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{Owner, SchemaId, StorageError};
+use proxima_core::{OwnerId, SchemaId, StorageError};
 use sqlx::{PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ impl HeadProjection {
 /// [`memory_key_column`]: crate::sidecars::PgSidecarRegistryFrozen::memory_key_column
 pub async fn owned_head_handle<'e, E>(
     executor: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     sidecar_table: &str,
     key_column: &str,
@@ -81,7 +81,7 @@ where
 /// `Internal` on query failure.
 pub(crate) async fn owned_head_memory_id<'e, E>(
     executor: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     sidecar_table: &str,
     key_column: &str,
@@ -104,7 +104,7 @@ where
 
 async fn owned_head_column<'e, E>(
     executor: E,
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     sidecar_table: &str,
     key_column: &str,
@@ -134,7 +134,7 @@ where
 /// hand-restated copy of it: a second spelling agrees with this one only by
 /// coincidence, and the access path is the thing under test.
 fn head_column_builder(
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     sidecar_table: &str,
     key_column: &str,
@@ -169,7 +169,7 @@ fn head_column_builder(
         " JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t \
          WHERE m.owner_id = ",
     );
-    builder.push_bind(owner.stored_owner_id());
+    builder.push_bind(owner.into_inner());
     // SQL-POLICY: fixed-fragment
     builder.push(" AND m.schema_id = ");
     builder.push_bind(schema_id.as_str());
@@ -195,7 +195,7 @@ fn head_column_builder(
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 pub fn owned_head_handle_sql_for_tests(
-    owner: Owner,
+    owner: OwnerId,
     schema_id: &SchemaId,
     sidecar_table: &str,
     key_column: &str,

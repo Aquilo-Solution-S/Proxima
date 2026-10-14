@@ -24,7 +24,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerRef, SchemaId,
+    AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
@@ -84,7 +84,7 @@ fn note() -> SidecarPayload {
 /// projection row itself would prove nothing about the write path.
 async fn write_note(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     language: Option<&str>,
 ) -> Result<MemoryId, StorageError> {
     let mut tx = pool
@@ -160,7 +160,7 @@ where
 #[tokio::test]
 async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_language() {
     with_db("proxima_proj_write", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, Some("german")).await?;
 
@@ -168,7 +168,7 @@ async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_lan
             projection_of(pool, t).await?,
             Some(ProjectionRow {
                 schema_id: AgentNoteV1::SCHEMA_ID.to_string(),
-                owner_id: owner.stored_owner_id(),
+                owner_id: owner.into_inner(),
                 lexical_language: "german".to_string(),
                 tag: vec!["survey".to_string()],
                 has_vector: true,
@@ -192,7 +192,7 @@ async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_lan
 #[tokio::test]
 async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
     with_db("proxima_proj_no_language", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let mut write = draft(None);
         write.lexical_language = None;
@@ -234,8 +234,8 @@ async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
 #[tokio::test]
 async fn a_transfer_moves_the_projection_row_with_the_admission() {
     with_db("proxima_proj_transfer", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
@@ -254,7 +254,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
         let row = projection_of(pool, t).await?.expect("projection survives");
         assert_eq!(
             row.owner_id,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "a projection row left at the source is a cross-owner index leak: \
              the ranked arm reads p.owner_id and nothing else"
         );
@@ -275,7 +275,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
 #[tokio::test]
 async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
     with_db("proxima_proj_forget", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
@@ -320,8 +320,8 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
 async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
     with_db("proxima_proj_owner_erase", async |pg| {
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
-        let bystander = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(user);
+        let bystander = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let erased = write_note(pool, owner, None).await?;
         let kept = write_note(pool, bystander, None).await?;
@@ -374,7 +374,7 @@ async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
 #[tokio::test]
 async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
     with_db("proxima_proj_schema_guard", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
@@ -495,7 +495,7 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
     const RENAMED_KEY: &str = "note_memory_id";
 
     with_db("proxima_proj_renamed_key", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
@@ -551,7 +551,7 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
             projection_of(pool, t).await?,
             Some(ProjectionRow {
                 schema_id: AgentNoteV1::SCHEMA_ID.to_string(),
-                owner_id: owner.stored_owner_id(),
+                owner_id: owner.into_inner(),
                 lexical_language: "german".to_string(),
                 tag: vec!["survey".to_string()],
                 has_vector: true,
@@ -577,7 +577,7 @@ use crate::integrity::{IntegrityFinding, IntegrityViolation};
 #[tokio::test]
 async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
     with_db("proxima_integrity_projection", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
@@ -635,7 +635,7 @@ async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
 #[tokio::test]
 async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_repair() {
     with_db("proxima_integrity_undeclared", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
 
         // A legal memory row that declares NO sidecar table at all.
@@ -699,7 +699,7 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
 #[tokio::test]
 async fn a_stamp_with_no_row_is_refused_at_commit() {
     with_db("proxima_presence_write", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
 
         // The admission alone, stamping the note table and writing no note.
@@ -761,7 +761,7 @@ async fn a_stamp_with_no_row_is_refused_at_commit() {
 #[tokio::test]
 async fn an_orphaned_stamp_is_caught_and_the_finding_says_there_is_no_repair() {
     with_db("proxima_presence_orphan", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
@@ -817,7 +817,7 @@ async fn an_orphaned_stamp_is_caught_and_the_finding_says_there_is_no_repair() {
 #[tokio::test]
 async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
     with_db("proxima_orphan_guard", async |pg| {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
         let memory_id = t.into_inner();

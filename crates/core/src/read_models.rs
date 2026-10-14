@@ -1,7 +1,7 @@
 //! Backend-neutral read DTOs shared by engine and storage ports.
 
 use crate::{
-    ChangeEvent, EntityKind, GoalId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    ChangeEvent, EntityKind, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     StorageError, ToolScope,
 };
 
@@ -9,7 +9,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySketch {
     pub id: MemoryId,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub kind: EntityKind,
     pub text: String,
 }
@@ -50,7 +50,7 @@ pub struct MemorySnapshot {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub text: Option<String>,
     pub payload: Option<SidecarPayload>,
 }
@@ -201,9 +201,9 @@ pub struct ChangeEventForWake {
 /// owner sets; stored Goal wake config only narrows these grants.
 #[derive(Debug, Clone, Copy)]
 pub struct GoalWakeCandidateRequest<'a> {
-    pub actor_read_owners: &'a [OwnerRef],
-    pub actor_write_owners: &'a [OwnerRef],
-    pub trigger_owner: OwnerRef,
+    pub actor_read_owners: &'a [OwnerId],
+    pub actor_write_owners: &'a [OwnerId],
+    pub trigger_owner: OwnerId,
     pub trigger_fact_id: MemoryId,
     pub trigger_schema_id: &'a SchemaId,
     pub trigger_schema_version: SchemaVersion,
@@ -220,7 +220,7 @@ pub struct GoalWakeCandidate {
     pub tool_ids: Vec<String>,
     pub prompt: String,
     pub hard_memories: Vec<GoalWakeHardMemory>,
-    pub actor_write_owners: Vec<OwnerRef>,
+    pub actor_write_owners: Vec<OwnerId>,
 }
 
 /// One pinned wake-context memory with the kind needed to render a

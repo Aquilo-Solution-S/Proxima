@@ -2,7 +2,7 @@ use super::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalChange, GoalDraft, GoalId,
     GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWakeConfigWrite, GoalWriteOutcome,
-    ModifyGoalAtomicRequest, Owner, PgConnection, StorageError, SystemOrigin,
+    ModifyGoalAtomicRequest, OwnerId, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
 
@@ -213,7 +213,7 @@ pub(super) async fn resolve_decompose_replay_set(
              ON d.goal_t = g.t
           ORDER BY r.ordinality",
     )
-    .bind(req.owner.stored_owner_id())
+    .bind(req.owner.into_inner())
     .bind(&request_ids)
     .bind(&declaration_json)
     .fetch_all(&mut *conn)
@@ -303,7 +303,7 @@ pub(crate) async fn resolve_goal_command_replay_on(
 /// live assignment, evidence, prior-head, or wake probe.
 pub(super) async fn resolve_goal_replay(
     conn: &mut PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     request_id: &str,
     declaration: &serde_json::Value,
 ) -> Result<Option<GoalWriteOutcome>, StorageError> {
@@ -314,7 +314,7 @@ pub(super) async fn resolve_goal_replay(
              ON d.goal_t = g.t
           WHERE g.owner_id = $1 AND g.request_id = $2",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(request_id)
     .bind(declaration)
     .fetch_optional(&mut *conn)
@@ -346,7 +346,7 @@ fn replay_outcome(
 
 pub(super) async fn require_goal_replay(
     conn: &mut PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     request_id: &str,
     declaration: &serde_json::Value,
 ) -> Result<GoalWriteOutcome, StorageError> {

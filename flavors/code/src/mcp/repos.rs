@@ -114,8 +114,8 @@ struct RepoCursorPos {
     repo_id: Uuid,
 }
 
-fn repo_fingerprint(owner: &proxima_core::Owner) -> String {
-    let canon = serde_json::to_string(&owner.external_key()).expect("fingerprint canon serializes");
+fn repo_fingerprint(owner: &proxima_core::OwnerId) -> String {
+    let canon = serde_json::to_string(&owner.to_string()).expect("fingerprint canon serializes");
     wire_cursor::fingerprint(&canon)
 }
 

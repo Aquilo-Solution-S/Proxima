@@ -1,7 +1,7 @@
 //! A series belongs to its head's owner: `goal_owner_matches_head_fk` refuses a
 //! version of another owner even from a scope that may write that owner's Goals.
 
-use proxima_core::{Credentials, GroupId, OwnerRef, OwnerRoles, Role, UserId};
+use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
 use proxima_storage_pg::begin_owner_transaction;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -60,7 +60,7 @@ async fn a_scope_of_another_owner_cannot_join_the_series() {
     let verifier = super::SyntheticVerifier {
         roles: OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(GroupId::new(other)), Role::admin())],
+            [(OwnerId::from(GroupId::new(other)), Role::admin())],
         )
         .unwrap(),
     };

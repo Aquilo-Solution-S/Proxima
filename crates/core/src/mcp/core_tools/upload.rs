@@ -21,7 +21,7 @@ use crate::mcp::{
 };
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::storage_ports::CitedBlobService;
-use crate::{AccessKind, AuthzContext, Owner};
+use crate::{AccessKind, AuthzContext, OwnerId};
 
 use super::facts_citing_object::parse_cited_object_id;
 use super::memory_spaces::resolve_space_for_write;
@@ -333,7 +333,7 @@ fn narrowed_space(
     ctx: &McpToolCtx,
     space: Option<&str>,
     authority: SpaceAuthority,
-) -> Result<(AuthzContext, Owner), McpToolError> {
+) -> Result<(AuthzContext, OwnerId), McpToolError> {
     let (space, authz) = resolve_space_for_write(ctx, space)?;
     let (allowed, denied) = match authority {
         SpaceAuthority::Write => (
@@ -372,7 +372,7 @@ mod tests {
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
-    use crate::{AuthzContext, FlavorServices, GroupId, OwnerRef, StorageError, UserId};
+    use crate::{AuthzContext, FlavorServices, GroupId, OwnerId, StorageError, UserId};
 
     use super::super::memory_spaces::test_ctx::ctx_for;
     use super::*;
@@ -382,7 +382,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenCall {
         action: &'static str,
-        owner: OwnerRef,
+        owner: OwnerId,
         authz_reaches_owner: bool,
     }
 
@@ -392,7 +392,7 @@ mod tests {
     }
 
     impl RecordingBlobPort {
-        fn record(&self, action: &'static str, authz: &AuthzContext, owner: OwnerRef) {
+        fn record(&self, action: &'static str, authz: &AuthzContext, owner: OwnerId) {
             self.calls.lock().expect("lock").push(SeenCall {
                 action,
                 owner,
@@ -406,7 +406,7 @@ mod tests {
         async fn prepare_upload(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _filename: &str,
             _mime: &str,
             _byte_len: u64,
@@ -423,7 +423,7 @@ mod tests {
         async fn stage_upload(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobStaged, StorageError> {
             self.record("stage", authz, owner);
@@ -446,7 +446,7 @@ mod tests {
         async fn finish_upload(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _upload_id: &str,
             _cited_object_id: uuid::Uuid,
         ) -> Result<(), StorageError> {
@@ -457,7 +457,7 @@ mod tests {
         async fn abort_upload(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobUploadAborted, StorageError> {
             self.record("abort", authz, owner);
@@ -467,7 +467,7 @@ mod tests {
         async fn read_url(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _cited_object_id: uuid::Uuid,
         ) -> Result<CitedBlobReadUrl, StorageError> {
             self.record("read_url", authz, owner);
@@ -480,7 +480,7 @@ mod tests {
         async fn find_held_blobs(
             &self,
             authz: &AuthzContext,
-            owner: OwnerRef,
+            owner: OwnerId,
             _content_hashes: &[[u8; 32]],
         ) -> Result<Vec<CitedBlobHeld>, StorageError> {
             self.record("find_held", authz, owner);
@@ -490,7 +490,7 @@ mod tests {
 
     fn ctx_with_port(
         subject: UserId,
-        group_roles: Vec<(OwnerRef, Role)>,
+        group_roles: Vec<(OwnerId, Role)>,
     ) -> (McpToolCtx, Arc<RecordingBlobPort>) {
         let mut ctx = ctx_for(subject, group_roles);
         let port = Arc::new(RecordingBlobPort::default());
@@ -538,7 +538,7 @@ mod tests {
             *calls,
             vec![SeenCall {
                 action: "prepare",
-                owner: OwnerRef::Personal(subject),
+                owner: OwnerId::from(subject),
                 authz_reaches_owner: true,
             }]
         );
@@ -547,7 +547,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_group_space_narrows_the_authz_to_that_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let (ctx, port) = ctx_with_port(subject, vec![(group, Role::editor())]);
         let space_key = super::super::memory_spaces::MemorySpaceKey::owner(group).to_wire();
 
@@ -566,7 +566,7 @@ mod tests {
     async fn unknown_space_key_is_rejected_before_the_port() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let (ctx, port) = ctx_with_port(subject, vec![]);
-        let foreign = format!("group:{}", uuid::Uuid::now_v7());
+        let foreign = uuid::Uuid::now_v7().to_string();
 
         let err = CoreUploadTool::call(ctx, prepare_args(Some(&foreign)))
             .await
@@ -584,7 +584,7 @@ mod tests {
     #[tokio::test]
     async fn viewer_write_denial_matches_core_remember_error_class() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let (ctx, port) = ctx_with_port(subject, vec![(group, Role::viewer())]);
         let space_key = super::super::memory_spaces::MemorySpaceKey::owner(group).to_wire();
 
@@ -604,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn viewer_read_url_reaches_the_port() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let (ctx, port) = ctx_with_port(subject, vec![(group, Role::viewer())]);
         let space_key = super::super::memory_spaces::MemorySpaceKey::owner(group).to_wire();
 

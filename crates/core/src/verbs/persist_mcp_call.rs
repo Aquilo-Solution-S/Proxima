@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CitedObjectPayload, FactPayload, FactReceiptId, MemoryId, Owner, PayloadKeyBuilder,
+    CitedObjectPayload, FactPayload, FactReceiptId, MemoryId, OwnerId, PayloadKeyBuilder,
     SchemaVersion, SourceId,
 };
 
@@ -18,7 +18,7 @@ pub const MCP_CALL_SOURCE_ID: &str = "core/mcp-call";
 
 #[derive(Debug, Clone)]
 pub struct McpCallLogInput {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub actor_oid: String,
     pub actor_upn: String,
     pub tool_name: String,
@@ -64,10 +64,7 @@ impl McpCallLogInput {
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
-        let kind = crate::OwnerRefKind::of(&self.owner);
-        let id = self.owner.stable_key_uuid();
-        hasher.update(kind.as_str().as_bytes());
-        hasher.update(b"\0");
+        let id = self.owner.into_inner();
         hasher.update(id.as_bytes());
         hasher.update(b"\0");
         hasher.update(&payload_key);

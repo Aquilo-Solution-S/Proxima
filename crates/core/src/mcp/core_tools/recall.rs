@@ -210,7 +210,7 @@ async fn collect_subjects(
 async fn collect_cue_touch(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
-    owner: crate::OwnerRef,
+    owner: crate::OwnerId,
     subjects: &[MemoryId],
     packet: &mut Packet,
 ) -> Result<(), McpToolError> {
@@ -258,7 +258,7 @@ async fn collect_cue_touch(
 async fn collect_question(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
-    owner: crate::OwnerRef,
+    owner: crate::OwnerId,
     query: &str,
     kind: Option<RecallKind>,
     limit: u32,
@@ -272,7 +272,7 @@ async fn collect_question(
         Some(RecallKind::Goal) | None => None,
     };
     // Recall always intends Hybrid, so every way of not getting it — no
-    // route for the Owner, or a client whose call failed — is the same
+    // route for the owner, or a client whose call failed — is the same
     // fact to the caller: the semantic leg did not run. `degraded` carries it
     // to the wire instead of leaving it in a log line the caller cannot see.
     let mut degraded = false;
@@ -363,7 +363,7 @@ async fn mark_perspective_heads(
 async fn collect_assigned_goals(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
-    owner: crate::OwnerRef,
+    owner: crate::OwnerId,
     limit: u32,
     packet: &mut Packet,
 ) -> Result<(), McpToolError> {
@@ -396,7 +396,7 @@ async fn collect_assigned_goals(
 struct Entry {
     reason: RecallReason,
     sketch: RecallSketch,
-    owner: Option<crate::OwnerRef>,
+    owner: Option<crate::OwnerId>,
     is_head: bool,
 }
 
@@ -444,7 +444,7 @@ impl Packet {
         );
     }
 
-    fn set_meta(&mut self, id: MemoryId, owner: Option<crate::OwnerRef>, is_head: bool) {
+    fn set_meta(&mut self, id: MemoryId, owner: Option<crate::OwnerId>, is_head: bool) {
         if let Some(entry) = self.by_id.get_mut(&id.into_inner()) {
             entry.owner = owner;
             entry.is_head = is_head;
@@ -490,7 +490,7 @@ impl Packet {
         }
     }
 
-    fn head_perspective_ids(&self, owner: crate::OwnerRef) -> Vec<MemoryId> {
+    fn head_perspective_ids(&self, owner: crate::OwnerId) -> Vec<MemoryId> {
         self.by_id
             .iter()
             .filter(|(_, entry)| {

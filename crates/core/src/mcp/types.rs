@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::authz::AuthzContext;
-use crate::{FlavorServices, MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
+use crate::{FlavorServices, MemoryId, OwnerId, verbs::schema::FlavorRegistryFrozen};
 
 /// Upper bound on the reserved `model_id` operator label, in characters.
 ///
@@ -143,7 +143,7 @@ pub fn resolve_operator_label(
 
 #[derive(Clone)]
 pub struct McpToolCtx {
-    pub owner: Owner,
+    pub owner: OwnerId,
     /// Caller's authorization context, threaded from the transport
     /// edge. Tools pass this to engine verbs — never a substituted
     /// engine identity (privilege-escalation guard).

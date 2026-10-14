@@ -18,8 +18,8 @@ use proxima_core::flavor::{
     TransferRule,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, Owner, OwnerRef,
-    PayloadKeyBuilder, ScopeDecl, ScopeKind, UserId,
+    AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, OwnerId, PayloadKeyBuilder,
+    ScopeDecl, ScopeKind, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::access::owner_columns::lock_scope_fence_exclusive_tx;
@@ -40,7 +40,6 @@ const THING_DECL: ScopeDecl = ScopeDecl {
     kind: THING,
     registry_table: "test_scope.things",
     id_column: "thing_id",
-    owner_kind_column: "owner_kind",
     owner_id_column: "owner_id",
 };
 
@@ -207,8 +206,8 @@ SELECT count(*)::bigint
    AND NOT granted
    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())";
 
-fn owner() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn owner() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 fn registry() -> proxima_core::FlavorRegistryFrozen {
@@ -241,10 +240,9 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
         sqlx::raw_sql(
             "CREATE SCHEMA test_scope;
              CREATE TABLE test_scope.things (
-                 owner_kind proxima_core.owner_kind NOT NULL,
                  owner_id uuid NOT NULL,
                  thing_id uuid NOT NULL,
-                 PRIMARY KEY (owner_kind, owner_id, thing_id)
+                 PRIMARY KEY (owner_id, thing_id)
              );
              CREATE TABLE test_scope.scoped_fact_v1 (
                  t uuid PRIMARY KEY REFERENCES proxima_core.memory(t) ON DELETE CASCADE,
@@ -291,18 +289,14 @@ fn engine(pg: &PgStorage, registry: &proxima_core::FlavorRegistryFrozen) -> prox
 
 async fn register_thing(
     pool: &sqlx::PgPool,
-    owner: Owner,
+    owner: OwnerId,
     thing_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let (kind, owner_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO test_scope.things (owner_kind, owner_id, thing_id) VALUES ($1, $2, $3)",
-    )
-    .bind(kind)
-    .bind(owner_id)
-    .bind(thing_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO test_scope.things (owner_id, thing_id) VALUES ($1, $2)")
+        .bind(owner.into_inner())
+        .bind(thing_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -332,7 +326,7 @@ async fn wait_for_advisory_waiters(pool: &sqlx::PgPool, at_least: i64) -> bool {
 fn spawn_scoped_ingest(
     db_name: String,
     registry: proxima_core::FlavorRegistryFrozen,
-    owner: Owner,
+    owner: OwnerId,
     payload: ScopedFactV1,
 ) -> tokio::task::JoinHandle<Result<Uuid, String>> {
     tokio::spawn(async move {

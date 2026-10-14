@@ -11,7 +11,7 @@ use proxima_core::flavor::{
     SearchProjectionDecl, TransferRule,
 };
 use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::{FactPayload, Owner};
+use proxima_core::{FactPayload, OwnerId};
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
@@ -217,7 +217,7 @@ pub(crate) async fn wait_for_outbox(pool: &sqlx::PgPool, t: Uuid, wanted: &str) 
     .expect("outbox state changes");
 }
 
-pub(crate) async fn capture(built: &crate::BuiltProxima, owner: Owner, note: &str) -> Uuid {
+pub(crate) async fn capture(built: &crate::BuiltProxima, owner: OwnerId, note: &str) -> Uuid {
     let payload = OutboxProbeV1 {
         probe_id: Uuid::now_v7(),
         note: note.to_owned(),

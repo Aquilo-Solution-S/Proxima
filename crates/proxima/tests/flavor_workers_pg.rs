@@ -15,7 +15,7 @@ use proxima::flavor::{
 };
 use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owner};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerId, Role, UserId,
 };
 use split_core_db::clone_split_core_db;
 use uuid::Uuid;
@@ -54,7 +54,7 @@ impl FlavorApp for BindProbeApp {
 #[derive(Debug)]
 struct TestAuthenticator {
     subject: UserId,
-    owner: Owner,
+    owner: OwnerId,
 }
 
 #[async_trait]

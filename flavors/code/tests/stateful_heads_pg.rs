@@ -24,16 +24,16 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{
-    FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, SchemaId, SchemaVersion,
-    SourceId, UserId,
+    FactPayload, FlavorRegistry, OwnerId, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId,
+    UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn make_owner() -> (UserId, Owner) {
+fn make_owner() -> (UserId, OwnerId) {
     let user = UserId::new(Uuid::now_v7());
-    let owner = OwnerRef::Personal(user);
+    let owner = OwnerId::from(user);
     (user, owner)
 }
 
@@ -68,7 +68,7 @@ impl FactPayload for StatelessFactV1 {
     }
 }
 
-fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand {
+fn fresh_draft(_owner: OwnerId, schema: &str, payload: &[u8]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: SchemaId::new(schema.into()),
@@ -105,7 +105,7 @@ struct Seeded {
 
 async fn seed_file_revision(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     file_path: &str,
     seed: &[u8],
@@ -128,7 +128,7 @@ async fn seed_file_revision(
 /// `file_revision_v1` row under it is a row `sidecar_tables` cannot reach.
 async fn seed_file_revision_state(
     pool: &PgPool,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     file_path: &str,
     seed: &[u8],
@@ -366,7 +366,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let storage = Arc::new(pg.clone()).storage_ports();
         let user = UserId::new(Uuid::now_v7());
-        let owner: Owner = OwnerRef::Personal(user);
+        let owner: OwnerId = OwnerId::from(user);
         let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
         let repo_id = Uuid::now_v7();
 

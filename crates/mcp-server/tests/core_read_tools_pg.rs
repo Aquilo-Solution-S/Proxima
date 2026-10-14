@@ -5,9 +5,7 @@ use std::sync::Arc;
 use common::{create_core_db, db_url, drop_db};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, Owner, OwnerRef, UserId,
-};
+use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, OwnerId, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -20,7 +18,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let source = insert_memory(&pg, &owner, "source lineage memory", &[]).await?;
     let derived = insert_memory(&pg, &owner, "derived lineage memory", &[source]).await?;
 
@@ -123,7 +121,7 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let memory_id = insert_memory(&pg, &owner, "structured search identity", &[]).await?;
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -170,7 +168,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "wake trigger fact").await?;
     let goal_id = insert_active_goal(&pg, &owner, Some(trigger)).await?;
 
@@ -198,7 +196,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     assert_eq!(candidates[0]["goal"], format!("G:{goal_id}"));
     assert_eq!(candidates[0]["prompt"], "plan only");
     assert_eq!(candidates[0]["tool_ids"][0], "core_search_memories");
-    assert_eq!(candidates[0]["actor_write_owners"][0], owner.external_key());
+    assert_eq!(candidates[0]["actor_write_owners"][0], owner.to_string());
 
     // A non-Fact reference class is rejected at parse (F:<uuid> required)...
     let abstraction = insert_memory(&pg, &owner, "not a fact", &[]).await?;
@@ -244,7 +242,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
     let mut goal_ids = Vec::new();
     goal_ids.push(insert_active_goal(&pg, &owner, Some(trigger)).await?);
@@ -344,7 +342,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     let pg = PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     // Unknown text: a version no declaration can speak for.
     let unknown = insert_active_goal(&pg, &owner, None).await?;
     // A series set at 22:13:20Z and paused a minute later; the head is the
@@ -454,7 +452,7 @@ async fn edge_resources_read_back_interpretation_references()
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_before_owner_rls_migrations().await?;
 
-    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let hub = insert_memory(&pg, &owner, "hub abstraction", &[]).await?;
     let spoke = insert_memory(&pg, &owner, "spoke abstraction", &[]).await?;
 
@@ -633,7 +631,7 @@ async fn assert_wake_candidates_signal_truncation(
 
 async fn insert_fact(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     text: &str,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     // The stamp and the row it promises land in one transaction: a memory row
@@ -663,18 +661,17 @@ async fn insert_fact(
 
 async fn insert_active_goal(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     trigger_t: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
@@ -728,13 +725,13 @@ fn goal_t_at(millis: u64) -> uuid::Uuid {
 /// tables: `handle` `None` starts a new series. Returns the series handle.
 async fn insert_goal_version(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     handle: Option<uuid::Uuid>,
     t: uuid::Uuid,
     state: &str,
     text: Option<&str>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = if let Some(handle) = handle {
         sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
             .bind(handle)
@@ -819,7 +816,7 @@ async fn arm_goal_for_fact(
 /// unstamped one outright.
 async fn insert_memory_row(
     conn: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     kind: &str,
     schema_id: &str,
     origins: &[uuid::Uuid],
@@ -853,13 +850,12 @@ async fn insert_memory_row(
             origins.push(fact_t);
         }
     }
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(&mut *conn)
     .await?;
     sqlx::query(
@@ -913,7 +909,7 @@ async fn insert_memory_row(
 
 async fn insert_memory(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     text: &str,
     origins: &[uuid::Uuid],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {

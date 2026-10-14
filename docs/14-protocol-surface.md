@@ -74,7 +74,7 @@ owner, and `ToolListNotifier::notify(owner)` sends
 Registrations are per process; a host with several replicas notifies on
 each.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and read authority on the target, which must exist; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerId`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and read authority on the target, which must exist; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
 
 Canonical substrate tools:
 
@@ -91,7 +91,7 @@ Canonical substrate tools:
 | `core_search_memories` | precision search; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` raw relevance floor (either leg before hybrid fusion) and hybrid `semantic_weight` (default 0.5). Hybrid uses weighted RRF (`k=60`), includes partial lexical matches, and pages a fixed candidate window; its fused `score` is comparable within the result list. Pages of at most 50: `has_more` plus an opaque `next_cursor`. The cursor is fingerprint-bound to query / mode / filters / order / spaces / score knobs and fails closed if those change. `limit`, `include_body`, and `include_neighbor_edges` may vary between pages. Neighbors default off |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
-| `core_transfer` | owner-transfer dispatcher: `transfer_to_owner`; moves a memory's owner to a destination group, not membership or ACL. Args: `entity` plus a required `to_owner` external owner key (`group:<uuid>`) |
+| `core_transfer` | owner-transfer dispatcher: `transfer_to_owner`; moves a memory's owner to a destination group, not membership or ACL. Args: `entity` plus a required `to_owner` owner id (a bare `<uuid>`) |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose`. `transition` takes `transition` (`pause`, `resume` or `abandon`) and, for a pause, a required `pending` (`keep` or `discard`): what the scheduler does with the work it queued for the Goal. `null` is the same as omitting it. `pending` on a resume or abandon, and a pause without it, are refused with an `InvalidInput` error. With an outbox intake every goal write also emits a `core/goal-change-v1` event ([18 §Goal changes on the feed](18-fact-outbox.md#goal-changes-on-the-feed)) |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
 | `core_upload` | cited-blob upload dispatcher: `prepare`, `complete`, `abort`, `read_url`; artefact bytes travel by presigned URL only, and the tool never emits `bucket`/`object_key` |
@@ -458,7 +458,7 @@ access.
 
 | Credential subject | Access |
 |---|---|
-| user (`OwnerRef::Personal`) | `Query`, `ChangeHistory`, `GoalWrite`; in-app `FactIngest` when acting as a source |
+| user (the subject's own `OwnerId`) | `Query`, `ChangeHistory`, `GoalWrite`; in-app `FactIngest` when acting as a source |
 | source | `FactIngest` for the registered source |
 | admin/controller | operational/config RPCs and the owner inverses |
 

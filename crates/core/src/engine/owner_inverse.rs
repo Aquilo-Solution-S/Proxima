@@ -236,6 +236,7 @@ impl Engine {
             }));
         }
 
+        let drop_proof_verified = drop_event.is_some();
         if let Some((user_id, drop_event_id)) = drop_event
             && let Err(reason) = self
                 .verify_personal_owner_drop(user_id, drop_event_id)
@@ -247,7 +248,10 @@ impl Engine {
             }));
         }
 
-        Ok(EraseAdmission::Admitted(EraseAuthorization::new(audit)))
+        Ok(EraseAdmission::Admitted(EraseAuthorization::new(
+            audit,
+            drop_proof_verified,
+        )))
     }
 
     /// Export one owner's owner bundle.
@@ -428,7 +432,7 @@ mod purge_tests {
     use crate::storage_ports::{
         OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, StoragePorts,
     };
-    use crate::{GroupId, OwnerRef, SourceId, UserId};
+    use crate::{GroupId, OwnerId, SourceId, UserId};
 
     #[derive(Debug, Default)]
     struct PermissiveAdmin {
@@ -595,7 +599,7 @@ mod purge_tests {
         let storage = StoragePorts::rejecting_with_erase_authority(admin.clone());
         let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let raw = AuthzContext::for_subject_with_role(
             subject,
             [(owner, crate::Role::admin())],

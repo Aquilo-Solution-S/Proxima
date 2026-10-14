@@ -115,7 +115,7 @@ substitutes today's installation identity.
 | `subject` | the series the event belongs to, as a bare lowercase UUID: the Fact's series handle, or for `core/goal-change-v1` the goal's `series` (§Ordering) | write session |
 | `sequence` (ext) | the event's position in that series, a 20-digit zero-padded decimal starting at 1, so string order is numeric order (`CloudEvents` sequence extension; §Ordering) | the series' head, under the series lock |
 | `data` | the typed export (serde of the registered payload) | payload |
-| `proximaowner` (ext) | `OwnerRef` wire form of the Fact's owner | authorized write context |
+| `proximaowner` (ext) | the Fact's owner id, a bare UUID | authorized write context |
 | `proximamodel` (ext) | model/runner identity **certified by the authenticating token**, when the deployment binds one; never the caller-supplied `model_id` label (see [15 §Trusted model provenance](15-deployment.md#trusted-model-provenance)). Omitted when absent | authenticated edge |
 | host-bound extensions (ext) | any extension attribute the HOST bound to the authorization context — the orchestration context a run happens under (`workflowid`, `runid`, `stepid`, …). Name-ordered, after `proximamodel` and before `data`; nothing at all when unbound (§Host-bound extension attributes) | host authorization context |
 
@@ -244,7 +244,7 @@ captured Fact `t`. Its delivery happens on `publication_delivery` lanes
 | Column | Note |
 |---|---|
 | `t` | `uuid` **PRIMARY KEY** — the Fact's memory `t`. There is **no FK to `memory`** (below) |
-| `owner_id` | `uuid NOT NULL REFERENCES owners(owner_id)`. A single id column, not the `(owner_kind, owner_id)` pair `memory` carries: the kind is read back through the `owners` join at claim time, so the record cannot disagree with the owner table |
+| `owner_id` | `uuid NOT NULL REFERENCES owners(owner_id)`. A single id column: an owner is its id, so the record cannot disagree with the owner table |
 | `schema_id`, `schema_version` | the registered typed export's identity |
 | `event_type` | the `CloudEvents` `type`, duplicated out of the envelope so a routing decision needs no JSON parse |
 | `event_id` | the `CloudEvents` `id` (`F:<uuid>`), `UNIQUE` — also the intake's dedup key |
@@ -479,7 +479,7 @@ and are re-exported by `proxima`, as are `SubjectPosition` and `ConsumerName`.
 | `ReceivedEvent` field | Value |
 |---|---|
 | `id` | the `CloudEvents` `id` (`F:<uuid>`): the dedup key, a plain string |
-| `owner` | the Fact's `OwnerRef`, typed from the outbox row (`owner_kind` joined at claim time) |
+| `owner` | the Fact's `OwnerId`, from the outbox row |
 | `delivered_count` | this consumer's lane `attempts`: how many times it has been claimed for this consumer, this claim included. `> 1` means an earlier claim did not end in the mark: its delivery failed or timed out, the process stopped before the mark, or shutdown or a quiesce handed the claim back before `accept` was called. It counts claims, not intake calls |
 | `raw` | the captured envelope bytes, verbatim. A signature check reads these |
 | `envelope` | `raw`, parsed: `CloudEventEnvelope` |

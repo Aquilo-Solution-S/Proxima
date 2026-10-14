@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
     AuthzContext, DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, Engine,
-    FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, SeriesHandle,
+    FactWrite, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId, SeriesHandle,
 };
 use proxima_storage_pg::query::ChunkSeriesHead;
 use uuid::Uuid;
@@ -241,7 +241,7 @@ fn file_blob_citation(payload: &FileRevisionV1) -> CitationSpec {
 pub async fn append_code_slices_with_handles(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,

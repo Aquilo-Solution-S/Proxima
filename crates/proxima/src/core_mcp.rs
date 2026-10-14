@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
-    McpToolDescriptor, McpToolErrorKind, Owner, ToolEffect, ToolName, ToolScope,
+    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolName, ToolScope,
     provider_safe_tool_name, resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{
@@ -173,7 +173,7 @@ impl CoreMcpTools {
     pub async fn call_core_tool(
         &self,
         authz: AuthzContext,
-        owner: Owner,
+        owner: OwnerId,
         model_id: Option<String>,
         name: &str,
         args: serde_json::Value,
@@ -202,7 +202,7 @@ impl CoreMcpTools {
     pub async fn read_core_resource(
         &self,
         authz: AuthzContext,
-        owner: Owner,
+        owner: OwnerId,
         model_id: Option<String>,
         uri: &str,
     ) -> Result<serde_json::Value, CoreMcpError> {
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
     use futures::FutureExt as _;
     use proxima_core::{
-        AuthPath, FlavorRegistry, McpTool, McpToolCtx, McpToolError, OwnerRef, StorageError, UserId,
+        AuthPath, FlavorRegistry, McpTool, McpToolCtx, McpToolError, OwnerId, StorageError, UserId,
     };
 
     /// A tool that resolves its operator label exactly the way the core
@@ -345,18 +345,18 @@ mod tests {
     }
 
     fn marker_auth() -> McpAuthContext {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let authz = proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         McpAuthContext { owner, authz }
     }
 
-    fn trusted_authz(owner: OwnerRef) -> AuthzContext {
+    fn trusted_authz(owner: OwnerId) -> AuthzContext {
         proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer)
             .with_trusted_model_id("acme/runner-v3")
             .expect("a well-formed runner id binds")
     }
 
-    fn untrusted_authz(owner: OwnerRef) -> AuthzContext {
+    fn untrusted_authz(owner: OwnerId) -> AuthzContext {
         proxima_core::AuthzContext::single_owner(&owner, AuthPath::HostBearer)
     }
 
@@ -364,7 +364,7 @@ mod tests {
     /// still wins, and the host is told rather than silently overridden.
     #[test]
     fn host_author_applies_the_same_precedence_as_the_transports() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
 
         let bound = host_author(&trusted_authz(owner), None).expect("no claim, no conflict");
         assert_eq!(bound.model_id, "acme/runner-v3");
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn host_author_refuses_a_model_id_that_differs_from_the_bound_identity() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
 
         let err = host_author(&trusted_authz(owner), Some("openai/gpt-9"))
             .expect_err("a host may not relabel an authenticated runner");
@@ -416,7 +416,7 @@ mod tests {
             Arc::new(proxima_core::Engine::new((*registry).clone())),
             FlavorServices::default(),
         );
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
 
         let err = tools
             .call_core_tool(

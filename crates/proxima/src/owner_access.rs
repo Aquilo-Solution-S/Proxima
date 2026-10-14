@@ -18,14 +18,15 @@ const FORWARDER_SUBJECTS: &str = "PROXIMA_FORWARDER_SUBJECTS";
 const FORWARDER_ROLE: &str = "PROXIMA_FORWARDER_ROLE";
 
 /// Trusted forwarder subjects and the fixed role each holds in whichever
-/// Group it selects per request (`X-Proxima-Owner: group:<uuid>`).
+/// registered Group it selects per request (`X-Proxima-Owner: <uuid>`).
 ///
 /// For a host that serves many parties through one authenticated subject: a
 /// flavor host forwards each party's call under its own token and names the
 /// party's Group, and the Group need not list the forwarder as a member. The
 /// policy answers only the per-Group probe the edge makes for a Group the
-/// subject's membership map lacks — real memberships still win, a Personal
-/// owner is never reachable through it, and the delegation service, which
+/// subject's membership map lacks — real memberships still win, an id the
+/// owner registry does not hold as a group (a user's owner, or an unknown
+/// id) is never reachable through it, and the delegation service, which
 /// reads memberships, is unaffected: a forwarder cannot delegate a role it
 /// only holds by policy.
 ///
@@ -71,13 +72,35 @@ impl ForwarderPolicy {
     }
 
     /// `inner` with this policy answering the per-Group probe for its
-    /// subjects.
+    /// subjects, in the groups `groups` holds as registered.
     #[must_use]
-    pub fn wrap(self, inner: Arc<dyn OwnerAccessPort>) -> Arc<dyn OwnerAccessPort> {
+    pub fn wrap(
+        self,
+        inner: Arc<dyn OwnerAccessPort>,
+        groups: Arc<dyn GroupRegistry>,
+    ) -> Arc<dyn OwnerAccessPort> {
         Arc::new(ForwarderOwnerAccess {
             policy: self,
             inner,
+            groups,
         })
+    }
+}
+
+/// The owner registry's one answer the forwarder policy needs: whether an
+/// id is registered as a group.
+#[async_trait]
+pub trait GroupRegistry: Send + Sync {
+    /// # Errors
+    ///
+    /// [`AccessError::Resolution`] when the registry cannot be read.
+    async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError>;
+}
+
+#[async_trait]
+impl GroupRegistry for proxima_storage_pg::PgOwnerAccessResolver {
+    async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
+        Self::is_registered_group(self, group).await
     }
 }
 
@@ -126,6 +149,7 @@ pub(crate) fn forwarder_from_lookup(
 struct ForwarderOwnerAccess {
     policy: ForwarderPolicy,
     inner: Arc<dyn OwnerAccessPort>,
+    groups: Arc<dyn GroupRegistry>,
 }
 
 #[async_trait]
@@ -139,7 +163,7 @@ impl OwnerAccessPort for ForwarderOwnerAccess {
         subject: UserId,
         group: GroupId,
     ) -> Result<Option<Role>, AccessError> {
-        if self.policy.is_forwarder(subject) {
+        if self.policy.is_forwarder(subject) && self.groups.is_registered_group(group).await? {
             return Ok(Some(self.policy.role));
         }
         self.inner.resolve_group_role(subject, group).await
@@ -197,7 +221,7 @@ impl OwnerAccessPort for LateOwnerAccess {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerRef, OwnerRoles};
+    use proxima_core::{OwnerId, OwnerRoles};
 
     use super::*;
 
@@ -211,6 +235,16 @@ mod tests {
             _subject: UserId,
         ) -> Result<OwnerRoles, AccessError> {
             Ok(self.0.clone())
+        }
+    }
+
+    /// A registry holding exactly the listed groups.
+    struct Registered(Vec<GroupId>);
+
+    #[async_trait]
+    impl GroupRegistry for Registered {
+        async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
+            Ok(self.0.contains(&group))
         }
     }
 
@@ -230,9 +264,10 @@ mod tests {
         let group = GroupId::new(uuid::Uuid::now_v7());
         let port = ForwarderPolicy::new([forwarder], Role::editor())
             .unwrap()
-            .wrap(Arc::new(Members(
-                OwnerRoles::for_subject(member, []).unwrap(),
-            )));
+            .wrap(
+                Arc::new(Members(OwnerRoles::for_subject(member, []).unwrap())),
+                Arc::new(Registered(vec![group])),
+            );
 
         assert_eq!(
             port.resolve_group_role(forwarder, group).await.unwrap(),
@@ -247,9 +282,43 @@ mod tests {
             port.resolve_roles_for_subject(forwarder)
                 .await
                 .unwrap()
-                .role_for(&OwnerRef::Group(group))
+                .role_for(&OwnerId::from(group))
                 .is_none(),
             "the eager map is the inner port's, so delegation sees no policy role"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_forwarder_naming_a_users_id_gets_no_role() {
+        let forwarder = UserId::new(uuid::Uuid::now_v7());
+        let user = UserId::new(uuid::Uuid::now_v7());
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let port = ForwarderPolicy::new([forwarder], Role::editor())
+            .unwrap()
+            .wrap(
+                Arc::new(Members(OwnerRoles::for_subject(forwarder, []).unwrap())),
+                Arc::new(Registered(vec![group])),
+            );
+
+        // The user's id, asked as a group: the registry does not hold it as
+        // one, so the policy role does not apply.
+        assert_eq!(
+            port.resolve_group_role(forwarder, OwnerId::from(user).as_group())
+                .await
+                .unwrap(),
+            None,
+            "a forwarder holds no role in a user's owner"
+        );
+        assert_eq!(
+            port.resolve_group_role(forwarder, GroupId::new(uuid::Uuid::now_v7()))
+                .await
+                .unwrap(),
+            None,
+            "nor in an id the registry never saw"
+        );
+        assert_eq!(
+            port.resolve_group_role(forwarder, group).await.unwrap(),
+            Some(Role::editor()),
         );
     }
 

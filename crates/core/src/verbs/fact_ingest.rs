@@ -11,8 +11,8 @@ use crate::edge::EdgeEndpoint;
 use crate::engine::WritePermit;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
-    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
-    SidecarPayload, SourceId,
+    FactPayload, FactReceiptId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
+    SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -771,19 +771,16 @@ impl FactWriteCommand {
     }
 
     /// Canonical receipt id per docs/01: BLAKE3 of `source_id` ||
-    /// `owner_components` || schema-owned receipt key, separated by 0x00
+    /// the owner id's 16 bytes || schema-owned receipt key, separated by 0x00
     /// bytes. Re-receipt of the same observation produces the same hash by
     /// construction. Receiptless commands return `None` and are not replayed.
     #[must_use]
-    pub fn receipt_id_for_owner(&self, owner: Owner) -> Option<FactReceiptId> {
+    pub fn receipt_id_for_owner(&self, owner: OwnerId) -> Option<FactReceiptId> {
         let receipt = self.receipt.as_ref()?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(receipt.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let kind = OwnerRefKind::of(&owner);
-        let id = owner.stable_key_uuid();
-        hasher.update(kind.as_str().as_bytes());
-        hasher.update(b"\x00");
+        let id = owner.into_inner();
         hasher.update(id.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);

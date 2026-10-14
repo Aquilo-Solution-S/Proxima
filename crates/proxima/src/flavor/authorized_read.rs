@@ -157,7 +157,7 @@ pub async fn read_owner_ids(
         .authorized_read_owners(authz)
         .await?
         .into_iter()
-        .map(proxima_core::OwnerRef::stored_owner_id)
+        .map(proxima_core::OwnerId::into_inner)
         .collect())
 }
 

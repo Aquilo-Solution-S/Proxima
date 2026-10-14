@@ -1,5 +1,5 @@
 //! Per-Owner embedding routing through the facade: each Owner embeds and
-//! searches through its own route, a route failure stays with its Owner, and
+//! searches through its own route, a route failure stays with its owner, and
 //! an Owner moves to a new model without a search gap.
 
 use super::*;
@@ -26,7 +26,7 @@ impl HeldWorker {
     /// is parked.
     async fn boot<F, Fut>(
         db_name: &str,
-        owner: Owner,
+        owner: OwnerId,
         inner: Arc<dyn proxima_core::llm::EmbeddingRouter>,
         start: F,
     ) -> Result<(proxima::BuiltProxima, Arc<Self>), Box<dyn std::error::Error>>
@@ -37,10 +37,9 @@ impl HeldWorker {
         let admin = sqlx::PgPool::connect(&db_url(db_name)).await?;
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind)",
+             VALUES ($1, 'personal'::proxima_core.owner_kind)",
         )
-        .bind(owner.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+        .bind(owner.into_inner())
         .execute(&admin)
         .await?;
         admin.close().await;
@@ -67,7 +66,7 @@ impl HeldWorker {
 impl proxima_core::llm::EmbeddingRouter for HeldWorker {
     async fn route(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
         if tokio::task::try_id().is_some()
             && !self.held.swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -354,13 +353,13 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
 }
 
 /// A caller with a personal space and a group space, each its own data
-/// Owner, served by one runtime whose router the test rewires.
+/// owner, served by one runtime whose router the test rewires.
 struct TwoOwnerFixture {
     built: proxima::BuiltProxima,
     tools: CoreMcpTools,
     authz: AuthzContext,
-    personal: Owner,
-    shared: Owner,
+    personal: OwnerId,
+    shared: OwnerId,
     shared_space: String,
     router: Arc<proxima_core::test_fixtures::TestEmbeddingRouter>,
     held: Arc<HeldWorker>,
@@ -370,8 +369,8 @@ struct TwoOwnerFixture {
 impl TwoOwnerFixture {
     async fn boot(db_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let (runtime_url, platform_url) = split_role_urls(db_name).await?;
-        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let shared = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
         let (built, held) = HeldWorker::boot(db_name, personal, router.clone(), |router| {
             Proxima::<AgentMemoryApp>::app()
@@ -1029,7 +1028,7 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
         )
         .fetch_one(&fixture.admin_pool)
         .await?;
-        assert_eq!(job_owner, fixture.shared.stored_owner_id());
+        assert_eq!(job_owner, fixture.shared.into_inner());
 
         let drained = engine.drain_embedding_jobs(10).await?;
         assert_eq!((drained.processed, drained.failed), (1, 0));

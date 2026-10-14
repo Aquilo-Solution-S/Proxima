@@ -155,7 +155,7 @@ mod tests {
         ChangeEventForWake {
             event: ChangeEvent {
                 seq,
-                owner: crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7())),
+                owner: crate::OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7())),
                 kind: ChangeEventKind::EntityDelete {
                     entity_kind: EntityKind::Fact,
                     entity: EntityRef::Memory(MemoryId::new(uuid::Uuid::now_v7())),

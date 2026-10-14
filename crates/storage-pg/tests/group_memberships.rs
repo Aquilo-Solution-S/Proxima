@@ -1,7 +1,7 @@
 //! `list_group_members` against the shipped table (no `created_at`).
 
 use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
-use proxima_core::{AccessKind, GroupId, OwnerRef, Relation, UserId};
+use proxima_core::{AccessKind, GroupId, OwnerId, Relation, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -24,7 +24,7 @@ async fn list_group_members_runs_against_v008_schema() {
         pg.bootstrap_group_admin(group, admin, admin.into_inner())
             .await?;
 
-        let permit = OwnerWritePermit::new_for_tests(OwnerRef::Group(group), AccessKind::Fact);
+        let permit = OwnerWritePermit::new_for_tests(OwnerId::from(group), AccessKind::Fact);
         pg.add_group_member(&permit, group, editor, Relation::Editor, Uuid::now_v7())
             .await?;
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerRef, OwnerRoles, Role, UserId,
+    AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
@@ -874,8 +874,8 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         roles: OwnerRoles::for_subject(
             subject,
             [
-                (OwnerRef::Group(group_a), Role::editor()),
-                (OwnerRef::Group(group_b), Role::viewer()),
+                (OwnerId::from(group_a), Role::editor()),
+                (OwnerId::from(group_b), Role::viewer()),
             ],
         )
         .unwrap(),
@@ -883,7 +883,7 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("synthetic".into()))
         .await
         .unwrap();
-    let narrowed = authz.narrowed_to_owner(OwnerRef::Group(group_a)).unwrap();
+    let narrowed = authz.narrowed_to_owner(OwnerId::from(group_a)).unwrap();
     let scope = narrowed.owner_scope().unwrap();
     let mut transaction = begin_owner_transaction(&runtime, scope).await.unwrap();
     let visible_sidecars: i64 =
@@ -901,8 +901,8 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         roles: OwnerRoles::for_subject(
             subject,
             [
-                (OwnerRef::Group(group_a), Role::editor()),
-                (OwnerRef::Group(group_b), Role::editor()),
+                (OwnerId::from(group_a), Role::editor()),
+                (OwnerId::from(group_b), Role::editor()),
             ],
         )
         .unwrap(),
@@ -995,7 +995,7 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     verify_writer.rollback().await.unwrap();
 
     let viewer = SyntheticVerifier {
-        roles: OwnerRoles::for_subject(subject, [(OwnerRef::Group(group_a), Role::viewer())])
+        roles: OwnerRoles::for_subject(subject, [(OwnerId::from(group_a), Role::viewer())])
             .unwrap(),
     };
     let viewer_authz = proxima_core::authenticate(&viewer, &Credentials::Bearer("viewer".into()))
@@ -1016,8 +1016,8 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         roles: OwnerRoles::for_subject(
             subject,
             [
-                (OwnerRef::Group(group_a), Role::viewer()),
-                (OwnerRef::Group(group_b), Role::editor()),
+                (OwnerId::from(group_a), Role::viewer()),
+                (OwnerId::from(group_b), Role::editor()),
             ],
         )
         .unwrap(),

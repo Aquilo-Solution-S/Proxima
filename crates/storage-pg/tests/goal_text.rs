@@ -25,7 +25,7 @@ use proxima_core::verbs::goal_write::{
 use proxima_core::verbs::query::{EntityKind, GoalRow, QueryRequest};
 use proxima_core::{
     AccessKind, EdgeEndpoint, FlavorRegistry, FlavorRegistryFrozen, GoalId, GoalPayload, MemoryId,
-    OwnerRef, PendingWork, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, UserId,
+    OwnerId, PendingWork, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -89,7 +89,7 @@ fn minted_at(id: GoalId) -> time::OffsetDateTime {
 /// One owner with an assigned Perspective, and the verbs that write Goals.
 struct Harness {
     pg: PgStorage,
-    owner: OwnerRef,
+    owner: OwnerId,
     permit: OwnerWritePermit,
     registry: FlavorRegistryFrozen,
     assignment: MemoryId,
@@ -97,7 +97,7 @@ struct Harness {
 
 impl Harness {
     async fn new(pg: PgStorage) -> TestResult<Self> {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg
             .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
@@ -325,10 +325,7 @@ impl Harness {
     }
 
     fn user_id(&self) -> UserId {
-        match self.owner {
-            OwnerRef::Personal(user_id) => user_id,
-            OwnerRef::Group(_) => unreachable!("the harness owns a personal owner"),
-        }
+        self.owner.as_user()
     }
 
     /// Insert a one-version Goal series the way a Goal written before v0.0.13
@@ -343,7 +340,7 @@ impl Harness {
         )
         .bind(handle)
         .bind(SimpleTextGoalV1::SCHEMA_ID)
-        .bind(self.owner.stored_owner_id())
+        .bind(self.owner.into_inner())
         .bind(t)
         .execute(pool)
         .await?;
@@ -354,7 +351,7 @@ impl Harness {
         )
         .bind(handle)
         .bind(t)
-        .bind(self.owner.stored_owner_id())
+        .bind(self.owner.into_inner())
         .bind(state)
         .bind(request_id)
         .bind(self.assignment.into_inner())
@@ -1085,7 +1082,7 @@ goal_test!(
             "SELECT count(*)::bigint FROM proxima_core.goal
           WHERE owner_id = $1 OR text = 'an exportable prompt'",
         )
-        .bind(h.owner.stored_owner_id())
+        .bind(h.owner.into_inner())
         .fetch_one(h.pg.pool_for_tests())
         .await?;
         assert_eq!(left, 0, "the text is erased with its row");

@@ -24,7 +24,7 @@ use crate::text_bounds::check_trimmed_len;
 use crate::verbs::goal_write::{MAX_WAKE_TOOL_ID_CHARS, registered_tool_key};
 use crate::{
     AccessError, ActionName, AuthPath, Authenticator, AuthzContext, DelegatedPhase,
-    DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerRef, OwnerRoles,
+    DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerId, OwnerRoles,
     ProtocolError, Role, ScopeKey, ScopeKeyError, StorageError, ToolName, ToolScope, UserId,
 };
 
@@ -232,7 +232,7 @@ impl DelegationMutationPermit {
 pub struct DelegationGrantStorage {
     pub delegation_id: DelegationId,
     pub subject: UserId,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub tool: String,
     pub action: Option<String>,
     pub role_ceiling: Role,
@@ -250,7 +250,7 @@ pub struct DelegationGrantStorage {
 pub struct DelegationGrant {
     delegation_id: DelegationId,
     subject: UserId,
-    owner: OwnerRef,
+    owner: OwnerId,
     command: DelegatedCommand,
     role_ceiling: Role,
     expires_at: SystemTime,
@@ -263,7 +263,7 @@ pub struct DelegationGrant {
 impl DelegationGrant {
     fn issued(
         subject: UserId,
-        owner: OwnerRef,
+        owner: OwnerId,
         command: DelegatedCommand,
         role_ceiling: Role,
         expires_at: SystemTime,
@@ -334,7 +334,7 @@ impl DelegationGrant {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn owner(&self) -> OwnerRef {
+    pub const fn owner(&self) -> OwnerId {
         self.owner
     }
 
@@ -395,14 +395,14 @@ pub trait DelegationStorePort: Send + Sync {
         &self,
         permit: &DelegationMutationPermit,
         delegation_id: DelegationId,
-        expected_owner: OwnerRef,
+        expected_owner: OwnerId,
     ) -> Result<Option<DelegationGrant>, StorageError>;
 
     async fn revoke(
         &self,
         permit: &DelegationMutationPermit,
         delegation_id: DelegationId,
-        expected_owner: OwnerRef,
+        expected_owner: OwnerId,
         revoked_at: SystemTime,
         revoked_by: UserId,
     ) -> Result<bool, StorageError>;
@@ -465,7 +465,7 @@ impl DelegatedAuthorityService {
     pub async fn issue(
         &self,
         source: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         command: DelegatedCommand,
         role_ceiling: Role,
     ) -> Result<DelegationIssued, DelegatedAuthorityError> {
@@ -524,7 +524,7 @@ impl DelegatedAuthorityService {
     pub async fn redeem_phase(
         &self,
         delegation_id: DelegationId,
-        expected_owner: OwnerRef,
+        expected_owner: OwnerId,
         expected_command: &DelegatedCommand,
     ) -> Result<DelegatedPhase, DelegatedAuthorityError> {
         let grant = self
@@ -590,7 +590,7 @@ impl DelegatedAuthorityService {
         &self,
         caller: &AuthzContext,
         delegation_id: DelegationId,
-        expected_owner: OwnerRef,
+        expected_owner: OwnerId,
     ) -> Result<DelegationRevocation, DelegatedAuthorityError> {
         let (caller_subject, _) = Self::validate_host_bearer(caller)?;
         self.revalidate_epoch(caller_subject, caller.auth_epoch())
@@ -661,7 +661,7 @@ impl DelegatedAuthorityService {
         subject: UserId,
         auth_epoch: u64,
     ) -> Result<(), DelegatedAuthorityError> {
-        let principal = OwnerRef::Personal(subject);
+        let principal = OwnerId::from(subject);
         if self.authenticator.current_auth_epoch(&principal).await > auth_epoch {
             return Err(DelegatedAuthorityError::AuthEpochRevoked);
         }
@@ -836,7 +836,7 @@ mod tests {
             &self,
             _permit: &DelegationMutationPermit,
             _delegation_id: DelegationId,
-            _expected_owner: OwnerRef,
+            _expected_owner: OwnerId,
         ) -> Result<Option<DelegationGrant>, StorageError> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             Ok(self.grant.lock().expect("grant mutex").clone())
@@ -846,7 +846,7 @@ mod tests {
             &self,
             _permit: &DelegationMutationPermit,
             _delegation_id: DelegationId,
-            _expected_owner: OwnerRef,
+            _expected_owner: OwnerId,
             _revoked_at: SystemTime,
             _revoked_by: UserId,
         ) -> Result<bool, StorageError> {
@@ -859,7 +859,7 @@ mod tests {
     struct TestOwnerAccess {
         requested_subject: UserId,
         returned_subject: Mutex<UserId>,
-        owner: OwnerRef,
+        owner: OwnerId,
         role: Mutex<Option<Role>>,
     }
 
@@ -888,7 +888,7 @@ mod tests {
             Err(AuthError::AuthRequired)
         }
 
-        async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
+        async fn current_auth_epoch(&self, _principal: &OwnerId) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
     }
@@ -920,7 +920,7 @@ mod tests {
 
     fn source(
         subject: UserId,
-        owner: OwnerRef,
+        owner: OwnerId,
         expires_at: SystemTime,
         scope: ToolScope,
     ) -> AuthzContext {
@@ -959,13 +959,13 @@ mod tests {
 
     fn fixtures() -> (
         UserId,
-        OwnerRef,
+        OwnerId,
         Arc<MemoryStore>,
         Arc<TestOwnerAccess>,
         Arc<EpochAuthenticator>,
     ) {
         let subject = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         (
             subject,
             owner,
@@ -1031,7 +1031,7 @@ mod tests {
             .transfer_to_owner(
                 &raw,
                 crate::access::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7())),
-                crate::OwnerRef::Group(crate::GroupId::new(Uuid::now_v7())),
+                OwnerId::from(crate::GroupId::new(Uuid::now_v7())),
             )
             .await
             .expect_err("raw delegated context must be denied before owner lookup");
@@ -1167,7 +1167,7 @@ mod tests {
             .issue(&caller, owner, command.clone(), Role::editor())
             .await
             .expect("issue");
-        let foreign_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let foreign_owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         assert!(matches!(
             service
                 .redeem_phase(issued.id, foreign_owner, &command)

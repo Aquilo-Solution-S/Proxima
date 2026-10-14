@@ -46,13 +46,14 @@ opaque ContentHash : Type := String
 /-- Kernel face of a retrieval situation: admitted `t`s in scope. -/
 abbrev Cue : Type := Set MemoryId
 
-/-- Stable persisted owner-table reference. This is not the resolved membership
-    map (`Owner := User → Option Role`). Entity rows should store this reference;
-    the host resolves it through `OwnerState` before authorization. No new axiom:
-    group refs reuse the existing engine-minted `Id`. -/
-inductive OwnerRef where
-  | personal (u : User)
-  | group (id : Id)
+/-- Stable persisted owner-table reference: the owner id, one `Id`. This is
+    not the resolved membership map (`Owner := User → Option Role`). Entity
+    rows store this id; the host resolves it through `OwnerState` before
+    authorization. The id carries no kind: whether it names a user or a group
+    is the host registry's fact, read only where a check needs it. No new
+    axiom: owner ids reuse the existing engine-minted `Id`. -/
+structure OwnerRef where
+  id : Id
 
 /-- The resolved Leopard-style owner map used by pure authorization rules. -/
 abbrev ResolvedOwner : Type := Owner
@@ -62,7 +63,10 @@ abbrev ResolvedOwner : Type := Owner
     algorithm, SQL tables, or caches; it consumes only this resolved function. -/
 structure OwnerState where
   resolve : OwnerRef → ResolvedOwner
-  personal_resolves : ∀ u : User, resolve (.personal u) = Owner.ofUser u
+  /-- A user's own owner id: the id the user is known by. -/
+  own : User → OwnerRef
+  /-- A user's own id resolves to that user's personal group. -/
+  personal_resolves : ∀ u : User, resolve (own u) = Owner.ofUser u
 
 /-- Which operator produced a derived memory. Reproducibility metadata stays
     engine/sidecar — not a Memory column. -/

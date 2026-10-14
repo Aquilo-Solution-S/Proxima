@@ -29,7 +29,7 @@ use proxima::flavor::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
     SeriesEraseRefusalKind, SeriesSelection,
 };
-use proxima_core::{AuthzContext, Engine, MemoryId, Owner, StorageError};
+use proxima_core::{AuthzContext, Engine, MemoryId, OwnerId, StorageError};
 use proxima_storage_pg::{
     MAX_TRANSACTION_ATTEMPTS, begin_compatible_owner_transaction, is_transient_conflict,
 };
@@ -130,13 +130,13 @@ LIMIT $2";
 /// scope fence, taken before this.
 const REPO_EXISTS_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
- WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+ WHERE owner_id = $1 AND repo_id = $2
    FOR UPDATE";
 
 /// `repo_ingestion_runs` is absent here too: `runs_repo_fk` cascades.
 const DELETE_REPO_SQL: &str = "\
 DELETE FROM proxima_code.repos
- WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3";
+ WHERE owner_id = $1 AND repo_id = $2";
 
 /// How long the retirement waits for any one lock before giving up on the
 /// attempt.
@@ -187,7 +187,7 @@ pub async fn erase_repo(
     engine: &Engine,
     authz: &AuthzContext,
     store: &CodeFlavorStore,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let tally = Tally::default();
@@ -271,7 +271,7 @@ async fn erase_repo_once(
     engine: &Engine,
     authz: &AuthzContext,
     store: &CodeFlavorStore,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     tally: &Tally,
 ) -> Result<bool, RepoRegistryError> {
@@ -397,10 +397,10 @@ fn page_error(repo_id: Uuid, err: SeriesEraseError, found: &[(String, Uuid)]) ->
 /// is refused as `FootprintIncomplete`, and the retry erases it.
 async fn retire_repo(
     store: &CodeFlavorStore,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<bool, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let mut tx = begin_compatible_owner_transaction(store.pool(), store.owner_scope()).await?;
     sqlx::query(ERASE_LOCK_TIMEOUT_SQL)
         .execute(&mut *tx)
@@ -408,7 +408,6 @@ async fn retire_repo(
     proxima::flavor::lock_scope_fence_exclusive_tx(&mut tx, super::CODE_REPO_SCOPE, owner, repo_id)
         .await?;
     let exists: Option<(Uuid,)> = sqlx::query_as(REPO_EXISTS_SQL)
-        .bind(kind)
         .bind(principal_id)
         .bind(repo_id)
         .fetch_optional(&mut *tx)
@@ -428,7 +427,6 @@ async fn retire_repo(
         });
     }
     let deleted = sqlx::query(DELETE_REPO_SQL)
-        .bind(kind)
         .bind(principal_id)
         .bind(repo_id)
         .execute(&mut *tx)

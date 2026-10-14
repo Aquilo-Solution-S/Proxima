@@ -286,7 +286,7 @@ Engine takes the fence on every admission:
 - **On the contract.** `FlavorContract::scopes` carries one `ScopeDecl` per
   kind: the schema-qualified registry table, its id column, and its owner
   kind/id columns. Storage GENERATES both the fence key
-  (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
+  (`proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`) and
   the liveness probe from those names and spells none of its own, so a renamed
   column is a declaration edit rather than a second place to keep in sync.
 
@@ -906,7 +906,7 @@ no-op into a silently idle loop.
 A queued delegated worker persists only `DelegationId`, resolves
 `ctx.service::<DelegatedAuthorityService>()`, and redeems `DelegatedPhase` at
 job claim and at each subsequent phase boundary. It passes `&DelegatedPhase` and the exact
-`OwnerRef` to the explicitly delegated-capable Engine/blob service methods;
+`OwnerId` to the explicitly delegated-capable Engine/blob service methods;
 its owner scope is intentionally sealed, so flavor code passes the phase,
 not a raw `OwnerScope` or reconstructed delegated `AuthzContext`. Ordinary
 authenticated jobs continue to pass `&AuthzContext`. `CitedBlobService::read_url` answers a
@@ -1048,9 +1048,8 @@ for its table.
 
 An owner column is `uuid`: `app.owner` and the other scope settings are
 `uuid[]`, and `proxima_core.owners.owner_id` is `uuid`. A `text` owner column
-is refused. A table that keeps the canonical `personal:<uuid>` / `group:<uuid>`
-string stores `OwnerRef::stable_key_uuid()` in a `uuid` column and keeps the
-string at its edge. A platform-only table is class `ownerless`.
+is refused. A table stores `OwnerId::into_inner()` in a `uuid` column; the
+owner's wire form is that same bare UUID. A platform-only table is class `ownerless`.
 
 A per-table call cannot see a table that was never given a call; the boot
 guard still refuses it, and a migration that adds several tables ends with

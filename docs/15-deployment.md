@@ -221,7 +221,7 @@ the cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 > `PROXIMA_OIDC_SUBJECT_MAP` to a Proxima `UserId`; `PgOwnerAccessResolver`
 > reads current group memberships into `OwnerRoles`. The client selects one
 > authorized owner during MCP `initialize` using `X-Proxima-Owner`:
-> `personal:<uuid>` or `group:<uuid>`. A client that sends neither header
+> the owner's bare `<uuid>`. A client that sends neither header
 > nor session (a native OAuth client) gets the owner the host authenticator
 > named with `AuthzContext::with_default_owner` — only an owner the context
 > already carries — or 403 if it named none; a malformed header never falls

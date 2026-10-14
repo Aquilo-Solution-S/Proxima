@@ -10,7 +10,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AbstractionPayload, AccessKind, AgentDerivationV1, EdgeKind, EdgeTargetProjection, EntityRef,
-    OwnerRef, SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge,
+    OwnerId, SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge,
     project_window_edges,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -75,7 +75,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         let specs = memory_schema_specs(&registry);
         let pg = PgStorage::connect(&url).await?.with_flavors(&registry);
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
@@ -202,7 +202,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let a = pg
@@ -214,7 +214,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
         let c = pg
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
             .await?;
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let foreign = pg
             .ingest_fact_atomic(&other_permit, &draft("fact", vec![], vec![]), None)
@@ -297,9 +297,9 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
 
         let own = pg
@@ -390,7 +390,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
@@ -468,7 +468,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
@@ -545,7 +545,7 @@ async fn lineage_diamond_visits_shared_node_once() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
@@ -675,7 +675,7 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg

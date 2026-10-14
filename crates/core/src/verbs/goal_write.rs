@@ -8,8 +8,8 @@ use crate::publication::PublicationStamp;
 use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 use crate::{FlavorRegistryFrozen, ProtocolError, ScopeKey};
 use crate::{
-    GoalChange, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner,
-    OwnerRef, PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
+    GoalChange, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, OwnerId,
+    PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
@@ -145,7 +145,7 @@ pub enum GoalWriteBuildError {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalDraft {
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub title: String,
@@ -165,7 +165,7 @@ impl GoalDraft {
     /// Build an Active Goal draft from an already-encoded typed payload.
     #[must_use]
     pub fn active_from_payload_write(
-        owner: OwnerRef,
+        owner: OwnerId,
         payload: GoalPayloadWrite,
         topology: GoalTopologyWrite,
         wake: Option<GoalWakeConfigWrite>,
@@ -191,7 +191,7 @@ impl GoalDraft {
 
     /// The storage `Owner` for this draft.
     #[must_use]
-    pub fn owner(&self) -> Owner {
+    pub fn owner(&self) -> OwnerId {
         self.owner
     }
 }
@@ -628,7 +628,7 @@ fn normalize_goal_display_field(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreateRequest<P> {
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub topology: GoalTopologyWrite,
     pub wake: Option<GoalWakeConfigWrite>,
     pub title: String,
@@ -658,7 +658,7 @@ impl<P> GoalCreateRequest<P> {
     /// which would be a programming error in the constructor invariant.
     #[must_use]
     pub fn product(
-        owner: OwnerRef,
+        owner: OwnerId,
         assignment: GoalAssignmentTarget,
         request_id: IdempotencyKey,
         title: impl Into<String>,
@@ -741,7 +741,7 @@ pub struct CreateGoalAtomicRequest<'a> {
 
 #[derive(Debug)]
 pub struct TransitionGoalAtomicRequest<'a> {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub prior_goal_id: GoalId,
     pub transition: GoalTransitionKind,
     pub authorship: GoalAuthorship,
@@ -751,7 +751,7 @@ pub struct TransitionGoalAtomicRequest<'a> {
 
 #[derive(Debug)]
 pub struct AchieveGoalAtomicRequest<'a> {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub prior_goal_id: GoalId,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
@@ -761,7 +761,7 @@ pub struct AchieveGoalAtomicRequest<'a> {
 
 #[derive(Debug)]
 pub struct ModifyGoalAtomicRequest<'a> {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub prior_goal_id: GoalId,
     pub replacement: GoalPayloadWrite,
     pub wake: Option<Option<GoalWakeConfigWrite>>,
@@ -781,7 +781,7 @@ pub struct ChildGoalDraft {
 
 #[derive(Debug)]
 pub struct DecomposeGoalAtomicRequest<'a> {
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub parent_goal_id: GoalId,
     pub authorship: GoalAuthorship,
     pub context: GoalAtomicContext<'a>,
@@ -804,7 +804,7 @@ pub enum GoalReplayRequest<'request, 'context> {
 impl GoalReplayRequest<'_, '_> {
     /// The Owner namespace in which the request id is interpreted.
     #[must_use]
-    pub fn owner(self) -> Owner {
+    pub fn owner(self) -> OwnerId {
         match self {
             Self::Create(req) => req.draft.owner(),
             Self::Transition(req) => req.owner,

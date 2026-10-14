@@ -1,6 +1,6 @@
 //! Catalog refusals for objects that can change whose RLS/SQL authority applies.
 
-use proxima_core::{Credentials, GroupId, OwnerRef, OwnerRoles, Role, UserId};
+use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
 use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
 use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
@@ -181,7 +181,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
     let verifier = SyntheticVerifier {
         roles: OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(GroupId::new(owners[0])), Role::viewer())],
+            [(OwnerId::from(GroupId::new(owners[0])), Role::viewer())],
         )
         .unwrap(),
     };
@@ -544,7 +544,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
     let verifier = SyntheticVerifier {
         roles: OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
-            [(OwnerRef::Group(GroupId::new(row_owner)), Role::editor())],
+            [(OwnerId::from(GroupId::new(row_owner)), Role::editor())],
         )
         .unwrap(),
     };

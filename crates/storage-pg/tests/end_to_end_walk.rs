@@ -11,7 +11,7 @@ use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    AccessKind, EntityId, EntityKind, GroupId, OwnerRef, SchemaId, SchemaVersion, UserId,
+    AccessKind, EntityId, EntityKind, GroupId, OwnerId, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -66,7 +66,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
@@ -160,17 +160,17 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         .await?;
         tx.commit().await?;
 
-        let chunks = query_heads(pool, owner.stored_owner_id(), "chunk").await?;
+        let chunks = query_heads(pool, owner.into_inner(), "chunk").await?;
         assert_eq!(chunks.len(), 2);
 
-        let hist = change_history(pool, owner.stored_owner_id(), None, 50).await?;
+        let hist = change_history(pool, owner.into_inner(), None, 50).await?;
         assert!(
             hist.iter()
                 .any(|r| r.op == "append" && r.entity == "memory")
         );
         assert!(hist.iter().any(|r| r.entity == "goal"));
 
-        let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let transferred = pg
             .transfer_to_owner(
                 &permit,
@@ -189,7 +189,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 .bind(file.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(new_owner, dest.stored_owner_id());
+        assert_eq!(new_owner, dest.into_inner());
         let handle_after: Uuid =
             sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())
@@ -201,7 +201,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
               WHERE t = $1 AND owner_id = $2",
         )
         .bind(file.memory_id.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(still_private, 0);

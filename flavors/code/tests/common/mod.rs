@@ -5,8 +5,8 @@ use std::process::Command;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner,
-    OwnerRef, Role, SchemaId, SchemaVersion, UserId,
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, OwnerId,
+    Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
@@ -112,8 +112,8 @@ pub async fn project_code(
 }
 
 #[must_use]
-pub fn test_owner() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+pub fn test_owner() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 pub fn git(repo: &Path, args: &[&str]) {
@@ -131,17 +131,14 @@ pub fn git(repo: &Path, args: &[&str]) {
 }
 
 pub async fn owner_write_permit(
-    owner: &Owner,
+    owner: &OwnerId,
     kind: AccessKind,
 ) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
-    let authz = match owner {
-        OwnerRef::Personal(user_id) => AuthzContext::for_subject(*user_id, AuthPath::HostBearer),
-        OwnerRef::Group(_) => AuthzContext::for_subject_with_role(
-            UserId::new(Uuid::now_v7()),
-            [(*owner, Role::admin())],
-            AuthPath::HostBearer,
-        ),
-    };
+    let authz = AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(*owner, Role::admin())],
+        AuthPath::HostBearer,
+    );
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     Ok(engine.authorize_owner_write(&authz, owner, kind).await?)
 }
@@ -149,7 +146,7 @@ pub async fn owner_write_permit(
 /// Insert one timeseries Memory row. Returns `(handle, t)`.
 pub async fn seed_memory(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &str,
     kind: &str,
     t: Option<Uuid>,
@@ -164,7 +161,7 @@ pub async fn seed_memory(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn seed_memory_with_sidecars(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &str,
     kind: &str,
     t: Option<Uuid>,
@@ -198,7 +195,7 @@ pub async fn seed_memory_with_sidecars(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn seed_memory_with_sidecars_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &str,
     kind: &str,
     t: Option<Uuid>,
@@ -238,13 +235,12 @@ pub async fn seed_memory_with_sidecars_in_tx(
             origins.push(fact_t);
         }
     }
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(&mut **tx)
     .await?;
     let head_exists: bool = sqlx::query_scalar(
@@ -313,7 +309,7 @@ pub async fn seed_memory_with_sidecars_in_tx(
 /// Insert one timeseries Goal row. Returns `(handle, t)`.
 pub async fn seed_goal(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &str,
     title: &str,
     request_id: &str,
@@ -322,13 +318,12 @@ pub async fn seed_goal(
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
     let handle = Uuid::now_v7();
     let t = t.unwrap_or_else(Uuid::now_v7);
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
-    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pool)
     .await?;
     sqlx::query(
@@ -407,7 +402,7 @@ fn code_template_name() -> String {
 /// # Panics
 ///
 /// Panics when the registration fails.
-pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
+pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &OwnerId, repo_id: Uuid) {
     proxima_code::testkit::register_repo(
         pool,
         None,

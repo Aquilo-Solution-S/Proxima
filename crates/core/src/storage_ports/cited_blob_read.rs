@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::OwnerRef;
+use crate::OwnerId;
 use crate::authz::DelegationRuntimeBinding;
 use crate::authz::{
     AuthzContext, DelegationRuntimeAuthority, EngineAuthority, context_for_engine_operation,
@@ -77,7 +77,7 @@ pub trait CitedBlobReadPort: Send + Sync {
     async fn collect_verified(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: Uuid,
         max_bytes: NonZeroU64,
     ) -> Result<VerifiedCitedBlob, CitedBlobReadError>;
@@ -141,7 +141,7 @@ impl CitedBlobReadService {
     pub async fn collect_verified<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: Uuid,
         max_bytes: NonZeroU64,
     ) -> Result<VerifiedCitedBlob, CitedBlobReadError>
@@ -167,7 +167,7 @@ mod tests {
 
     use super::*;
     use crate::authz::{AuthPath, DelegatedPhase, DelegationRuntimeBinding};
-    use crate::{GroupId, OwnerRef, Role, UserId};
+    use crate::{GroupId, OwnerId, Role, UserId};
 
     #[derive(Debug, Default)]
     struct RecordingRead {
@@ -179,7 +179,7 @@ mod tests {
         async fn collect_verified(
             &self,
             _authz: &AuthzContext,
-            _owner: OwnerRef,
+            _owner: OwnerId,
             cited_object_id: Uuid,
             _max_bytes: NonZeroU64,
         ) -> Result<VerifiedCitedBlob, CitedBlobReadError> {
@@ -202,7 +202,7 @@ mod tests {
         let runtime_authority = DelegationRuntimeAuthority::new(DelegationRuntimeBinding::fresh());
         let service = CitedBlobReadService::new_runtime(backend.clone(), &runtime_authority);
         let subject = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let expires_at = SystemTime::now() + Duration::from_secs(30);
         let raw = AuthzContext::for_subject_with_role(
             subject,
@@ -233,7 +233,7 @@ mod tests {
         let runtime_authority = DelegationRuntimeAuthority::new(binding.clone());
         let service = CitedBlobReadService::new_runtime(backend.clone(), &runtime_authority);
         let subject = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let expires_at = SystemTime::now() + Duration::from_secs(30);
         let raw = AuthzContext::for_subject_with_role(
             subject,

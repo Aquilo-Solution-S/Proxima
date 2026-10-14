@@ -16,7 +16,7 @@ use crate::flavor::{
     Surface, TransferLeg,
 };
 use crate::storage_ports::StateSurfaceName;
-use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
+use crate::{AuthPath, GroupId, OwnerId, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
 /// off the frozen flavor contracts.
@@ -483,10 +483,10 @@ pub enum OwnerExportTarget {
 impl OwnerExportTarget {
     /// Return the concrete owner for this export target.
     #[must_use]
-    pub const fn owner(&self) -> OwnerRef {
+    pub fn owner(&self) -> OwnerId {
         match self {
-            Self::GroupOwner { group_id } => OwnerRef::Group(*group_id),
-            Self::PersonalOwner { user_id } => OwnerRef::Personal(*user_id),
+            Self::GroupOwner { group_id } => OwnerId::from(*group_id),
+            Self::PersonalOwner { user_id } => OwnerId::from(*user_id),
         }
     }
 
@@ -526,7 +526,7 @@ pub struct OwnerExportRequest {
 pub struct OwnerExportBundle {
     pub operation_id: uuid::Uuid,
     pub target: OwnerExportTarget,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub derived_requester: Option<UserId>,
     pub derived_auth_path: String,
     pub exported_at: time::OffsetDateTime,
@@ -679,12 +679,12 @@ pub struct OwnerEraseContext {
 impl OwnerEraseContext {
     /// Concrete owner sealed into the erase target by engine authorization.
     #[must_use]
-    pub const fn owner(&self) -> OwnerRef {
+    pub fn owner(&self) -> OwnerId {
         match &self.target {
             OwnerEraseTarget::GroupOwner { group_id }
-            | OwnerEraseTarget::GroupSourceScope { group_id, .. } => OwnerRef::Group(*group_id),
+            | OwnerEraseTarget::GroupSourceScope { group_id, .. } => OwnerId::from(*group_id),
             OwnerEraseTarget::PersonalOwner { user_id, .. }
-            | OwnerEraseTarget::PersonalSourceScope { user_id, .. } => OwnerRef::Personal(*user_id),
+            | OwnerEraseTarget::PersonalSourceScope { user_id, .. } => OwnerId::from(*user_id),
         }
     }
 
@@ -781,7 +781,7 @@ impl OwnerExportContext {
 
     /// Return the concrete exported owner.
     #[must_use]
-    pub fn owner(&self) -> OwnerRef {
+    pub fn owner(&self) -> OwnerId {
         self.target.owner()
     }
 
@@ -809,6 +809,7 @@ impl OwnerExportContext {
 #[derive(Debug)]
 pub struct EraseAuthorization {
     audit: OwnerEraseContext,
+    drop_proof_verified: bool,
     _private: private::Seal,
 }
 
@@ -832,10 +833,21 @@ impl EraseAuthorization {
         &self.audit
     }
 
+    /// Whether the engine verified a host drop proof for the target id.
+    ///
+    /// Storage reads the registered kind of the target under lock: a user
+    /// owner is erased only when this is `true`, whichever target shape the
+    /// caller chose.
+    #[must_use]
+    pub const fn drop_proof_verified(&self) -> bool {
+        self.drop_proof_verified
+    }
+
     /// Create a new erase authorization (internal only).
-    pub(crate) fn new(audit: OwnerEraseContext) -> Self {
+    pub(crate) fn new(audit: OwnerEraseContext, drop_proof_verified: bool) -> Self {
         Self {
             audit,
+            drop_proof_verified,
             _private: private::Seal,
         }
     }
@@ -844,13 +856,20 @@ impl EraseAuthorization {
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub fn new_for_tests(target: OwnerEraseTarget) -> Self {
-        Self::new(OwnerEraseContext::new(
-            uuid::Uuid::now_v7(),
+        let verified = !matches!(
             target,
-            None,
-            AuthPath::HostBearer,
-            time::OffsetDateTime::now_utc(),
-        ))
+            OwnerEraseTarget::GroupOwner { .. } | OwnerEraseTarget::GroupSourceScope { .. }
+        );
+        Self::new(
+            OwnerEraseContext::new(
+                uuid::Uuid::now_v7(),
+                target,
+                None,
+                AuthPath::HostBearer,
+                time::OffsetDateTime::now_utc(),
+            ),
+            verified,
+        )
     }
 }
 

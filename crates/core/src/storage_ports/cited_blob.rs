@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use time::OffsetDateTime;
 
-use crate::OwnerRef;
+use crate::OwnerId;
 use crate::authz::DelegationRuntimeBinding;
 use crate::authz::{
     AuthzContext, DelegationRuntimeAuthority, EngineAuthority, context_for_engine_operation,
@@ -147,7 +147,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn prepare_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         filename: &str,
         mime: &str,
         byte_len: u64,
@@ -179,7 +179,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn stage_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError>;
 
@@ -203,7 +203,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn finish_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         cited_object_id: uuid::Uuid,
     ) -> Result<(), StorageError>;
@@ -217,7 +217,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn abort_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobUploadAborted, StorageError>;
 
@@ -231,7 +231,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn read_url(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: uuid::Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError>;
 
@@ -276,7 +276,7 @@ pub trait CitedBlobPort: Send + Sync {
     async fn find_held_blobs(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         content_hashes: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, StorageError>;
 }
@@ -352,7 +352,7 @@ impl CitedBlobService {
     pub async fn prepare_upload<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         filename: &str,
         mime: &str,
         byte_len: u64,
@@ -375,7 +375,7 @@ impl CitedBlobService {
     pub async fn stage_upload<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError>
     where
@@ -394,7 +394,7 @@ impl CitedBlobService {
     pub async fn finish_upload<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         cited_object_id: uuid::Uuid,
     ) -> Result<(), StorageError>
@@ -416,7 +416,7 @@ impl CitedBlobService {
     pub async fn abort_upload<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobUploadAborted, StorageError>
     where
@@ -435,7 +435,7 @@ impl CitedBlobService {
     pub async fn read_url<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: uuid::Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError>
     where
@@ -454,7 +454,7 @@ impl CitedBlobService {
     pub async fn find_held_blobs<A>(
         &self,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         content_hashes: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, StorageError>
     where

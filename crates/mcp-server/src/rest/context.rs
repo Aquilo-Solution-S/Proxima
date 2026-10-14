@@ -187,10 +187,10 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::{AuthPath, AuthzContext, Owner, OwnerRef, UserId};
+    use proxima_core::{AuthPath, AuthzContext, OwnerId, UserId};
 
     fn auth(trusted_model_id: Option<&str>) -> McpAuthContext {
-        let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
             authz: trusted_model_id.map_or_else(

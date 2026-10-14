@@ -18,7 +18,7 @@ use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, Schema
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalCreatePayloadWriteRequest {
-    pub owner: crate::OwnerRef,
+    pub owner: crate::OwnerId,
     pub topology: GoalTopologyWrite,
     pub wake: Option<GoalWakeConfigWrite>,
     pub payload: GoalPayloadWrite,
@@ -29,7 +29,7 @@ pub struct GoalCreatePayloadWriteRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalTransitionRequest {
-    pub owner: crate::OwnerRef,
+    pub owner: crate::OwnerId,
     pub prior_goal_id: crate::GoalId,
     pub transition: GoalTransitionKind,
     pub authorship: GoalAuthorship,
@@ -39,7 +39,7 @@ pub struct GoalTransitionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalMarkAchievedRequest {
-    pub owner: crate::OwnerRef,
+    pub owner: crate::OwnerId,
     pub prior_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
@@ -49,7 +49,7 @@ pub struct GoalMarkAchievedRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalModifyRequest {
-    pub owner: crate::OwnerRef,
+    pub owner: crate::OwnerId,
     pub prior_goal_id: crate::GoalId,
     pub replacement: GoalPayloadWrite,
     pub wake: Option<Option<GoalWakeConfigWrite>>,
@@ -61,7 +61,7 @@ pub struct GoalModifyRequest {
 
 #[derive(Debug)]
 pub struct GoalDecomposeRequest {
-    pub owner: crate::OwnerRef,
+    pub owner: crate::OwnerId,
     pub parent_goal_id: crate::GoalId,
     pub authorship: GoalAuthorship,
     pub topology: GoalTopologyWrite,
@@ -486,7 +486,7 @@ impl Engine {
     async fn validate_goal_topology_authorized(
         &self,
         authz: &AuthzContext,
-        goal_owner: &crate::Owner,
+        goal_owner: &crate::OwnerId,
         topology: &GoalTopologyWrite,
     ) -> Result<(), ProtocolError> {
         self.validate_goal_topology_authorized_visible(authz, goal_owner, topology, &[])
@@ -496,7 +496,7 @@ impl Engine {
     pub(in crate::engine) async fn validate_goal_topology_authorized_visible(
         &self,
         authz: &AuthzContext,
-        goal_owner: &crate::Owner,
+        goal_owner: &crate::OwnerId,
         topology: &GoalTopologyWrite,
         written: &[MemoryId],
     ) -> Result<(), ProtocolError> {
@@ -542,7 +542,7 @@ impl Engine {
     async fn target_perspective_authorized(
         &self,
         authz: &AuthzContext,
-        goal_owner: &crate::Owner,
+        goal_owner: &crate::OwnerId,
         memory_id: MemoryId,
     ) -> Result<MemoryId, ProtocolError> {
         let home_owner = self
@@ -672,7 +672,7 @@ impl Engine {
     async fn require_perspective_kind(
         &self,
         authz: &AuthzContext,
-        owner: &crate::Owner,
+        owner: &crate::OwnerId,
         memory_id: MemoryId,
         field: &'static str,
     ) -> Result<(), ProtocolError> {
@@ -760,7 +760,7 @@ mod tests {
         GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, SystemOrigin,
     };
     use crate::{
-        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, Owner, OwnerRef, SchemaId,
+        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, OwnerId, SchemaId,
         SchemaVersion, ToolId, UserId,
     };
 
@@ -801,13 +801,13 @@ mod tests {
         );
     }
 
-    fn owner() -> crate::OwnerRef {
-        crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> crate::OwnerId {
+        OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn storage_with_memory(
-        member: OwnerRef,
-        home_owner: Owner,
+        member: OwnerId,
+        home_owner: OwnerId,
         entity_readable: bool,
         memory_kind: EntityKind,
     ) -> MembershipStorage {
@@ -878,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn author_self_perspective_denies_foreign_write_owner() {
         let owner = owner();
-        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let memory_id = memory_id();
         let engine = engine_with_ports(storage_with_memory(
             owner,
@@ -921,7 +921,7 @@ mod tests {
     #[tokio::test]
     async fn create_goal_from_payload_write_rejects_foreign_perspective_target() {
         let owner = owner();
-        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
         let engine = engine_with_ports(storage_with_memory(
             owner,
@@ -953,7 +953,7 @@ mod tests {
     #[tokio::test]
     async fn decompose_goal_rejects_foreign_perspective_target() {
         let owner = owner();
-        let foreign = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let target = memory_id();
         let engine = engine_with_ports(storage_with_memory(
             owner,

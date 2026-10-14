@@ -42,7 +42,7 @@ pub struct WakeCandidateItem {
     /// Pinned wake-context memory references (`F:`/`A:`/`P:` prefixed ids);
     /// hydrate via `proxima://memory/{id}`.
     pub hard_memories: Vec<String>,
-    /// Owner keys (`personal:<uuid>`/`group:<uuid>`) the caller may write to.
+    /// Owner ids (bare `<uuid>`s) the caller may write to.
     pub actor_write_owners: Vec<String>,
 }
 
@@ -90,8 +90,8 @@ fn candidate_item(ctx: &McpToolCtx, candidate: GoalWakeCandidate) -> WakeCandida
             .collect(),
         actor_write_owners: candidate
             .actor_write_owners
-            .into_iter()
-            .map(crate::OwnerRef::external_key)
+            .iter()
+            .map(ToString::to_string)
             .collect(),
     }
 }

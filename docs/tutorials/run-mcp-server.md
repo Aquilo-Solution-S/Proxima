@@ -15,7 +15,7 @@ cargo run -p proxima-mcp
 
 Expected: server listens on `http://127.0.0.1:31415/mcp` with the code
 flavor linked. MCP clients authenticate with an OIDC bearer and select the
-session owner during `initialize` with `X-Proxima-Owner: personal:$USER_ID`.
+session owner during `initialize` with `X-Proxima-Owner: $USER_ID`.
 
 Substrate-only (no code flavor): `cargo run -p proxima-mcp --no-default-features`.
 

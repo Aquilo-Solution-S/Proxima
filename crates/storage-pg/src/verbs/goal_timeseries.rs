@@ -5,7 +5,7 @@ use proxima_core::publication::PublicationStamp;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    FactPayload, GoalChange, GoalChangeV1, GoalId, Owner, SchemaVersion, SidecarPayload,
+    FactPayload, GoalChange, GoalChangeV1, GoalId, OwnerId, SchemaVersion, SidecarPayload,
     StorageError,
 };
 use sqlx::{Postgres, Transaction};
@@ -100,7 +100,7 @@ impl GoalWakePlan {
 /// persists them in order without extending an already-held advisory set.
 #[derive(Debug)]
 pub(crate) struct PreparedGoalWrite {
-    owner: Owner,
+    owner: OwnerId,
     owner_id: Uuid,
     handle: Uuid,
     t: Uuid,
@@ -168,14 +168,14 @@ pub(crate) struct GoalRequestRow {
 /// `Internal` on query failure.
 pub(crate) async fn load_goal_by_request_id(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     request_id: &str,
 ) -> Result<Option<GoalRequestRow>, StorageError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
         "SELECT handle, t, write_act_t FROM proxima_core.goal
           WHERE owner_id = $1 AND request_id = $2",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(request_id)
     .fetch_optional(tx.as_mut())
     .await
@@ -189,7 +189,7 @@ pub(crate) async fn load_goal_by_request_id(
 
 pub async fn ingest_write_act(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
         schema_id: proxima_core::SchemaId::new(WRITE_ACT_SCHEMA.to_string()),
@@ -225,7 +225,7 @@ pub(crate) async fn reserve_fact_identity(
 
 pub(crate) async fn ingest_write_act_at(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     identity: ReservedFactIdentity,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
@@ -252,7 +252,7 @@ pub(crate) async fn ingest_write_act_at(
 #[cfg(any(test, feature = "test-fixtures"))]
 pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &GoalWriteCommand,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
@@ -281,7 +281,7 @@ pub async fn write_goal(
 /// effects to roll back.
 pub(crate) async fn prepare_goal_write(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &GoalWriteCommand,
     wake: GoalWakePlan,
     expected_prior_t: Option<Uuid>,

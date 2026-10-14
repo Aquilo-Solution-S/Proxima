@@ -9,7 +9,7 @@ use axum::routing::get;
 use proxima::{Authz, layered_router};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, FlavorServices,
-    Owner, OwnerRef, UserId,
+    OwnerId, UserId,
 };
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, default_allowlist, owner_key, streamable_http_service,
@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 use tower::util::ServiceExt;
 use uuid::Uuid;
 
-fn owner() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn owner() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 async fn ping(Authz(_authz): Authz) -> StatusCode {
@@ -27,7 +27,7 @@ async fn ping(Authz(_authz): Authz) -> StatusCode {
 }
 
 struct StubHostAuth {
-    owner: Owner,
+    owner: OwnerId,
 }
 
 #[async_trait]
@@ -59,11 +59,11 @@ fn edge_auth() -> McpEdgeAuth {
     McpEdgeAuth::headless()
 }
 
-fn router(auth: Arc<McpEdgeAuth>, owner: Owner) -> Router {
+fn router(auth: Arc<McpEdgeAuth>, owner: OwnerId) -> Router {
     router_with_hosts(auth, owner, &[])
 }
 
-fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: Owner, allowed_hosts: &[String]) -> Router {
+fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: OwnerId, allowed_hosts: &[String]) -> Router {
     let host = McpToolHost::from_parts(
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
         FlavorServices::default(),
@@ -80,7 +80,7 @@ async fn status(
     app: Router,
     method: Method,
     uri: &str,
-    selected_owner: Owner,
+    selected_owner: OwnerId,
     bearer: Option<String>,
 ) -> StatusCode {
     let mut builder = Request::builder()
@@ -104,7 +104,7 @@ async fn status_with_host(
     uri: &str,
     bearer: Option<&str>,
     host: &str,
-    selected_owner: Owner,
+    selected_owner: OwnerId,
 ) -> StatusCode {
     let mut request = Request::builder()
         .method(method)

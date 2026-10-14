@@ -8,7 +8,7 @@ use proxima_core::storage_ports::{
     CitedBlobOwnerReconcilePort, CitedBlobReconcileOutcome, CitedBlobReconcilePort,
     MAX_RECONCILE_SAMPLE,
 };
-use proxima_core::{AuthzContext, OwnerRef, StorageError, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{AuthzContext, OwnerId, StorageError, UPLOADED_BLOB_SCHEMA_ID};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -75,7 +75,7 @@ impl CitedBlobOwnerReconcilePort for CitedBlobStore {
     async fn reconcile_owner(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
     ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
         CitedBlobStore::reconcile_owner(self, authz, owner).await
     }
@@ -214,7 +214,7 @@ impl CitedBlobStore {
     pub async fn reconcile_owner(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
     ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
         ensure_owner_access(authz, &owner).map_err(blob_error_to_storage)?;
 
@@ -231,8 +231,7 @@ impl CitedBlobStore {
             let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-            let page =
-                load_live_upload_page(tx.as_mut(), Some(owner.stored_owner_id()), after).await?;
+            let page = load_live_upload_page(tx.as_mut(), Some(owner.into_inner()), after).await?;
             tx.commit()
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
@@ -481,7 +480,7 @@ mod tests {
     use std::sync::Arc;
 
     use proxima_core::storage_ports::CitedBlobOwnerReconcileService;
-    use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, OwnerRef, UserId};
+    use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, OwnerId, UserId};
     use uuid::Uuid;
 
     use super::super::keys::{canonical_object_key, pending_object_key};
@@ -505,8 +504,8 @@ mod tests {
         // service instead returns the owner denial synchronously.
         let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
             .expect("test store config");
-        let readable = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let denied = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let readable = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let denied = OwnerId::from(UserId::new(Uuid::now_v7()));
         let authz = AuthzContext::single_owner(&readable, AuthPath::HostBearer);
         let service = CitedBlobOwnerReconcileService::new(Arc::new(store));
 

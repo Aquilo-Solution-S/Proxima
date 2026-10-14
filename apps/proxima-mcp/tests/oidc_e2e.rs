@@ -26,8 +26,8 @@ use proxima::{Proxima, ResourceServerMetadata, S3RuntimeConfig};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::storage_ports::OwnerMembershipAdminPort;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId, Owner,
-    OwnerAccessPort, OwnerRef, Relation, Role, ToolScope, UserId,
+    AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId,
+    OwnerAccessPort, OwnerId, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::PgOwnerAccessResolver;
@@ -89,7 +89,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject = UserId::new(Uuid::now_v7());
-    let owner: Owner = OwnerRef::Personal(subject);
+    let owner: OwnerId = OwnerId::from(subject);
     let owner_key = owner_header(owner);
     let (enc, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
@@ -544,7 +544,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject = UserId::new(Uuid::now_v7());
-    let owner: Owner = OwnerRef::Personal(subject);
+    let owner: OwnerId = OwnerId::from(subject);
     let owner_key = owner_header(owner);
     let (enc, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
@@ -717,7 +717,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let (database_url, created_db) = live_database_url().await?;
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
-    let group_owner: Owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let group_owner: OwnerId = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let subject = UserId::new(Uuid::now_v7());
     let (enc, resolver) = keypair();
 
@@ -760,9 +760,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     // Seed the Editor membership row after boot (migrations have run by
     // now), matching how a production grant lands: a row appears, no
     // redeploy needed.
-    let OwnerRef::Group(group_id) = group_owner else {
-        unreachable!("group_owner is always Group")
-    };
+    let group_id = group_owner.as_group();
     let storage = common::runtime_storage(&runtime_url, &platform_url).await?;
     let permit_engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     let permit_authz =
@@ -867,8 +865,8 @@ async fn initialize(
     Ok(session_id)
 }
 
-fn owner_header(owner: Owner) -> String {
-    owner.external_key()
+fn owner_header(owner: OwnerId) -> String {
+    owner.to_string()
 }
 
 async fn initialized(

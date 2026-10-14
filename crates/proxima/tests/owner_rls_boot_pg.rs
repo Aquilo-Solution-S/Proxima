@@ -7,7 +7,7 @@ use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMi
 use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
 use proxima_core::{
     AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
-    ErrorCode, GroupId, Owner, OwnerRoles, UserId,
+    ErrorCode, GroupId, OwnerId, OwnerRoles, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgPoolConfig;
@@ -99,7 +99,7 @@ async fn provision_platform_role(admin: &PgPool, platform: &str, runtime: &str, 
     exec(admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'proxima_core' LOOP EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO {platform}', r.nspname, r.proname, r.args); END LOOP; END $$")).await;
 }
 
-async fn setup() -> (String, PgPool, String, String, Owner, String, String) {
+async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
     let database = unique_db_name("proxima_owner_rls_boot");
     create_db(&database).await.expect("create database");
     let admin = PgPool::connect(&db_url(&database)).await.expect("admin");
@@ -120,12 +120,12 @@ async fn setup() -> (String, PgPool, String, String, Owner, String, String) {
     let platform = format!("owner_rls_platform_{suffix}");
     let runtime = format!("owner_rls_runtime_{suffix}");
     let password = format!("pw_{suffix}");
-    let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     exec(
         &admin,
         format!(
             "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ('{}', 'personal')",
-            owner.stored_owner_id()
+            owner.into_inner()
         ),
     )
     .await;
@@ -268,7 +268,7 @@ impl FlavorApp for CodeApp {
 async fn boot(
     runtime_url: String,
     platform_url: Option<String>,
-    owner: Owner,
+    owner: OwnerId,
     skip_migrations: bool,
 ) -> Result<proxima::BuiltProxima, proxima::ProximaError> {
     let mut app = Proxima::<CodeApp>::app()
@@ -302,10 +302,7 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
     let booted = result.expect("split-role boot");
     let authz = proxima_core::authenticate(
         &SyntheticAuthenticator {
-            subject: match owner {
-                Owner::Personal(subject) => subject,
-                Owner::Group(_) => unreachable!(),
-            },
+            subject: owner.as_user(),
         },
         &Credentials::Bearer("synthetic-token".into()),
     )
@@ -341,13 +338,13 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         .expect("runtime verify pool");
     let mut verify_tx = verify.begin().await.expect("runtime verify transaction");
     sqlx::query("SELECT set_config('app.proxima_scope', 'owner', true), set_config('app.owner', $1::text, true)")
-        .bind(format!("{{{}}}", owner.stored_owner_id()))
+        .bind(format!("{{{}}}", owner.into_inner()))
         .execute(&mut *verify_tx)
         .await
         .expect("bind existing owner scope");
     let existing_owner: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.owners WHERE owner_id = $1")
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_one(&mut *verify_tx)
             .await
             .expect("existing owner survives upgrade");
@@ -373,7 +370,7 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
-    let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let first = boot(
         runtime_url.clone(),
         Some(platform_url.clone()),
@@ -397,7 +394,7 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
         &admin,
         format!(
             "INSERT INTO proxima_core.owners(owner_id, kind) VALUES ('{}', 'personal')",
-            owner.stored_owner_id()
+            owner.into_inner()
         ),
     )
     .await;
@@ -408,7 +405,7 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
-async fn assert_insecure_single_owner_roundtrip(owner: Owner) {
+async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
     let _guard = BOOT_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -430,7 +427,7 @@ async fn assert_insecure_single_owner_roundtrip(owner: Owner) {
     assert_eq!(scope.writable_owners(AccessKind::Fact), vec![owner]);
 
     let foreign_subject = UserId::new(uuid::Uuid::now_v7());
-    let foreign_owner = Owner::Personal(foreign_subject);
+    let foreign_owner = OwnerId::from(foreign_subject);
     let foreign_authz = proxima_core::authenticate(
         &SyntheticAuthenticator {
             subject: foreign_subject,
@@ -478,17 +475,6 @@ async fn assert_insecure_single_owner_roundtrip(owner: Owner) {
         .await
         .expect_err("single-owner context cannot write the foreign owner");
     assert_eq!(denied.code, ErrorCode::Forbidden);
-    if let Owner::Group(group) = owner {
-        let synthetic_personal = Owner::Personal(UserId::new(group.into_inner()));
-        let denied = engine
-            .ingest_fact(
-                &authz,
-                FactWrite::new(synthetic_personal, "test/synthetic-owner", &note),
-            )
-            .await
-            .expect_err("group's synthetic subject grants no Personal access");
-        assert_eq!(denied.code, ErrorCode::Forbidden);
-    }
     assert!(authz.narrowed_to_owner(foreign_owner).is_none());
     built.shutdown().await;
     cleanup(&database, admin, &runtime, &platform).await;
@@ -496,13 +482,12 @@ async fn assert_insecure_single_owner_roundtrip(owner: Owner) {
 
 #[tokio::test]
 async fn insecure_personal_owner_reads_and_writes_under_split_role_rls() {
-    assert_insecure_single_owner_roundtrip(Owner::Personal(UserId::new(uuid::Uuid::now_v7())))
-        .await;
+    assert_insecure_single_owner_roundtrip(OwnerId::from(UserId::new(uuid::Uuid::now_v7()))).await;
 }
 
 #[tokio::test]
 async fn insecure_group_owner_reads_and_writes_under_split_role_rls() {
-    assert_insecure_single_owner_roundtrip(Owner::Group(GroupId::new(uuid::Uuid::now_v7()))).await;
+    assert_insecure_single_owner_roundtrip(OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))).await;
 }
 
 #[tokio::test]

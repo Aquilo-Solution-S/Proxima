@@ -63,7 +63,7 @@ Tools are effect adapters.
 |---|---|
 | Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and tool metadata declarations |
 | Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
-| Owner roles | memory reads/writes/actions are gated by server-resolved `OwnerRoles` plus tool scope; roles are `Viewer`/`Ingest`/`Editor`/`Admin` over concrete `OwnerRef`s, not a separate action vocabulary |
+| Owner roles | memory reads/writes/actions are gated by server-resolved `OwnerRoles` plus tool scope; roles are `Viewer`/`Ingest`/`Editor`/`Admin` over concrete `OwnerId`s, not a separate action vocabulary |
 | Persistence | tool result enters storage only as registered Fact / A/P / Goal writes; no tool writes an edge |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |

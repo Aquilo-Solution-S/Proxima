@@ -10,8 +10,8 @@ use std::time::Duration;
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion,
-    StorageError, UserId,
+    AccessKind, EdgeEndpoint, EntityKind, MemoryId, OwnerId, SchemaId, SchemaVersion, StorageError,
+    UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -197,10 +197,8 @@ async fn engine_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
 }
 
 /// Seed the owner row through the engine; returns the owner and one hot Fact.
-async fn seed_owner(
-    pg: &PgStorage,
-) -> Result<(OwnerRef, OwnerWritePermit, MemoryId), StorageError> {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+async fn seed_owner(pg: &PgStorage) -> Result<(OwnerId, OwnerWritePermit, MemoryId), StorageError> {
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
     Ok((owner, permit, fact.memory_id))
@@ -260,7 +258,7 @@ async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
             if let Some(lock) = lock {
                 lock.execute(&mut *tx).await?;
             }
-            insert_facts(&mut tx, owner.stored_owner_id(), 400).await?;
+            insert_facts(&mut tx, owner.into_inner(), 400).await?;
             let (mode, advisory) = pin_lock_state(&mut tx).await?;
             tx.rollback().await?;
             if coarse {
@@ -278,7 +276,7 @@ async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
         // A small write never reads pg_locks: the setting still counts.
         let mut tx = pool.begin().await?;
         sqlx::query(COARSE).execute(&mut *tx).await?;
-        insert_facts(&mut tx, owner.stored_owner_id(), 3).await?;
+        insert_facts(&mut tx, owner.into_inner(), 3).await?;
         assert_eq!(pin_lock_state(&mut tx).await?, (Some("3".to_owned()), 3));
         tx.rollback().await?;
 
@@ -288,7 +286,7 @@ async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
         sqlx::query("SET LOCAL proxima_core.pin_lock_mode = 'coarse'")
             .execute(&mut *tx)
             .await?;
-        insert_facts(&mut tx, owner.stored_owner_id(), 3).await?;
+        insert_facts(&mut tx, owner.into_inner(), 3).await?;
         assert_eq!(
             pin_lock_state(&mut tx).await?,
             (Some("coarse".to_owned()), 0)
@@ -318,7 +316,7 @@ async fn coarse_mode_still_refuses_missing_and_erased_targets() {
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, erased) = seed_owner(&pg).await?;
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let pool = pg.pool_for_tests();
         // A live pin grounds the row, so the refusal is the target's own.
         let live = pg
@@ -381,7 +379,7 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, fact) = seed_owner(&pg).await?;
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let pool = pg.pool_for_tests();
         let abstraction = pg
             .ingest_fact_atomic(&permit, &abstraction_draft(fact), None)
@@ -451,7 +449,7 @@ async fn concurrent_erase_waits_for_the_bulk_transaction() {
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, first) = seed_owner(&pg).await?;
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let pool = pg.pool_for_tests();
         let context = pg.host_state_erase_context()?;
         let sidecars = core_pg_sidecars();

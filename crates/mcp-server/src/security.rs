@@ -17,7 +17,7 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::{BodyStream, StreamBody};
 use proxima_core::{
-    AuthPath, Authenticator, Identity, Owner, RevalidationConfig, revalidate_stream,
+    AuthPath, Authenticator, Identity, OwnerId, RevalidationConfig, revalidate_stream,
 };
 
 use crate::McpServerError;
@@ -646,7 +646,7 @@ enum OwnerSelection {
     /// response's freshly minted session id to this owner. `via_session`
     /// records whether the owner came from an existing session binding.
     Selected {
-        owner: Owner,
+        owner: OwnerId,
         bind_new: bool,
         via_session: bool,
     },
@@ -667,7 +667,7 @@ enum OwnerSelection {
 async fn selected_owner(
     sessions: &McpSessionBindings,
     headers: &HeaderMap,
-    default: Option<Owner>,
+    default: Option<OwnerId>,
 ) -> OwnerSelection {
     let owner_header = request_header_str(headers, PROXIMA_OWNER_HEADER);
     let session_id = request_header_str(headers, MCP_SESSION_ID_HEADER);
@@ -909,8 +909,7 @@ mod tests {
     use futures_util::stream;
     use proxima_core::{
         AccessError, AccessKind, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
-        GroupId, Identity, Owner, OwnerAccessPort, OwnerRef, OwnerRoles, RevalidationConfig, Role,
-        UserId,
+        GroupId, Identity, OwnerAccessPort, OwnerId, OwnerRoles, RevalidationConfig, Role, UserId,
     };
     use tokio::sync::mpsc;
     use tokio::time;
@@ -926,7 +925,7 @@ mod tests {
 
     /// Host authenticator that accepts exactly `good-token` for `owner`.
     struct TokenAuth {
-        owner: Owner,
+        owner: OwnerId,
     }
 
     #[async_trait]
@@ -942,7 +941,7 @@ mod tests {
     }
 
     struct CountingTokenAuth {
-        owner: Owner,
+        owner: OwnerId,
         calls: Arc<AtomicU64>,
     }
 
@@ -959,13 +958,13 @@ mod tests {
         }
     }
 
-    fn user_owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn user_owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     /// Router mirroring the production stack: the auth layer over an OK
     /// `/mcp` stub, seeded with `sessions` and a `TokenAuth` for `owner`.
-    fn auth_app(owner: Owner, sessions: McpSessionBindings) -> Router {
+    fn auth_app(owner: OwnerId, sessions: McpSessionBindings) -> Router {
         auth_app_with_auth(Arc::new(TokenAuth { owner }), sessions)
     }
 
@@ -1009,12 +1008,12 @@ mod tests {
     /// resolved through [`OwnerAccessPort::resolve_group_role`].
     struct PerOwnerAccess {
         subject: UserId,
-        roles: HashMap<Owner, Role>,
+        roles: HashMap<OwnerId, Role>,
         calls: Arc<AtomicU64>,
     }
 
     impl PerOwnerAccess {
-        fn new(subject: UserId, roles: impl IntoIterator<Item = (Owner, Role)>) -> Self {
+        fn new(subject: UserId, roles: impl IntoIterator<Item = (OwnerId, Role)>) -> Self {
             Self {
                 subject,
                 roles: roles.into_iter().collect(),
@@ -1041,7 +1040,7 @@ mod tests {
             if subject != self.subject {
                 return Ok(None);
             }
-            Ok(self.roles.get(&OwnerRef::Group(group)).copied())
+            Ok(self.roles.get(&OwnerId::from(group)).copied())
         }
     }
 
@@ -1088,8 +1087,8 @@ mod tests {
         (status, body)
     }
 
-    fn group_owner() -> Owner {
-        OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))
+    fn group_owner() -> OwnerId {
+        OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
     // One forwarder subject, one party per request: each request is
@@ -1249,7 +1248,7 @@ mod tests {
     /// Group as the default, as a native OAuth client sends no owner header.
     struct TenantAuth {
         subject: UserId,
-        tenant: Owner,
+        tenant: OwnerId,
         name_default: bool,
     }
 
@@ -1327,7 +1326,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_header_overrides_the_default() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let personal = OwnerRef::Personal(subject);
+        let personal = OwnerId::from(subject);
         let app = tenant_app(
             TenantAuth {
                 subject,
@@ -2049,10 +2048,8 @@ mod tests {
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
-        let principal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let OwnerRef::Personal(subject) = principal else {
-            unreachable!("principal is personal");
-        };
+        let principal = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let subject = principal.as_user();
         proxima_core::AuthzContext::for_subject(subject, proxima_core::AuthPath::HostBearer)
             .with_expires_at(expires_at)
             .with_auth_epoch(auth_epoch)
@@ -2092,7 +2089,7 @@ mod tests {
             Err(AuthError::AuthRequired)
         }
 
-        async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
+        async fn current_auth_epoch(&self, _principal: &OwnerId) -> u64 {
             self.epoch.load(Ordering::SeqCst)
         }
     }

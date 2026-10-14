@@ -1,6 +1,6 @@
 //! The read lane: one presigned GET, over a locator this store itself wrote.
 
-use proxima_core::{AuthzContext, OwnerRef};
+use proxima_core::{AuthzContext, OwnerId};
 use time::OffsetDateTime;
 
 use super::CitedBlobStore;
@@ -32,7 +32,7 @@ impl CitedBlobStore {
     pub async fn find_held_blobs(
         &self,
         ctx: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         content_hashes: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, BlobError> {
         ensure_owner_access(ctx, &owner)?;

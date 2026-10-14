@@ -9,7 +9,7 @@
 {"blob_id":null,"content_id":null,"cooled_at":"<ts009>","goal_refs":null,"handle":"<id010>","ingest_key":"k4","kind":"fact","object_key":"cold/<id011>","owner_id":"<id012>","source_id":"src-a","t":"<id011>"}
 {"blob_id":null,"content_id":null,"cooled_at":"<ts013>","goal_refs":null,"handle":"<id014>","ingest_key":"k5","kind":"fact","object_key":"cold/<id015>","owner_id":"<id012>","source_id":"src-b","t":"<id015>"}
 ## export proxima_core.delegated_authority_grants (1)
-{"action_name":null,"auth_epoch":1,"expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id012>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
+{"action_name":null,"auth_epoch":1,"expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id012>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
 ## export proxima_core.goal (2)
 {"assignment_t":null,"close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id018>","owner_id":"<id012>","request_id":"req-1","state":"Active","t":"<id018>","title":"a goal","wake_id":"<id019>","write_act_t":null}
 {"assignment_t":null,"close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id020>","owner_id":"<id012>","request_id":"req-2","state":"Active","t":"<id020>","title":"a goal","wake_id":"<id021>","write_act_t":null}
@@ -35,8 +35,8 @@
 {"kind":"goal","owner_id":"<id012>","t":"<id018>","text":"goal sketch"}
 {"kind":"goal","owner_id":"<id012>","t":"<id020>","text":"goal sketch"}
 ## export proxima_core.source_cursors (2)
-{"cursor":"\\x3333333333333333","owner_id":"<id012>","owner_kind":"personal","source":"src-a","updated_at":"<ts026>"}
-{"cursor":"\\x3333333333333333","owner_id":"<id012>","owner_kind":"personal","source":"src-b","updated_at":"<ts026>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id012>","source":"src-a","updated_at":"<ts026>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id012>","source":"src-b","updated_at":"<ts026>"}
 ## export proxima_core.task_goal_v1 (2)
 {"due_at":"<ts027>","priority":null,"t":"<id018>"}
 {"due_at":"<ts027>","priority":null,"t":"<id020>"}
@@ -64,9 +64,9 @@
 ## proxima_core.cooled (1)
 {"blob_id":null,"content_id":null,"cooled_at":"<ts013>","goal_refs":null,"handle":"<id014>","ingest_key":"k5","kind":"fact","object_key":"cold/<id015>","owner_id":"<id012>","source_id":"src-b","t":"<id015>"}
 ## proxima_core.delegated_authority_grants (3)
-{"action_name":null,"auth_epoch":1,"delegation_id":"<id040>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id012>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
-{"action_name":null,"auth_epoch":1,"delegation_id":"<id041>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id032>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
-{"action_name":null,"auth_epoch":1,"delegation_id":"<id042>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id032>","owner_kind":"personal","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id032>","tool_name":"core_remember","write_ceiling":"fact"}
+{"action_name":null,"auth_epoch":1,"delegation_id":"<id040>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id012>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
+{"action_name":null,"auth_epoch":1,"delegation_id":"<id041>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id032>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","write_ceiling":"fact"}
+{"action_name":null,"auth_epoch":1,"delegation_id":"<id042>","expires_at":"<ts016>","issued_at":"<ts017>","owner_id":"<id032>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id032>","tool_name":"core_remember","write_ceiling":"fact"}
 ## proxima_core.embedding_heads (1)
 {"dim":1024,"embedding_version":1,"entity_id":"<id029>","model_id":"test-embed","owner_id":"<id032>"}
 ## proxima_core.embedding_jobs (0)
@@ -125,8 +125,8 @@
 {"kind":"goal","owner_id":"<id012>","t":"<id020>","text":"goal sketch"}
 {"kind":"goal","owner_id":"<id032>","t":"<id043>","text":"goal sketch"}
 ## proxima_core.source_cursors (2)
-{"cursor":"\\x3333333333333333","owner_id":"<id012>","owner_kind":"personal","source":"src-b","updated_at":"<ts026>"}
-{"cursor":"\\x3333333333333333","owner_id":"<id032>","owner_kind":"personal","source":"src-a","updated_at":"<ts026>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id012>","source":"src-b","updated_at":"<ts026>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id032>","source":"src-a","updated_at":"<ts026>"}
 ## proxima_core.task_goal_v1 (3)
 {"due_at":"<ts027>","priority":null,"t":"<id018>"}
 {"due_at":"<ts027>","priority":null,"t":"<id020>"}

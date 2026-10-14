@@ -21,7 +21,7 @@ use crate::verbs::own_erase::{
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    DerivedMemoryOutcome, EntityKind, FactPayload, GoalPayload, MemoryId, Owner, SchemaId,
+    DerivedMemoryOutcome, EntityKind, FactPayload, GoalPayload, MemoryId, OwnerId, SchemaId,
     SidecarPayload,
 };
 
@@ -30,7 +30,7 @@ use crate::{
 /// Facts declare reference pins, never derivation origins.
 #[derive(Clone)]
 pub struct FactWrite<'a, P: FactPayload> {
-    owner: Owner,
+    owner: OwnerId,
     source_id: &'a str,
     payload: &'a P,
     observed_at: Option<time::OffsetDateTime>,
@@ -65,7 +65,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
     /// the first and refuses the second, so this builder cannot produce
     /// the refusable state — [`Self::lexical_language`] overrides it.
     #[must_use]
-    pub fn new(owner: Owner, source_id: &'a str, payload: &'a P) -> Self {
+    pub fn new(owner: OwnerId, source_id: &'a str, payload: &'a P) -> Self {
         Self {
             owner,
             source_id,
@@ -135,7 +135,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
 /// A [`FactWrite`] that owns its source id and payload, so the write can
 /// move onto a task the caller does not own ([`Engine::ingest_fact_detached`]).
 struct OwnedFactWrite<P: FactPayload> {
-    owner: Owner,
+    owner: OwnerId,
     source_id: String,
     payload: P,
     observed_at: Option<time::OffsetDateTime>,
@@ -208,7 +208,7 @@ pub struct UnitOfWork<'a> {
     /// with the kind of a row written earlier in this transaction.
     written_kinds: Vec<(MemoryId, EntityKind)>,
     /// Resolved destinations, for owner-constrained pending Goal assignments.
-    written_owners: Vec<(MemoryId, Owner)>,
+    written_owners: Vec<(MemoryId, OwnerId)>,
     /// [`Self::erase_own_series`] ran. The unit then accepts only
     /// [`Self::commit`]: its session is the erase's, not a cognitive one.
     erased: bool,
@@ -217,7 +217,7 @@ pub struct UnitOfWork<'a> {
 enum UnitAuthorization<'a> {
     Ordinary(&'a AuthzContext),
     HostState {
-        owner: Owner,
+        owner: OwnerId,
         descriptor: HostStateParticipantDescriptor,
     },
     /// Host-held system authority, for [`UnitOfWork::erase_own_series`]
@@ -460,7 +460,7 @@ impl Engine {
     pub fn host_state_unit_of_work<'a>(
         &'a self,
         authority: &HostStateMaintenanceAuthority,
-        owner: Owner,
+        owner: OwnerId,
     ) -> Result<HostStateUnitOfWork<'a>, ProtocolError> {
         if authority.system_binding != self.system_authority_binding {
             return Err(ProtocolError::forbidden(
@@ -735,7 +735,7 @@ impl<'a> UnitOfWork<'a> {
     /// a registered memory sidecar or declares no owner column.
     pub async fn read_own_sidecar(
         &mut self,
-        owner: Owner,
+        owner: OwnerId,
         read: &SidecarSessionRead<'_>,
     ) -> Result<Vec<serde_json::Value>, ProtocolError> {
         let write_permit = self
@@ -763,7 +763,7 @@ impl<'a> UnitOfWork<'a> {
     /// a registered memory sidecar.
     pub async fn owned_series_head_memory_id(
         &mut self,
-        owner: Owner,
+        owner: OwnerId,
         schema_id: &SchemaId,
         sidecar_table: &str,
         columns: &[(&str, SidecarAtom)],
@@ -1124,7 +1124,7 @@ impl<'a> UnitOfWork<'a> {
     fn validate_pending_goal_targets(
         &self,
         req: &super::GoalCreatePayloadWriteRequest,
-        goal_owner: &Owner,
+        goal_owner: &OwnerId,
     ) -> Result<(), ProtocolError> {
         let assignment = req.topology.assignment().perspective_id();
         if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
@@ -1178,7 +1178,11 @@ impl<'a> UnitOfWork<'a> {
     /// # Errors
     ///
     /// Authorization or storage faults.
-    pub async fn forget(&mut self, owner: Owner, memory_id: MemoryId) -> Result<(), ProtocolError> {
+    pub async fn forget(
+        &mut self,
+        owner: OwnerId,
+        memory_id: MemoryId,
+    ) -> Result<(), ProtocolError> {
         let write_permit = self
             .engine
             .authorize_write_limit(self.authz()?, &owner)
@@ -1231,7 +1235,7 @@ impl<'a> UnitOfWork<'a> {
     pub async fn erase_own_series(
         &mut self,
         flavor_id: &str,
-        owner: Owner,
+        owner: OwnerId,
         selection: SeriesSelection,
         mode: EraseMode,
     ) -> Result<SeriesEraseReceipt, SeriesEraseError> {
@@ -1421,7 +1425,7 @@ impl UnitOfWork<'_> {
 async fn authorize_series_erase(
     engine: &Engine,
     authorization: &UnitAuthorization<'_>,
-    owner: Owner,
+    owner: OwnerId,
 ) -> Result<crate::storage_ports::OwnerWritePermit, SeriesEraseError> {
     let permit = match *authorization {
         UnitAuthorization::Ordinary(authz) => engine.authorize_owner_admin(authz, &owner).await?,
@@ -1486,16 +1490,12 @@ fn own_sidecar_table(
 /// The roles a system erase context carries: exactly `owner`, at the role
 /// that writes Goals (Admin).
 ///
-/// A personal owner is its own subject's personal role; a Group is Admin
-/// granted by the host's system authority, under a subject that is no user.
-fn system_erase_roles(owner: Owner) -> crate::access::OwnerRoles {
+/// Admin granted by the host's system authority, under a subject that is no
+/// user: the owner is never the subject's own id, whatever the registry calls
+/// it.
+fn system_erase_roles(owner: OwnerId) -> crate::access::OwnerRoles {
     use crate::access::{OwnerRoles, Role};
-    match owner {
-        Owner::Personal(user) => OwnerRoles::scoped_to(user, owner, Role::personal()),
-        Owner::Group(_) => {
-            OwnerRoles::scoped_to(crate::UserId::new(uuid::Uuid::nil()), owner, Role::admin())
-        }
-    }
+    OwnerRoles::scoped_to(crate::UserId::new(uuid::Uuid::nil()), owner, Role::admin())
 }
 
 /// A transient storage fault is the caller's to retry; everything else is
@@ -1554,7 +1554,7 @@ mod tests {
         HostStateCommand, HostStateParticipantDescriptor, HostStateParticipantId, StateSurfaceName,
         StoragePorts, WriteSession, WriteSessionFactory,
     };
-    use crate::{Engine, Owner, UserId};
+    use crate::{Engine, OwnerId, UserId};
 
     const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("host_state_test");
     const STATE_TABLE: StateSurfaceName = StateSurfaceName::new("host_state_test.state");
@@ -1594,7 +1594,7 @@ mod tests {
     };
 
     struct EmptyTablesCommand {
-        owner: Owner,
+        owner: OwnerId,
     }
 
     impl HostStateCommand for EmptyTablesCommand {
@@ -1602,7 +1602,7 @@ mod tests {
         const TABLES: &'static [StateSurfaceName] = &[];
         type Outcome = ();
 
-        fn owner(&self) -> Owner {
+        fn owner(&self) -> OwnerId {
             self.owner
         }
     }
@@ -1662,7 +1662,7 @@ mod tests {
         let foreign_begins = Arc::new(AtomicUsize::new(0));
         let foreign_engine = engine(foreign_begins.clone());
         let err = foreign_engine
-            .host_state_unit_of_work(&authority, Owner::Personal(UserId::new(uuid::Uuid::nil())))
+            .host_state_unit_of_work(&authority, OwnerId::from(UserId::new(uuid::Uuid::nil())))
             .expect_err("another engine boot cannot accept the authority");
 
         assert!(err.to_string().contains("different engine"));
@@ -1678,7 +1678,7 @@ mod tests {
             .host_state_maintenance_authority(&system)
             .expect("the participant descriptor is valid")
             .expect("the test backend has a host-state participant");
-        let owner = Owner::Personal(UserId::new(uuid::Uuid::nil()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::nil()));
         let mut unit = engine
             .host_state_unit_of_work(&authority, owner)
             .expect("the capability belongs to the engine");
@@ -1706,7 +1706,8 @@ mod tests {
         use crate::storage_ports::StoragePorts;
         use crate::verbs::own_erase::{EraseMode, SeriesEraseError, SeriesSelection};
         use crate::{
-            AuthPath, AuthzContext, Engine, FlavorServices, Owner, Tool, ToolCtx, ToolError, UserId,
+            AuthPath, AuthzContext, Engine, FlavorServices, OwnerId, Tool, ToolCtx, ToolError,
+            UserId,
         };
 
         const GATE_FLAVOR: &str = "gate_fixture";
@@ -1904,7 +1905,7 @@ mod tests {
             tool: &str,
             args: serde_json::Value,
         ) -> Result<serde_json::Value, String> {
-            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
             let descriptor = engine
                 .registry()
                 .mcp_tool(tool)
@@ -2021,7 +2022,7 @@ mod tests {
         async fn a_unit_outside_any_tool_is_not_gated_by_a_tool_declaration() {
             let begins = Arc::new(AtomicUsize::new(0));
             let engine = engine(begins.clone());
-            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
             let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
             assert_eq!(authz.invoking_tool(), None);
             let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
@@ -2037,7 +2038,7 @@ mod tests {
         async fn a_sidecar_selection_of_a_foreign_schema_is_refused_before_storage() {
             let begins = Arc::new(AtomicUsize::new(0));
             let engine = engine(begins.clone());
-            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
             let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
             let schema = || crate::SchemaId::new("another_flavor/thing-v1".to_owned());
             for selection in [
@@ -2080,7 +2081,7 @@ mod tests {
         async fn an_empty_selection_is_authorized_without_a_session() {
             let begins = Arc::new(AtomicUsize::new(0));
             let engine = engine(begins.clone());
-            let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+            let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
             let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
             let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
             let receipt = unit
@@ -2099,7 +2100,7 @@ mod tests {
                 .await
                 .expect("an erase unit with no session commits");
 
-            let group = Owner::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+            let group = OwnerId::from(crate::GroupId::new(uuid::Uuid::now_v7()));
             let ingest = AuthzContext::for_subject_with_role(
                 UserId::new(uuid::Uuid::now_v7()),
                 [(group, crate::Role::ingest())],
