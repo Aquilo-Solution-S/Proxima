@@ -186,8 +186,9 @@ Index: [docs/README.md](docs/README.md). Origin ontology:
 ## Implementation
 
 Rust. One binary per deployment: Engine, storage, transports, and the
-flavor crates linked at build time. No runtime registry, no plugin
-tier, no in-process flavor catalog. Workspace crates stay
+flavor crates linked at build time, whose registry freezes at startup. A
+flavor is what a Proxima host serves under its own id, so a flavor can also
+be installed and run outside the host process. Workspace crates stay
 `publish = false`; the git tag is the version. In-tree / pin-by-git
 consumers must move with the tag.
 

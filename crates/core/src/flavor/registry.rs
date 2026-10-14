@@ -6,8 +6,8 @@ use super::{
 };
 use crate::FactPayload;
 
-/// Mutable build-time registry. Flavors push into it during their
-/// `register()` call; `freeze` consumes it whole into a
+/// Mutable build-time registry of the flavors linked into this host.
+/// Flavors push into it during their `register()` call; `freeze` consumes it whole into a
 /// `FlavorRegistryFrozen` via `FlavorRegistryFrozen::from_registry`.
 /// Fields are `pub(crate)` so that constructor can destructure them.
 #[derive(Debug)]

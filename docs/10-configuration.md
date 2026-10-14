@@ -891,7 +891,7 @@ coexisting pack versions share one schema.
 | Embedded host app | host builds `Proxima<App>` programmatically over a local Engine/Postgres; injects its own authenticator + embedding client |
 | Headless MCP host | process env (`apps/proxima-mcp`) + host authenticator; shipped OIDC constructs it with `OwnerAccessPort` |
 | Hosted deployment | provisioned env/secrets + tenant authenticator |
-| Stock pack host | `proxima::serve::<(TheFlavor,)>()` + chart env: environment OIDC, forwarder policy, request-header allowlist, health probes |
+| Stock flavor host | `proxima::serve::<(TheFlavor,)>()` + chart env: environment OIDC, forwarder policy, request-header allowlist, health probes |
 
 The same Engine contract applies in every shape: build-time types,
 runtime endpoint instances.

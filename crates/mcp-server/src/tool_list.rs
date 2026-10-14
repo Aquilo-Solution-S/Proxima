@@ -1,7 +1,7 @@
 //! Per-owner `notifications/tools/list_changed` delivery.
 //!
 //! A caller's tool list is projected from its owner and token, so a host
-//! that changes what an owner may call (a pack turned on, a binding
+//! that changes what an owner may call (a flavor turned on, a binding
 //! withdrawn) must tell that owner's connected clients, and only them:
 //! which tools exist is itself tenant information. There is one kind of
 //! listener per MCP lifecycle:

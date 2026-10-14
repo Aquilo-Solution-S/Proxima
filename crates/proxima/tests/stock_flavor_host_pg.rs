@@ -1,4 +1,4 @@
-//! The stock pack host, end to end through the facade's environment path.
+//! The stock flavor host, end to end through the facade's environment path.
 //!
 //! Every runtime here boots as `proxima::run` does — `Proxima::app()` plus
 //! one environment layer — except that the layer is an injected map
@@ -12,7 +12,7 @@
 //! tool scope: `RuntimeBuilder` reads no tool-scope variable
 //! (`PROXIMA_TOOL_PROFILE` belongs to the `proxima-mcp` binary), so the test
 //! flavor names it in its own `FlavorApp::configure`, which is where a stock
-//! pack host names it too.
+//! flavor host names it too.
 #![cfg(feature = "auth-oidc")]
 
 #[path = "fixtures/split_core_db.rs"]
@@ -46,16 +46,16 @@ use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-const KID: &str = "pack-host-key";
-const AUDIENCE: &str = "proxima-pack-host";
-const PUBLIC_URL: &str = "https://proxima.pack.test";
-const FOREIGN_HOST: &str = "foreign.pack.test";
-const FORWARDER_SUB: &str = "pack-forwarder";
-const MEMBER_SUB: &str = "pack-member";
-const TICKET_HEADER: &str = "x-pack-ticket";
-const SECRET_HEADER: &str = "x-pack-secret";
-const PROBE_TOOL: &str = "packhost_probe";
-const SLOW_PATH: &str = "/pack/slow";
+const KID: &str = "flavor-host-key";
+const AUDIENCE: &str = "proxima-flavor-host";
+const PUBLIC_URL: &str = "https://proxima.flavor.test";
+const FOREIGN_HOST: &str = "foreign.flavor.test";
+const FORWARDER_SUB: &str = "flavor-forwarder";
+const MEMBER_SUB: &str = "flavor-member";
+const TICKET_HEADER: &str = "x-flavor-ticket";
+const SECRET_HEADER: &str = "x-flavor-secret";
+const PROBE_TOOL: &str = "flavorhost_probe";
+const SLOW_PATH: &str = "/flavor/slow";
 const SLOW_FOR: Duration = Duration::from_millis(500);
 
 /// Set by the slow route once its handler runs, so the drain test signals
@@ -70,7 +70,7 @@ struct ProbeArgs {}
 /// What one served call looked like from inside the tool.
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct ProbeOutput {
-    /// `x-pack-ticket`, when the allowlist copied it.
+    /// `x-flavor-ticket`, when the allowlist copied it.
     ticket: Option<String>,
     /// Every header name the tool can see.
     header_names: Vec<String>,
@@ -125,11 +125,11 @@ impl Tool for Probe {
     }
 }
 
-struct PackHost;
+struct FlavorHost;
 
-impl FlavorBundle for PackHost {
+impl FlavorBundle for FlavorHost {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        registry.try_add_mcp_tool::<Probe>("packhost")
+        registry.try_add_mcp_tool::<Probe>("flavorhost")
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -137,11 +137,11 @@ impl FlavorBundle for PackHost {
     }
 }
 
-impl FlavorApp for PackHost {
+impl FlavorApp for FlavorHost {
     fn app_info() -> AppInfo {
         AppInfo {
-            id: "stock-pack-host-test",
-            title: "Stock Pack Host Test",
+            id: "stock-flavor-host-test",
+            title: "Stock Flavor Host Test",
             version: "1",
         }
     }
@@ -242,7 +242,7 @@ struct Stack {
 
 impl Stack {
     async fn new() -> Self {
-        let database = clone_split_core_db("proxima_pack_host")
+        let database = clone_split_core_db("proxima_flavor_host")
             .await
             .expect("PG required for tests");
         let idp = Idp::start().await.expect("loopback identity provider");
@@ -291,7 +291,7 @@ impl Stack {
     /// Boot exactly as a stock host does, with `env` as its only input.
     async fn boot(&self, overrides: &[(&str, &str)]) -> TestResult<(RunningProxima, String)> {
         let env = self.env(overrides);
-        let running = Proxima::<(PackHost,)>::app()
+        let running = Proxima::<(FlavorHost,)>::app()
             .from_lookup(move |key| env.get(key).cloned())?
             .run()
             .await?;
@@ -334,7 +334,7 @@ async fn initialize(
             "params": {
                 "protocolVersion": "2025-03-26",
                 "capabilities": {},
-                "clientInfo": {"name": "pack-host-test", "version": "0"}
+                "clientInfo": {"name": "flavor-host-test", "version": "0"}
             }
         }))
         .send()
