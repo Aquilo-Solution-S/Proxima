@@ -589,7 +589,7 @@ pub(crate) async fn bootstrap_group_admin(
     platform: Option<&crate::PgPlatformScope>,
     group_id: GroupId,
     first_admin_user_id: UserId,
-    granted_by: uuid::Uuid,
+    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx = match platform {
@@ -597,8 +597,7 @@ pub(crate) async fn bootstrap_group_admin(
             None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
         };
         let result =
-            bootstrap_group_admin_on_connection(&mut tx, group_id, first_admin_user_id, granted_by)
-                .await;
+            bootstrap_group_admin_on_connection(&mut tx, group_id, first_admin_user_id).await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -621,7 +620,6 @@ pub async fn bootstrap_group_admin_on_connection(
     conn: &mut PgConnection,
     group_id: GroupId,
     first_admin_user_id: UserId,
-    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_group_membership_tx(conn, group_id).await?;
     insert_group_row(conn, group_id).await?;
@@ -665,14 +663,13 @@ pub(crate) async fn add_group_member(
     group_id: GroupId,
     member_user_id: UserId,
     relation: Relation,
-    granted_by: uuid::Uuid,
+    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
         let result =
-            add_group_member_on_connection(&mut tx, group_id, member_user_id, relation, granted_by)
-                .await;
+            add_group_member_on_connection(&mut tx, group_id, member_user_id, relation).await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -696,7 +693,6 @@ pub async fn add_group_member_on_connection(
     group_id: GroupId,
     member_user_id: UserId,
     relation: Relation,
-    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_group_membership_tx(conn, group_id).await?;
     insert_group_row(conn, group_id).await?;
@@ -838,7 +834,7 @@ pub(crate) async fn replace_group_member_relation(
     member_user_id: UserId,
     from: Relation,
     to: Relation,
-    granted_by: uuid::Uuid,
+    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
@@ -849,7 +845,6 @@ pub(crate) async fn replace_group_member_relation(
             member_user_id,
             from,
             to,
-            granted_by,
         )
         .await;
         crate::owner_scope::finish_transaction(tx, result).await
@@ -876,7 +871,6 @@ pub async fn replace_group_member_relation_on_connection(
     member_user_id: UserId,
     from: Relation,
     to: Relation,
-    _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_group_membership_tx(conn, group_id).await?;
     let deleted = sqlx::query(

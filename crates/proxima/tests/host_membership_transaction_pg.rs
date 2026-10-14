@@ -112,7 +112,7 @@ async fn host_transaction_rolls_back_registry_membership_and_host_row() {
     proxima::register_group(&mut tx, group)
         .await
         .expect("register group");
-    proxima::bootstrap_group_admin(&mut tx, group, admin, admin.into_inner())
+    proxima::bootstrap_group_admin(&mut tx, group, admin)
         .await
         .expect("first admin");
     sqlx::query("INSERT INTO public.host_membership_transaction_rows (id) VALUES ($1)")
@@ -137,7 +137,7 @@ async fn committed_host_transaction_keeps_membership_and_role_probe_sees_admin()
     proxima::register_group(&mut tx, group)
         .await
         .expect("register group");
-    proxima::bootstrap_group_admin(&mut tx, group, admin, admin.into_inner())
+    proxima::bootstrap_group_admin(&mut tx, group, admin)
         .await
         .expect("first admin");
     sqlx::query("INSERT INTO public.host_membership_transaction_rows (id) VALUES ($1)")
@@ -180,7 +180,6 @@ async fn connection_membership_write_keeps_user_registry_constraint() {
         group,
         UserId::new(Uuid::now_v7()),
         Relation::Viewer,
-        Uuid::now_v7(),
     )
     .await
     .expect_err("a user id cannot become a group");
@@ -227,7 +226,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
     proxima::register_group(&mut tx, group)
         .await
         .expect("register group");
-    proxima::add_group_member(&mut tx, group, member, Relation::Viewer, Uuid::now_v7())
+    proxima::add_group_member(&mut tx, group, member, Relation::Viewer)
         .await
         .expect("add viewer");
     assert_eq!(
@@ -244,7 +243,6 @@ async fn connection_relation_writes_share_the_host_transaction() {
         member,
         Relation::Viewer,
         Relation::Editor,
-        Uuid::now_v7(),
     )
     .await
     .expect("replace relation");
@@ -263,7 +261,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
             .expect("removed probe"),
         None
     );
-    proxima::add_group_member(&mut tx, group, member, Relation::Admin, Uuid::now_v7())
+    proxima::add_group_member(&mut tx, group, member, Relation::Admin)
         .await
         .expect("add admin");
     assert_eq!(
