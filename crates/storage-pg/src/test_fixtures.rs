@@ -86,6 +86,22 @@ pub async fn reopen_migrations_after_owner_rls_lane(
         "DO $reopen$
          BEGIN
              IF NOT EXISTS (SELECT 1 FROM public._sqlx_migrations WHERE version = {first}) THEN
+                 IF to_regclass('proxima_core.owners') IS NOT NULL THEN
+                     DROP TRIGGER IF EXISTS owner_group_kind_guard ON proxima_core.owners;
+                 END IF;
+                 DROP TABLE IF EXISTS proxima_core.group_lock_request CASCADE;
+                 DROP TABLE IF EXISTS proxima_core.group_role_projection CASCADE;
+                 DROP TABLE IF EXISTS proxima_core.group_edges CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.owner_group_kind_guard();
+                 DROP FUNCTION IF EXISTS proxima_core.group_projection_after_write() CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.group_projection_write_guard() CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.group_membership_before_write() CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.group_edge_before_write() CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.group_lock_request_trigger() CASCADE;
+                 DROP FUNCTION IF EXISTS proxima_core.rebuild_group_role_projection(uuid[]);
+                 DROP FUNCTION IF EXISTS proxima_core.lock_group_trees(uuid, uuid);
+                 DROP FUNCTION IF EXISTS proxima_core.lock_group_tree(uuid);
+                 DROP FUNCTION IF EXISTS proxima_core.group_tree_root(uuid);
                  DROP TABLE IF EXISTS proxima_core.goal_change_v1;
                  DROP TABLE IF EXISTS proxima_core.publication_delivery;
                  DROP TABLE IF EXISTS proxima_core.publication_consumer;
