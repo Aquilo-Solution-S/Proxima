@@ -565,6 +565,62 @@ pub(crate) async fn resolve_membership<'e>(
         .collect())
 }
 
+/// The subject kind and the memberships visible to one resolution probe.
+/// The kind is read in the same query as the memberships so a group-shaped
+/// subject is refused without a second round trip.
+pub(crate) struct SubjectMemberships {
+    pub(crate) subject_is_group: bool,
+    pub(crate) memberships: Vec<MembershipRow>,
+}
+
+/// Resolve a subject's registered kind and memberships in one query.
+/// `group` narrows the membership rows for the point probe used by
+/// `group_role`; `None` enumerates every group for `roles_for_subject`.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn resolve_subject_membership(
+    conn: &mut sqlx::PgConnection,
+    subject: UserId,
+    group: Option<GroupId>,
+) -> Result<SubjectMemberships, StorageError> {
+    let rows: Vec<(bool, Option<uuid::Uuid>, Option<Relation>)> = sqlx::query_as(
+        "WITH subject AS (
+             SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.owners
+                  WHERE owner_id = $1 AND kind = 'group'
+             ) AS subject_is_group
+         )
+         SELECT subject.subject_is_group, memberships.group_id, memberships.relation
+           FROM subject
+           LEFT JOIN proxima_core.group_memberships AS memberships
+             ON memberships.member_user_id = $1
+            AND ($2::uuid IS NULL OR memberships.group_id = $2)
+          ORDER BY memberships.group_id, memberships.relation",
+    )
+    .bind(subject.into_inner())
+    .bind(group.map(GroupId::into_inner))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_err)?;
+
+    let subject_is_group = rows.first().is_some_and(|(is_group, _, _)| *is_group);
+    let memberships = rows
+        .into_iter()
+        .filter_map(|(_, group, relation)| {
+            Some(MembershipRow {
+                group: GroupId::new(group?),
+                relation: relation?,
+            })
+        })
+        .collect();
+    Ok(SubjectMemberships {
+        subject_is_group,
+        memberships,
+    })
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
@@ -926,24 +982,6 @@ pub(crate) async fn has_group_relation_on_connection(
     relation: Relation,
 ) -> Result<bool, StorageError> {
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 AND relation = $3)").bind(group_id.into_inner()).bind(member_user_id.into_inner()).bind(relation).fetch_one(&mut *conn).await.map_err(map_err)
-}
-
-/// Every relation `member_user_id` holds on `group_id`, in the order
-/// [`resolve_membership`] enumerates them — one probe on the primary key
-/// instead of the member's whole membership. The caller folds these through
-/// the same [`OwnerRoles`](proxima_core::OwnerRoles) path as the full
-/// enumeration, so the answer is byte-identical to the eager map's and
-/// bounded by one group whatever the member's fan-out.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub(crate) async fn group_relations_for_member_on_connection(
-    conn: &mut PgConnection,
-    group_id: GroupId,
-    member_user_id: UserId,
-) -> Result<Vec<Relation>, StorageError> {
-    sqlx::query_scalar("SELECT relation FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation").bind(group_id.into_inner()).bind(member_user_id.into_inner()).fetch_all(&mut *conn).await.map_err(map_err)
 }
 
 /// # Errors

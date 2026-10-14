@@ -90,6 +90,8 @@ pub enum AccessError {
     DerivedOwnerOverride,
     #[error("owner access resolution failed: {0}")]
     Resolution(String),
+    #[error("subject {0:?} is registered as a group owner")]
+    SubjectIsGroup(UserId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

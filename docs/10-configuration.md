@@ -303,7 +303,9 @@ group)` (`proxima::host`, `proxima_storage_pg`), not with the resolver, which
 opens its own transaction, and not with raw `proxima_core.group_memberships`
 queries. They run the queries `PgOwnerAccessResolver` runs and fold them
 through `OwnerRoles::for_subject`: same answers, several relations in one group
-give their join, a Personal owner is never resolved. They begin, commit and
+give their join. A subject registered as a group is refused with
+`AccessError::SubjectIsGroup` before deriving any role; an unregistered subject
+keeps its personal role. The registry kind is read in the membership query. They begin, commit and
 set nothing, and read what the connection's scope allows: every group on a
 platform-scoped transaction, the groups the membership read policy admits
 under an owner scope. A row inserted earlier in the same transaction is

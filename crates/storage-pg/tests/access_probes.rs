@@ -233,3 +233,57 @@ async fn a_failing_connection_is_a_resolution_error_not_an_empty_answer() {
     let _ = drop_db(&db_name).await;
     result.expect("probe failures surface");
 }
+
+#[tokio::test]
+async fn group_registered_subject_is_refused_before_personal_role_derivation() {
+    let (db_name, pool) = fixture().await;
+    let result = async {
+        let group = group();
+        let subject = UserId::new(group.into_inner());
+        let member = user();
+        let ordinary = user();
+        seed_membership(&pool, group, member, Relation::Viewer).await;
+        let resolver = PgOwnerAccessResolver::new(pool.clone());
+        let mut conn = pool.acquire().await?;
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.owners WHERE owner_id = $1)",
+        )
+        .bind(ordinary.into_inner())
+        .fetch_one(&mut *conn)
+        .await?;
+        assert!(!registered, "first-write subject has no owner row yet");
+        assert_eq!(
+            roles_for_subject(&mut conn, ordinary).await?,
+            OwnerRoles::empty_for_subject(ordinary),
+            "an unregistered subject keeps its derived personal role"
+        );
+        assert_eq!(
+            resolver.resolve_roles_for_subject(ordinary).await?,
+            OwnerRoles::empty_for_subject(ordinary)
+        );
+
+        // Probe every entry before asserting, so a pre-fix run records all
+        // four ways a group UUID could acquire the subject's personal role.
+        let eager = roles_for_subject(&mut conn, subject).await;
+        let resolved = resolver.resolve_roles_for_subject(subject).await;
+        let point = group_role(&mut conn, subject, group).await;
+        let resolved_point = resolver.resolve_group_role(subject, group).await;
+        eprintln!("group subject: eager={eager:?}, resolver={resolved:?}, point={point:?}, resolver point={resolved_point:?}");
+        for result in [eager, resolved] {
+            assert!(matches!(
+                result,
+                Err(AccessError::SubjectIsGroup(found)) if found == subject
+            ));
+        }
+        for result in [point, resolved_point] {
+            assert!(matches!(
+                result,
+                Err(AccessError::SubjectIsGroup(found)) if found == subject
+            ));
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("group-shaped subjects are refused");
+}

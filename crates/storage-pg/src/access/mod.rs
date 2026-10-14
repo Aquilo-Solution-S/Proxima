@@ -199,17 +199,30 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
 ///
 /// # Errors
 ///
-/// Returns [`AccessError::Resolution`] when the query fails.
+/// Returns [`AccessError::Resolution`] when the query fails, or
+/// [`AccessError::SubjectIsGroup`] when `subject` is registered as a group.
 pub async fn roles_for_subject(
     conn: &mut PgConnection,
     subject: UserId,
 ) -> Result<OwnerRoles, AccessError> {
-    let memberships = owner_columns::resolve_membership(&mut *conn, &OwnerId::from(subject))
+    resolve_subject_roles(conn, subject, None).await
+}
+
+async fn resolve_subject_roles(
+    conn: &mut PgConnection,
+    subject: UserId,
+    group: Option<GroupId>,
+) -> Result<OwnerRoles, AccessError> {
+    let resolved = owner_columns::resolve_subject_membership(&mut *conn, subject, group)
         .await
         .map_err(|err| resolution_error(&err))?;
+    if resolved.subject_is_group {
+        return Err(AccessError::SubjectIsGroup(subject));
+    }
     OwnerRoles::for_subject(
         subject,
-        memberships
+        resolved
+            .memberships
             .into_iter()
             .map(|row| (OwnerId::from(row.group), row.relation.role())),
     )
@@ -249,22 +262,15 @@ pub async fn roles_for_subject(
 ///
 /// # Errors
 ///
-/// Returns [`AccessError::Resolution`] when the query fails.
+/// Returns [`AccessError::Resolution`] when the query fails, or
+/// [`AccessError::SubjectIsGroup`] when `subject` is registered as a group.
 pub async fn group_role(
     conn: &mut PgConnection,
     subject: UserId,
     group: GroupId,
 ) -> Result<Option<Role>, AccessError> {
     let owner = OwnerId::from(group);
-    let relations = owner_columns::group_relations_for_member_on_connection(conn, group, subject)
-        .await
-        .map_err(|err| resolution_error(&err))?;
-    let roles = OwnerRoles::for_subject(
-        subject,
-        relations
-            .into_iter()
-            .map(|relation| (owner, relation.role())),
-    )?;
+    let roles = resolve_subject_roles(conn, subject, Some(group)).await?;
     Ok(roles.role_for(&owner))
 }
 
