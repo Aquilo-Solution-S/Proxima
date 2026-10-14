@@ -65,7 +65,8 @@ callbacks and do not let those callbacks choose additional core rows.
 
 The preconditions are real and they live in the transaction, not the name.
 Group scopes take the membership lock and re-check the roster; personal
-scopes require `OwnerDropProofPort` to confirm the drop event. A source scope
+scopes require the host's `OwnerDropProofPort` (installed with
+`.owner_drop_proof(..)`) to confirm the drop event. A source scope
 is a partial owner: rows that carry no source attribution belong to neither
 half of one and are therefore untouched by it.
 

@@ -4,8 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppInfo, Feature, FeatureState, FlavorApp, NamedMigrator, PayloadKind, Proxima, ProximaError,
-    company_owner, run_core_and_flavor_migrations,
+    AccessError, AppInfo, Feature, FeatureState, FlavorApp, NamedMigrator, OwnerDropProofPort,
+    OwnerEraseOutcome, OwnerEraseRefusal, PayloadKind, Proxima, ProximaError, company_owner,
+    run_core_and_flavor_migrations,
 };
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
@@ -312,6 +313,116 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
 
     let _ = drop_db(&db_name).await;
     result.expect("facade run integration test failed");
+}
+
+/// The host's proof that a person was dropped: yes for exactly one person and
+/// drop event, so a test sees both reach the port.
+#[derive(Debug)]
+struct DroppedPerson {
+    user: UserId,
+    drop_event_id: &'static str,
+}
+
+#[async_trait]
+impl OwnerDropProofPort for DroppedPerson {
+    async fn verify_personal_owner_dropped(
+        &self,
+        user_id: UserId,
+        drop_event_id: &str,
+    ) -> Result<bool, AccessError> {
+        Ok(user_id == self.user && drop_event_id == self.drop_event_id)
+    }
+}
+
+fn refusal(outcome: &OwnerEraseOutcome) -> Option<&OwnerEraseRefusal> {
+    match outcome {
+        OwnerEraseOutcome::Refused { reason, .. } => Some(reason),
+        _ => None,
+    }
+}
+
+/// A host installs its drop proof through the facade, and a personal erase
+/// asks it: with none installed the erase refuses, with one it erases only
+/// the drop the host proves.
+#[tokio::test]
+async fn facade_owner_drop_proof_gates_personal_erase() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner::Personal(user);
+        let system = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+
+        let without = Proxima::<GoalTestApp>::app()
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let payload = drain_note("a dropped person's fact");
+        without
+            .host()
+            .engine()
+            .ingest_fact(
+                &proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+                    &owner,
+                    AuthPath::HostBearer,
+                )),
+                proxima::FactWrite::new(owner, "test/drop-proof", &payload),
+            )
+            .await?;
+        let outcome = without
+            .host()
+            .engine()
+            .erase_personal_owner(&system, user, "drop-1".into())
+            .await?;
+        assert_eq!(
+            refusal(&outcome),
+            Some(&OwnerEraseRefusal::DropProofPortUnavailable),
+            "{outcome:?}"
+        );
+        without.shutdown().await;
+
+        let with = Proxima::<GoalTestApp>::app()
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .owner_drop_proof(Arc::new(DroppedPerson {
+                user,
+                drop_event_id: "drop-1",
+            }))
+            .build()
+            .await?;
+        let engine = with.host().engine();
+        let outcome = engine
+            .erase_personal_owner(&system, user, "drop-2".into())
+            .await?;
+        assert_eq!(
+            refusal(&outcome),
+            Some(&OwnerEraseRefusal::PersonalDropNotVerified),
+            "{outcome:?}"
+        );
+        let outcome = engine
+            .erase_personal_owner(&system, user, "drop-1".into())
+            .await?;
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("the proven drop erases: {outcome:?}");
+        };
+        assert!(
+            counts.iter().any(|(_, erased)| erased > 0),
+            "the person's fact is erased: {counts:?}"
+        );
+        with.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("facade owner drop proof integration test failed");
 }
 
 /// #389: a host that sets an embedding client and nothing else gets its

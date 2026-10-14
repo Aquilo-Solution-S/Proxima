@@ -24,7 +24,7 @@ pub mod __private {
 
 use proxima_core::StorageError;
 use proxima_core::env_value;
-use proxima_core::storage_ports::StoragePorts;
+use proxima_core::storage_ports::{StoragePorts, StoragePortsBuilder};
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryScalar;
 use sqlx::{PgConnection, PgPool, Postgres};
@@ -2335,6 +2335,13 @@ impl PgStorage {
 
     #[must_use]
     pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
+        self.storage_ports_builder().build()
+    }
+
+    /// [`Self::storage_ports`] before `build`, so a host can add the
+    /// optional ports storage does not implement (`owner_drop_proof`).
+    #[must_use]
+    pub fn storage_ports_builder(self: Arc<Self>) -> StoragePortsBuilder {
         StoragePorts::builder()
             .fact_ingest(self.clone())
             .mcp_call_read(self.clone())
@@ -2356,7 +2363,6 @@ impl PgStorage {
             .source_cursor(self.clone())
             .owner_erase(self.clone())
             .write_session(self)
-            .build()
     }
 
     /// Global enqueue-only embedding reconciliation.
