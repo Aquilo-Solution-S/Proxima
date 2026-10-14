@@ -371,7 +371,7 @@ async fn assert_memory_owner_refusals(conn: &mut PgConnection) {
     reason = "one migration history, three installs"
 )]
 async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
-    let db = TestDb::fresh().await;
+    let db = TestDb::fresh_before_owner_rls().await;
     migrate_through_v015(&db.name, &db.pg).await;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
@@ -498,7 +498,7 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
 async fn projection_rows_follow_their_memory_kind() {
     use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerId, Role, UserId};
 
-    let db = TestDb::fresh().await;
+    let db = TestDb::fresh_before_owner_rls().await;
     apply_current_migrations(&db.pg)
         .await
         .expect("current migrations");

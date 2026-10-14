@@ -1,5 +1,6 @@
 //! Engine membership authorization for nested group endpoints.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use proxima_core::authz::{AuthorizationHook, AuthzInput, AuthzOperation, AuthzVeto};
@@ -9,10 +10,7 @@ use proxima_core::{
     Relation, Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::test_fixtures::{
-    core_migrator_before_owner_rls, register_group_for_tests,
-    reopen_migrations_after_owner_rls_lane,
-};
+use proxima_storage_pg::test_fixtures::register_group_for_tests;
 use proxima_storage_pg::{PgPlatformScope, PgStorage};
 use proxima_storage_pg::{PgPoolConfig, PgTuning};
 use sqlx::PgPool;
@@ -57,9 +55,16 @@ impl Harness {
         let name = format!("proxima_test_nested_engine_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let admin_pool = PgPool::connect(&db_url(&name)).await?;
-        core_migrator_before_owner_rls().run(&admin_pool).await?;
+        let mut staged = proxima_storage_pg::core_migrator();
+        staged.migrations = Cow::Owned(
+            staged
+                .iter()
+                .filter(|migration| migration.version < 14)
+                .cloned()
+                .collect(),
+        );
+        staged.run(&admin_pool).await?;
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
-        reopen_migrations_after_owner_rls_lane(&admin_pool).await?;
         let migration = PgStorage::connect_for_migrations_with_config(
             &platform_url,
             PgPoolConfig::default(),

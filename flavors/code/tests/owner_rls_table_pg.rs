@@ -176,7 +176,7 @@ async fn platform_connection(db: &TestDb) -> PgConnection {
 
 /// A migrated database and a connection as the role that owns its tables.
 async fn migrated_platform() -> (TestDb, PgConnection) {
-    let db = TestDb::fresh().await;
+    let db = TestDb::fresh_before_owner_rls().await;
     apply_current_migrations(&db.pg)
         .await
         .expect("current migrations");
