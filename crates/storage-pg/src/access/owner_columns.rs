@@ -440,7 +440,7 @@ pub(crate) async fn blob_upload_object_keys(
 ///
 /// The only production owners upsert on the data path. Memory / goal / wake /
 /// citation / cited-blob writes all go through this. A group is registered
-/// when it is created ([`register_group`]), so an id a write reaches unregistered
+/// when it is created (`register_group`), so an id a write reaches unregistered
 /// is a user seen for the first time and is registered as `personal`. A
 /// registered id keeps the kind it was registered with: the registry is never
 /// rewritten from a write.

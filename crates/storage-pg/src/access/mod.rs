@@ -278,7 +278,7 @@ impl PgOwnerAccessResolver {
     /// full enumeration — a single indexed `EXISTS` query for callers that
     /// only need one relation check (e.g. gating a manage-only action).
     ///
-    /// Only [`OwnerId::Group`] owners carry row-backed relations in
+    /// Only registered group owners carry row-backed relations in
     /// `proxima_core.group_memberships`; Personal access is
     /// derived by the kernel rules, never by a membership row, so probing
     /// either always returns `Ok(false)` — fail closed rather than mint a

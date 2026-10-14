@@ -100,6 +100,7 @@ async fn run_cold_reboot(database: &str, keep_s3: bool) -> TestResult<ColdEraseO
     let group = GroupId::new(Uuid::now_v7());
     let owner = OwnerId::from(group);
     let initial = boot(database, owner, Some(config.clone())).await?;
+    register_group(&admin_pool(database).await?, group).await?;
     let authz = host_context(owner, AuthPath::HostBearer);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),
@@ -337,6 +338,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
     let group = GroupId::new(Uuid::now_v7());
     let owner = OwnerId::from(group);
     let initial = boot(database, owner, Some(config.clone())).await?;
+    register_group(&admin_pool(database).await?, group).await?;
     let store = initial
         .host()
         .blobs()
