@@ -445,6 +445,12 @@ pub(crate) async fn blob_upload_object_keys(
 /// registered id keeps the kind it was registered with: the registry is never
 /// rewritten from a write.
 ///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
 /// # Errors
 ///
 /// Storage errors from the upsert.
@@ -469,24 +475,19 @@ pub async fn ensure_owner_row(
 
 /// Register `group` as a group, eagerly, when it is created.
 ///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
 /// # Errors
 ///
 /// [`StorageError::Conflict`] when the id is already registered as a user.
 /// Other storage errors from the upsert.
-pub(crate) async fn register_group(
-    conn: &mut sqlx::PgConnection,
-    group: GroupId,
-) -> Result<(), StorageError> {
-    let group_id = group.into_inner();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'group')
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(group_id)
-    .execute(&mut *conn)
-    .await
-    .map_err(map_err)?;
+pub async fn register_group(conn: &mut PgConnection, group: GroupId) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group).await?;
+    insert_group_row(conn, group).await?;
     if registered_group_on_connection(conn, group).await? {
         Ok(())
     } else {
@@ -494,6 +495,19 @@ pub(crate) async fn register_group(
             "owner id is registered as a user, not a group".into(),
         ))
     }
+}
+
+async fn insert_group_row(conn: &mut PgConnection, group: GroupId) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// Whether `group` is registered as a group in `proxima_core.owners`.
@@ -553,14 +567,14 @@ pub(crate) async fn resolve_membership<'e>(
 ///
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn lock_group_membership_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     group_id: GroupId,
 ) -> Result<(), StorageError> {
     sqlx::query(
         "SELECT pg_advisory_xact_lock(hashtextextended('proxima-group-membership:' || $1::text, 0))",
     )
     .bind(group_id.into_inner())
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await
     .map_err(map_err)?;
     Ok(())
@@ -575,44 +589,67 @@ pub(crate) async fn bootstrap_group_admin(
     platform: Option<&crate::PgPlatformScope>,
     group_id: GroupId,
     first_admin_user_id: UserId,
-    _granted_by: uuid::Uuid,
+    granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx = match platform {
             Some(scope) => scope.begin().await?,
             None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
         };
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        register_group(&mut tx, group_id).await?;
-        let inserted = sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             SELECT $1, $2, $3
-              WHERE NOT EXISTS (
-                  SELECT 1
-                    FROM proxima_core.group_memberships
-                   WHERE group_id = $1
-                     AND relation = $3
-              )",
-        )
-        .bind(group_id.into_inner())
-        .bind(first_admin_user_id.into_inner())
-        .bind(Relation::Admin)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-
-        if inserted.rows_affected() == 0 {
-            tx.rollback().await.map_err(map_err)?;
-            return Err(StorageError::Conflict(
-                "group already has an Admin membership".into(),
-            ));
-        }
-
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            bootstrap_group_admin_on_connection(&mut tx, group_id, first_admin_user_id, granted_by)
+                .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Register a group and seed its first Admin; refuse an existing Admin.
+///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if an Admin exists or the group id is
+/// registered as a user (the membership foreign key); other database failures
+/// are classified as [`StorageError`].
+pub async fn bootstrap_group_admin_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    first_admin_user_id: UserId,
+    _granted_by: uuid::Uuid,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    insert_group_row(conn, group_id).await?;
+    let inserted = sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         SELECT $1, $2, $3
+          WHERE NOT EXISTS (
+              SELECT 1
+                FROM proxima_core.group_memberships
+               WHERE group_id = $1
+                 AND relation = $3
+          )",
+    )
+    .bind(group_id.into_inner())
+    .bind(first_admin_user_id.into_inner())
+    .bind(Relation::Admin)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+
+    if inserted.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "group already has an Admin membership".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Adding a member to an id never seen before creates the group, so the
@@ -628,29 +665,54 @@ pub(crate) async fn add_group_member(
     group_id: GroupId,
     member_user_id: UserId,
     relation: Relation,
-    _granted_by: uuid::Uuid,
+    granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        register_group(&mut tx, group_id).await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(relation)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            add_group_member_on_connection(&mut tx, group_id, member_user_id, relation, granted_by)
+                .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Register an unseen group and add a relation; an existing relation stays.
+///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if the group id is registered as a user
+/// (the membership foreign key); other database failures are classified as
+/// [`StorageError`].
+pub async fn add_group_member_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+    _granted_by: uuid::Uuid,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    insert_group_row(conn, group_id).await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(relation)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// # Errors
@@ -665,21 +727,40 @@ pub(crate) async fn remove_group_member(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result = remove_group_member_on_connection(&mut tx, group_id, member_user_id).await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Remove every relation of a member in a group; an absent member is `Ok`.
+///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] for database failures.
+pub async fn remove_group_member_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// Delete the one `relation` row of `member_user_id` in `group_id`, under the
@@ -698,23 +779,45 @@ pub(crate) async fn remove_group_member_relation(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2
-                AND relation = $3",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(relation)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            remove_group_member_relation_on_connection(&mut tx, group_id, member_user_id, relation)
+                .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Remove one relation of a member in a group; an absent relation is `Ok`.
+///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] for database failures.
+pub async fn remove_group_member_relation_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2
+            AND relation = $3",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(relation)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// Replace the `from` row of `member_user_id` in `group_id` with a `to` row in
@@ -735,46 +838,77 @@ pub(crate) async fn replace_group_member_relation(
     member_user_id: UserId,
     from: Relation,
     to: Relation,
-    _granted_by: uuid::Uuid,
+    granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        let deleted = sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2
-                AND relation = $3",
+        let result = replace_group_member_relation_on_connection(
+            &mut tx,
+            group_id,
+            member_user_id,
+            from,
+            to,
+            granted_by,
         )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(from)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        if deleted.rows_affected() == 0 {
-            tx.rollback().await.map_err(map_err)?;
-            return Err(StorageError::Conflict(
-                "member does not hold the relation being replaced".into(),
-            ));
-        }
-        sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(to)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Replace a held relation with another; an existing target relation stays.
+///
+/// No authorization runs: the host vouches for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if the member does not hold `from`, with
+/// nothing changed. Other database failures are classified as [`StorageError`];
+/// the caller must roll back the transaction on failure.
+pub async fn replace_group_member_relation_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    from: Relation,
+    to: Relation,
+    _granted_by: uuid::Uuid,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    let deleted = sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2
+            AND relation = $3",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(from)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    if deleted.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "member does not hold the relation being replaced".into(),
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(to)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// True iff `member_user_id` currently holds exactly `relation` on `group_id`.

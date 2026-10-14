@@ -285,6 +285,18 @@ pub use proxima_mcp_server::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// Owner-registry and membership writes on a host's own transaction.
+///
+/// No authorization runs: the host vouches for each write as it would for a
+/// row it inserts itself. The caller's transaction must be platform-scoped
+/// (for example [`PgPlatformScope::begin`]); pass `&mut *tx`. These functions
+/// never begin, commit, roll back, retry or set a scope. The caller retries
+/// its whole transaction on [`StorageError::Retryable`]. All effects follow
+/// from the committed rows; no post-commit action is required.
+pub use proxima_storage_pg::{
+    add_group_member, bootstrap_group_admin, ensure_owner_row, register_group, remove_group_member,
+    remove_group_member_relation, replace_group_member_relation,
+};
 /// Role probes on a host's own transaction (see
 /// [`proxima_storage_pg::roles_for_subject`]): the answers
 /// [`PgOwnerAccessResolver`] gives, with no transaction of their own.
