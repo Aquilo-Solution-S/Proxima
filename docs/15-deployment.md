@@ -181,6 +181,8 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
+| `PROXIMA_S3_ACCESS_KEY_ID` | with bucket | `proxima` | Static S3 access key id. |
+| `PROXIMA_S3_SECRET_ACCESS_KEY` | with bucket | `proxima-dev` | Static S3 secret access key; never logged. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
 | `PROXIMA_PG_*` | no | see [env-vars](reference/env-vars.md) | Pool and search tuning (`MAX_CONNECTIONS`, `HNSW_*`, `SEMANTIC_*`). Defaults are the shipped path. |
 

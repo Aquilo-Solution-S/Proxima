@@ -67,7 +67,6 @@ whatlang = "0.18"
 # testing patterns one at a time per path.
 globset = "0.4"
 sha2 = "0.11"
-aws-config = "1.6.0"
 # Drop aws-sdk-s3's default `rustls` feature: it pulls the LEGACY rustls 0.21
 # stack (aws-smithy-http-client/legacy-rustls-ring -> rustls-webpki 0.101.7,
 # RUSTSEC-2026-0098/0099/0104). `default-https-client` (kept) uses the modern

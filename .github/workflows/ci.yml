@@ -235,8 +235,8 @@ jobs:
       PROXIMA_S3_BUCKET: proxima-cited-blobs
       PROXIMA_S3_REGION: us-east-1
       PROXIMA_S3_ENDPOINT_URL: http://localhost:9000
-      AWS_ACCESS_KEY_ID: proxima
-      AWS_SECRET_ACCESS_KEY: proxima-dev
+      PROXIMA_S3_ACCESS_KEY_ID: proxima
+      PROXIMA_S3_SECRET_ACCESS_KEY: proxima-dev
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

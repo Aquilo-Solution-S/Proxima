@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::{ColdObjectStore, StorageError};
@@ -90,7 +89,7 @@ async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
     let key = format!("objects/{}", Uuid::now_v7());
     let result = tokio::time::timeout(
@@ -308,17 +307,4 @@ async fn version_count(client: &Client, bucket: &str, key: &str) -> TestResult<u
             .iter()
             .filter(|marker| marker.key() == Some(key))
             .count())
-}
-
-async fn s3_client(config: &S3RuntimeConfig) -> Client {
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(Region::new(config.region.clone()));
-    if let Some(endpoint) = &config.endpoint_url {
-        loader = loader.endpoint_url(endpoint);
-    }
-    Client::from_conf(
-        aws_sdk_s3::config::Builder::from(&loader.load().await)
-            .force_path_style(true)
-            .build(),
-    )
 }

@@ -50,18 +50,21 @@ docker compose -f docker-compose.dev.yml --profile init run --rm s3-init
 run as a one-shot command so the shell waits for bucket creation and versioning
 to finish; do not use `up -d --wait s3-init` as a replacement.
 
-Export the same local target and AWS SDK credential-chain values in the shell
-that starts `proxima-mcp`:
+Export the same local target and static S3 key pair in the shell that starts
+`proxima-mcp`:
 
 ```sh
 export PROXIMA_S3_BUCKET=proxima-dev
 export PROXIMA_S3_REGION=us-east-1
 export PROXIMA_S3_ENDPOINT_URL="http://127.0.0.1:${PROXIMA_DEV_S3_PORT:-9100}"
 export PROXIMA_S3_FORCE_PATH_STYLE=true
-export AWS_ACCESS_KEY_ID=proxima
-export AWS_SECRET_ACCESS_KEY=proxima-dev
-export AWS_DEFAULT_REGION=us-east-1
+export PROXIMA_S3_ACCESS_KEY_ID=proxima
+export PROXIMA_S3_SECRET_ACCESS_KEY=proxima-dev
 ```
+
+The S3 client uses only this configured pair. It does not read the ambient AWS
+environment, shared credentials or config files, profiles, web identity,
+container or instance roles, session tokens, or refresh providers.
 
 ## Start A Local OIDC Issuer
 

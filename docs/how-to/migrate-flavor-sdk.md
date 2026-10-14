@@ -18,6 +18,7 @@ migration ([migration policy §v0.0.31](migrations.md#v0031)); no flavor migrati
 | Authorization | Engine attach requires manage on both groups; detach either; relation change parent. Host transaction forms continue to run no authorization/hooks |
 | Locks | One root-keyed advisory lock per affected tree, two roots in UUID order for attach; roots confirmed after locking and retried if moved |
 | Isolation | Membership writes require `READ COMMITTED`; `REPEATABLE READ` and `SERIALIZABLE` refuse with typed `StorageError::MembershipIsolation` |
+| S3 credentials | **Breaking:** set `PROXIMA_S3_ACCESS_KEY_ID` and `PROXIMA_S3_SECRET_ACCESS_KEY` when enabling the S3 lane. The client uses only this static pair; a host that relied on ambient environment credentials, shared config or credentials files, a profile, web identity, a container or instance role, session token, or refresh provider must configure both variables. |
 | Removed | `PgOwnerAccessResolver::has_role_for_owner`; use `roles_for_subject`/`group_role` and authorize from the resulting role |
 | Erasure | A subgroup prevents abandonment/erase; group erase removes its parent edge; person erase removes every projected role |
 

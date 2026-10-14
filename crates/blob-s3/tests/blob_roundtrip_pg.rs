@@ -1,6 +1,4 @@
-use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_blob_s3::{
     BlobError, CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore,
@@ -246,6 +244,10 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
             .expect("S3 target required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
         region: std::env::var("PROXIMA_S3_REGION").expect("PROXIMA_S3_REGION"),
         endpoint_url: std::env::var("PROXIMA_S3_ENDPOINT_URL").ok(),
+        key_pair: proxima_blob_s3::S3KeyPair::new(
+            std::env::var("PROXIMA_S3_ACCESS_KEY_ID").expect("PROXIMA_S3_ACCESS_KEY_ID"),
+            std::env::var("PROXIMA_S3_SECRET_ACCESS_KEY").expect("PROXIMA_S3_SECRET_ACCESS_KEY"),
+        ),
         force_path_style: true,
         upload_ttl_seconds: 900,
         read_ttl_seconds: 900,
@@ -253,22 +255,8 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
     }
 }
 
-async fn s3_client(config: &S3RuntimeConfig) -> Client {
-    let mut loader =
-        aws_config::defaults(BehaviorVersion::latest()).region(Region::new(config.region.clone()));
-    if let Some(endpoint_url) = &config.endpoint_url {
-        loader = loader.endpoint_url(endpoint_url);
-    }
-    let shared = loader.load().await;
-    let mut builder = aws_sdk_s3::config::Builder::from(&shared);
-    if config.force_path_style {
-        builder = builder.force_path_style(true);
-    }
-    Client::from_conf(builder.build())
-}
-
 async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static [u8]) {
-    let client = s3_client(config).await;
+    let client = config.client();
     client
         .put_object()
         .bucket(&config.bucket)
@@ -343,7 +331,7 @@ async fn wait_for_s3_object(
     config: &S3RuntimeConfig,
     key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = s3_client(config).await;
+    let client = config.client();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if client
@@ -791,7 +779,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
         row.try_get::<Option<Vec<u8>>, _>("content_hash")?.is_none(),
         "a first-stage terminal repair must not manufacture staged identity"
     );
-    let client = s3_client(&config).await;
+    let client = config.client();
     let object = client
         .get_object()
         .bucket(&config.bucket)
@@ -946,8 +934,8 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     .await;
     let canonical_key = format!("objects/{upload_id}");
     put_object_via_sdk(&config, &canonical_key, existing).await;
-    let conditional_error = s3_client(&config)
-        .await
+    let conditional_error = config
+        .client()
         .put_object()
         .bucket(&config.bucket)
         .key(&canonical_key)
@@ -976,8 +964,8 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     assert!(
         matches!(error, BlobError::State(message) if message == "canonical object conflicts with staged bytes")
     );
-    let retained = s3_client(&config)
-        .await
+    let retained = config
+        .client()
         .get_object()
         .bucket(&config.bucket)
         .key(&canonical_key)
@@ -1472,7 +1460,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
     let completed = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"transferred")
         .await
         .expect("upload");
-    let client = s3_client(&config).await;
+    let client = config.client();
     let before = head(&client, &config.bucket, &completed.object_key)
         .await
         .expect("object present before the transfer");
@@ -1599,7 +1587,7 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
         "the cited series transfers"
     );
 
-    let client = s3_client(&config).await;
+    let client = config.client();
     erase_owner_and_drain(&pg, &store, source).await;
 
     assert!(
@@ -1896,7 +1884,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
             .await
             .expect("completed blob row");
 
-    let client = s3_client(&config).await;
+    let client = config.client();
     assert!(
         client
             .head_object()
@@ -1945,7 +1933,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
 
     // Self-provision a versioned bucket (idempotent across runs).
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
@@ -2104,7 +2092,7 @@ async fn versioned_cold_delete_removes_exact_key_versions_and_preserves_prefix_c
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
     client
         .put_bucket_versioning()
@@ -2422,8 +2410,8 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
         complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
             .await
             .expect("second upload");
-    s3_client(&config)
-        .await
+    config
+        .client()
         .delete_object()
         .bucket(&config.bucket)
         .key(&lost_key)
@@ -2582,16 +2570,14 @@ async fn upload_status(pool: &sqlx::PgPool, upload_id: &str) -> String {
 
 async fn assert_s3_key_absent(config: &S3RuntimeConfig, key: &str) {
     assert!(
-        head(&s3_client(config).await, &config.bucket, key)
-            .await
-            .is_none(),
+        head(&config.client(), &config.bucket, key).await.is_none(),
         "S3 key {key} must be absent"
     );
 }
 
 async fn assert_s3_key_versions_absent(config: &S3RuntimeConfig, key: &str) {
-    let objects = s3_client(config)
-        .await
+    let objects = config
+        .client()
         .list_object_versions()
         .bucket(&config.bucket)
         .prefix(key)
@@ -2612,8 +2598,8 @@ async fn assert_s3_key_versions_absent(config: &S3RuntimeConfig, key: &str) {
 }
 
 async fn exact_key_version_ids(config: &S3RuntimeConfig, key: &str) -> Vec<(String, bool)> {
-    let objects = s3_client(config)
-        .await
+    let objects = config
+        .client()
         .list_object_versions()
         .bucket(&config.bucket)
         .prefix(key)
@@ -2825,7 +2811,7 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
         assert_eq!(corpus_counts(&pool).await, (0, 0));
         assert_eq!(upload_status(&pool, &upload_id).await, "pending");
         assert!(
-            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            head(&config.client(), &config.bucket, &canonical_key)
                 .await
                 .is_some(),
             "staging leaves canonical bytes available for abort or recovery"
@@ -2845,7 +2831,7 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
         assert!(aborted.aborted);
         assert_eq!(upload_status(&pool, &upload_id).await, "aborted");
         assert!(
-            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            head(&config.client(), &config.bucket, &canonical_key)
                 .await
                 .is_some(),
             "explicit abort retains canonical bytes for owner cleanup"
@@ -2864,7 +2850,7 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
             .expect("repeated abort");
         assert!(repeated.aborted);
         assert!(
-            head(&s3_client(&config).await, &config.bucket, &canonical_key)
+            head(&config.client(), &config.bucket, &canonical_key)
                 .await
                 .is_some(),
             "repeated abort retains canonical bytes"
@@ -2947,7 +2933,7 @@ async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
     assert_eq!(corpus_counts(&pool).await, (1, 1));
     assert_s3_key_absent(&config, &pending_key).await;
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_some(),
         "successful retry retains canonical bytes"
@@ -2977,7 +2963,7 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
     client
         .put_bucket_versioning()
@@ -3042,7 +3028,7 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
     assert!(aborted.aborted);
     assert_s3_key_versions_absent(&config, &pending_key).await;
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_some(),
         "aborting does not delete the canonical object"
@@ -3075,7 +3061,7 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
     ));
     assert_s3_key_versions_absent(&config, &pending_key).await;
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_some(),
         "stage-after-abort cleanup retains canonical bytes"
@@ -3105,7 +3091,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
     client
         .put_bucket_versioning()
@@ -3177,7 +3163,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
             .await
     });
     let deadline = Instant::now() + Duration::from_secs(10);
-    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+    while head(&config.client(), &config.bucket, &canonical_key)
         .await
         .is_none()
     {
@@ -3216,7 +3202,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     assert!(matches!(error, BlobError::State(message) if message == expected_error));
     assert_s3_key_versions_absent(&config, &pending_key).await;
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_some(),
         "terminal repair retains canonical bytes"
@@ -3296,7 +3282,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
 
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
@@ -3369,7 +3355,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_none(),
         "the erase decided before any canonical object existed"
@@ -3389,7 +3375,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
             )
             .await
     });
-    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+    while head(&config.client(), &config.bucket, &canonical_key)
         .await
         .is_none()
     {
@@ -3423,7 +3409,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     assert_eq!(debt.0, config.bucket);
     assert_eq!(debt.1, None);
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_some(),
         "the debt is a queue row, not a synchronous delete"
@@ -3471,7 +3457,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
     client
         .put_bucket_versioning()
@@ -3542,7 +3528,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
             .await
     });
     let deadline = Instant::now() + Duration::from_secs(10);
-    while head(&s3_client(&config).await, &config.bucket, &canonical_key)
+    while head(&config.client(), &config.bucket, &canonical_key)
         .await
         .is_none()
     {
@@ -3623,7 +3609,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         (1, 1, 0)
     );
     assert!(
-        head(&s3_client(&config).await, &config.bucket, &canonical_key)
+        head(&config.client(), &config.bucket, &canonical_key)
             .await
             .is_none(),
         "the drain destroys the object the stage orphaned"
@@ -3658,7 +3644,7 @@ async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
         bucket: format!("{}-versioned", base.bucket),
         ..base
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
     client
         .put_bucket_versioning()

@@ -1,6 +1,5 @@
-use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
+use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use proxima_core::{EndpointUrlError, EndpointUrlPolicy, env_value, process_env};
 
 use crate::BlobError;
@@ -30,11 +29,48 @@ pub(crate) fn validate_presign_ttl(key: &str, seconds: u64) -> Result<(), BlobEr
     Ok(())
 }
 
+/// Static S3 key pair; the secret is private and redacted by `Debug`.
+///
+/// ```
+/// proxima_blob_s3::S3KeyPair::new(String::new(), String::new());
+/// ```
+///
+/// ```compile_fail
+/// proxima_blob_s3::S3KeyPair::new(String::new(), String::new()).secret_access_key;
+/// ```
+#[derive(Clone)]
+pub struct S3KeyPair {
+    access_key_id: String,
+    secret_access_key: String,
+}
+
+impl S3KeyPair {
+    /// Construct a static key pair supplied by a host.
+    #[must_use]
+    pub fn new(access_key_id: String, secret_access_key: String) -> Self {
+        Self {
+            access_key_id,
+            secret_access_key,
+        }
+    }
+}
+
+impl std::fmt::Debug for S3KeyPair {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("S3KeyPair")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Runtime S3 target and TTL settings for cited-blob uploads.
 #[derive(Debug, Clone)]
 pub struct S3RuntimeConfig {
     pub bucket: String,
     pub region: String,
+    pub key_pair: S3KeyPair,
     pub endpoint_url: Option<String>,
     pub force_path_style: bool,
     pub upload_ttl_seconds: u64,
@@ -87,6 +123,10 @@ impl S3RuntimeConfig {
                 "missing PROXIMA_S3_REGION (required with PROXIMA_S3_BUCKET)".to_string(),
             )
         })?;
+        let key_pair = S3KeyPair::new(
+            required_key(lookup, "PROXIMA_S3_ACCESS_KEY_ID")?,
+            required_key(lookup, "PROXIMA_S3_SECRET_ACCESS_KEY")?,
+        );
         let endpoint_url = env_value(lookup, "PROXIMA_S3_ENDPOINT_URL");
         if let Some(endpoint_url) = &endpoint_url {
             validate_endpoint_url(endpoint_url)?;
@@ -94,6 +134,7 @@ impl S3RuntimeConfig {
         Ok(Some(Self {
             bucket,
             region,
+            key_pair,
             endpoint_url,
             force_path_style: parse_bool_env(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_presign_ttl_env(
@@ -124,19 +165,31 @@ impl S3RuntimeConfig {
         env_value(&process_env, "PROXIMA_S3_BUCKET").is_some()
     }
 
-    pub(crate) async fn client(&self) -> Result<Client, BlobError> {
-        let mut loader = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(self.region.clone()));
+    /// Build an S3 client solely from these configured values.
+    #[must_use]
+    pub fn client(&self) -> Client {
+        let mut builder = aws_sdk_s3::Config::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new(self.region.clone()))
+            .force_path_style(self.force_path_style)
+            .credentials_provider(Credentials::new(
+                self.key_pair.access_key_id.clone(),
+                self.key_pair.secret_access_key.clone(),
+                None,
+                None,
+                "proxima-s3-config",
+            ));
         if let Some(endpoint_url) = &self.endpoint_url {
-            loader = loader.endpoint_url(endpoint_url);
+            builder = builder.endpoint_url(endpoint_url);
         }
-        let shared = loader.load().await;
-        let mut builder = aws_sdk_s3::config::Builder::from(&shared);
-        if self.force_path_style {
-            builder = builder.force_path_style(true);
-        }
-        Ok(Client::from_conf(builder.build()))
+        Client::from_conf(builder.build())
     }
+}
+
+fn required_key(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<String, BlobError> {
+    env_value(lookup, key).ok_or_else(|| {
+        BlobError::Config(format!("missing {key} (required with PROXIMA_S3_BUCKET)"))
+    })
 }
 
 fn parse_bool_env(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<bool, BlobError> {
@@ -213,6 +266,10 @@ mod tests {
                 .iter()
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_string())
+                .or_else(|| match key {
+                    "PROXIMA_S3_ACCESS_KEY_ID" | "PROXIMA_S3_SECRET_ACCESS_KEY" => process_env(key),
+                    _ => None,
+                })
         }
     }
 
@@ -234,6 +291,120 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
+    }
+
+    fn assert_missing_key_is_refused(missing: &str) {
+        let pairs = bucketed(&[]);
+        let lookup = |key: &str| {
+            if key == missing {
+                None
+            } else {
+                env(&pairs)(key)
+            }
+        };
+        let err = S3RuntimeConfig::from_lookup(&lookup).unwrap_err();
+        let BlobError::Config(msg) = err else {
+            panic!("wrong variant");
+        };
+        assert!(msg.contains(missing), "{msg}");
+    }
+
+    #[test]
+    fn from_lookup_requires_access_key_id_alongside_the_bucket() {
+        assert_missing_key_is_refused("PROXIMA_S3_ACCESS_KEY_ID");
+    }
+
+    #[test]
+    fn from_lookup_requires_secret_access_key_alongside_the_bucket() {
+        assert_missing_key_is_refused("PROXIMA_S3_SECRET_ACCESS_KEY");
+    }
+
+    // The SDK's deprecated Config::credentials_provider() always returns None.
+    // Observe the configured resolver through its supported identity-cache seam.
+    #[derive(Debug)]
+    struct CredentialsObserver(std::sync::Arc<std::sync::Mutex<Option<Credentials>>>);
+
+    impl aws_sdk_s3::config::ResolveCachedIdentity for CredentialsObserver {
+        fn resolve_cached_identity<'a>(
+            &'a self,
+            resolver: aws_smithy_runtime_api::client::identity::SharedIdentityResolver,
+            runtime_components: &'a aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+            config_bag: &'a aws_sdk_s3::config::ConfigBag,
+        ) -> aws_smithy_runtime_api::client::identity::IdentityFuture<'a> {
+            use aws_smithy_runtime_api::client::identity::{IdentityFuture, ResolveIdentity};
+
+            IdentityFuture::new(async move {
+                let identity = resolver
+                    .resolve_identity(runtime_components, config_bag)
+                    .await?;
+                *self.0.lock().unwrap() = identity.data::<Credentials>().cloned();
+                Ok(identity)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn client_uses_only_configured_credentials_region_and_endpoint() {
+        use aws_sdk_s3::presigning::PresigningConfig;
+
+        let mut config = S3RuntimeConfig::from_env().unwrap();
+        config.region = "eu-central-1".into();
+        config.force_path_style = true;
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let client = Client::from_conf(
+            config
+                .client()
+                .config()
+                .to_builder()
+                .identity_cache(CredentialsObserver(observed.clone()))
+                .build(),
+        );
+        assert_eq!(client.config().region().unwrap().as_ref(), config.region);
+        let request = client
+            .get_object()
+            .bucket(&config.bucket)
+            .key("config-probe")
+            .presigned(PresigningConfig::expires_in(std::time::Duration::from_mins(1)).unwrap())
+            .await
+            .unwrap();
+        let endpoint = config
+            .endpoint_url
+            .as_ref()
+            .expect("PROXIMA_S3_ENDPOINT_URL");
+        assert!(
+            request
+                .uri()
+                .starts_with(&format!("{endpoint}/{}/config-probe?", config.bucket))
+        );
+        let credentials = observed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("configured resolver ran");
+        assert_eq!(credentials.access_key_id(), config.key_pair.access_key_id);
+        assert!(credentials.secret_access_key() == config.key_pair.secret_access_key);
+        assert!(credentials.session_token().is_none());
+        assert!(credentials.expiry().is_none());
+    }
+
+    #[test]
+    fn from_lookup_rejects_blank_key_variables() {
+        for key in ["PROXIMA_S3_ACCESS_KEY_ID", "PROXIMA_S3_SECRET_ACCESS_KEY"] {
+            let extra = [(key, " \n")];
+            let pairs = bucketed(&extra);
+            let error = S3RuntimeConfig::from_lookup(&env(&pairs)).unwrap_err();
+            assert!(matches!(error, BlobError::Config(message) if message.contains(key)));
+        }
+    }
+
+    #[test]
+    fn config_debug_redacts_the_secret_and_shows_the_access_key_id() {
+        let config = S3RuntimeConfig::from_env().unwrap();
+        let debug = format!("{config:?}");
+        assert!(!config.key_pair.secret_access_key.is_empty());
+        assert!(!debug.contains(&config.key_pair.secret_access_key));
+        assert!(debug.contains(&config.key_pair.access_key_id));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     #[test]
