@@ -1,4 +1,5 @@
-//! Compile-time flavor composition: a `FlavorBundle` is one flavor's
+//! Compile-time flavor composition. A flavor is what a host serves under
+//! its own id; a `FlavorBundle` is one flavor linked into the host: its
 //! vocabulary (register fn) plus its sidecar migrations. Tuples of
 //! bundles compose statically — duplicate ids fail at registry freeze.
 

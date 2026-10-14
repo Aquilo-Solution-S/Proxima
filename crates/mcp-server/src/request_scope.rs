@@ -23,8 +23,8 @@ const CREDENTIAL_HEADERS: [&str; 3] = ["authorization", "proxy-authorization", "
 /// Which inbound request headers the served path copies into
 /// [`RequestHeaders`].
 ///
-/// Each entry is a header name (`x-pack-ticket`) or a prefix ending in `*`
-/// (`x-piy-env-*`). Matching is case-insensitive. Empty — the default —
+/// Each entry is a header name (`x-flavor-ticket`) or a prefix ending in `*`
+/// (`x-flavor-env-*`). Matching is case-insensitive. Empty — the default —
 /// copies nothing and publishes no [`RequestHeaders`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RequestHeaderAllowlist {
@@ -179,21 +179,21 @@ mod tests {
 
     #[test]
     fn copies_exact_and_prefixed_names_only() {
-        let allowlist = RequestHeaderAllowlist::parse(["X-Pack-Ticket", "x-piy-env-*", " "])
+        let allowlist = RequestHeaderAllowlist::parse(["X-Flavor-Ticket", "x-flavor-env-*", " "])
             .expect("valid entries");
         let copied = allowlist
             .extract(&headers(&[
-                ("x-pack-ticket", "t1"),
-                ("x-piy-env-forgejo-base-url", "https://git.test"),
+                ("x-flavor-ticket", "t1"),
+                ("x-flavor-env-forgejo-base-url", "https://git.test"),
                 ("x-other", "no"),
                 ("authorization", "Bearer secret"),
             ]))
             .expect("well-formed")
             .expect("allowlist is non-empty");
 
-        assert_eq!(copied.get("X-PACK-TICKET"), Some("t1"));
+        assert_eq!(copied.get("X-FLAVOR-TICKET"), Some("t1"));
         assert_eq!(
-            copied.get("x-piy-env-forgejo-base-url"),
+            copied.get("x-flavor-env-forgejo-base-url"),
             Some("https://git.test")
         );
         assert_eq!(copied.len(), 2);
@@ -204,7 +204,7 @@ mod tests {
     fn an_empty_allowlist_publishes_nothing() {
         assert!(
             RequestHeaderAllowlist::default()
-                .extract(&headers(&[("x-pack-ticket", "t1")]))
+                .extract(&headers(&[("x-flavor-ticket", "t1")]))
                 .unwrap()
                 .is_none()
         );
@@ -229,15 +229,18 @@ mod tests {
 
     #[test]
     fn a_repeated_or_non_ascii_header_is_refused() {
-        let allowlist = RequestHeaderAllowlist::parse(["x-pack-ticket"]).unwrap();
+        let allowlist = RequestHeaderAllowlist::parse(["x-flavor-ticket"]).unwrap();
         let err = allowlist
-            .extract(&headers(&[("x-pack-ticket", "a"), ("x-pack-ticket", "b")]))
+            .extract(&headers(&[
+                ("x-flavor-ticket", "a"),
+                ("x-flavor-ticket", "b"),
+            ]))
             .unwrap_err();
         assert!(err.to_string().contains("at most once"), "{err}");
 
         let mut map = HeaderMap::new();
         map.insert(
-            "x-pack-ticket",
+            "x-flavor-ticket",
             HeaderValue::from_bytes(b"caf\xc3\xa9").unwrap(),
         );
         assert!(allowlist.extract(&map).is_err());
@@ -247,13 +250,13 @@ mod tests {
     fn request_services_merges_the_extension_bag_and_the_headers() {
         #[derive(Debug)]
         struct Budget;
-        let allowlist = RequestHeaderAllowlist::parse(["x-pack-ticket"]).unwrap();
+        let allowlist = RequestHeaderAllowlist::parse(["x-flavor-ticket"]).unwrap();
         let mut extensions = http::Extensions::new();
         extensions.insert(FlavorServices::with(Budget));
 
         let services = request_services(
             &allowlist,
-            &headers(&[("x-pack-ticket", "t1")]),
+            &headers(&[("x-flavor-ticket", "t1")]),
             &extensions,
         )
         .expect("merge");
@@ -262,17 +265,17 @@ mod tests {
             services
                 .get::<RequestHeaders>()
                 .unwrap()
-                .get("x-pack-ticket"),
+                .get("x-flavor-ticket"),
             Some("t1")
         );
 
         let mut forged = http::Extensions::new();
         forged.insert(FlavorServices::with(RequestHeaders::from_pairs([(
-            "x-pack-ticket",
+            "x-flavor-ticket",
             "forged",
         )])));
         assert!(
-            request_services(&allowlist, &headers(&[("x-pack-ticket", "t1")]), &forged).is_err()
+            request_services(&allowlist, &headers(&[("x-flavor-ticket", "t1")]), &forged).is_err()
         );
         assert!(
             request_services(
