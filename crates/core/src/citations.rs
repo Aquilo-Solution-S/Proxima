@@ -11,6 +11,12 @@ use crate::CitedObjectPayload;
 
 pub const UPLOADED_BLOB_SCHEMA_ID: &str = "core/uploaded-blob-v1";
 
+/// Canonical object key shared by staging and transactional publication.
+#[must_use]
+pub fn uploaded_blob_object_key(upload_id: uuid::Uuid) -> String {
+    format!("objects/{upload_id}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UploadedBlobPayload {
     pub content_hash: [u8; 32],

@@ -157,9 +157,9 @@ pub trait CitedBlobPort: Send + Sync {
     /// from their `upload_id`, recording only the transfer locator and
     /// digests — never corpus rows.
     ///
-    /// The split exists so that persisting the artefact and recording its
-    /// arrival can be one transaction. This half is the part that cannot
-    /// be: it streams, hashes, and copies in the object store. It is
+    /// The split exists so that persisting the artefact, recording its
+    /// arrival, and settling the upload row can be one transaction. This half
+    /// is the part that cannot be: it streams, hashes, and copies in the object store. It is
     /// idempotent — the canonical key is a function of the `upload_id`
     /// alone. A repeat verifies and reads that immutable canonical object —
     /// it never overwrites it — and a caller that crashes before persisting
@@ -168,8 +168,7 @@ pub trait CitedBlobPort: Send + Sync {
     /// The pending object is retired, best-effort, after the canonical locator
     /// is recorded — a provider failure there never fails a stage that already
     /// succeeded. A retry re-reads those canonical bytes if corpus persistence
-    /// fails; `finish_upload` repeats pending-key cleanup after the artefact is
-    /// in the corpus.
+    /// fails. The Engine settles the row in the corpus transaction.
     ///
     /// # Errors
     ///
@@ -183,17 +182,12 @@ pub trait CitedBlobPort: Send + Sync {
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError>;
 
-    /// Close out a staged upload whose artefact is now in the corpus:
-    /// mark the pending upload completed against `cited_object_id` and
-    /// retry dropping the redundant pending object.
+    /// Retry pending-key cleanup after Engine completion. The cited object,
+    /// Fact and completed upload row are already committed atomically; the
+    /// Engine treats failures here as best effort, bounded by bucket lifecycle.
     ///
-    /// Called after the artefact and its Fact are committed, never
-    /// before — so a crash in between leaves an upload row that still
-    /// says `pending` while its artefact is already recorded. That is
-    /// bookkeeping for the transfer protocol, invisible in the corpus,
-    /// and repaired by completing the same upload again.
-    ///
-    /// Idempotent: an upload already marked completed is not an error.
+    /// Direct port callers use the same transactional row-completion
+    /// implementation. An already completed row is a read-only replay.
     ///
     /// # Errors
     ///

@@ -188,8 +188,8 @@ The Fact's replay key is the **content hash alone**. For one owner a
 content hash resolves to exactly one CitedObject, so keying on filename or
 mime as well would let one file acquire two arrival Facts by being
 uploaded under a second name. One file, one upload Fact, per owner: the
-Fact replays exactly when the upload does, and re-completing is both
-idempotent and the repair path.
+Fact replays exactly when the upload does. A completed upload replays after
+its transfer expiry, returning the same cited object and Fact.
 
 **On a replay the Fact stays one and the upload rows do not, and that is
 deliberate.** Each upload keeps its own `blob_uploads` row with the filename
@@ -213,46 +213,40 @@ the substrate's event rather than owning a parallel one. See docs/09
 ### One write
 
 The CitedObject (its `proxima_core.blob` row), the Fact that cites it, its
-receipt, its embedding job, and any flavor extension rows are one
-transaction. An artefact whose arrival nothing recorded is not a state
+receipt, its embedding job, any flavor extension rows, and the completed
+`blob_uploads` row are one transaction. An artefact whose arrival nothing recorded is not a state
 completion can leave behind.
 
 That works because persisting a CitedObject already *is* a Fact write with
 an inline citation: storage upserts the object on
 `(owner, schema, content_hash)` — the key the upload lane deduplicates on —
 and the Fact carries it as its citation (`memory.blob_id`). Once it does,
-the two cannot come apart. Finishing then marks the `blob_uploads` row
-completed against that blob, outside the transaction (below).
+the two cannot come apart. The same corpus transaction marks the
+`blob_uploads` row completed against that blob.
 
 What cannot be inside that transaction is the object-store work. Streaming,
 hashing, and copying an S3 object is not a database statement and must not
-hold a transaction open while it runs. Completion is therefore three steps:
+hold a transaction open while it runs. Completion is therefore two database
+phases:
 
 1. **stage** — verify the bytes with one bounded object read, publish them
    conditionally to the canonical key derived from their `upload_id`, record
    the transfer locator and SHA-256 audit digest, and carry the BLAKE3 content
    address forward. It writes no corpus rows. The
    redundant pending object is retired before stage returns; a retry reads
-   the recorded canonical key. `finish` repeats the pending-key purge, so a
-   provider failure during either cleanup is repaired by a later retry.
-2. **the transaction** — everything above.
-3. **finish** — mark the upload row completed against the cited object and
-   retry deleting the now-redundant pending object.
-
-A crash before step 3 leaves an upload row still saying `pending` whose
-artefact is already recorded. That is bookkeeping for the transfer
-protocol, invisible in the corpus, and resolved by completing the same
-upload again.
+   the recorded canonical key.
+2. **the transaction** — write the cited object and Fact, and mark the upload
+   row completed against the cited object. Deleting the redundant pending
+   object remains best effort outside this transaction.
 
 A host or flavor that already computed the immutable metadata before the PUT
 may call `complete_upload_as_fact_with_expectation` with an
 `UploadCompletionExpectation`. After the one staging call, core compares the
 BLAKE3 content hash, byte length, MIME, and filename in that order, before
 authorization or the Fact transaction. A mismatch is a redacted
-`InvalidArgument`; no corpus rows are written, `finish` is not called, and
-an upload that was still pending remains pending for an explicit abort or a
-retry with the corrected expectation. Replacement bytes require abort plus a
-new prepare. The ordinary `complete_upload_as_fact` method has no caller
+`InvalidArgument`; no corpus rows are written, and an upload that was still
+pending remains pending for an explicit abort or a retry with the corrected
+expectation. Replacement bytes require abort plus a new prepare. The ordinary `complete_upload_as_fact` method has no caller
 expectation and remains the path used by MCP's unchanged
 `complete(upload_id)` action.
 

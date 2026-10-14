@@ -38,6 +38,7 @@ pub(super) fn blob_error_to_storage(err: BlobError) -> StorageError {
         }
         BlobError::S3(message) => StorageError::Unavailable(format!("S3 error: {message}")),
         BlobError::Db(err) => StorageError::Unavailable(format!("db error: {err}")),
+        BlobError::Storage(error) => error,
         BlobError::Denied(message) => {
             StorageError::ConstraintViolation(format!("access denied: {message}"))
         }

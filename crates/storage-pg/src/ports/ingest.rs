@@ -119,6 +119,19 @@ impl FactIngestPort for PgStorage {
                     authorized.owner_write_permit().owner_scope(),
                 )
                 .await?;
+                // Admission replays can return before the ordinary owner fence.
+                // Fence both new writes and replays before any corpus row locks.
+                if let Some(upload_id) = authorized.upload_completion() {
+                    let owner = authorized.owner_write_permit().owner();
+                    crate::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
+                        .await?;
+                    let key = proxima_core::citations::uploaded_blob_object_key(upload_id);
+                    crate::access::owner_columns::lock_object_keys_tx(
+                        &mut tx,
+                        std::slice::from_ref(&key),
+                    )
+                    .await?;
+                }
                 let tables = self.sidecars.tables_for_payloads(&payloads)?;
                 let scopes = self.scopes.targets_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
@@ -151,6 +164,18 @@ impl FactIngestPort for PgStorage {
                     },
                 )
                 .await?;
+                if let Some(upload_id) = authorized.upload_completion() {
+                    let cited_object_id = outcome.cited_object_id.ok_or_else(|| {
+                        StorageError::Internal("upload completion requires a cited object".into())
+                    })?;
+                    crate::access::owner_columns::complete_upload_in_tx(
+                        &mut tx,
+                        authorized.owner_write_permit().owner(),
+                        upload_id,
+                        cited_object_id,
+                    )
+                    .await?;
+                }
                 tx.commit().await.map_err(crate::error::map_err)?;
                 Ok(outcome)
             }
@@ -226,7 +251,6 @@ impl FactIngestPort for PgStorage {
         .await
     }
 }
-
 #[async_trait::async_trait]
 impl McpCallReadPort for PgStorage {
     async fn read_mcp_call_history(

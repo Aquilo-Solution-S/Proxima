@@ -620,7 +620,9 @@ async fn assert_writes(
 /// A blob port that stages whatever it is asked to: completion then runs the
 /// engine's own gate and write path against Postgres, without S3.
 #[derive(Debug)]
-struct StagedBlobs;
+struct StagedBlobs {
+    pool: PgPool,
+}
 
 #[async_trait::async_trait]
 impl CitedBlobPort for StagedBlobs {
@@ -638,7 +640,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn stage_upload(
         &self,
         _: &AuthzContext,
-        _: OwnerId,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError> {
         // A distinct address per upload: the upload id's bytes, twice.
@@ -646,6 +648,22 @@ impl CitedBlobPort for StagedBlobs {
         let mut content_hash = [0_u8; 32];
         content_hash[..16].copy_from_slice(id.as_bytes());
         content_hash[16..].copy_from_slice(id.as_bytes());
+        // Match real staging's transfer row; Engine completion now settles it
+        // atomically with the cited Fact. The role assertions below stay intact.
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, content_hash, sha256, expires_at)
+             VALUES ($1, $2, 'kindrule', $3, 'kindrule.txt', 'text/plain',
+                     8, $4, $4, now() + interval '1 hour')",
+        )
+        .bind(id)
+        .bind(owner.into_inner())
+        .bind(format!("objects/{upload_id}"))
+        .bind(&content_hash[..])
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
         Ok(CitedBlobStaged {
             payload: UploadedBlobPayload {
                 content_hash,
@@ -702,8 +720,16 @@ impl CitedBlobPort for StagedBlobs {
 
 /// An upload Fact is a Fact write: completion succeeds exactly for the roles
 /// that write Facts, `Role::ingest()` included.
-async fn assert_upload(built: &BuiltProxima, group: OwnerId, name: &str, role: Role) {
-    let service = CitedBlobService::new(Arc::new(StagedBlobs));
+async fn assert_upload(
+    built: &BuiltProxima,
+    admin: &PgPool,
+    group: OwnerId,
+    name: &str,
+    role: Role,
+) {
+    let service = CitedBlobService::new(Arc::new(StagedBlobs {
+        pool: admin.clone(),
+    }));
     // The upload Fact's owner is the one writable owner of the context, so
     // the caller narrows to the space first, as `core_upload` does.
     let authz = context(group, role)
@@ -926,7 +952,7 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
         for (name, role) in roles() {
             assert_reads(&built, &tools, group, name, role, &seeded).await?;
             assert_writes(&tools, group, name, role, &seeded).await?;
-            assert_upload(&built, group, name, role).await;
+            assert_upload(&built, &admin, group, name, role).await;
             if s3.is_some() {
                 assert_s3_writes(&built, &tools, group, name, role).await?;
             } else {

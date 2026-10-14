@@ -265,11 +265,11 @@ async fn group_registered_subject_is_refused_before_personal_role_derivation() {
         // Probe every entry before asserting, so a pre-fix run records all
         // four ways a group UUID could acquire the subject's personal role.
         let eager = roles_for_subject(&mut conn, subject).await;
-        let resolved = resolver.resolve_roles_for_subject(subject).await;
+        let via_port = resolver.resolve_roles_for_subject(subject).await;
         let point = group_role(&mut conn, subject, group).await;
         let resolved_point = resolver.resolve_group_role(subject, group).await;
-        eprintln!("group subject: eager={eager:?}, resolver={resolved:?}, point={point:?}, resolver point={resolved_point:?}");
-        for result in [eager, resolved] {
+        eprintln!("group subject: eager={eager:?}, resolver={via_port:?}, point={point:?}, resolver point={resolved_point:?}");
+        for result in [eager, via_port] {
             assert!(matches!(
                 result,
                 Err(AccessError::SubjectIsGroup(found)) if found == subject

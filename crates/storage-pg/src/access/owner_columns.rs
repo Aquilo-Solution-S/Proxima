@@ -7,6 +7,7 @@ use proxima_core::{
     AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use uuid::Uuid;
 
 /// One cross-process boundary shared by every host-capable `UoW` and exclusive
 /// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
@@ -1361,6 +1362,152 @@ async fn lock_series_membership(
     Ok(actual)
 }
 
+/// The database's closed upload lifecycle, shared by staging and publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(
+    type_name = "proxima_core.blob_upload_status",
+    rename_all = "lowercase"
+)]
+pub enum UploadStatus {
+    Pending,
+    Completed,
+    Aborted,
+    Expired,
+}
+
+/// The result of publishing a staged upload against its cited object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishTransitionDecision {
+    WonPending,
+    AlreadyFinished,
+    OvertookTerminal,
+}
+
+/// Classify a locked upload publication result.
+///
+/// # Errors
+/// Refuses contradictory object identities or affected-row counts.
+pub fn finish_transition_decision(
+    observed_status: UploadStatus,
+    observed_cited_object_id: Option<Uuid>,
+    cited_object_id: Uuid,
+    rows_affected: u64,
+) -> Result<FinishTransitionDecision, StorageError> {
+    match rows_affected {
+        1 => Ok(FinishTransitionDecision::WonPending),
+        0 => match observed_status {
+            UploadStatus::Completed if observed_cited_object_id == Some(cited_object_id) => {
+                Ok(FinishTransitionDecision::AlreadyFinished)
+            }
+            UploadStatus::Completed => Err(StorageError::ConstraintViolation(
+                "upload already completed against a different cited object".into(),
+            )),
+            UploadStatus::Aborted | UploadStatus::Expired => {
+                Ok(FinishTransitionDecision::OvertookTerminal)
+            }
+            UploadStatus::Pending => Err(StorageError::ConstraintViolation(
+                "upload finish did not transition pending row".into(),
+            )),
+        },
+        other => Err(StorageError::ConstraintViolation(format!(
+            "upload finish affected {other} rows"
+        ))),
+    }
+}
+
+/// Publish an upload on the caller's transaction; return its cleanup bucket.
+///
+/// Shared by cited Fact admission and direct blob-port completion. Takes the
+/// owner fence, canonical-key fence and row lock in that order, verifies the
+/// staged hash against the owner-scoped cited object, and settles the row.
+/// Completed replays perform no write. No transaction control or S3 I/O.
+///
+/// # Errors
+/// Refuses absent uploads, unstaged or mismatched bytes, and contradictory
+/// completed objects. Database faults retain their storage error class.
+pub async fn complete_upload_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerId,
+    upload_id: Uuid,
+    cited_object_id: Uuid,
+) -> Result<String, StorageError> {
+    let key = proxima_core::citations::uploaded_blob_object_key(upload_id);
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
+    crate::access::owner_columns::lock_object_keys_tx(tx, std::slice::from_ref(&key)).await?;
+    let (bucket, status, blob_id, hash): (String, UploadStatus, Option<Uuid>, Option<Vec<u8>>) =
+        sqlx::query_as(
+            "SELECT bucket, status, blob_id, content_hash
+               FROM proxima_core.blob_uploads
+              WHERE owner_id = $1 AND upload_id = $2
+              FOR UPDATE",
+        )
+        .bind(owner.into_inner())
+        .bind(upload_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?
+        .ok_or_else(|| StorageError::ConstraintViolation("upload not found for Owner".into()))?;
+
+    match status {
+        UploadStatus::Completed => {
+            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
+            return Ok(bucket);
+        }
+        UploadStatus::Aborted | UploadStatus::Expired => {
+            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
+        }
+        UploadStatus::Pending => {}
+    }
+    let hash = hash
+        .as_deref()
+        .filter(|hash| hash.len() == 32)
+        .ok_or_else(|| {
+            StorageError::ConstraintViolation(
+                "upload has no exact staged content identity; restage before finish".into(),
+            )
+        })?;
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT content_hash FROM proxima_core.blob
+          WHERE blob_id = $1 AND owner_id = $2
+            AND schema_id = $3 AND content_hash = $4
+          FOR SHARE",
+    )
+    .bind(cited_object_id)
+    .bind(owner.into_inner())
+    .bind(proxima_core::UPLOADED_BLOB_SCHEMA_ID)
+    .bind(hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "cited object does not match the staged upload content identity".into(),
+        )
+    })?;
+
+    let changed = sqlx::query(
+        "UPDATE proxima_core.blob_uploads
+            SET object_key = $1, status = 'completed', blob_id = $2, completed_at = now()
+          WHERE owner_id = $3 AND upload_id = $4 AND status = $5",
+    )
+    .bind(key)
+    .bind(cited_object_id)
+    .bind(owner.into_inner())
+    .bind(upload_id)
+    .bind(status)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    finish_transition_decision(status, blob_id, cited_object_id, changed)?;
+    if changed != 1 {
+        return Err(StorageError::ConstraintViolation(
+            "late upload finish did not transition terminal row".into(),
+        ));
+    }
+    Ok(bucket)
+}
+
 /// Refuse a transfer while upload publication can still attach one of this
 /// series' cited blobs to its source-owned locator.
 async fn ensure_series_uploads_published(
@@ -1368,17 +1515,17 @@ async fn ensure_series_uploads_published(
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    // A staged upload is still an unpublished completion. The Fact
-    // transaction can commit before `finish_upload` records that completion;
-    // moving the cited blob in that window would leave the source upload row
-    // behind and let its later finish point at a destination-owned blob.
+    // Staged rows can still await publication by a direct blob-port caller
+    // or an older host. Engine completion publishes its upload row in the
+    // Fact transaction. Refuse a transfer while another staged row could
+    // later attach this blob under the source owner.
     // The ordinary fence is identity- and series-scoped: an abandoned prepare
     // has no content identity, and an unrelated staged upload cannot claim
     // this series. The one exception is a row staged before 0007: it has a
     // canonical locator and SHA-256 witness but no BLAKE3 column to relate it
     // to a cited blob. That ambiguous upgrade state must fence the owner until
     // a completion retry re-hashes it; otherwise transfer can move the Fact's
-    // blob before finish attaches the source upload row.
+    // blob before completion attaches the source upload row.
     let unpublished_upload: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1

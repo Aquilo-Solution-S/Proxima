@@ -508,6 +508,7 @@ impl AuthorizedInlineCitedObject {
 pub struct AuthorizedFactWithCitation {
     core: AuthorizedFactCore,
     cited_object: AuthorizedInlineCitedObject,
+    upload_completion: Option<Uuid>,
 }
 
 impl AuthorizedFactWithCitation {
@@ -515,7 +516,11 @@ impl AuthorizedFactWithCitation {
         core: AuthorizedFactCore,
         cited_object: AuthorizedInlineCitedObject,
     ) -> Self {
-        Self { core, cited_object }
+        Self {
+            core,
+            cited_object,
+            upload_completion: None,
+        }
     }
 
     /// Index rows storage must assert alongside the Fact row.
@@ -548,6 +553,24 @@ impl AuthorizedFactWithCitation {
     #[must_use]
     pub const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.core.publication()
+    }
+
+    pub(crate) fn with_upload_completion(mut self, upload_id: Uuid) -> Self {
+        self.upload_completion = Some(upload_id);
+        self
+    }
+
+    /// Upload row to complete atomically with this cited Fact, minted only by
+    /// the Engine's upload verb.
+    ///
+    /// ```compile_fail
+    /// fn forge(write: proxima_core::verbs::fact_ingest::AuthorizedFactWithCitation) {
+    ///     write.with_upload_completion(uuid::Uuid::nil());
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn upload_completion(&self) -> Option<Uuid> {
+        self.upload_completion
     }
 
     #[must_use]

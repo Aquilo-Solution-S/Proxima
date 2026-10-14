@@ -1,16 +1,22 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
+use proxima::UploadCompleted;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId,
     MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ToolScope, UserId,
 };
 use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
+use proxima_core::StorageError;
 use proxima_core::error::{ErrorCode, ProtocolError};
-use proxima_core::storage_ports::CitedBlobService;
+use proxima_core::storage_ports::{
+    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+    CitedBlobUploadAborted, CitedBlobUploadPrepared,
+};
 use proxima_core::{AgentNoteV1, ColdObjectStore};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
@@ -318,6 +324,262 @@ async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestRes
         Ok(())
     }
     .await;
+    drop_db(&database).await?;
+    result
+}
+
+/// Refuse the old post-commit bookkeeping call without touching upload state.
+/// The real store still stages the bytes; only the crash point is injected.
+struct FaultAfterCorpusCommit {
+    inner: proxima_blob_s3::CitedBlobStore,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl CitedBlobPort for FaultAfterCorpusCommit {
+    async fn prepare_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        filename: &str,
+        mime: &str,
+        byte_len: u64,
+    ) -> Result<CitedBlobUploadPrepared, StorageError> {
+        CitedBlobPort::prepare_upload(&self.inner, authz, owner, filename, mime, byte_len).await
+    }
+
+    async fn stage_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        upload_id: &str,
+    ) -> Result<CitedBlobStaged, StorageError> {
+        CitedBlobPort::stage_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn finish_upload(
+        &self,
+        _authz: &AuthzContext,
+        _owner: OwnerId,
+        _upload_id: &str,
+        _cited_object_id: Uuid,
+    ) -> Result<(), StorageError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(StorageError::Unavailable(
+            "injected failure after corpus commit".into(),
+        ))
+    }
+
+    async fn abort_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadAborted, StorageError> {
+        CitedBlobPort::abort_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn read_url(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        cited_object_id: Uuid,
+    ) -> Result<CitedBlobReadUrl, StorageError> {
+        CitedBlobPort::read_url(&self.inner, authz, owner, cited_object_id).await
+    }
+
+    async fn find_held_blobs(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+        CitedBlobPort::find_held_blobs(&self.inner, authz, owner, hashes).await
+    }
+}
+
+#[derive(Debug)]
+struct UploadCommitObservation {
+    completion: Result<UploadCompleted, ProtocolError>,
+    row: (String, Option<Uuid>),
+    fact_id: Uuid,
+    blob_id: Uuid,
+    finish_calls: usize,
+    replay: Option<Result<UploadCompleted, ProtocolError>>,
+}
+
+async fn failed_upload_finish_fixture(
+    restart_after_expiry: bool,
+) -> TestResult<UploadCommitObservation> {
+    let database = unique_db_name("proxima_upload_atomic");
+    create_db(&database).await?;
+    let result = observe_failed_upload_finish(&database, restart_after_expiry).await;
+    drop_db(&database).await?;
+    result
+}
+
+async fn observe_failed_upload_finish(
+    database: &str,
+    restart_after_expiry: bool,
+) -> TestResult<UploadCommitObservation> {
+    let config = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
+    let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerId::from(group);
+    let built = boot(database, owner, Some(config.clone())).await?;
+    let pool = admin_pool(database).await?;
+    register_group(&pool, group).await?;
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let store = built.host().blobs().ok_or("S3 store")?.clone();
+    let prepared = store
+        .prepare_upload(
+            &authz,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "atomic.txt".into(),
+                mime: "text/plain".into(),
+                byte_len: BODY.len() as u64,
+            },
+        )
+        .await?;
+    store
+        .cold_store()
+        .put(&format!("pending/{}", prepared.upload_id), BODY)
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = CitedBlobService::new(Arc::new(FaultAfterCorpusCommit {
+        inner: store.clone(),
+        calls: Arc::clone(&calls),
+    }));
+    let completion = built
+        .host()
+        .engine()
+        .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
+        .await;
+    // Capture the committed rows even when the old Engine reported a failure.
+    let row = sqlx::query_as(
+        "SELECT status::text, blob_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id)?)
+    .fetch_one(&pool)
+    .await?;
+    let (fact_id, blob_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT t, blob_id FROM proxima_core.memory WHERE owner_id = $1 AND schema_id = 'core/upload-v1'",
+    ).bind(owner.into_inner()).fetch_one(&pool).await?;
+    assert_eq!(corpus_counts(&pool).await?, (1, 1));
+    let finish_calls = calls.load(Ordering::SeqCst);
+    drop(service);
+    stop(built).await;
+    let replay = if restart_after_expiry {
+        // Advance only expiry, never forge a status or completion link.
+        sqlx::query("UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 hour' WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).execute(&pool).await?;
+        let restarted = boot(database, owner, Some(config.clone())).await?;
+        let service = CitedBlobService::new(Arc::new(
+            restarted.host().blobs().ok_or("S3 store")?.clone(),
+        ));
+        let result = restarted
+            .host()
+            .engine()
+            .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
+            .await;
+        drop(service);
+        stop(restarted).await;
+        Some(result)
+    } else {
+        None
+    };
+    // Cleanup exactly this fixture's canonical key before asserting observations.
+    store
+        .cold_store()
+        .delete(&format!("objects/{}", prepared.upload_id))
+        .await?;
+    pool.close().await;
+    Ok(UploadCommitObservation {
+        completion,
+        row,
+        fact_id,
+        blob_id,
+        finish_calls,
+        replay,
+    })
+}
+
+#[tokio::test]
+async fn upload_completion_commits_upload_row_with_corpus() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = failed_upload_finish_fixture(false).await?;
+    eprintln!("post-commit failure observation: {observed:?}");
+    assert_eq!(
+        observed.finish_calls, 1,
+        "failure injected at the old post-commit step"
+    );
+    assert_eq!(observed.row, ("completed".into(), Some(observed.blob_id)));
+    let completed = observed.completion?;
+    assert_eq!(completed.fact.memory_id.into_inner(), observed.fact_id);
+    assert_eq!(
+        Uuid::parse_str(&completed.blob.cited_object_id)?,
+        observed.blob_id
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_completed_upload_replays_same_fact_and_object() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = failed_upload_finish_fixture(true).await?;
+    eprintln!("restart after expired upload observation: {observed:?}");
+    assert_eq!(observed.finish_calls, 1, "failure injected before restart");
+    let replay = observed.replay.ok_or("replay observation")??;
+    assert!(replay.blob.idempotent_replay);
+    assert!(replay.fact.idempotent_replay);
+    assert_eq!(
+        Uuid::parse_str(&replay.blob.cited_object_id)?,
+        observed.blob_id
+    );
+    assert_eq!(replay.fact.memory_id.into_inner(), observed.fact_id);
+    assert_eq!(observed.row, ("completed".into(), Some(observed.blob_id)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_without_arrived_bytes_expires() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return Ok(());
+    }
+    let database = unique_db_name("proxima_upload_missing_bytes");
+    create_db(&database).await?;
+    let result = async {
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerId::from(group);
+        let built = boot(&database, owner, Some(S3RuntimeConfig::from_env()?)).await?;
+        register_group(&admin_pool(&database).await?, group).await?;
+        let authz = host_context(owner, AuthPath::HostBearer);
+        let store = built.host().blobs().expect("S3 store");
+        let prepared = store.prepare_upload(&authz, CitedBlobUploadPrepareTs {
+            owner, filename: "missing.txt".into(), mime: "text/plain".into(), byte_len: BODY.len() as u64,
+        }).await?;
+        sqlx::query("UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 hour' WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).execute(&admin_pool(&database).await?).await?;
+        let service = CitedBlobService::new(Arc::new(store.clone()));
+        let error = built.host().engine().complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[]).await
+            .expect_err("missing bytes must expire");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let status: String = sqlx::query_scalar("SELECT status::text FROM proxima_core.blob_uploads WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).fetch_one(&admin_pool(&database).await?).await?;
+        assert_eq!(status, "expired");
+        stop(built).await;
+        Ok(())
+    }.await;
     drop_db(&database).await?;
     result
 }

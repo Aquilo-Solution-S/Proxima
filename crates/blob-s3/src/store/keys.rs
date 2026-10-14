@@ -30,7 +30,7 @@ pub(super) fn pending_object_key(upload_id: Uuid) -> String {
 /// The committed object for one upload, derived from the row's own primary
 /// key — which is what the read gate compares against.
 pub(super) fn canonical_object_key(upload_id: Uuid) -> String {
-    format!("{CANONICAL_OBJECT_PREFIX}{upload_id}")
+    proxima_core::citations::uploaded_blob_object_key(upload_id)
 }
 
 /// Which upload row's id minted the object a row names.

@@ -1,10 +1,10 @@
-//! The write lane: prepare → stage → finish, with abort as the other exit.
+//! The write lane: prepare → stage → corpus completion, with abort as the other exit.
 //!
 //! These four stay in one file because their contract is an ordering, not a
 //! set of independent verbs. `stage_upload` records the canonical locator
-//! and retires the redundant pending transfer copy; `finish_upload` repeats
-//! that cleanup after the corpus transaction records the artefact. Splitting
-//! them apart would hide that.
+//! and retires the redundant pending transfer copy. Corpus completion settles
+//! the upload row in the same transaction as the cited object and Fact;
+//! pending-key deletion remains best effort outside it.
 
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
@@ -30,8 +30,8 @@ use super::rows::{
     load_upload_optional_on_connection, mark_upload_expired_on_connection,
 };
 use super::transitions::{
-    AbortTransitionDecision, FinishTransitionDecision, StageLocatorDecision,
-    abort_transition_decision, finish_transition_decision, stage_locator_decision,
+    AbortTransitionDecision, StageLocatorDecision, abort_transition_decision,
+    stage_locator_decision,
 };
 use crate::error::BlobError;
 
@@ -59,6 +59,11 @@ where
             Err(BlobError::Db(error))
                 if attempt < proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS
                     && proxima_storage_pg::is_transient_conflict(&error) =>
+            {
+                attempt += 1;
+            }
+            Err(BlobError::Storage(proxima_core::StorageError::Retryable(_)))
+                if attempt < proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS =>
             {
                 attempt += 1;
             }
@@ -398,7 +403,7 @@ impl CitedBlobStore {
     /// On the first stage the row's locator changes to the canonical key, so a
     /// retry re-reads that canonical copy even if the presigned pending key is
     /// overwritten. Retiring the redundant pending transfer copy is
-    /// best-effort hygiene, never an outcome: `finish_upload` retries it, and
+    /// best-effort hygiene, never an outcome: the completion cleanup retries it, and
     /// the bucket lifecycle rule reclaims whatever every attempt missed.
     ///
     /// # Errors
@@ -725,7 +730,7 @@ impl CitedBlobStore {
     /// `assert_no_unpublished_upload` alone would suggest. That check refuses
     /// to transfer a series while one of its uploads is unpublished, so a
     /// PENDING row can never be moved out from under a stage. But a stage can
-    /// be a retry: an earlier stage set `content_hash`, `finish_upload`
+    /// be a retry: an earlier stage set `content_hash`, completion
     /// completed the row, and a transfer then moved that completed row to
     /// another owner. This stage's snapshot still says "pending", its update
     /// matches nothing, and the row it is looking for is alive elsewhere. The
@@ -864,7 +869,7 @@ impl CitedBlobStore {
     /// locator, and the presigned PUT stays usable until it expires — so this
     /// is hygiene, not a guarantee. A provider failure here must not turn an
     /// already-decided completion, replay or abort into an error for the
-    /// caller: `finish_upload` retries the purge, and the bucket lifecycle
+    /// caller: the stage and finish paths retry the purge, and the bucket lifecycle
     /// rule reclaims whatever every attempt missed.
     async fn purge_pending_upload_best_effort(&self, bucket: &str, upload_id: Uuid) {
         if let Err(error) = self.purge_pending_upload(bucket, upload_id).await {
@@ -887,14 +892,12 @@ impl CitedBlobStore {
             .map_err(|err| BlobError::S3(err.to_string()))
     }
 
-    /// Close out an upload whose artefact is now recorded: mark the row
-    /// completed against `blob_id`, then drop the pending object.
+    /// Retry pending-key cleanup for an Engine-completed upload.
     ///
-    /// The order matters. The canonical blob is already referenced by a
-    /// committed cited object, so the pending copy is redundant. Resolving
-    /// the row transition first makes retries observe the committed outcome;
-    /// the version-aware purge then remains safe to repeat if a provider
-    /// failure interrupts cleanup.
+    /// The corpus transaction already completed the row. Direct port callers
+    /// share that transaction's row-transition implementation; a completed
+    /// replay only validates the cited-object id and returns the cleanup bucket.
+    /// Pending-key deletion is best effort and never changes a committed outcome.
     ///
     /// There is no in-process pending-expiry sweep: leftover `pending/`
     /// objects (from a crashed complete, an abandoned prepare, or an
@@ -936,108 +939,16 @@ impl CitedBlobStore {
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<String, BlobError> {
-        // Finish is the publication half of the upload protocol. It shares
-        // the owner fence with Memory/citation admission and transfer, then
-        // makes its status decision against a row locked in that same
-        // transaction. Otherwise a committed Fact could be followed by a
-        // transfer that moves the blob while this stale pending row is still
-        // allowed to finish under the source owner.
         let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
             .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
-            .await
-            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
-        // Before the row lock, so this stays in the global fence → key → row
-        // order. `complete_terminal_upload` below writes `object_key`, which
-        // is a reference to this key, and an erase deciding whether to destroy
-        // it takes the same lock.
-        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
-            &mut tx,
-            std::slice::from_ref(&canonical_object_key(upload_id)),
+            .map_err(BlobError::from)?;
+        let bucket = proxima_storage_pg::access::owner_columns::complete_upload_in_tx(
+            &mut tx, owner, upload_id, blob_id,
         )
         .await
-        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
-        let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
-        let owner_id = owner.into_inner();
-        // The cited blob must be the object this upload actually staged. A
-        // terminal row keeps its canonical bytes, so there is nothing to
-        // restore here — only this identity to prove before publication.
-        if matches!(
-            row.status,
-            UploadStatus::Pending | UploadStatus::Aborted | UploadStatus::Expired
-        ) {
-            let staged_content_hash = row
-                .content_hash
-                .as_deref()
-                .filter(|hash| hash.len() == 32)
-                .ok_or_else(|| {
-                    BlobError::State(
-                        "upload has no exact staged content identity; restage before finish".into(),
-                    )
-                })?;
-            sqlx::query_scalar::<_, Vec<u8>>(
-                "SELECT content_hash
-                       FROM proxima_core.blob
-                      WHERE blob_id = $1
-                        AND owner_id = $2
-                        AND schema_id = $3
-                        AND content_hash = $4
-                      FOR SHARE",
-            )
-            .bind(blob_id)
-            .bind(owner_id)
-            .bind(proxima_core::UPLOADED_BLOB_SCHEMA_ID)
-            .bind(staged_content_hash)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(BlobError::Db)?
-            .ok_or_else(|| {
-                BlobError::State(
-                    "cited object does not match the staged upload content identity".into(),
-                )
-            })?;
-        }
-        let decision = match row.status {
-            UploadStatus::Pending => {
-                let rows_affected = sqlx::query(
-                    "UPDATE proxima_core.blob_uploads \
-                        SET status = 'completed', blob_id = $1, completed_at = now() \
-                      WHERE owner_id = $2 \
-                        AND upload_id = $3 \
-                        AND status = 'pending'",
-                )
-                .bind(blob_id)
-                .bind(owner_id)
-                .bind(upload_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(BlobError::Db)?
-                .rows_affected();
-                if rows_affected == 1 {
-                    FinishTransitionDecision::WonPending
-                } else {
-                    // `FOR UPDATE` plus the owner fence means this cannot
-                    // race a compliant transition. Keep the classification
-                    // for databases with an external writer, and use the
-                    // locked row rather than a stale pool snapshot.
-                    finish_transition_decision(row.status, row.blob_id, blob_id, 0)?
-                }
-            }
-            status => finish_transition_decision(status, row.blob_id, blob_id, 0)?,
-        };
-
-        if decision == FinishTransitionDecision::OvertookTerminal {
-            // The artefact and its Fact are committed — `blob_id`
-            // exists only because that transaction succeeded — so the
-            // transfer's outcome is `completed` no matter what an abort or
-            // an expiry sweep wrote while the transaction was in flight.
-            // Failing here would report a committed write as failed and
-            // leave an upload id the caller can never retry.
-            complete_terminal_upload(&mut tx, owner, upload_id, blob_id).await?;
-        }
+        .map_err(BlobError::from)?;
         tx.commit().await.map_err(BlobError::Db)?;
-        Ok(row.bucket)
+        Ok(bucket)
     }
 
     /// Abort a pending upload.
@@ -1189,35 +1100,6 @@ impl CitedBlobStore {
         self.purge_pending_upload_best_effort(&row.bucket, upload_id)
             .await;
     }
-}
-
-async fn complete_terminal_upload(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &OwnerId,
-    upload_id: Uuid,
-    blob_id: Uuid,
-) -> Result<(), BlobError> {
-    let rows_affected = sqlx::query(
-        "UPDATE proxima_core.blob_uploads \
-            SET object_key = $1, status = 'completed', blob_id = $2, completed_at = now() \
-          WHERE owner_id = $3 \
-            AND upload_id = $4 \
-            AND status IN ('aborted', 'expired')",
-    )
-    .bind(canonical_object_key(upload_id))
-    .bind(blob_id)
-    .bind(owner.into_inner())
-    .bind(upload_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(BlobError::Db)?
-    .rows_affected();
-    if rows_affected != 1 {
-        return Err(BlobError::State(
-            "late upload finish did not transition terminal row".into(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

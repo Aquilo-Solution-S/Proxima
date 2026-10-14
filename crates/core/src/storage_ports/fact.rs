@@ -80,6 +80,8 @@ pub trait FactIngestPort: Send + Sync {
         embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError>;
 
+    /// Persist the citation and Fact atomically. When the Engine carrier
+    /// names an upload, complete its row in that same transaction as well.
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,

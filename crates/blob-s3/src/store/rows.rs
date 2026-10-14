@@ -23,23 +23,12 @@ pub(super) struct UploadRow {
     pub(super) filename: String,
     pub(super) mime: String,
     pub(super) expected_byte_len: i64,
-    pub(super) content_hash: Option<Vec<u8>>,
     pub(super) status: UploadStatus,
     pub(super) blob_id: Option<Uuid>,
     pub(super) expires_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(
-    type_name = "proxima_core.blob_upload_status",
-    rename_all = "lowercase"
-)]
-pub(super) enum UploadStatus {
-    Pending,
-    Completed,
-    Aborted,
-    Expired,
-}
+pub(super) use proxima_storage_pg::access::owner_columns::UploadStatus;
 
 #[derive(Debug, Clone)]
 pub(super) struct BlobLocation {
@@ -96,7 +85,7 @@ pub(super) async fn load_upload_optional_on_connection(
 ) -> Result<Option<UploadRow>, BlobError> {
     let owner_id = owner.into_inner();
     let row = sqlx::query(
-        "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
+        "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status, blob_id, expires_at \
            FROM proxima_core.blob_uploads \
           WHERE owner_id = $1 \
@@ -118,7 +107,6 @@ pub(super) async fn load_upload_optional_on_connection(
         filename: row.get("filename"),
         mime: row.get("mime"),
         expected_byte_len: row.get("expected_byte_len"),
-        content_hash: row.get("content_hash"),
         status: row.get("status"),
         blob_id: row.get("blob_id"),
         expires_at: row.get("expires_at"),
@@ -148,7 +136,7 @@ pub(super) async fn load_upload_optional_for_update(
 ) -> Result<Option<UploadRow>, BlobError> {
     let owner_id = owner.into_inner();
     let row = sqlx::query(
-        "SELECT bucket, object_key, filename, mime, expected_byte_len, content_hash, \
+        "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status, blob_id, expires_at \
            FROM proxima_core.blob_uploads \
           WHERE owner_id = $1 \
@@ -171,7 +159,6 @@ pub(super) async fn load_upload_optional_for_update(
         filename: row.get("filename"),
         mime: row.get("mime"),
         expected_byte_len: row.get("expected_byte_len"),
-        content_hash: row.get("content_hash"),
         status: row.get("status"),
         blob_id: row.get("blob_id"),
         expires_at: row.get("expires_at"),
