@@ -156,7 +156,7 @@ with the series; `ingest_keys` for those `t`s are deleted. The series'
 it carries `actor_upn` and its own `owner_id`, stamped with the owner that
 made the call — so a transfer leaves it with the source, and every surface
 that reads it keys on that column. Every other sidecar follows the memory. The destination's `owners` row is minted inside the same
-transaction (`ensure_owner_row`), which is what keeps the FKs whole. It also
+transaction, which is what keeps the FKs whole. It also
 commits paired `transfer` rows into `announce` (prior owner's lane +
 destination owner's lane). Goals do not transfer: the verb is memory-only;
 `goal` refuses UPDATE, and `goal_head` may move only `t`

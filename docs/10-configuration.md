@@ -315,13 +315,13 @@ inside a transaction it opens and rolls back.
 ### Roles inside a host transaction
 
 Owner registry and membership writes inside a host transaction. The host
-facade exports `register_group`, `ensure_owner_row`, `bootstrap_group_admin`,
+facade exports `register_group`, `bootstrap_group_admin`,
 `add_group_member`, `remove_group_member`, `remove_group_member_relation` and
 `replace_group_member_relation`; each takes `&mut PgConnection` and accepts the
 host's `&mut *tx`. `register_group`, `bootstrap_group_admin`, `add_group_member`,
 `remove_group_member`, `remove_group_member_relation` and
-`replace_group_member_relation` share the membership advisory lock;
-`ensure_owner_row` does not take that lock. They write the same registry and
+`replace_group_member_relation` share the membership advisory lock.
+They write the same registry and
 membership rows as their pool forms, but never begin, commit, roll back, set a
 scope or retry. No authorization runs:
 the host vouches for the write as it would for a row it inserts itself. The

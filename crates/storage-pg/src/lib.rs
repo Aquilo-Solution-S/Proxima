@@ -88,7 +88,7 @@ pub use access::PgOwnerAccessResolver;
 /// retries its whole transaction. All effects follow from committed rows.
 pub use access::owner_columns::{
     add_group_member_on_connection as add_group_member,
-    bootstrap_group_admin_on_connection as bootstrap_group_admin, ensure_owner_row, register_group,
+    bootstrap_group_admin_on_connection as bootstrap_group_admin, register_group,
     remove_group_member_on_connection as remove_group_member,
     remove_group_member_relation_on_connection as remove_group_member_relation,
     replace_group_member_relation_on_connection as replace_group_member_relation,

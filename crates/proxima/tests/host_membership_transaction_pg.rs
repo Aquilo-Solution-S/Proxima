@@ -167,7 +167,9 @@ async fn connection_membership_write_keeps_user_registry_constraint() {
     let group = GroupId::new(user_id.into_inner());
     let scope = platform_scope(&db).await;
     let mut tx = scope.begin().await.expect("platform transaction");
-    proxima::ensure_owner_row(&mut tx, &OwnerId::from(user_id))
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(user_id.into_inner())
+        .execute(&mut *tx)
         .await
         .expect("register personal owner");
     tx.commit().await.expect("commit personal owner");

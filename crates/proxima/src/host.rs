@@ -294,7 +294,7 @@ pub use proxima_storage_pg::PgOwnerAccessResolver;
 /// its whole transaction on [`StorageError::Retryable`]. All effects follow
 /// from the committed rows; no post-commit action is required.
 pub use proxima_storage_pg::{
-    add_group_member, bootstrap_group_admin, ensure_owner_row, register_group, remove_group_member,
+    add_group_member, bootstrap_group_admin, register_group, remove_group_member,
     remove_group_member_relation, replace_group_member_relation,
 };
 /// Role probes on a host's own transaction (see
