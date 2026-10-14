@@ -11,8 +11,8 @@ use crate::edge::EdgeEndpoint;
 use crate::engine::WritePermit;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
-    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion,
-    SidecarPayload, SourceId,
+    FactPayload, FactReceiptId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
+    SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -508,6 +508,7 @@ impl AuthorizedInlineCitedObject {
 pub struct AuthorizedFactWithCitation {
     core: AuthorizedFactCore,
     cited_object: AuthorizedInlineCitedObject,
+    upload_completion: Option<Uuid>,
 }
 
 impl AuthorizedFactWithCitation {
@@ -515,7 +516,11 @@ impl AuthorizedFactWithCitation {
         core: AuthorizedFactCore,
         cited_object: AuthorizedInlineCitedObject,
     ) -> Self {
-        Self { core, cited_object }
+        Self {
+            core,
+            cited_object,
+            upload_completion: None,
+        }
     }
 
     /// Index rows storage must assert alongside the Fact row.
@@ -548,6 +553,24 @@ impl AuthorizedFactWithCitation {
     #[must_use]
     pub const fn publication(&self) -> Option<&crate::publication::PublicationPlan> {
         self.core.publication()
+    }
+
+    pub(crate) fn with_upload_completion(mut self, upload_id: Uuid) -> Self {
+        self.upload_completion = Some(upload_id);
+        self
+    }
+
+    /// Upload row to complete atomically with this cited Fact, minted only by
+    /// the Engine's upload verb.
+    ///
+    /// ```compile_fail
+    /// fn forge(write: proxima_core::verbs::fact_ingest::AuthorizedFactWithCitation) {
+    ///     write.with_upload_completion(uuid::Uuid::nil());
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn upload_completion(&self) -> Option<Uuid> {
+        self.upload_completion
     }
 
     #[must_use]
@@ -771,19 +794,16 @@ impl FactWriteCommand {
     }
 
     /// Canonical receipt id per docs/01: BLAKE3 of `source_id` ||
-    /// `owner_components` || schema-owned receipt key, separated by 0x00
+    /// the owner id's 16 bytes || schema-owned receipt key, separated by 0x00
     /// bytes. Re-receipt of the same observation produces the same hash by
     /// construction. Receiptless commands return `None` and are not replayed.
     #[must_use]
-    pub fn receipt_id_for_owner(&self, owner: Owner) -> Option<FactReceiptId> {
+    pub fn receipt_id_for_owner(&self, owner: OwnerId) -> Option<FactReceiptId> {
         let receipt = self.receipt.as_ref()?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(receipt.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let kind = OwnerRefKind::of(&owner);
-        let id = owner.stable_key_uuid();
-        hasher.update(kind.as_str().as_bytes());
-        hasher.update(b"\x00");
+        let id = owner.into_inner();
         hasher.update(id.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);

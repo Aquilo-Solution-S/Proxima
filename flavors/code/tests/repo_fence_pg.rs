@@ -17,7 +17,7 @@ use proxima_code::testkit::{build_engine, erase_repo, ingest_commit, register_re
 use proxima_code::{CODE_REPO_SCOPE, CodeFlavorStore, CommitSummaryV1, CommitV1, RepoScope};
 use proxima_core::{
     AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, Engine, MemoryId, MemoryTarget,
-    OperatorId, Owner, ProtocolError, SeriesHandle,
+    OperatorId, OwnerId, ProtocolError, SeriesHandle,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -71,7 +71,7 @@ SELECT count(*)::bigint
 /// taken.
 const HOLD_REPO_ROW_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
- WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+ WHERE owner_id = $1 AND repo_id = $2
    FOR UPDATE";
 
 fn commit_payload(repo_id: Uuid, sha: &str) -> CommitV1 {
@@ -92,7 +92,7 @@ fn commit_payload(repo_id: Uuid, sha: &str) -> CommitV1 {
 
 async fn register(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
@@ -172,7 +172,7 @@ async fn connect_storage(db_name: &str) -> Result<PgStorage, String> {
 /// can block.
 fn spawn_ingest(
     db_name: String,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     sha: &str,
 ) -> tokio::task::JoinHandle<Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, String>> {
@@ -191,7 +191,7 @@ fn spawn_ingest(
 /// can block.
 fn spawn_erase(
     db_name: String,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
 ) -> tokio::task::JoinHandle<Result<proxima_code::RepoEraseReceipt, String>> {
     tokio::spawn(async move {
@@ -239,9 +239,8 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
         // its fence.
         let barrier_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let mut barrier = barrier_pool.begin().await?;
-        let (kind, owner_id) = owner.columns();
+        let owner_id = owner.into_inner();
         sqlx::query(HOLD_REPO_ROW_SQL)
-            .bind(kind)
             .bind(owner_id)
             .bind(repo_id)
             .fetch_all(&mut *barrier)
@@ -370,9 +369,8 @@ async fn an_erase_of_one_repository_does_not_fence_another() {
 
         let barrier_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let mut barrier = barrier_pool.begin().await?;
-        let (kind, owner_id) = owner.columns();
+        let owner_id = owner.into_inner();
         sqlx::query(HOLD_REPO_ROW_SQL)
-            .bind(kind)
             .bind(owner_id)
             .bind(erased)
             .fetch_all(&mut *barrier)
@@ -443,7 +441,7 @@ async fn two_same_repo_writers_hold_the_fence_at_once_and_the_erase_sweeps_both(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -574,9 +572,8 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         // its fence, so the erase parks holding the fence.
         let barrier_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let mut barrier = barrier_pool.begin().await?;
-        let (kind, owner_id) = owner.columns();
+        let owner_id = owner.into_inner();
         sqlx::query(HOLD_REPO_ROW_SQL)
-            .bind(kind)
             .bind(owner_id)
             .bind(repo_id)
             .fetch_all(&mut *barrier)
@@ -648,7 +645,7 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
 async fn host_write_commit_summary(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     repo_id: Uuid,
     commit_sha: &str,
     commit: MemoryId,
@@ -694,13 +691,13 @@ async fn host_write_commit_summary(
 /// that names a sidecar table it has no row in is refused at COMMIT.
 async fn insert_commit_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     t: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use proxima_core::FactPayload;
 
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",

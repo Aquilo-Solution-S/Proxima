@@ -7,8 +7,8 @@ use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWrit
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion,
-    StorageError, UserId,
+    AccessKind, EdgeEndpoint, EntityKind, MemoryId, OwnerId, SchemaId, SchemaVersion, StorageError,
+    UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -64,7 +64,7 @@ async fn goal_wake_share_restrict_match_fire() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
@@ -154,7 +154,7 @@ async fn wake_target_erase_and_admission_have_one_lifecycle_order() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
@@ -278,7 +278,7 @@ async fn carried_wake_with_erased_target_rejects_without_a_goal_head() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let target = pg
@@ -394,7 +394,7 @@ async fn cooled_assignment_rejects_a_goal_successor_without_a_new_head() {
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let fact = pg
@@ -504,7 +504,7 @@ async fn cooled_carried_wake_rejects_a_goal_successor_without_a_new_head() {
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let trigger = pg
@@ -624,7 +624,7 @@ async fn direct_fact_memory_wake_rejects_a_non_fact_trigger() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let fact = pg
@@ -674,7 +674,7 @@ async fn goal_assignment_and_evidence_erase_before_head_have_one_order() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let base = pg

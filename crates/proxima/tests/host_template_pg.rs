@@ -9,7 +9,7 @@ use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMi
 use proxima::host::MigrationError;
 use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily, admin_url, drop_db};
 use proxima::{AppInfo, BuiltProxima, FlavorApp, Proxima, ToolScope};
-use proxima_core::{Owner, UserId};
+use proxima_core::{OwnerId, UserId};
 use proxima_storage_pg::PgPoolConfig;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, PgConnection, PgPool, SqlSafeStr};
@@ -204,7 +204,7 @@ fn code_of(error: &sqlx::Error) -> Option<String> {
         .map(Cow::into_owned)
 }
 
-async fn boot(db: &SplitRoleDb, owner: Owner, skip_migrations: bool) -> BuiltProxima {
+async fn boot(db: &SplitRoleDb, owner: OwnerId, skip_migrations: bool) -> BuiltProxima {
     let builder = Proxima::<HostApp>::app()
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
@@ -236,7 +236,7 @@ async fn a_clone_holds_every_migration_and_a_boot_applies_none() {
         .expect("the host's migration ran in the template");
     assert_eq!(seeded, "seeded by the host migration");
 
-    let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let booted = boot(&db, owner, false).await;
     booted.shutdown().await;
     assert_eq!(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::mcp::{McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid};
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerRef, ToolCaller, ToolCtx,
+    AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerId, ToolCaller, ToolCtx,
     ToolServices,
 };
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use super::input_validation::{resolve_evidence, validate_plan_items};
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 
 fn test_ctx() -> ToolCtx {
-    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let mut services = ToolServices::new();
     services.insert(McpToolPresentation::new());
     ToolCtx::new(

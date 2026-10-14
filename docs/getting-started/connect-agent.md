@@ -8,7 +8,7 @@ ready-to-paste command for Claude Code:
 ```sh
 claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
   --header "Authorization: Bearer <token-from-dev-idp>" \
-  --header "X-Proxima-Owner: personal:<user-id-from-dev-idp>"
+  --header "X-Proxima-Owner: <user-id-from-dev-idp>"
 ```
 
 Equivalent JSON, for clients that take a config file:
@@ -20,7 +20,7 @@ Equivalent JSON, for clients that take a config file:
       "url": "http://127.0.0.1:31415/mcp",
       "headers": {
         "Authorization": "Bearer <oidc-access-token>",
-        "X-Proxima-Owner": "personal:<user-id>"
+        "X-Proxima-Owner": "<user-id>"
       }
     }
   }

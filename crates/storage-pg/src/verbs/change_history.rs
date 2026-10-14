@@ -5,7 +5,7 @@
 use proxima_core::verbs::change_history::{
     ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
 };
-use proxima_core::{OwnerRef, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ use crate::error::map_err;
 
 pub(crate) async fn change_history_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &ChangeHistoryRequest,
 ) -> Result<ChangeHistoryResponse, StorageError> {
     if read_owners.is_empty() {
@@ -25,7 +25,7 @@ pub(crate) async fn change_history_on_connection(
     let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let limit = i64::from(req.limit.min(MAX_CHANGE_HISTORY_LIMIT));
     let high_water =

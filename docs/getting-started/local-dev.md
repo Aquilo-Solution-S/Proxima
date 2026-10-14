@@ -131,7 +131,7 @@ curl -s -D- -o/dev/null -X POST http://127.0.0.1:31415/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-Proxima-Owner: personal:$USER_ID" \
+  -H "X-Proxima-Owner: $USER_ID" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
         "protocolVersion":"2025-06-18","capabilities":{},
         "clientInfo":{"name":"probe","version":"1"}}}'

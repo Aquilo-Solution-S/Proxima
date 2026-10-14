@@ -7,17 +7,14 @@
 )]
 
 use crate::PgStorage;
-use crate::access::owner_columns::ensure_owner_row;
+use crate::access::owner_columns::{ensure_owner_row, register_group};
 use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{lock_lifecycle_targets_tx, lock_memory_handles_tx};
-use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
-use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{AccessKind, GroupId, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId};
+use proxima_core::{AccessKind, GroupId, OwnerId, SchemaId, SchemaVersion, StorageError, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
@@ -140,7 +137,7 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
@@ -213,7 +210,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
@@ -279,7 +276,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(&hash)
         .fetch_one(pool)
         .await?;
@@ -410,20 +407,11 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
     result.expect("pin/blob test failed");
 }
 
-fn assert_kind_conflict(err: StorageError) {
-    match err {
-        StorageError::ConstraintViolation(msg) => {
-            assert!(
-                msg.contains("owners.kind conflict"),
-                "got ConstraintViolation {msg}"
-            );
-        }
-        other => panic!("expected kind conflict, got {other}"),
-    }
-}
-
+/// With bare owner ids a kind is no longer carried by a write: an id first
+/// seen through a write is registered once, and the only path that names a
+/// kind, group registration, refuses an id already registered as a user.
 #[tokio::test]
-async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
+async fn an_id_first_seen_as_a_user_is_never_registered_as_a_group() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -433,76 +421,29 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let id = Uuid::now_v7();
-        let personal = OwnerRef::Personal(UserId::new(id));
-        let group = OwnerRef::Group(GroupId::new(id));
-        let permit = OwnerWritePermit::new_for_tests(personal, AccessKind::Fact);
+        let owner = OwnerId::from(UserId::new(id));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
         pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
-        {
-            let mut conn = pool.acquire().await?;
-            ensure_owner_row(&mut conn, &personal).await?;
-            assert_kind_conflict(
-                ensure_owner_row(&mut conn, &group)
-                    .await
-                    .expect_err("helper"),
-            );
+        let mut conn = pool.acquire().await?;
+        ensure_owner_row(&mut conn, &owner).await?;
+        ensure_owner_row(&mut conn, &OwnerId::from(GroupId::new(id))).await?;
+        let kind: String =
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+                .bind(id)
+                .fetch_one(&mut *conn)
+                .await?;
+        assert_eq!(kind, "personal", "the first sighting registers the id");
+        match register_group(&mut conn, GroupId::new(id)).await {
+            Err(StorageError::Conflict(_)) => {}
+            other => panic!("expected a registration conflict, got {other:?}"),
         }
-
-        let mut tx = pool.begin().await?;
-        assert_kind_conflict(
-            write_goal(
-                &mut tx,
-                &group,
-                &GoalWriteCommand {
-                    handle: None,
-                    schema_id: "core/task-v1".into(),
-                    title: "kind conflict".into(),
-                    text: None,
-                    state: GoalState::Active,
-                    request_id: "kind-conflict".into(),
-                    close_fact_t: None,
-                    assignment_t: None,
-                    dependency_t: vec![],
-                    evidence_t: vec![],
-                    wake_id: None,
-                    mint_write_act: false,
-                    write_act_t: None,
-                },
-            )
-            .await
-            .expect_err("goal"),
-        );
-        assert_kind_conflict(
-            insert_wake_config(
-                &mut tx,
-                &group,
-                &WakeConfigDraft {
-                    trigger_kind: WakeTriggerKind::FactSchema,
-                    trigger_schema_id: Some("core/visit-v1".into()),
-                    trigger_t: None,
-                    tool_ids: vec!["core.remember".into()],
-                    prompt: "on visit".into(),
-                    hard_memory_t: vec![],
-                },
-            )
-            .await
-            .expect_err("wake"),
-        );
-        tx.rollback().await?;
-
-        let group_permit = OwnerWritePermit::new_for_tests(group, AccessKind::Fact);
-        assert_kind_conflict(
-            pg.ingest_fact_atomic(&group_permit, &draft(None), None)
-                .await
-                .expect_err("fact"),
-        );
-
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("owners kind-conflict test failed");
+    result.expect("owner registration test failed");
 }
 
 #[tokio::test]
@@ -516,7 +457,7 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
         let mut joins = Vec::new();
         for _ in 0..8 {

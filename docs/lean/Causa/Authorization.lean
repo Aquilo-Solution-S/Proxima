@@ -116,18 +116,18 @@ theorem personal_forbids_manage :
   rintro u r ⟨hnp, _⟩
   exact hnp ⟨u, rfl⟩
 
-/-- The stable personal owner reference resolves to exactly that user's personal
-    group. Visibility through the owner table therefore reduces to identity. -/
+/-- A user's own owner id resolves to exactly that user's personal group.
+    Visibility through the owner table therefore reduces to identity. -/
 theorem owner_state_personal_visible :
     ∀ (s : OwnerState) (u r : User),
-      visible (s.resolve (.personal u)) r ↔ r = u := by
+      visible (s.resolve (s.own u)) r ↔ r = u := by
   intro s u r
   rw [s.personal_resolves u]
   exact visible_personal u r
 
-/-- Personal owner refs remain unmanageable after server resolution. -/
+/-- A user's own owner id remains unmanageable after server resolution. -/
 theorem owner_state_personal_forbids_manage :
-    ∀ (s : OwnerState) (u r : User), ¬ may_manage_in s r (.personal u) := by
+    ∀ (s : OwnerState) (u r : User), ¬ may_manage_in s r (s.own u) := by
   intro s u r h
   unfold may_manage_in at h
   rw [s.personal_resolves u] at h

@@ -1377,8 +1377,7 @@ mod tests {
     ];
 
     fn full_auth(scope: ToolScope) -> McpAuthContext {
-        let owner =
-            proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
             authz: proxima_core::AuthzContext::single_owner(
@@ -1392,8 +1391,7 @@ mod tests {
     /// An auth context whose token binds a model identity, as the OIDC
     /// subject map produces for a configured runner principal.
     fn trusted_auth(trusted_model_id: &str) -> McpAuthContext {
-        let owner =
-            proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
             authz: proxima_core::AuthzContext::single_owner(
@@ -1884,9 +1882,9 @@ mod tests {
     /// name.
     #[test]
     fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
+        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
-        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject_with_role(
@@ -1932,9 +1930,9 @@ mod tests {
 
     #[test]
     fn a_bogus_action_scope_never_advertises_a_flat_tool() {
-        use proxima_core::{AuthPath, AuthzContext, Owner, UserId};
+        use proxima_core::{AuthPath, AuthzContext, OwnerId, UserId};
 
-        let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let descriptor = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
         let auth = McpAuthContext {
             owner,
@@ -1954,9 +1952,9 @@ mod tests {
 
     #[test]
     fn a_viewer_sees_only_the_read_leaf_of_a_mixed_dispatcher() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
+        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
-        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject_with_role(
@@ -2026,7 +2024,7 @@ mod tests {
     #[test]
     fn scoped_dispatcher_projection_preserves_allowed_argument_schema_metadata() {
         use proxima_core::access::Role;
-        use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, Owner, UserId};
+        use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerId, UserId};
 
         let registry = FlavorRegistry::default().freeze_or_panic_for_tests();
         let descriptor = registry
@@ -2034,7 +2032,7 @@ mod tests {
             .iter()
             .find(|tool| tool.name == protocol_tool::CORE_MEMBERSHIP)
             .expect("core membership dispatcher");
-        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject_with_role(
@@ -2083,10 +2081,10 @@ mod tests {
     #[test]
     fn a_viewer_keeps_the_annotated_read_command_of_an_argv_dispatcher() {
         use proxima_core::{
-            AuthPath, AuthzContext, GroupId, Owner, ToolScope, UserId, access::Role,
+            AuthPath, AuthzContext, GroupId, OwnerId, ToolScope, UserId, access::Role,
         };
 
-        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject_with_role(
@@ -2172,10 +2170,10 @@ mod tests {
 
     #[test]
     fn denial_hints_exclude_actions_forbidden_by_the_owner_role() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerRef, UserId, access::Role};
+        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject_with_role(

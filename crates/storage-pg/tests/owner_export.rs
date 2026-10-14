@@ -6,7 +6,7 @@ use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{OwnerInversePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
-use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::core_pg_sidecars;
@@ -85,7 +85,7 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
@@ -148,7 +148,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
@@ -169,13 +169,13 @@ async fn export_carries_cooled_locators_and_sketches() {
             &cold,
             &key,
             cooled_t,
-            owner.stored_owner_id(),
+            owner.into_inner(),
         )
         .await?;
         tx.commit().await?;
 
         // A neighbour owner's cooled admission and sketch must not appear.
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let neighbour = pg
             .ingest_fact_atomic(&other_permit, &sketched("fact", "Not yours"), None)
@@ -190,7 +190,7 @@ async fn export_carries_cooled_locators_and_sketches() {
             &cold,
             &neighbour_key,
             neighbour_t,
-            other.stored_owner_id(),
+            other.into_inner(),
         )
         .await?;
         tx.commit().await?;
@@ -205,7 +205,7 @@ async fn export_carries_cooled_locators_and_sketches() {
              VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
         )
         .bind(witnessed_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(witnessed_t)
         .execute(pool)
         .await?;
@@ -215,7 +215,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         )
         .bind(witnessed_handle)
         .bind(witnessed_t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
@@ -299,7 +299,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let pool = pg.pool_for_tests();
 
         // No core payload registers a citation sidecar, so the coverage is a
@@ -324,7 +324,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
         .execute(pool)
         .await?;
 
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         for (holder, schema, seed, body, page) in [
             (owner, "core/cited-v1", 7u8, "mine", 4),
             (other, "core/cited-v1", 9u8, "not mine", 11),
@@ -337,7 +337,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
                  VALUES ($1, $2, $3)
                  RETURNING blob_id",
             )
-            .bind(holder.stored_owner_id())
+            .bind(holder.into_inner())
             .bind(schema)
             .bind(vec![seed; 32])
             .fetch_one(pool)
@@ -405,8 +405,8 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(user);
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
 
         for holder in [owner, other] {
@@ -420,7 +420,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
              VALUES ($1, 'opaque/archive-v1', $2)
              RETURNING blob_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![7u8; 32])
         .fetch_one(pool)
         .await?;
@@ -428,7 +428,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
             "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'opaque/archive-v1', $2)",
         )
-        .bind(other.stored_owner_id())
+        .bind(other.into_inner())
         .bind(vec![9u8; 32])
         .execute(pool)
         .await?;

@@ -1,8 +1,8 @@
 //! Hydration of `announce` rows into typed `ChangeEvent`s.
 
 use proxima_core::{
-    ChangeEvent, ChangeEventKind, EntityKind, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
-    OwnerRefKind, SchemaId, SchemaVersion, StorageError, UserId,
+    ChangeEvent, ChangeEventKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerId, SchemaId,
+    SchemaVersion, StorageError,
 };
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -14,7 +14,6 @@ use crate::pg_enums::{PgAnnounceEntity, PgAnnounceOp, PgPinTargetKind};
 struct AnnounceRow {
     seq: Uuid,
     owner_id: Uuid,
-    owner_kind: OwnerRefKind,
     op: PgAnnounceOp,
     entity: PgAnnounceEntity,
     handle: Uuid,
@@ -28,7 +27,6 @@ struct AnnounceRow {
 const ANNOUNCE_BY_SEQ_SQL: &str = "
 SELECT a.seq,
        a.owner_id,
-       o.kind AS owner_kind,
        a.op AS op,
        a.entity AS entity,
        a.handle,
@@ -49,7 +47,6 @@ SELECT a.seq,
 const ANNOUNCE_BY_SEQS_SQL: &str = "
 SELECT a.seq,
        a.owner_id,
-       o.kind AS owner_kind,
        a.op AS op,
        a.entity AS entity,
        a.handle,
@@ -70,13 +67,13 @@ SELECT a.seq,
 
 pub(crate) async fn hydrate_change_event_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
     let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let row = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQ_SQL)
         .bind(seq)
@@ -89,7 +86,7 @@ pub(crate) async fn hydrate_change_event_on_connection(
 
 pub(crate) async fn hydrate_change_events_batch_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     seqs: &[Uuid],
 ) -> Result<Vec<ChangeEvent>, StorageError> {
     if seqs.is_empty() {
@@ -98,7 +95,7 @@ pub(crate) async fn hydrate_change_events_batch_on_connection(
     let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let rows = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQS_SQL)
         .bind(seqs)
@@ -114,10 +111,7 @@ pub(crate) async fn hydrate_change_events_batch_on_connection(
 /// where the row is read, not in a catch-all arm here that has to invent a
 /// meaning for it.
 fn decode_announce_row(row: AnnounceRow) -> ChangeEvent {
-    let owner = match row.owner_kind {
-        OwnerRefKind::Personal => OwnerRef::Personal(UserId::new(row.owner_id)),
-        OwnerRefKind::Group => OwnerRef::Group(GroupId::new(row.owner_id)),
-    };
+    let owner = OwnerId::new(row.owner_id);
     let entity_kind = match (row.entity, row.memory_kind) {
         (PgAnnounceEntity::Goal, _) => EntityKind::Goal,
         (PgAnnounceEntity::Memory, Some(kind)) => kind.into(),

@@ -203,17 +203,14 @@ pub(crate) fn resolve_subject(
 /// subjects: re-asserting the same interpretation is one memory, not a
 /// growing pile of identical judgments.
 pub(crate) fn interpretation_memory_id(
-    owner: &crate::Owner,
+    owner: &crate::OwnerId,
     model_id: &str,
     claim: &str,
     confidence: u8,
     subjects: &[uuid::Uuid],
 ) -> uuid::Uuid {
-    let principal_kind = crate::OwnerRefKind::of(owner);
-    let principal_id = owner.stable_key_uuid();
+    let principal_id = owner.into_inner();
     let mut buf = Vec::with_capacity(96 + claim.len() + subjects.len() * 16);
-    buf.extend_from_slice(principal_kind.as_str().as_bytes());
-    buf.push(0);
     buf.extend_from_slice(principal_id.as_bytes());
     buf.push(0);
     buf.extend_from_slice(model_id.as_bytes());
@@ -232,10 +229,10 @@ pub(crate) fn interpretation_memory_id(
 mod tests {
     use super::{InterpretArgs, InterpretTool, default_confidence, reject_self_subject};
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
     use std::sync::Arc;
 
-    fn ctx(owner: OwnerRef) -> McpToolCtx {
+    fn ctx(owner: OwnerId) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -271,7 +268,7 @@ mod tests {
     /// rewriting it to 100 would store a number nobody meant.
     #[tokio::test]
     async fn confidence_past_the_scale_is_refused_not_clamped() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let err = InterpretTool::call(ctx(owner), args(vec![subject()], 140))
             .await
             .expect_err("140 is not a confidence");
@@ -311,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_interpretation_must_be_about_something() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let err = InterpretTool::call(ctx(owner), args(Vec::new(), 80))
             .await
             .expect_err("an empty subject list is refused");

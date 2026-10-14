@@ -8,7 +8,7 @@
 
 pub use proxima_pg_testkit::*;
 
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, Role, UserId};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, Role, UserId};
 use proxima_storage_pg::{
     PgPoolConfig, PgSidecarRegistry, PgStorage, PgTuning, register_core_pg_sidecars,
 };
@@ -186,20 +186,16 @@ fn fingerprint_hash(fingerprint: &str, sources: &[NamedMigrator]) -> u64 {
 ///
 /// # Panics
 ///
-/// Never for a well-formed owner: both constructions narrow to `owner` by
-/// construction.
+/// Never: an admin on exactly `owner` narrows to it by construction.
 #[must_use]
-pub fn scoped_authz(owner: Owner) -> AuthzContext {
-    let context = match owner {
-        Owner::Personal(_) => AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-        Owner::Group(_) => AuthzContext::for_subject_with_role(
-            UserId::new(uuid::Uuid::now_v7()),
-            [(owner, Role::admin())],
-            AuthPath::HostBearer,
-        )
-        .narrowed_to_owner(owner)
-        .expect("an admin on exactly this owner narrows to it"),
-    };
+pub fn scoped_authz(owner: OwnerId) -> AuthzContext {
+    let context = AuthzContext::for_subject_with_role(
+        UserId::new(uuid::Uuid::now_v7()),
+        [(owner, Role::admin())],
+        AuthPath::HostBearer,
+    )
+    .narrowed_to_owner(owner)
+    .expect("an admin on exactly this owner narrows to it");
     proxima_core::test_fixtures::authenticated_context(context)
 }
 

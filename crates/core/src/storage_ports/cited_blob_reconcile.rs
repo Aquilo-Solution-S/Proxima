@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use crate::OwnerRef;
+use crate::OwnerId;
 use crate::authz::{AuthPath, AuthzContext, SystemAuthority};
 use crate::storage::StorageError;
 
@@ -178,7 +178,7 @@ pub trait CitedBlobOwnerReconcilePort: Send + Sync {
     async fn reconcile_owner(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
     ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError>;
 }
 
@@ -221,7 +221,7 @@ impl CitedBlobOwnerReconcileService {
     pub async fn reconcile_owner(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
     ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
         if authz.auth_path() == AuthPath::Delegated {
             return Err(StorageError::ConstraintViolation(
@@ -249,7 +249,7 @@ mod tests {
         async fn reconcile_owner(
             &self,
             _authz: &AuthzContext,
-            _owner: OwnerRef,
+            _owner: OwnerId,
         ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(CitedBlobOwnerReconcileOutcome::default())
@@ -261,7 +261,7 @@ mod tests {
         let port = Arc::new(RecordingReconcile::default());
         let service = CitedBlobOwnerReconcileService::new(port.clone());
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let raw = AuthzContext::for_subject_with_role(
             subject,
             [(owner, Role::viewer())],

@@ -8,7 +8,7 @@ use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, Engine, EntityKind, FactIngestOutcome, FactPayload,
-    FactWriteCommand, FlavorRegistry, OwnerRef, SidecarPayload, Speaker, UserId, UtteranceV1,
+    FactWriteCommand, FlavorRegistry, OwnerId, SidecarPayload, Speaker, UserId, UtteranceV1,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -24,7 +24,7 @@ struct Fixture {
     db_name: String,
     pg: PgStorage,
     engine: Arc<Engine>,
-    owner: OwnerRef,
+    owner: OwnerId,
     authz: AuthzContext,
 }
 
@@ -43,7 +43,7 @@ impl Fixture {
             db_name,
             pg,
             engine,
-            owner: OwnerRef::Personal(user),
+            owner: OwnerId::from(user),
             authz: AuthzContext::for_subject(user, AuthPath::HostBearer),
         })
     }
@@ -151,7 +151,7 @@ async fn watermarks_preserve_authorized_owners_and_page_boundaries() {
             )
             .await?;
         assert!(foreign.change_event_seq > later.change_event_seq);
-        let foreign_owner = OwnerRef::Personal(foreign_user);
+        let foreign_owner = OwnerId::from(foreign_user);
         // The reader's authorization, not the request, bounds rows and watermark.
         let mut request = QueryRequest {
             entity_kind: Some(EntityKind::Fact),

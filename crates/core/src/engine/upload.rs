@@ -15,8 +15,8 @@
 //! What could not be in that transaction is the object-store work:
 //! streaming, hashing, and copying an S3 object is not a database
 //! statement and must not hold a transaction open while it runs. Hence the
-//! split: [`CitedBlobPort::stage_upload`] before, one transaction, then
-//! [`CitedBlobPort::finish_upload`] after.
+//! split: [`CitedBlobPort::stage_upload`] before, then one corpus transaction
+//! that also settles the upload row.
 //!
 //! The blob port arrives as an argument rather than as an `Engine` field.
 //! The store is host-wired and optional (a host without S3 has none), while
@@ -31,7 +31,7 @@ use crate::error::ProtocolError;
 use crate::storage_ports::{CitedBlobService, CitedBlobStaged, CitedBlobUploadCompleted};
 use crate::verbs::fact_ingest::{FactWriteCommand, InlineCitedObjectDraft};
 use crate::{
-    CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    CitedObjectPayload, FactIngestOutcome, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     UploadV1,
 };
 
@@ -120,27 +120,25 @@ impl Engine {
     /// # What is atomic
     ///
     /// The cited object (its `proxima_core.blob` row), the Fact that cites
-    /// it, its receipt, its embedding job, and every extension row are one
-    /// transaction. Nothing a reader can observe
+    /// it, its receipt, its embedding job, every extension row, and the completed
+    /// upload row are one transaction. Nothing a reader can observe
     /// survives a failure partway: an artefact with no recorded arrival is
     /// not a state this verb can leave behind.
     ///
-    /// Two things sit outside it, both deliberately, and neither is corpus
-    /// content. Staging performs one bounded object read, records the
+    /// Object-store I/O stays outside the corpus transaction. Staging performs
+    /// one bounded object read, records the
     /// transfer's canonical locator and SHA-256 audit digest, carries the
     /// BLAKE3 content address forward, and best-effort retires the redundant
-    /// pending copy — no transaction may be held open across that. Finishing
-    /// marks the upload row and retries the same cleanup. A crash before
-    /// finishing leaves an upload row still saying `pending` whose artefact
-    /// is already recorded; completing the same upload again resolves it.
+    /// pending copy — no transaction may be held open across that. The corpus
+    /// transaction also settles the upload row; pending-key cleanup after
+    /// commit is best effort, bounded by the bucket lifecycle.
     ///
     /// # Idempotency
     ///
     /// Safe to call again with the same `upload_id`. Staging derives its
     /// canonical key from that `upload_id`, so a repeat verifies and reads
     /// exactly the same immutable object; the Fact replays on its receipt and
-    /// returns the same `memory_id` and cited object, and finishing tolerates
-    /// an upload already completed against the same artefact.
+    /// returns the same `memory_id` and cited object even after `expires_at`.
     ///
     /// # Errors
     ///
@@ -154,7 +152,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
     ) -> Result<UploadCompleted, ProtocolError>
@@ -184,7 +182,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         expectation: &UploadCompletionExpectation,
@@ -207,7 +205,7 @@ impl Engine {
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         expectation: Option<&UploadCompletionExpectation>,
@@ -232,11 +230,13 @@ impl Engine {
             .await
     }
 
+    /// Persist the cited object, upload Fact, and completed upload row in one
+    /// corpus transaction. Only best-effort pending-key cleanup follows commit.
     async fn persist_staged_upload_as_fact<A>(
         &self,
         blobs: &CitedBlobService,
         authority: &A,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         extensions: &[SidecarPayload],
         staged: CitedBlobStaged,
@@ -285,6 +285,10 @@ impl Engine {
             )));
         }
 
+        let upload_id = uuid::Uuid::parse_str(upload_id).map_err(|err| {
+            ProtocolError::invalid_argument("upload_id", format!("invalid upload id: {err}"))
+        })?;
+        let authorized = authorized.with_upload_completion(upload_id);
         let fact = self
             .ingest_fact_with_citation_and_typed_sidecar(&authorized)
             .await?;
@@ -297,16 +301,15 @@ impl Engine {
             )
         })?;
 
-        // Outside the transaction, and necessarily so: it marks the
-        // upload row and deletes the now-redundant pending object, one of
-        // which is not a database write at all. A crash before this leaves
-        // an upload row still saying `pending` while its artefact and the
-        // Fact are committed — bookkeeping for the transfer protocol,
-        // invisible in the corpus, and repaired by completing again.
-        blobs
-            .finish_upload(authority, owner, upload_id, cited_object_id)
+        // The corpus transaction already completed the row. This call only
+        // retries expendable pending-key cleanup; its failure cannot undo
+        // or report failure for the committed Fact.
+        if let Err(error) = blobs
+            .finish_upload(authority, owner, &upload_id.to_string(), cited_object_id)
             .await
-            .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
+        {
+            tracing::warn!(%upload_id, %error, "leaving upload cleanup to the bucket lifecycle");
+        }
 
         let blob = CitedBlobUploadCompleted {
             cited_object_id: cited_object_id.to_string(),
@@ -412,7 +415,7 @@ mod tests {
         async fn prepare_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _filename: &str,
             _mime: &str,
             _byte_len: u64,
@@ -423,7 +426,7 @@ mod tests {
         async fn stage_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobStaged, StorageError> {
             self.stage_calls.fetch_add(1, Ordering::SeqCst);
@@ -433,7 +436,7 @@ mod tests {
         async fn finish_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
             _cited_object_id: uuid::Uuid,
         ) -> Result<(), StorageError> {
@@ -444,7 +447,7 @@ mod tests {
         async fn abort_upload(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _upload_id: &str,
         ) -> Result<CitedBlobUploadAborted, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -453,7 +456,7 @@ mod tests {
         async fn read_url(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _cited_object_id: uuid::Uuid,
         ) -> Result<CitedBlobReadUrl, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -462,7 +465,7 @@ mod tests {
         async fn find_held_blobs(
             &self,
             _authz: &crate::AuthzContext,
-            _owner: crate::OwnerRef,
+            _owner: crate::OwnerId,
             _content_hashes: &[[u8; 32]],
         ) -> Result<Vec<CitedBlobHeld>, StorageError> {
             Err(StorageError::Internal("test port: unused".to_owned()))
@@ -483,7 +486,7 @@ mod tests {
             stage_calls: Arc::clone(&stage_calls),
             finish_calls: Arc::clone(&finish_calls),
         }));
-        let owner = crate::OwnerRef::Personal(UserId::new(uuid::Uuid::nil()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::nil()));
         let authority = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 

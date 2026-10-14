@@ -283,8 +283,8 @@ fn short_and_unstructured_tokens_are_rejected() {
     assert_eq!(distinctive_terms("id fs plugin A1 the config"), "");
 }
 
-fn owner(byte: u8) -> proxima_core::Owner {
-    proxima_core::Owner::Personal(proxima_core::UserId::new(id(byte)))
+fn owner(byte: u8) -> proxima_core::OwnerId {
+    proxima_core::OwnerId::from(proxima_core::UserId::new(id(byte)))
 }
 
 fn resolved() -> ResolvedChunkQuery<'static> {
@@ -412,7 +412,7 @@ fn weight(value: f32) -> SemanticWeight {
 #[test]
 fn an_unweighted_query_keeps_the_six_value_canon() {
     let six_values = serde_json::json!([
-        owner(1).external_key(),
+        owner(1).to_string(),
         "parse_chunk",
         "hybrid",
         Some(id(9)),

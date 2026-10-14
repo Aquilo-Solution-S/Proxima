@@ -51,7 +51,8 @@ Supported Rust tiers:
 | Host API (storage handle) | `use proxima::{PgStorage, PgHostStateEraseContext, OriginScope, PublicationOriginEligibility, PublicationOriginEligibilityPort, begin_owner_transaction};` | `PgStorage` is the migration helpers' parameter; `PgHostStateEraseContext` and `OriginScope` are what `ProximaHost::{host_state_erase_context_for_host, origin_scope_for_host}` return. `begin_owner_transaction(&PgPool, &OwnerScope)` is for authorized extra-table adapters: the pool comes from `clone_pool_for_host`, the scope from `authenticate`; every statement runs on the returned transaction; no `proxima_core.*` SQL through it or the pool; Fact and state writes use `UnitOfWork`. Not Flavor SDK |
 | Host API (OIDC) | `use proxima::auth::{OidcTokenValidator, ValidatedOidcToken, OidcRejection, OidcRoleShape, OidcRoleShaper, OidcClaimMap, AuthorizedPartyPolicy};` | `validate_with::<C>` reads host claims from the verified payload; `OidcRoleShape::Host` shapes a binding's context from every claim; `with_authorized_party_policy(AuthorizedPartyPolicy)` pins the allowed `azp` per binding ([10 §MCP Endpoint and Authentication](../10-configuration.md#mcp-endpoint-and-authentication)); requires feature `auth-oidc` |
 | Host API (system work) | `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` | sealed `AuthPath::System` context from the runtime's `SystemAuthority`, with no bearer or stub authenticator |
-| Host API (role probes) | `use proxima::{roles_for_subject, group_role};` | `roles_for_subject(&mut *tx, subject) -> Result<OwnerRoles, AccessError>`, `group_role(&mut *tx, subject, group) -> Result<Option<Role>, AccessError>` on the host's own connection or transaction (`PgPlatformScope::begin()` included): the answers `PgOwnerAccessResolver` gives, several relations in one group joined. No transaction control, no scope set; rows the connection's scope cannot read are not seen. No bool probe: authorize from the role — [10 §MCP Endpoint and Authentication](../10-configuration.md#mcp-endpoint-and-authentication) |
+| Host API (role probes) | `use proxima::{roles_for_subject, group_role};` | `roles_for_subject(&mut *tx, subject) -> Result<OwnerRoles, AccessError>`, `group_role(&mut *tx, subject, group) -> Result<Option<Role>, AccessError>` on the host's own connection or transaction (`PgPlatformScope::begin()` included): the answers `PgOwnerAccessResolver` gives, several relations in one group joined. A group-registered subject is refused with `AccessError::SubjectIsGroup` before role derivation; an unregistered subject keeps its personal role. No transaction control, no scope set; rows the connection's scope cannot read are not seen, the registry row that refuses a group-registered subject included, so resolve on a platform-scoped transaction. No bool probe: authorize from the role — [10 §MCP Endpoint and Authentication](../10-configuration.md#mcp-endpoint-and-authentication) |
+| Host API (owner registry and membership writes) | `use proxima::host::{register_group, bootstrap_group_admin, add_group_member, remove_group_member, remove_group_member_relation, replace_group_member_relation};` | Every form takes `&mut PgConnection` and is called with `&mut *tx` inside the host's platform-scoped transaction. The host vouches for the write; no authorization runs, the authorization hooks included. Group writes share the membership advisory lock. The forms preserve registry and membership rows, never begin, commit, roll back, set a scope or retry, and have no post-commit action. The caller retries its whole transaction. Pool forms call these connection forms inside their own transaction. |
 | Host API (membership relation) | `Engine::{remove_member_relation, replace_member_relation}` | `remove_member_relation(&authz, group, member, relation)` deletes one row (absent is `Ok`); `replace_member_relation(&authz, group, member, from, to)` is one transaction under the membership lock: `from` must be held (else `invalid_argument`, nothing changes), `from == to` is refused, other relations stay, no reader sees the member with neither. Manage gate, hooks (`Membership { change: Remove, relation: from }` then `{ change: Add, relation: to }`, both before the write) and membership locking as `add_member` / `remove_member`. `OwnerMembershipAdminPort` gains `remove_group_member_relation` / `replace_group_member_relation` with refusing defaults |
 | Host API (tool scope) | `use proxima::host::{ToolScope, ScopeKey, ToolName, ActionName, ResourceKey, ScopeKeyError, tool_palette_excluding};` | `ToolScope::Palette(Vec<ScopeKey>)`; a key exists only through `ScopeKey::parse` and the typed constructors, so a tool name cannot spell a `tool:action` leaf or a `resource:` key ([12 §Scope keys](../12-tool-manifest.md#scope-keys)) |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
@@ -93,7 +94,7 @@ source scan (not kept) found 49 types that SDK signatures name and
 `proxima::flavor` does not, and they are not exported yet. Through the
 `flavor::authorized_read` functions: `AuthzContext`, `Engine`. Through registry,
 tool and storage accessors: `AccessKind`, `AccessError`, `Relation`, `Role`,
-`Owner`, `OwnerRefKind`, `ToolScope`, `CapabilityTag`, `StorageError`,
+`OwnerId`, `ToolScope`, `CapabilityTag`, `StorageError`,
 `TrimmedLenViolation`, `HostStateCommand`, `HostStateOutcome`. Through the write
 path: `WritePermit`, `OwnerWritePermit`, `PublicationPlan`, `Citation`,
 `FactReceiptDraft`, `AuthorizedNodeLinks`, `AuthorizedInlineCitedObject`,
@@ -147,21 +148,17 @@ Unsupported:
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |
 | runtime plugin/tool/schema registration | denied; flavor composition is build-time |
 
-## Owner External Keys
+## Owner Ids
 
-| OwnerRef | External key |
-|---|---|
-| `OwnerRef::Personal(UserId)` | `personal:<uuid>` |
-| `OwnerRef::Group(GroupId)` | `group:<uuid>` |
-
-Personal and Group are the only owner kinds. Every owner carries a UUID —
-there is no id-less owner — so `OwnerRef::columns()` returns
-`(OwnerRefKind, Uuid)` and `OwnerRefKind::with_uuid(Uuid)` is total.
+An owner is `OwnerId(Uuid)`, `From<UserId>` and `From<GroupId>`. Its wire
+form is the bare hyphenated UUID; the old `personal:<uuid>` / `group:<uuid>`
+spellings are refused. The kind (user or group) is not part of the id: it
+lives only in `proxima_core.owners.kind`.
 
 | Helper | Import | Contract |
 |---|---|---|
-| `OwnerRef::external_key()` | `proxima::OwnerRef` / `proxima_core::OwnerRef` | format the canonical runtime/API key |
-| `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical `personal:`/`group:` keys; any other prefix or a bare kind is invalid |
+| `Display` / `FromStr` | `proxima::OwnerId` / `proxima_core::OwnerId` | print and parse the bare hyphenated UUID; anything else is `OwnerIdParseError` |
+| `into_inner()`, `as_user()`, `as_group()` | `proxima::OwnerId` | the id as a `Uuid`, `UserId` or `GroupId`; a typed view, not a kind check |
 
 ## Roles
 
@@ -207,7 +204,7 @@ so Content reuse never crosses a limit.
 
 | Item | Contract |
 |---|---|
-| `OwnerWritePermit` | sealed storage-tier proof: `(OwnerRef, AccessKind)`; constructor is not public |
+| `OwnerWritePermit` | sealed storage-tier proof: `(OwnerId, AccessKind)`; constructor is not public |
 | minting path | `Engine::authorize_owner_write(authz, owner, kind)` after server-resolved owner access |
 | `AuthPath::System` | writes only through a context `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` built from this Engine's witness; any other System context is refused |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |
@@ -538,7 +535,7 @@ execution or activity log projector):
 
 | Rule | Contract |
 |---|---|
-| owner | write under the tenant's `OwnerRef::Group(GroupId)`, not `OwnerRef::Personal(UserId)`. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
+| owner | write under the tenant's group id (`OwnerId::from(GroupId)`), not a user's own id. Tenant-shared evidence belongs to the group the tenant's members can read/manage together, not to one operator's personal owner. |
 | target-owner ingest | resolve the worker subject to roles; call `Engine::ingest_fact(&authz, FactWrite::new(owner, source_id, &payload))`. The explicit destination is authorized without narrowing the caller's read access. |
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |

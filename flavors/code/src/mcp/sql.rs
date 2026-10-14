@@ -1,14 +1,10 @@
 //! Lookup helpers for code MCP tools.
 
-use proxima_core::{Owner, OwnerRefKind, ToolCtx, ToolError};
+use proxima_core::{ToolCtx, ToolError};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 
 use super::CodeToolCtxExt;
 use super::code_store;
-
-pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, uuid::Uuid) {
-    owner.columns()
-}
 
 /// Resolve a `repo_handle`, a bare repo UUID, or a display name / path to a
 /// repo id that **exists for this owner**.
@@ -31,7 +27,7 @@ pub async fn resolve_repo_identifier(
         .ok()
         .or_else(|| uuid::Uuid::parse_str(trimmed).ok());
 
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+    let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
     let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
         .await
@@ -42,20 +38,18 @@ pub async fn resolve_repo_identifier(
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos
-         WHERE owner_kind = $1
-           AND owner_id = $2
+         WHERE owner_id = $1
            AND (
-               ($4::uuid IS NOT NULL AND repo_id = $4)
-               OR ($4::uuid IS NULL AND (
-                      lower(display_name) = lower($3)
-                      OR lower(canonical_path) = lower($3)
-                      OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($3)
+               ($3::uuid IS NOT NULL AND repo_id = $3)
+               OR ($3::uuid IS NULL AND (
+                      lower(display_name) = lower($2)
+                      OR lower(canonical_path) = lower($2)
+                      OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($2)
                   ))
            )
          ORDER BY created_at DESC
          LIMIT 2",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(trimmed)
     .bind(claimed_id)

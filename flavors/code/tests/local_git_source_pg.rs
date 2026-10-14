@@ -29,7 +29,8 @@ use proxima_core::llm::{
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, Cursor, FactPayload, Owner, SchemaId, SchemaVersion,
+    AbstractionPayload, AuthPath, AuthzContext, Cursor, FactPayload, OwnerId, SchemaId,
+    SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
@@ -43,7 +44,7 @@ use tempfile::TempDir;
 /// that let a racing erase be re-indexed. See `repo_fence_pg`.
 async fn register_fixture_repo(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     path: &std::path::Path,
 ) {
@@ -86,8 +87,8 @@ fn fixture_repo() -> TempDir {
     dir
 }
 
-async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let owner_id = owner.stored_owner_id();
+async fn count_present_chunks(pool: &sqlx::PgPool, owner: &OwnerId, repo_id: Uuid) -> i64 {
+    let owner_id = owner.into_inner();
     let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memory_head h \
@@ -107,11 +108,11 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
 
 async fn count_present_chunks_for_path(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     file_path: &str,
 ) -> i64 {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memory_head h \
@@ -133,11 +134,11 @@ async fn count_present_chunks_for_path(
 
 async fn fetch_file_revision_state(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Option<FileState> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let row: Option<(FileState,)> = sqlx::query_as(
         "SELECT s.state \
          FROM proxima_core.memory_head h \
@@ -533,7 +534,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         // head the deletion pass must tombstone). Deterministic memory ids
         // let the FK-ordered inserts (memories -> code_chunk_v1) share the
         // same id set without a temp table.
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",

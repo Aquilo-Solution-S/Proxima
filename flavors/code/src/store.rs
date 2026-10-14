@@ -1,5 +1,5 @@
 use proxima_core::{
-    AbstractionPayload, FactPayload, GoalId, MemoryId, Owner, OwnerScope, ToolError,
+    AbstractionPayload, FactPayload, GoalId, MemoryId, OwnerId, OwnerScope, ToolError,
 };
 use proxima_storage_pg::query::{
     ChunkHeadClass, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
@@ -89,7 +89,7 @@ impl CodeFlavorStore {
     pub(crate) async fn owned_file_revision_heads(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: uuid::Uuid,
         file_paths: &[String],
     ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
@@ -115,7 +115,7 @@ impl CodeFlavorStore {
     pub(crate) async fn owned_present_file_revision_heads_except(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: uuid::Uuid,
         keep_paths: &[String],
     ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
@@ -142,8 +142,8 @@ impl CodeFlavorStore {
     pub(crate) async fn readable_file_revision_head_ts(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
-        read_owners: &[Owner],
+        owner: OwnerId,
+        read_owners: &[OwnerId],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
@@ -173,7 +173,7 @@ impl CodeFlavorStore {
     pub(crate) async fn owned_chunk_head_classes(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: uuid::Uuid,
         file_paths: &[String],
     ) -> Result<Vec<ChunkHeadClass>, ToolError> {
@@ -199,7 +199,7 @@ impl CodeFlavorStore {
     pub(crate) async fn owned_chunk_series_heads(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<ChunkSeriesHead>, ToolError> {
@@ -226,8 +226,8 @@ impl CodeFlavorStore {
     pub(crate) async fn readable_chunk_head_ts_for_file(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
-        read_owners: &[Owner],
+        owner: OwnerId,
+        read_owners: &[OwnerId],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
@@ -285,7 +285,7 @@ impl CodeFlavorStore {
     pub(crate) async fn nearest_code_chunk_candidates(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         query: &proxima_core::SpaceVector,
         filters: CodeChunkVectorFilters<'_>,
         limit: usize,
@@ -365,7 +365,7 @@ impl CodeFlavorStore {
     /// `max(newest assignment, newest evidence)`.
     pub(crate) async fn active_goal_activations(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         targets: &[MemoryId],
     ) -> Result<Vec<(MemoryId, GoalId)>, ToolError> {
         if targets.is_empty() {
@@ -375,13 +375,10 @@ impl CodeFlavorStore {
         let mut tx = begin_compatible_owner_transaction(&self.pool, self.owner_scope())
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
-        let rows = active_goals_for_memory_targets_on_connection(
-            &mut tx,
-            owner.stored_owner_id(),
-            &target_ids,
-        )
-        .await
-        .map_err(|error| ToolError::Other(error.to_string()))?;
+        let rows =
+            active_goals_for_memory_targets_on_connection(&mut tx, owner.into_inner(), &target_ids)
+                .await
+                .map_err(|error| ToolError::Other(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;

@@ -2,7 +2,7 @@
 //! the versions.
 
 use proxima_core::read_models::MemoryCounts;
-use proxima_core::{EntityKind, OwnerRef, StorageError};
+use proxima_core::{EntityKind, OwnerId, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -18,12 +18,12 @@ use crate::pg_enums::PgMemoryKind;
 /// no second per-kind filter is added here.
 pub(crate) async fn count_memories_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
 ) -> Result<MemoryCounts, StorageError> {
     let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let mut counts = MemoryCounts::default();
 

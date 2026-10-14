@@ -47,7 +47,7 @@ fn file_revision(repo_id: Uuid, file_path: &str, version: &str) -> FileRevisionV
 /// which is the point of the fence and is pinned in `repo_fence_pg`.
 async fn register_fixture_repo(
     pg: &proxima_storage_pg::PgStorage,
-    owner: &proxima_core::OwnerRef,
+    owner: &proxima_core::OwnerId,
     repo_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
@@ -82,7 +82,7 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
             now,
         )
         .await?;
-        let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        let destination = proxima_core::OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
         let transferred = pg
             .transfer_to_owner(
                 &permit,

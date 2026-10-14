@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use proxima_core::{
-    Credentials, Engine, FlavorRegistry, GroupId, OwnerRef, OwnerRoles, Relation, Role, UserId,
+    Credentials, Engine, FlavorRegistry, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
 use proxima_storage_pg::{
     PgPlatformScope, PgStorage, begin_owner_transaction, group_role, roles_for_subject,
@@ -77,12 +77,9 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
         .expect("platform scope");
     let mut tx = scope.begin().await.unwrap();
     let all = roles_for_subject(&mut tx, subject).await.unwrap();
+    assert_eq!(all.role_for(&OwnerId::from(visible)), Some(Role::editor()));
     assert_eq!(
-        all.role_for(&OwnerRef::Group(visible)),
-        Some(Role::editor())
-    );
-    assert_eq!(
-        all.role_for(&OwnerRef::Group(hidden)),
+        all.role_for(&OwnerId::from(hidden)),
         Some(Role::viewer().join(Role::ingest()))
     );
     assert_eq!(
@@ -97,8 +94,8 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
         roles: OwnerRoles::for_subject(
             subject,
             [
-                (OwnerRef::Group(visible), Role::editor()),
-                (OwnerRef::Group(hidden), Role::viewer()),
+                (OwnerId::from(visible), Role::editor()),
+                (OwnerId::from(hidden), Role::viewer()),
             ],
         )
         .unwrap(),
@@ -106,17 +103,14 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
     let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("probe".into()))
         .await
         .unwrap();
-    let narrowed = authz.narrowed_to_owner(OwnerRef::Group(visible)).unwrap();
+    let narrowed = authz.narrowed_to_owner(OwnerId::from(visible)).unwrap();
     let mut tx = begin_owner_transaction(&runtime, narrowed.owner_scope().unwrap())
         .await
         .unwrap();
     let seen = roles_for_subject(&mut tx, subject).await.unwrap();
+    assert_eq!(seen.role_for(&OwnerId::from(visible)), Some(Role::editor()));
     assert_eq!(
-        seen.role_for(&OwnerRef::Group(visible)),
-        Some(Role::editor())
-    );
-    assert_eq!(
-        seen.role_for(&OwnerRef::Group(hidden)),
+        seen.role_for(&OwnerId::from(hidden)),
         None,
         "a group the scope cannot read is not seen"
     );
@@ -148,7 +142,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     let verifier = super::SyntheticVerifier {
-        roles: OwnerRoles::for_subject(manager, [(OwnerRef::Group(group), Role::admin())]).unwrap(),
+        roles: OwnerRoles::for_subject(manager, [(OwnerId::from(group), Role::admin())]).unwrap(),
     };
     let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("manage".into()))
         .await

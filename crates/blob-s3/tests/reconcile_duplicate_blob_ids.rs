@@ -15,7 +15,7 @@ use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileOutcome, CitedBlobReconcileOutcome, CitedBlobService,
 };
 use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, OwnerRef};
+use proxima_core::{AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, OwnerId};
 use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -196,7 +196,7 @@ async fn observe_reports(
             "SELECT count(*) FROM proxima_core.blob_uploads
               WHERE owner_id = $1 AND blob_id = $2 AND status = 'completed'",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(first.1)
         .fetch_one(pg.pool_for_tests())
         .await?;
@@ -234,7 +234,7 @@ async fn observe_reports(
             "UPDATE proxima_core.blob_uploads SET bucket = 'foreign-reconcile-fixture'
               WHERE owner_id = $1 AND blob_id = $2",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(first.1)
         .execute(pg.pool_for_tests())
         .await?;
@@ -263,7 +263,7 @@ async fn upload(
     service: &CitedBlobService,
     store: &CitedBlobStore,
     authz: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     body: &'static [u8],
 ) -> TestResult<(Uuid, Uuid)> {
     let prepared = store

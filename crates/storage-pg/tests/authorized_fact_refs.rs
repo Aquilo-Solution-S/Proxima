@@ -24,7 +24,7 @@ use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
 use proxima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
     EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FactWrite,
-    FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, Owner, OwnerRef,
+    FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId,
     PayloadKeyBuilder, PayloadReference, SchemaId, SchemaVersion, SeriesHandle, SidecarPayload,
     StorageError, UploadedBlobPayload, UserId,
 };
@@ -149,8 +149,8 @@ proxima_storage_pg::pg_sidecar! {
     },
 }
 
-fn owner() -> Owner {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn owner() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 fn draft(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> FactWriteCommand {
@@ -232,7 +232,7 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
     }
 }
 
-async fn seed_fact(pg: &PgStorage, owner: Owner) -> Result<MemoryId, StorageError> {
+async fn seed_fact(pg: &PgStorage, owner: OwnerId) -> Result<MemoryId, StorageError> {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     Ok(pg
         .ingest_fact_atomic(
@@ -250,7 +250,7 @@ async fn seed_fact(pg: &PgStorage, owner: Owner) -> Result<MemoryId, StorageErro
 
 async fn seed_abstraction(
     pg: &PgStorage,
-    owner: Owner,
+    owner: OwnerId,
     origin: MemoryId,
 ) -> Result<MemoryId, StorageError> {
     let mut draft = draft(
@@ -271,7 +271,7 @@ async fn seed_abstraction(
         .memory_id)
 }
 
-async fn seed_perspective(pg: &PgStorage, owner: Owner) -> Result<MemoryId, StorageError> {
+async fn seed_perspective(pg: &PgStorage, owner: OwnerId) -> Result<MemoryId, StorageError> {
     let fact = seed_fact(pg, owner).await?;
     let abstraction = seed_abstraction(pg, owner, fact).await?;
     let mut draft = draft(
@@ -350,7 +350,7 @@ fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
 async fn create_goal(
     pg: &PgStorage,
     registry: &proxima_core::FlavorRegistryFrozen,
-    owner: Owner,
+    owner: OwnerId,
     perspective: MemoryId,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
     let topology = GoalTopologyWrite::new(
@@ -766,7 +766,7 @@ async fn storage_uses_sidecars_bound_during_authorization() {
                   WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3
              )",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(authorized.draft().source_id.as_deref())
         .bind(authorized.draft().ingest_key.as_deref())
         .fetch_one(pg.pool_for_tests())
@@ -849,7 +849,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE owner_id = $1 AND schema_id = $2",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(FACT_SCHEMA)
         .fetch_one(pg.pool_for_tests())
         .await?;
@@ -964,7 +964,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(reference_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -974,7 +974,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
         )
         .bind(reference_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![goal.into_inner()])
         .execute(pool)
         .await?;
@@ -987,7 +987,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(memory_ref_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         let error = sqlx::query(
@@ -997,7 +997,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}')",
         )
         .bind(memory_ref_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![goal.into_inner()])
         .execute(pool)
         .await
@@ -1019,7 +1019,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(goal_ref_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         let error = sqlx::query(
@@ -1029,7 +1029,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
         )
         .bind(goal_ref_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![perspective.into_inner()])
         .execute(pool)
         .await
@@ -1048,7 +1048,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(origin_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         let error = sqlx::query(
@@ -1057,7 +1057,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}')",
         )
         .bind(origin_handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![goal.into_inner()])
         .execute(pool)
         .await
@@ -1094,7 +1094,7 @@ async fn goal_erase_serializes_against_reference_admission() {
         .await?;
 
         let waiter_pool = pool.clone();
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
         let waiter = tokio::spawn(async move {
             let mut tx = waiter_pool.begin().await?;
@@ -1192,7 +1192,7 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
             .await?;
 
         let waiter_pool = pool.clone();
-        let owner_id = owner.stored_owner_id();
+        let owner_id = owner.into_inner();
         let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
         let waiter = tokio::spawn(async move {
             let mut tx = waiter_pool.begin().await?;

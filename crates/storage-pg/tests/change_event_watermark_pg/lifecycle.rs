@@ -8,7 +8,7 @@ use proxima_core::storage_ports::ChangeEventPort;
 use proxima_core::{
     AgentDerivationV1, AuthPath, AuthzContext, ChangeEvent, ChangeEventKind, ColdObjectStore,
     DerivationIdentity, DerivedMemory, Engine, EntityId, EntityKind, EntityRef, FlavorRegistry,
-    GroupId, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerRef, SeriesHandle,
+    GroupId, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId, SeriesHandle,
     StorageError, UserId, cold_object_key,
 };
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
@@ -63,7 +63,7 @@ fn event_identity(event: &ChangeEvent) -> (EventOperation, EntityKind, EntityRef
 fn assert_event_identities(
     events: &[ChangeEvent],
     memories: &[MemoryIdentity],
-    owner: OwnerRef,
+    owner: OwnerId,
     operations: &[EventOperation],
 ) {
     assert_eq!(events.len(), memories.len() * operations.len());
@@ -189,7 +189,7 @@ async fn cool_chain(
         .bind(memory.id.into_inner())
         .fetch_one(fixture.pg.pool_for_tests())
         .await?;
-        assert_eq!(owner_id, fixture.owner.stored_owner_id());
+        assert_eq!(owner_id, fixture.owner.into_inner());
         assert_eq!(kind, memory.kind.as_str().to_lowercase());
         assert!(
             !hot && !erased,
@@ -234,18 +234,18 @@ async fn erase_after_transfer(
     memories: &[MemoryIdentity],
 ) -> TestResult<()> {
     let group = GroupId::new(Uuid::now_v7());
-    let destination = OwnerRef::Group(group);
+    let destination = OwnerId::from(group);
     let pool = fixture.pg.pool_for_tests();
     sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .execute(pool)
         .await?;
     sqlx::query(
         "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
          VALUES ($1, $2, 'admin')",
     )
-    .bind(destination.stored_owner_id())
-    .bind(fixture.owner.stored_owner_id())
+    .bind(destination.into_inner())
+    .bind(fixture.owner.into_inner())
     .execute(pool)
     .await?;
     for memory in memories.iter().rev() {
@@ -256,7 +256,7 @@ async fn erase_after_transfer(
     }
     let transferred: i64 =
         sqlx::query_scalar("SELECT count(*) FROM proxima_core.cooled WHERE owner_id = $1")
-            .bind(destination.stored_owner_id())
+            .bind(destination.into_inner())
             .fetch_one(pool)
             .await?;
     assert_eq!(transferred, i64::try_from(memories.len())?);
@@ -264,15 +264,13 @@ async fn erase_after_transfer(
     // Abandon the destination using the same membership table checked under
     // lock by the public erase path. The source owner and its history remain.
     let removed = sqlx::query("DELETE FROM proxima_core.group_memberships WHERE group_id = $1")
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .execute(pool)
         .await?
         .rows_affected();
     assert_eq!(removed, 1);
-    let system = AuthzContext::for_subject(
-        UserId::new(fixture.owner.stored_owner_id()),
-        AuthPath::System,
-    );
+    let system =
+        AuthzContext::for_subject(UserId::new(fixture.owner.into_inner()), AuthPath::System);
     let erased = fixture.engine.erase_group_owner(&system, group).await?;
     assert!(
         matches!(

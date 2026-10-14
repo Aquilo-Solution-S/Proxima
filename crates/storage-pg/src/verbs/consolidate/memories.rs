@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
 use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{
-    EntityKind, MemoryId, OwnerRef, OwnerRefKind, SchemaId, SidecarPayload, StorageError,
-};
+use proxima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
 use sqlx::{PgConnection, PgPool};
 
 use crate::error::map_err;
@@ -33,10 +31,10 @@ pub async fn load_memory_by_id_on_connection(
     memory_id: MemoryId,
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let raw: Option<(String, String, OwnerRefKind, uuid::Uuid, Vec<String>)> = sqlx::query_as(
-        "SELECT m.kind::text, m.schema_id, o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+    let raw: Option<(String, String, uuid::Uuid, Vec<String>)> = sqlx::query_as(
+        "SELECT m.kind::text, m.schema_id, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
-    let Some((kind_text, schema_id, owner_kind, owner_id, sidecar_tables)) = raw else {
+    let Some((kind_text, schema_id, owner_id, sidecar_tables)) = raw else {
         return Ok(None);
     };
     let Some(kind) = parse_memory_kind(&kind_text) else {
@@ -46,7 +44,7 @@ pub async fn load_memory_by_id_on_connection(
         memory_id: memory_id.into_inner(),
         kind,
         schema_id,
-        owner: owner_from_kind(owner_kind, owner_id),
+        owner: OwnerId::new(owner_id),
         sidecar_tables,
     }];
     let mut snapshots =
@@ -61,7 +59,7 @@ pub async fn load_memory_by_id_on_connection(
 pub async fn load_memories_by_ids(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[proxima_core::OwnerRef],
+    read_owners: &[proxima_core::OwnerId],
     memory_ids: &[MemoryId],
     schemas: &[MemorySchemaSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -81,7 +79,7 @@ pub async fn load_memories_by_ids(
 pub async fn load_memories_by_ids_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[proxima_core::OwnerRef],
+    read_owners: &[proxima_core::OwnerId],
     memory_ids: &[MemoryId],
     schemas: &[MemorySchemaSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -91,25 +89,23 @@ pub async fn load_memories_by_ids_on_connection(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerRef::stored_owner_id)
+        .map(proxima_core::OwnerId::into_inner)
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
-    let raw: Vec<(uuid::Uuid, String, String, OwnerRefKind, uuid::Uuid, Vec<String>)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id, o.kind::text::proxima_core.owner_kind, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+    let raw: Vec<(uuid::Uuid, String, String, uuid::Uuid, Vec<String>)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, m.schema_id, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
-        .filter_map(
-            |(t, kind, schema_id, owner_kind, owner_id, sidecar_tables)| {
-                Some(MemoryHydrationRow {
-                    memory_id: t,
-                    kind: parse_memory_kind(&kind)?,
-                    schema_id,
-                    owner: owner_from_kind(owner_kind, owner_id),
-                    sidecar_tables,
-                })
-            },
-        )
+        .filter_map(|(t, kind, schema_id, owner_id, sidecar_tables)| {
+            Some(MemoryHydrationRow {
+                memory_id: t,
+                kind: parse_memory_kind(&kind)?,
+                schema_id,
+                owner: OwnerId::new(owner_id),
+                sidecar_tables,
+            })
+        })
         .collect::<Vec<_>>();
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
 }
@@ -232,19 +228,12 @@ fn parse_memory_kind(kind: &str) -> Option<EntityKind> {
     }
 }
 
-fn owner_from_kind(kind: OwnerRefKind, owner_id: uuid::Uuid) -> OwnerRef {
-    match kind {
-        OwnerRefKind::Personal => OwnerRef::Personal(proxima_core::UserId::new(owner_id)),
-        OwnerRefKind::Group => OwnerRef::Group(proxima_core::GroupId::new(owner_id)),
-    }
-}
-
 #[derive(Debug)]
 struct MemoryHydrationRow {
     memory_id: uuid::Uuid,
     kind: EntityKind,
     schema_id: String,
-    owner: OwnerRef,
+    owner: OwnerId,
     sidecar_tables: Vec<String>,
 }
 
@@ -347,7 +336,7 @@ mod tests {
     use crate::sidecars::core_pg_sidecars;
     use proxima_core::read_models::MemorySchemaSpec;
     use proxima_core::{
-        AgentNoteV1, EntityKind, FactPayload, OwnerRef, SchemaVersion, UploadV1, UserId,
+        AgentNoteV1, EntityKind, FactPayload, OwnerId, SchemaVersion, UploadV1, UserId,
     };
 
     fn fact_spec<P: FactPayload>() -> MemorySchemaSpec {
@@ -361,7 +350,7 @@ mod tests {
 
     #[test]
     fn one_invalid_visible_row_fails_the_whole_snapshot_batch() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let rows = [
             MemoryHydrationRow {
                 memory_id: uuid::Uuid::now_v7(),

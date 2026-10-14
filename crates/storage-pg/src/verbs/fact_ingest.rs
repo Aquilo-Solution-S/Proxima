@@ -21,7 +21,7 @@ use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, Owner, SidecarPayload, StorageError,
+    MemoryId, OwnerId, SidecarPayload, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -156,14 +156,14 @@ pub(crate) fn fact_natural_key(
 /// Authorization-bearing inputs shared by every Fact persistence route.
 #[derive(Debug, Clone, Copy)]
 struct AuthorizedFactInput<'a> {
-    owner: &'a Owner,
+    owner: &'a OwnerId,
     draft: &'a FactWriteCommand,
     links: &'a AuthorizedNodeLinks,
 }
 
 impl<'a> AuthorizedFactInput<'a> {
     const fn new(
-        owner: &'a Owner,
+        owner: &'a OwnerId,
         draft: &'a FactWriteCommand,
         links: &'a AuthorizedNodeLinks,
     ) -> Self {
@@ -391,7 +391,7 @@ fn reject_unstamped_memory_tables(
 /// existing object and returns its id.
 async fn persist_citation_timeseries(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &FactWriteCommand,
     plan: CitationPlan<'_>,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
@@ -416,7 +416,7 @@ async fn persist_citation_timeseries(
 
 async fn upsert_blob(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     schema_id: &str,
     content_hash: &[u8; 32],
 ) -> Result<uuid::Uuid, StorageError> {
@@ -438,7 +438,7 @@ async fn upsert_blob(
 
 async fn persist_draft_citation(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &FactWriteCommand,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let Some(citation) = &draft.citation else {
@@ -478,10 +478,10 @@ async fn citation_object_for_t(
 /// whose message the MCP surface passes through verbatim.
 async fn verify_cited_object_ref_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     cited_object_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -582,7 +582,7 @@ where
     let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
     if let super::memory_timeseries::PreparedMemoryAdmission::Replay(mut outcome) = prepared {
         outcome.cited_object_id =
-            citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
+            citation_object_for_t(tx, owner.into_inner(), outcome.memory_id).await?;
         return Ok(outcome);
     }
 
@@ -596,7 +596,7 @@ where
         (None, Some(payloads)) => {
             crate::verbs::content::ensure_content_from_payloads(
                 tx,
-                owner.stored_owner_id(),
+                owner.into_inner(),
                 if draft.kind.is_empty() {
                     "fact"
                 } else {
@@ -630,7 +630,7 @@ where
                 crate::verbs::publication_outbox::next_series_position(tx, outcome.handle).await?;
             crate::verbs::publication_outbox::capture_publication_in_tx(
                 tx,
-                owner.stored_owner_id(),
+                owner.into_inner(),
                 outcome.memory_id.into_inner(),
                 plan,
                 position,
@@ -640,12 +640,12 @@ where
     }
     if outcome.idempotent_replay {
         outcome.cited_object_id =
-            citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
+            citation_object_for_t(tx, owner.into_inner(), outcome.memory_id).await?;
     } else {
         outcome.cited_object_id = write.blob_id;
         crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
             tx,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             outcome.memory_id.into_inner(),
             options.embedding_spaces,
         )

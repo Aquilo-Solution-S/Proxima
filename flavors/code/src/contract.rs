@@ -612,7 +612,7 @@ const WORK_ASSIGNMENT_V1: SchemaContract = record_schema(
 const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_code.repos",
-        key: KeyShape::Custom(&["owner_kind", "owner_id", "repo_id"]),
+        key: KeyShape::Custom(&["owner_id", "repo_id"]),
         owner_column: Some("owner_id"),
         transfer: TransferRule::RetainAtSource {
             why: "a repo registration is a path on the host that registered it, plus that \

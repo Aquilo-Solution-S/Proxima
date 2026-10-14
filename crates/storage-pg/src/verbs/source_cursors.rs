@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::{Cursor, Owner, StorageError};
+use proxima_core::{Cursor, OwnerId, StorageError};
 
 use crate::error::map_err;
 
@@ -12,21 +12,19 @@ use crate::error::map_err;
 /// Returns `StorageError::Internal` for SQL failures.
 pub(crate) async fn load_source_cursor<'e>(
     executor: impl sqlx::PgExecutor<'e>,
-    owner: &Owner,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<Option<Cursor>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     // `source_cursors.owner_id` is NOT NULL in the schema, so `=` is exactly
     // `IS NOT DISTINCT FROM` here and below while keeping the pkey usable
     // (`PostgreSQL` has no index strategy for DistinctExpr).
     let row: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT cursor
            FROM proxima_core.source_cursors
-          WHERE owner_kind = $1
-            AND owner_id = $2
-            AND source = $3",
+          WHERE owner_id = $1
+            AND source = $2",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
     .fetch_optional(executor)
@@ -47,17 +45,16 @@ pub(crate) async fn store_source_cursor<'e>(
     cursor: &Cursor,
 ) -> Result<(), StorageError> {
     let owner = permit.owner();
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.source_cursors
-            (owner_kind, owner_id, source, cursor)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (owner_kind, owner_id, source)
+            (owner_id, source, cursor)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (owner_id, source)
          DO UPDATE SET
              cursor = EXCLUDED.cursor,
              updated_at = now()",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
     .bind(cursor.as_bytes())
@@ -74,18 +71,16 @@ pub(crate) async fn store_source_cursor<'e>(
 /// Returns `StorageError::Internal` for SQL failures or duration overflow.
 pub(crate) async fn source_cursor_age<'e>(
     executor: impl sqlx::PgExecutor<'e>,
-    owner: &Owner,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<Option<Duration>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     let updated_at: Option<time::OffsetDateTime> = sqlx::query_scalar(
         "SELECT updated_at
            FROM proxima_core.source_cursors
-          WHERE owner_kind = $1
-            AND owner_id = $2
-            AND source = $3",
+          WHERE owner_id = $1
+            AND source = $2",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
     .fetch_optional(executor)

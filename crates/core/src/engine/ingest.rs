@@ -14,7 +14,7 @@ use crate::verbs::persist_mcp_call::{
     MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput, McpCallLogOutcome,
 };
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{EntityKind, MemoryId, Owner, SidecarPayload};
+use crate::{EntityKind, MemoryId, OwnerId, SidecarPayload};
 
 /// Capture only the values which can select a natural series; body replay semantics are unchanged.
 fn bind_fact_natural_key(
@@ -432,7 +432,7 @@ impl Engine {
         // under the permit owner that admitted each target: one kind load per
         // owner, not one per target. A Vec and not a map because the order a
         // caller met the owners is the order their mismatches surface.
-        let mut deferred_kinds: Vec<(Owner, Vec<(MemoryId, EntityKind)>)> = Vec::new();
+        let mut deferred_kinds: Vec<(OwnerId, Vec<(MemoryId, EntityKind)>)> = Vec::new();
         for target in targets {
             // A repeated declaration names the same endpoint, and the first
             // occurrence already validated and admitted it. Skipping here and
@@ -532,7 +532,7 @@ impl Engine {
     pub(in crate::engine) fn single_fact_write_owner<A>(
         &self,
         authority: &A,
-    ) -> Result<Owner, ProtocolError>
+    ) -> Result<OwnerId, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
@@ -576,7 +576,7 @@ impl Engine {
     /// rather than landing without the job that would make it searchable.
     pub(in crate::engine) async fn fact_embedding_spaces(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         schema_id: &str,
     ) -> Result<Vec<EmbeddingSpace>, ProtocolError> {
         if !self.registry().schema_is_embeddable(schema_id) {
@@ -747,7 +747,7 @@ impl Engine {
         &self,
         authority: &A,
         fact_info: &SchemaInfo,
-        owner: Owner,
+        owner: OwnerId,
         sidecars: &[SidecarPayload],
     ) -> Result<Option<crate::publication::PublicationPlan>, ProtocolError>
     where
@@ -940,13 +940,13 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::{
-        AuthPath, FactPayload, FlavorRegistry, GroupId, OwnerRef, PayloadKeyBuilder,
+        AuthPath, FactPayload, FlavorRegistry, GroupId, OwnerId, PayloadKeyBuilder,
         PayloadReference, ReferenceBinding, Relation, SchemaId,
     };
     use serde::{Deserialize, Serialize};
 
-    fn test_owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn test_owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -1007,8 +1007,8 @@ mod tests {
     }
 
     fn reference_engine(
-        owner: Owner,
-        home_owner: Option<Owner>,
+        owner: OwnerId,
+        home_owner: Option<OwnerId>,
         entity_readable: bool,
         memory_kind: Option<EntityKind>,
         observed_fact_writes: Arc<AtomicUsize>,
@@ -1029,8 +1029,8 @@ mod tests {
     /// path, so a test can assert them rather than infer them from behaviour.
     #[allow(clippy::type_complexity)]
     fn observed_reference_engine(
-        owner: Owner,
-        home_owner: Option<Owner>,
+        owner: OwnerId,
+        home_owner: Option<OwnerId>,
         entity_readable: bool,
         memory_kind: Option<EntityKind>,
         observed_fact_writes: Arc<AtomicUsize>,

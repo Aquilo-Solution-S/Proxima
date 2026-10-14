@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::access::{AccessKind, EntityId, Relation};
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::{GroupId, Owner, OwnerRef};
+use crate::{GroupId, OwnerId};
 
 /// Reason a hook denied an otherwise-allowed request.
 #[derive(Debug)]
@@ -41,23 +41,20 @@ pub enum AuthzOperation {
     Membership {
         change: MembershipChange,
         group: GroupId,
-        member: OwnerRef,
+        member: OwnerId,
         relation: Relation,
     },
     /// Entity ownership move audited by entity and destination owner.
     /// There is no share: an owner transfer is the only cross-owner move,
     /// and the series leaves the source owner's view entirely.
-    EntityTransfer {
-        entity: EntityId,
-        to_owner: OwnerRef,
-    },
+    EntityTransfer { entity: EntityId, to_owner: OwnerId },
 }
 
 #[derive(Debug)]
 pub struct AuthzInput<'a> {
     pub authz: &'a AuthzContext,
-    pub requested: &'a Owner,
-    pub resolved: &'a Owner,
+    pub requested: &'a OwnerId,
+    pub resolved: &'a OwnerId,
     pub operation: AuthzOperation,
 }
 
@@ -67,7 +64,7 @@ pub trait OwnerResolver: Send + Sync + Debug + 'static {
     /// # Errors
     ///
     /// Returns a protocol error when the requested owner cannot be resolved.
-    fn resolve(&self, authz: &AuthzContext, requested: &Owner) -> Result<Owner, ProtocolError>;
+    fn resolve(&self, authz: &AuthzContext, requested: &OwnerId) -> Result<OwnerId, ProtocolError>;
 }
 
 /// Zero or more, run in registration order. `veto` deny-only; `observe` is audit.

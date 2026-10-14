@@ -18,7 +18,7 @@ use crate::payloads::{
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::sql::{map_storage, owner_columns};
+use super::sql::map_storage;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeWorkItemBundleArgs {
@@ -285,7 +285,7 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
 }
 
 async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+    let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
     let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
         .await
@@ -293,11 +293,9 @@ async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT display_name, canonical_path, target_branch
            FROM proxima_code.repos
-          WHERE owner_kind = $1
-            AND owner_id = $2
-            AND repo_id = $3",
+          WHERE owner_id = $1
+            AND repo_id = $2",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
     .fetch_optional(&mut *tx)

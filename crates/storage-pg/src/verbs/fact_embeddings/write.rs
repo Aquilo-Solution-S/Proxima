@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::EmbeddingWriteProof;
 use proxima_core::{
-    EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, EntityKind, MemoryId, Owner,
+    EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, EntityKind, MemoryId, OwnerId,
     SpaceVector, StorageError,
 };
 use sqlx::{Postgres, Transaction};
@@ -14,7 +14,7 @@ use crate::error::map_err;
 /// in the latter case the successor necessarily writes the later head.
 pub(crate) async fn lock_embedding_job_claim(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     entity: EmbeddableEntityRef,
     space: &EmbeddingSpace,
     proof: EmbeddingWriteProof,
@@ -27,7 +27,7 @@ pub(crate) async fn lock_embedding_job_claim(
 
 async fn lock_embedding_job_claim_fields(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     entity: EmbeddableEntityRef,
     space: &EmbeddingSpace,
     job_id: uuid::Uuid,
@@ -69,7 +69,7 @@ async fn lock_embedding_job_claim_fields(
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn insert_memory_embedding(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     entity_kind: EntityKind,
     memory_id: MemoryId,
     vectors: &[SpaceVector],
@@ -101,11 +101,11 @@ pub(crate) async fn insert_memory_embedding(
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn insert_embedding(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     entity: EmbeddableEntityRef,
     vectors: &[SpaceVector],
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let space = validate_embedding_vectors(vectors)?;
     let dim = crate::pgvector::Lane::of(space.dim()).width;
     let model_id = space.model_id();
@@ -208,10 +208,10 @@ pub(crate) fn validate_embedding_vectors(
 
 async fn embedding_entity_is_eligible(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     entity: EmbeddableEntityRef,
 ) -> Result<bool, StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let entity_id = match entity {
         EmbeddableEntityRef::Memory { memory_id, .. } => memory_id.into_inner(),
         EmbeddableEntityRef::Goal(goal_id) => goal_id.into_inner(),

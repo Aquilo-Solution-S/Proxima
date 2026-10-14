@@ -9,7 +9,7 @@
 use std::any::Any;
 use std::fmt;
 
-use crate::Owner;
+use crate::OwnerId;
 use crate::storage::StorageError;
 
 /// Stable identity for the single host-state participant captured at boot.
@@ -100,7 +100,7 @@ pub trait HostStateCommand: Send + 'static {
     /// gate; maintenance units require their fixed, capability-scoped owner.
     /// SQL stamps this owner from the resulting host-state permit, never
     /// from a caller-supplied column.
-    fn owner(&self) -> Owner;
+    fn owner(&self) -> OwnerId;
 }
 
 /// The owners a [`HostStateCommand`] payload names, stated by the command
@@ -115,7 +115,7 @@ pub trait HostStateCommand: Send + 'static {
 /// handler runs.
 pub trait HostStatePayloadOwners: HostStateCommand {
     /// Every owner the payload names. Empty when it names none.
-    fn payload_owners(&self) -> Vec<Owner>;
+    fn payload_owners(&self) -> Vec<OwnerId>;
 }
 
 /// Result of a host-state command that ran (or was refused) without a
@@ -327,11 +327,11 @@ mod tests {
         HostStateRequest, StateSurfaceName,
     };
     use crate::storage_ports::HostStateWritePermit;
-    use crate::{GroupId, OwnerRef};
+    use crate::{GroupId, OwnerId};
     use uuid::Uuid;
 
     struct Dummy {
-        owner: crate::Owner,
+        owner: crate::OwnerId,
     }
 
     impl HostStateCommand for Dummy {
@@ -341,13 +341,13 @@ mod tests {
             &[super::StateSurfaceName::new("dummy.table")];
         type Outcome = u8;
 
-        fn owner(&self) -> crate::Owner {
+        fn owner(&self) -> crate::OwnerId {
             self.owner
         }
     }
 
     struct OtherParticipant {
-        owner: crate::Owner,
+        owner: crate::OwnerId,
     }
 
     impl HostStateCommand for OtherParticipant {
@@ -355,13 +355,13 @@ mod tests {
         const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new("dummy.table")];
         type Outcome = u8;
 
-        fn owner(&self) -> crate::Owner {
+        fn owner(&self) -> crate::OwnerId {
             self.owner
         }
     }
 
     struct ExtraTable {
-        owner: crate::Owner,
+        owner: crate::OwnerId,
     }
 
     impl HostStateCommand for ExtraTable {
@@ -372,14 +372,14 @@ mod tests {
         ];
         type Outcome = u8;
 
-        fn owner(&self) -> crate::Owner {
+        fn owner(&self) -> crate::OwnerId {
             self.owner
         }
     }
 
     #[test]
     fn a_multi_command_participant_dispatches_without_losing_the_request() {
-        let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
+        let owner = OwnerId::from(GroupId::new(Uuid::nil()));
         let request = HostStateRequest::from_command(ExtraTable { owner });
         assert!(request.is::<ExtraTable>());
         assert!(!request.is::<Dummy>());
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn permit_rejects_requests_outside_its_stamped_participant_and_tables() {
-        let owner = OwnerRef::Group(GroupId::new(Uuid::nil()));
+        let owner = OwnerId::from(GroupId::new(Uuid::nil()));
         let permit = HostStateWritePermit::new(
             owner,
             Dummy::PARTICIPANT_ID,

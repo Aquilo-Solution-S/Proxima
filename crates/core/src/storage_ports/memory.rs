@@ -20,7 +20,7 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
     MemoryHydrationBatchOutcome, MemoryKindRow, StorageError,
 };
-use crate::{GoalId, MemoryId, Owner, OwnerRef, OwnerScope};
+use crate::{GoalId, MemoryId, OwnerId, OwnerScope};
 
 /// Node writes that also assert index rows.
 ///
@@ -49,7 +49,7 @@ pub trait MemoryAuthoringPort: Send + Sync {
     async fn load_memory_kinds(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError>;
 
@@ -89,7 +89,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn load_fact_text(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_id: crate::MemoryId,
     ) -> Result<Option<String>, StorageError>;
 
@@ -107,14 +107,14 @@ pub trait MemoryReadPort: Send + Sync {
     async fn load_sketches(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError>;
 
     async fn load_pin_nodes(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         memory_ids: &[MemoryId],
     ) -> Result<Vec<PinNode>, StorageError>;
 
@@ -124,7 +124,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn load_visible_goal_ids(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         goal_ids: &[GoalId],
     ) -> Result<Vec<GoalId>, StorageError>;
 
@@ -134,14 +134,14 @@ pub trait MemoryReadPort: Send + Sync {
     async fn load_inbound_pin_nodes(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         query: InboundPinQuery<'_>,
     ) -> Result<Vec<PinNode>, StorageError>;
 
     async fn query_memories(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         req: &crate::verbs::query::QueryRequest,
         schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
@@ -158,7 +158,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn count_memories(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
     ) -> Result<MemoryCounts, StorageError>;
 
     async fn search_memories(
@@ -171,7 +171,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn walk_memory_lineage(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
@@ -180,7 +180,7 @@ pub trait MemoryReadPort: Send + Sync {
     async fn owned_series_handle(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: Owner,
+        owner: OwnerId,
         schema_id: &crate::SchemaId,
         sidecar_table: &str,
         columns: &[(&str, crate::verbs::query::SidecarAtom)],
@@ -203,7 +203,7 @@ pub trait MemoryInspectPort: Send + Sync {
     async fn load_memories_by_ids(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         memory_ids: &[crate::MemoryId],
         schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
@@ -218,7 +218,7 @@ pub trait CitationPort: Send + Sync {
     async fn facts_citing_object(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         cited_object_id: uuid::Uuid,
         schemas: &[MemorySchemaSpec],
         after: Option<crate::verbs::query::FactCitationCursor>,
@@ -228,7 +228,7 @@ pub trait CitationPort: Send + Sync {
     async fn citation_of_fact(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 }

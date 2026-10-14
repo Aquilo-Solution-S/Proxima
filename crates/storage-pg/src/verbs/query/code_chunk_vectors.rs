@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-use proxima_core::{Owner, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::{PgConnection, PgPool};
 
 use super::embedding_candidates::{
@@ -103,7 +103,7 @@ pub struct CodeChunkVectorCandidate {
 pub async fn nearest_code_chunk_candidates(
     pool: &PgPool,
     tuning: &PgTuning,
-    owner: Owner,
+    owner: OwnerId,
     query: &proxima_core::SpaceVector,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
@@ -128,7 +128,7 @@ pub async fn nearest_code_chunk_candidates(
 pub async fn nearest_code_chunk_candidates_on_connection(
     connection: &mut PgConnection,
     tuning: &PgTuning,
-    owner: Owner,
+    owner: OwnerId,
     query: &proxima_core::SpaceVector,
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
@@ -152,7 +152,7 @@ pub async fn nearest_code_chunk_candidates_on_connection(
         // SQL-POLICY: fixed-fragment — the lane's compile-time predicate and
         // casts, chosen by a closed enum; every value is bound.
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .bind(filters.repo_id)
             .bind(query.space().model_id())
             .bind(&query_vector)
@@ -173,7 +173,7 @@ pub async fn nearest_code_chunk_candidates_on_connection(
     }
     let rows = best_embedding_scores_on_connection(
         connection,
-        &[owner.stored_owner_id()],
+        &[owner.into_inner()],
         query,
         &candidates.into_iter().collect::<Vec<_>>(),
     )

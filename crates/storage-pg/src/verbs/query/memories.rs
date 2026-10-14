@@ -9,7 +9,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryRow, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{MemoryId, OwnerRef, SchemaId, SidecarPayload, StorageError};
+use proxima_core::{MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -25,14 +25,14 @@ use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water_on_connec
 pub(crate) async fn query_memories_on_connection(
     connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &QueryRequest,
     schemas: &[MemorySchemaSpec],
 ) -> Result<QueryResponse, StorageError> {
     let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerRef::stored_owner_id)
+        .map(proxima_core::OwnerId::into_inner)
         .collect();
     let seq_high_water = read_seq_high_water_on_connection(connection, &owner_ids).await?;
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
@@ -309,7 +309,6 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
     let mut sql = String::from(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
-                o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
          FROM proxima_core.memory m \
@@ -327,7 +326,7 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
 /// never consumes a slot. No limit is applied to heads before that lookup.
 fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
     let mut sql = String::from(
-        "SELECT page.*, o.kind::text::proxima_core.owner_kind AS owner_kind \
+        "SELECT page.* \
          FROM proxima_core.owners o CROSS JOIN LATERAL ( \
            SELECT m.t AS memory_id, m.handle, \
                   COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \

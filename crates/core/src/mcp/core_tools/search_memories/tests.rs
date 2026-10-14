@@ -3,12 +3,12 @@ use super::{
     SearchMemoriesMode, SearchMemoriesSupersession, cursor_positions, decode_cursor, encode_cursor,
     truncate_body, validate_body_max_chars, validate_list_caps, validate_score_args,
 };
-use crate::MemoryId;
 use crate::mcp::McpToolError;
 use crate::verbs::query::{
     SearchCursor, SearchMode, SearchOrder, TagMatch,
     hybrid_degraded_to_lexical as degraded_to_lexical,
 };
+use crate::{MemoryId, OwnerId};
 
 fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
     SearchMemoriesArgs {
@@ -141,11 +141,11 @@ fn score_based_flavor_warning_keeps_its_existing_contract() {
 }
 
 fn lane(owner: u128, space: Option<&str>) -> OwnerLane {
-    let owner = crate::OwnerRef::Personal(crate::UserId::new(uuid::Uuid::from_u128(owner)));
+    let owner = OwnerId::from(crate::UserId::new(uuid::Uuid::from_u128(owner)));
     OwnerLane {
         space: crate::mcp::core_tools::memory_spaces::ResolvedMemorySpace {
-            key: owner.external_key(),
-            label: owner.external_key(),
+            key: owner.to_string(),
+            label: owner.to_string(),
             owner,
         },
         arm: space.map_or(LaneArm::Lexical, |model| {
@@ -207,7 +207,9 @@ fn kind_filter_accepts_all_casings_like_sibling_enums() {
 #[test]
 fn oversized_space_and_tag_lists_are_rejected() {
     let mut too_many_spaces = args(SearchMemoriesMode::Lexical);
-    too_many_spaces.spaces = (0..17).map(|i| format!("group:{i}")).collect();
+    too_many_spaces.spaces = (0..17)
+        .map(|i| uuid::Uuid::from_u128(i).to_string())
+        .collect();
     assert!(matches!(
         validate_list_caps(&too_many_spaces),
         Err(McpToolError::InvalidInput(message)) if message.contains("16 spaces")
@@ -223,7 +225,9 @@ fn oversized_space_and_tag_lists_are_rejected() {
     // Exactly at the cap passes; the caps bound work, they are not
     // off-by-one traps.
     let mut at_cap = args(SearchMemoriesMode::Lexical);
-    at_cap.spaces = (0..16).map(|i| format!("group:{i}")).collect();
+    at_cap.spaces = (0..16)
+        .map(|i| uuid::Uuid::from_u128(i).to_string())
+        .collect();
     at_cap.tags = (0..16).map(|i| format!("tag-{i}")).collect();
     assert!(validate_list_caps(&at_cap).is_ok());
 }
@@ -232,16 +236,13 @@ fn oversized_space_and_tag_lists_are_rejected() {
 fn spaces_dedup_by_resolved_owner_not_raw_key() {
     let subject = crate::UserId::new(uuid::Uuid::now_v7());
     let ctx = crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for(subject, vec![]);
-    // `current` and `personal:<own uuid>` are two spellings of the
+    // `current` and the caller's own bare uuid are two spellings of the
     // same space; a page must not search it twice and return every
     // hit doubled.
-    let both_spellings = vec![
-        "current".to_string(),
-        format!("personal:{}", subject.into_inner()),
-    ];
+    let both_spellings = vec!["current".to_string(), subject.into_inner().to_string()];
     let deduped = super::resolve_search_spaces(&ctx, &both_spellings).expect("valid spaces");
     assert_eq!(deduped.len(), 1, "one owner, one search");
-    assert_eq!(deduped[0].owner, crate::OwnerRef::Personal(subject));
+    assert_eq!(deduped[0].owner, OwnerId::from(subject));
 
     // Both spellings must also continue each other's cursors: the
     // fingerprint is computed over resolved owners, so after dedup

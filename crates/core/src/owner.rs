@@ -1,140 +1,113 @@
 //! Owner scoping primitive.
 //!
-//! Runtime mirror of the Lean `OwnerRef` boundary: rows carry a stable owner
-//! reference; hosts resolve that reference into roles before authorization.
+//! Runtime mirror of the Lean `OwnerId` boundary (`docs/lean/Causa/Identity.lean`):
+//! a row carries one stable owner id; the host resolves that id into roles
+//! before authorization. A resolved owner is always a group, and a user is the
+//! personal group whose only member is that user, so a user's id is its own
+//! owner id. Whether an id names a group or a user is Proxima's internal
+//! registry (`proxima_core.owners.kind`), never part of this type.
+
+use std::fmt;
+use std::str::FromStr;
 
 use uuid::Uuid;
 
 use crate::{GroupId, UserId};
 
-/// Row owner reference. This is stable persisted identity, not the resolved
-/// role map used for authorization.
-pub type Owner = OwnerRef;
+/// Stable persisted owner reference: one owner id, a UUID. This is not the
+/// resolved role map used for authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct OwnerId(Uuid);
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub enum OwnerRef {
-    Personal(UserId),
-    Group(GroupId),
-}
-
-impl OwnerRef {
-    /// Storage columns for this reference: the kind discriminant and the
-    /// UUID. Every owner has a UUID — there is no id-less owner kind.
+impl OwnerId {
     #[must_use]
-    pub const fn columns(self) -> (OwnerRefKind, Uuid) {
-        match self {
-            Self::Personal(user) => (OwnerRefKind::Personal, user.into_inner()),
-            Self::Group(group) => (OwnerRefKind::Group, group.into_inner()),
-        }
+    pub const fn new(id: Uuid) -> Self {
+        Self(id)
     }
 
-    /// Stored `owner_id`, never NULL.
+    /// The stored `owner_id`, and the UUID every owner-keyed hash or object
+    /// key carries.
     #[must_use]
-    pub const fn stored_owner_id(self) -> Uuid {
-        self.stable_key_uuid()
+    pub const fn into_inner(self) -> Uuid {
+        self.0
     }
 
-    /// Stable non-DB UUID component for deterministic hashes / object keys.
-    ///
-    /// This value is what `owner_id` stores (NOT NULL).
+    /// The same id read as a member's id: the owner a user holds the personal
+    /// role in.
     #[must_use]
-    pub const fn stable_key_uuid(self) -> Uuid {
-        match self {
-            Self::Personal(user) => user.into_inner(),
-            Self::Group(group) => group.into_inner(),
-        }
+    pub const fn as_user(self) -> UserId {
+        UserId::new(self.0)
     }
 
-    /// Canonical runtime/API owner key.
-    ///
-    /// This is an external protocol convention, not a storage adapter:
-    /// `personal:<uuid>` or `group:<uuid>`.
+    /// The same id read as a group's id.
     #[must_use]
-    pub fn external_key(self) -> String {
-        let (kind, id) = self.columns();
-        format!("{}:{}", kind.as_str(), id)
+    pub const fn as_group(self) -> GroupId {
+        GroupId::new(self.0)
     }
 }
 
-/// Parse a canonical runtime/API owner key.
-///
-/// # Errors
-///
-/// Returns [`OwnerExternalKeyParseError`] when the key is not exactly
-/// `personal:<uuid>` or `group:<uuid>`.
-pub fn parse_external_key(raw: &str) -> Result<OwnerRef, OwnerExternalKeyParseError> {
-    let (kind, raw_id) = raw
-        .split_once(':')
-        .ok_or(OwnerExternalKeyParseError::InvalidFormat)?;
-    let id = Uuid::parse_str(raw_id).map_err(|source| OwnerExternalKeyParseError::InvalidUuid {
-        kind: kind.to_string(),
-        source,
-    })?;
-    match kind {
-        "personal" => Ok(OwnerRef::Personal(UserId::new(id))),
-        "group" => Ok(OwnerRef::Group(GroupId::new(id))),
-        _ => Err(OwnerExternalKeyParseError::InvalidKind {
-            kind: kind.to_string(),
-        }),
+impl From<UserId> for OwnerId {
+    fn from(user: UserId) -> Self {
+        Self(user.into_inner())
     }
 }
 
+impl From<GroupId> for OwnerId {
+    fn from(group: GroupId) -> Self {
+        Self(group.into_inner())
+    }
+}
+
+impl From<Uuid> for OwnerId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
+impl From<OwnerId> for Uuid {
+    fn from(owner: OwnerId) -> Self {
+        owner.0
+    }
+}
+
+impl fmt::Display for OwnerId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0.hyphenated(), formatter)
+    }
+}
+
+/// An owner id on the wire is exactly a hyphenated UUID.
 #[derive(Debug, thiserror::Error)]
-pub enum OwnerExternalKeyParseError {
-    #[error("owner external key must be `personal:<uuid>` or `group:<uuid>`")]
-    InvalidFormat,
-    #[error("owner external key kind {kind:?} is not supported")]
-    InvalidKind { kind: String },
-    #[error("owner external key {kind:?} id is not a UUID: {source}")]
-    InvalidUuid { kind: String, source: uuid::Error },
+#[error("owner id must be a hyphenated UUID")]
+pub struct OwnerIdParseError;
+
+impl FromStr for OwnerId {
+    type Err = OwnerIdParseError;
+
+    /// Parse the wire form: a 36-character hyphenated UUID and nothing else.
+    /// A prefixed (`kind:<uuid>`), braced, URN or simple form is refused like
+    /// any malformed id.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        if raw.len() != 36 {
+            return Err(OwnerIdParseError);
+        }
+        Uuid::try_parse(raw)
+            .map(Self)
+            .map_err(|_| OwnerIdParseError)
+    }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
-)]
-#[sqlx(type_name = "proxima_core.owner_kind", rename_all = "lowercase")]
-pub enum OwnerRefKind {
-    Personal,
-    Group,
+impl serde::Serialize for OwnerId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
 }
 
-impl OwnerRefKind {
-    #[must_use]
-    pub const fn of(owner: &OwnerRef) -> Self {
-        match owner {
-            OwnerRef::Personal(_) => Self::Personal,
-            OwnerRef::Group(_) => Self::Group,
-        }
-    }
-
-    /// Rebuild the owner reference from its stored columns. Total: every
-    /// owner kind carries a UUID.
-    #[must_use]
-    pub const fn with_uuid(self, id: Uuid) -> OwnerRef {
-        match self {
-            Self::Personal => OwnerRef::Personal(crate::UserId::new(id)),
-            Self::Group => OwnerRef::Group(crate::GroupId::new(id)),
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Personal => "personal",
-            Self::Group => "group",
-        }
+impl<'de> serde::Deserialize<'de> for OwnerId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -143,52 +116,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owner_refs_are_stable_handles_not_resolved_roles() {
-        let user = UserId::new(uuid::Uuid::now_v7());
-        let group = GroupId::new(uuid::Uuid::now_v7());
-
+    fn an_owner_id_is_the_uuid_of_its_user_or_group() {
+        let id = Uuid::now_v7();
         assert_eq!(
-            OwnerRefKind::of(&OwnerRef::Personal(user)),
-            OwnerRefKind::Personal
+            OwnerId::from(UserId::new(id)),
+            OwnerId::from(GroupId::new(id))
         );
+        assert_eq!(OwnerId::from(UserId::new(id)).into_inner(), id);
+    }
+
+    #[test]
+    fn an_owner_id_round_trips_its_wire_form() {
+        let owner = OwnerId::new(Uuid::now_v7());
+        assert_eq!(owner.to_string().parse::<OwnerId>().expect("wire"), owner);
         assert_eq!(
-            OwnerRefKind::of(&OwnerRef::Group(group)),
-            OwnerRefKind::Group
+            serde_json::to_value(owner).expect("serialize"),
+            serde_json::Value::String(owner.to_string())
         );
     }
 
     #[test]
-    fn owner_external_keys_round_trip() {
-        let personal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-
-        assert_eq!(
-            parse_external_key(&personal.external_key()).expect("personal key"),
-            personal
-        );
-        assert_eq!(
-            parse_external_key(&group.external_key()).expect("group key"),
-            group
-        );
-    }
-
-    #[test]
-    fn owner_external_key_rejects_non_canonical_forms() {
-        assert!(matches!(
-            parse_external_key("personal"),
-            Err(OwnerExternalKeyParseError::InvalidFormat)
-        ));
-        assert!(matches!(
-            parse_external_key("personal:not-a-uuid"),
-            Err(OwnerExternalKeyParseError::InvalidUuid { .. })
-        ));
-        assert!(matches!(
-            parse_external_key("org:00000000-0000-0000-0000-000000000000"),
-            Err(OwnerExternalKeyParseError::InvalidKind { .. })
-        ));
-        assert!(matches!(
-            parse_external_key("world:00000000-0000-0000-0000-000000000001"),
-            Err(OwnerExternalKeyParseError::InvalidKind { .. })
-        ));
+    fn an_old_kind_prefixed_owner_key_is_refused() {
+        let id = Uuid::now_v7();
+        for raw in [
+            format!("personal:{id}"),
+            format!("group:{id}"),
+            format!("{{{id}}}"),
+            format!("urn:uuid:{id}"),
+            id.simple().to_string(),
+            "personal".to_owned(),
+            String::new(),
+        ] {
+            assert!(raw.parse::<OwnerId>().is_err(), "{raw} must be refused");
+            assert!(
+                serde_json::from_value::<OwnerId>(serde_json::Value::String(raw.clone())).is_err(),
+                "{raw} must not deserialize"
+            );
+        }
     }
 }

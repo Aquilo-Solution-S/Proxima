@@ -1,5 +1,5 @@
 use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::{Owner, StorageError};
+use proxima_core::{OwnerId, StorageError};
 
 mod embeddings;
 mod goals;
@@ -19,7 +19,7 @@ pub use host_state_dispatch::{
 };
 pub use host_state_lifecycle::PgHostStateLifecyclePort;
 
-fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
+fn validate_permit_owner(permit: &OwnerWritePermit, owner: &OwnerId) -> Result<(), StorageError> {
     if permit.owner() == owner {
         Ok(())
     } else {

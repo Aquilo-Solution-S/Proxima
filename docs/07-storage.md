@@ -76,7 +76,7 @@ owner of its key). Several owner relationships on one table become a mapping
 table each — own table, own single owner column, keyed to the parent. See
 09 §Sidecar Tables.
 
-Access uses server-resolved `OwnerRef` → roles. No org column.
+Access uses server-resolved `OwnerId` → roles. No org column.
 
 ### Runtime owner binding
 
@@ -156,7 +156,7 @@ with the series; `ingest_keys` for those `t`s are deleted. The series'
 it carries `actor_upn` and its own `owner_id`, stamped with the owner that
 made the call — so a transfer leaves it with the source, and every surface
 that reads it keys on that column. Every other sidecar follows the memory. The destination's `owners` row is minted inside the same
-transaction (`ensure_owner_row`), which is what keeps the FKs whole. It also
+transaction, which is what keeps the FKs whole. It also
 commits paired `transfer` rows into `announce` (prior owner's lane +
 destination owner's lane). Goals do not transfer: the verb is memory-only;
 `goal` refuses UPDATE, and `goal_head` may move only `t`
@@ -334,7 +334,7 @@ payload names a `ScopeKind` and returns its scope id, a flavor contract
 declares that kind's registry table, id column and owner columns once, and
 freeze refuses a kind used without a declaration or declared twice. From the
 declaration storage generates one fence key
-(`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`) and
+(`proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`) and
 one liveness probe over the named registry, spelling no name of its own.
 Every admission that persists a scoped payload — through `Engine`, a unit of
 work, `Engine::derive_memory`, or a sidecar/replay path — takes that fence shared in

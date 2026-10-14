@@ -11,13 +11,13 @@ use crate::storage::{
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     AbstractionPayload, EntityId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
-    OperatorId, Owner, OwnerRef, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload,
+    OperatorId, OwnerId, PerspectivePayload, SchemaId, SchemaVersion, SidecarPayload,
 };
 use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
 pub(super) struct PreparedDerived {
     pub(super) write_permit: super::pipeline::WritePermit,
-    pub(super) owner: Owner,
+    pub(super) owner: OwnerId,
     pub(super) memory_id: MemoryId,
     pub(super) kind: EntityKind,
     pub(super) text: String,
@@ -37,7 +37,7 @@ pub(super) struct PreparedDerived {
 #[derive(Debug)]
 struct RawDerivedTestRequest<'a> {
     pub memory_id: MemoryId,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub kind: EntityKind,
     pub text: String,
     pub schema_id: SchemaId,
@@ -284,7 +284,7 @@ pub enum EmbeddingMode {
 /// ```
 pub struct DerivedMemory {
     pub(crate) target: MemoryTarget,
-    pub(crate) owner: OwnerRef,
+    pub(crate) owner: OwnerId,
     pub(crate) text: String,
     pub(crate) sidecar_payload: SidecarPayload,
     pub(crate) origins: Vec<MemoryId>,
@@ -328,7 +328,7 @@ impl DerivedMemory {
     /// Rejects empty origins; revisions also require provenance.
     pub fn abstraction<P: AbstractionPayload>(
         target: MemoryTarget,
-        owner: OwnerRef,
+        owner: OwnerId,
         text: impl Into<String>,
         payload: P,
         origins: impl IntoIterator<Item = MemoryId>,
@@ -354,7 +354,7 @@ impl DerivedMemory {
     /// Rejects empty origins. Use `interpretation` for a judgment grounded only through references.
     pub fn perspective<P: PerspectivePayload>(
         target: MemoryTarget,
-        owner: OwnerRef,
+        owner: OwnerId,
         text: impl Into<String>,
         payload: P,
         origins: impl IntoIterator<Item = MemoryId>,
@@ -378,7 +378,7 @@ impl DerivedMemory {
     #[must_use]
     pub fn interpretation<P: PerspectivePayload>(
         target: MemoryTarget,
-        owner: OwnerRef,
+        owner: OwnerId,
         text: impl Into<String>,
         payload: P,
     ) -> Self {
@@ -428,7 +428,7 @@ impl Engine {
         A: EngineAuthority + ?Sized,
     {
         let mut resolved = std::collections::HashMap::new();
-        let mut groups: Vec<(Owner, Vec<MemoryId>)> = Vec::new();
+        let mut groups: Vec<(OwnerId, Vec<MemoryId>)> = Vec::new();
         let mut unique = Vec::new();
         for id in ids {
             if unique.contains(id) {
@@ -486,7 +486,7 @@ impl Engine {
     pub async fn forget_memory<A>(
         &self,
         authority: &A,
-        owner: Owner,
+        owner: OwnerId,
         memory_id: MemoryId,
     ) -> Result<(), ProtocolError>
     where
@@ -519,7 +519,7 @@ impl Engine {
     pub async fn hydrate_memory<A>(
         &self,
         authority: &A,
-        owner: Owner,
+        owner: OwnerId,
         memory_id: MemoryId,
     ) -> Result<MemoryHydrationOutcome, ProtocolError>
     where
@@ -554,7 +554,7 @@ impl Engine {
     pub async fn hydrate_memories<A>(
         &self,
         authority: &A,
-        owner: Owner,
+        owner: OwnerId,
         memory_ids: &[MemoryId],
     ) -> Result<MemoryHydrationBatchOutcome, ProtocolError>
     where
@@ -785,7 +785,7 @@ impl Engine {
     async fn validate_derived_revision<A: EngineAuthority + ?Sized>(
         &self,
         authority: &A,
-        owner: Owner,
+        owner: OwnerId,
         kind: EntityKind,
         prior: MemoryId,
         session_kinds: &[(MemoryId, EntityKind)],
@@ -826,7 +826,7 @@ impl Engine {
     /// it: a moving route's `next` space is never embedded inline.
     async fn prepare_memory_embedding(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_id: MemoryId,
         schema_id: &str,
         text: &str,
@@ -936,7 +936,7 @@ impl Engine {
     pub(in crate::engine) async fn load_required_memory_kind(
         &self,
         scope: Option<&crate::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_id: MemoryId,
     ) -> Result<EntityKind, ProtocolError> {
         let mut kinds = self
@@ -948,7 +948,7 @@ impl Engine {
     pub(in crate::engine) async fn load_required_memory_kinds(
         &self,
         scope: Option<&crate::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<EntityKind>, ProtocolError> {
         if memory_ids.is_empty() {
@@ -1148,13 +1148,13 @@ mod tests {
     use crate::authz::AuthzContext;
     use crate::error::ErrorCode;
     use crate::{
-        AbstractionPayload, AgentDerivationV1, EntityKind, FlavorRegistry, OwnerRef, UserId,
+        AbstractionPayload, AgentDerivationV1, EntityKind, FlavorRegistry, OwnerId, UserId,
     };
 
     use super::*;
 
-    fn owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn engine() -> Engine {
@@ -1174,7 +1174,7 @@ mod tests {
         })
     }
 
-    fn request(owner: Owner, derived_from: &[EdgeEndpoint]) -> RawDerivedTestRequest<'_> {
+    fn request(owner: OwnerId, derived_from: &[EdgeEndpoint]) -> RawDerivedTestRequest<'_> {
         RawDerivedTestRequest {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             owner,
@@ -1412,7 +1412,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingAuthoring {
         seen: std::sync::Mutex<Option<RecordedWrite>>,
-        hydration_calls: std::sync::Mutex<Vec<(OwnerRef, Vec<MemoryId>)>>,
+        hydration_calls: std::sync::Mutex<Vec<(OwnerId, Vec<MemoryId>)>>,
     }
 
     #[async_trait::async_trait]
@@ -1439,7 +1439,7 @@ mod tests {
         async fn load_memory_kinds(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _owner: &Owner,
+            _owner: &OwnerId,
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::MemoryKindRow>, StorageError> {
             Ok(Vec::new())

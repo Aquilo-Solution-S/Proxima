@@ -1,6 +1,6 @@
 //! What a status-changing `UPDATE` that changed no row should conclude.
 //!
-//! `finish_upload` and `abort_upload` race each other and the expiry
+//! Transactional upload publication and `abort_upload` race the expiry
 //! sweep, and both re-read the row rather than assume why they lost. The
 //! decision is a pure function of the observed status, so it is assertable
 //! without a database — the races themselves are pinned in
@@ -57,56 +57,24 @@ pub(super) fn stage_locator_decision(
     }
 }
 
-/// What a `finish_upload` that changed no row should do, given the status
-/// the upload actually holds now.
-///
-/// `finish_upload` runs AFTER the transaction that recorded the artefact and
-/// its Fact committed, so an error here reports a failure for a write that
-/// succeeded — and leaves an `upload_id` the caller can never retry. The
-/// lost race is therefore classified, not assumed: only a genuinely
-/// contradictory state is an error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FinishTransitionDecision {
-    /// This call performed the transition.
-    WonPending,
-    /// Someone else completed it against the same artefact. Idempotent —
-    /// the same guarantee the `Completed` arm already grants a replay.
-    AlreadyFinished,
-    /// An abort or an expiry reached the row first, but the artefact and
-    /// its Fact are already committed. Record the completion over the
-    /// terminal status: the transfer's outcome IS completed, and an abort
-    /// that lost this race did not undo a committed write.
-    OvertookTerminal,
-}
+#[cfg(test)]
+pub(super) use proxima_storage_pg::access::owner_columns::FinishTransitionDecision;
 
+#[cfg(test)]
+/// Shared publication classification, mapped into the blob error vocabulary.
 pub(super) fn finish_transition_decision(
     observed_status: UploadStatus,
     observed_cited_object_id: Option<Uuid>,
     cited_object_id: Uuid,
     rows_affected: u64,
 ) -> Result<FinishTransitionDecision, BlobError> {
-    match rows_affected {
-        1 => Ok(FinishTransitionDecision::WonPending),
-        0 => match observed_status {
-            UploadStatus::Completed if observed_cited_object_id == Some(cited_object_id) => {
-                Ok(FinishTransitionDecision::AlreadyFinished)
-            }
-            // The only genuinely contradictory state: something else was
-            // staged under this upload id.
-            UploadStatus::Completed => Err(BlobError::State(
-                "upload already completed against a different cited object".into(),
-            )),
-            UploadStatus::Aborted | UploadStatus::Expired => {
-                Ok(FinishTransitionDecision::OvertookTerminal)
-            }
-            UploadStatus::Pending => Err(BlobError::State(
-                "upload finish did not transition pending row".into(),
-            )),
-        },
-        other => Err(BlobError::State(format!(
-            "upload finish affected {other} rows"
-        ))),
-    }
+    proxima_storage_pg::access::owner_columns::finish_transition_decision(
+        observed_status,
+        observed_cited_object_id,
+        cited_object_id,
+        rows_affected,
+    )
+    .map_err(Into::into)
 }
 
 pub(super) fn abort_transition_decision(

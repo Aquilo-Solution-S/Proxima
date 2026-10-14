@@ -5,12 +5,12 @@ use proxima_mcp_server::owner_key;
 pub use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
 use serde_json::json;
 
-use proxima_core::Owner;
+use proxima_core::OwnerId;
 use proxima_core::test_fixtures::owner_fixture;
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
-pub fn nil_owner() -> Owner {
+pub fn nil_owner() -> OwnerId {
     owner_fixture()
 }
 

@@ -147,10 +147,10 @@ mod tests {
     use super::{get_schema, parse_kind};
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError};
 
-    use crate::{AuthPath, AuthzContext, FlavorServices, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorServices, OwnerId, UserId};
 
     fn ctx_with_probes() -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),

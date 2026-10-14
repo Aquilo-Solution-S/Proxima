@@ -1,6 +1,6 @@
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::verbs::query::{FactCitationCursor, FactCitationPage, FactCitationReadback};
-use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
+use proxima_core::{MemoryId, OwnerId, SchemaId, StorageError};
 use sqlx::PgConnection;
 
 use crate::error::map_err;
@@ -10,7 +10,7 @@ use crate::verbs::consolidate::load_memories_by_ids_on_connection;
 pub(crate) async fn facts_citing_object_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     cited_object_id: uuid::Uuid,
     schemas: &[MemorySchemaSpec],
     after: Option<FactCitationCursor>,
@@ -26,7 +26,7 @@ pub(crate) async fn facts_citing_object_on_connection(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let fetch = i64::from(limit).saturating_add(1);
     let rows: Vec<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as("SELECT m.t, COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') FROM proxima_core.memory m WHERE m.blob_id = $1 AND m.owner_id = ANY($2::uuid[]) AND m.kind = 'fact' AND ($3::timestamptz IS NULL OR (COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01'), m.t) < ($3::timestamptz, $4::uuid)) ORDER BY 2 DESC, m.t DESC LIMIT $5")
@@ -56,7 +56,7 @@ pub(crate) async fn facts_citing_object_on_connection(
 
 pub(crate) async fn citation_of_fact_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[proxima_core::OwnerRef],
+    read_owners: &[proxima_core::OwnerId],
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
     if read_owners.is_empty() {
@@ -65,7 +65,7 @@ pub(crate) async fn citation_of_fact_on_connection(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerRef::stored_owner_id)
+        .map(proxima_core::OwnerId::into_inner)
         .collect();
     let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
         "SELECT m.blob_id, b.schema_id FROM proxima_core.memory m JOIN proxima_core.blob b ON b.blob_id = m.blob_id WHERE m.t = $1 AND m.kind = 'fact' AND m.blob_id IS NOT NULL AND m.owner_id = ANY($2::uuid[])",

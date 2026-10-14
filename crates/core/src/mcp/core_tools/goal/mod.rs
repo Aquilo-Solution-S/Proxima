@@ -822,12 +822,12 @@ mod tests {
     use crate::engine::MembershipStorage;
     use crate::mcp::McpAuthorContext;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerRef, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerId, UserId,
     };
     use std::sync::Arc;
 
     fn test_ctx() -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
@@ -850,7 +850,7 @@ mod tests {
         std::sync::Arc<std::sync::Mutex<Vec<GoalAuthorship>>>,
         MemoryId,
     ) {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let target = MemoryId::new(uuid::Uuid::now_v7());
         let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let storage = MembershipStorage {

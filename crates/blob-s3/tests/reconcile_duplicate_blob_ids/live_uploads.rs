@@ -160,7 +160,7 @@ async fn reports(
     store: &CitedBlobStore,
     authority: &proxima_core::authz::SystemAuthority,
     authz: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
 ) -> TestResult<Reports> {
     Ok(Reports {
         global: store.reconcile_all(authority).await?,
@@ -430,7 +430,7 @@ async fn observe_resolution_order(
 async fn selected_read(
     store: &CitedBlobStore,
     authz: &AuthzContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     blob_id: Uuid,
     expected_upload: Uuid,
 ) -> TestResult<SelectedRead> {

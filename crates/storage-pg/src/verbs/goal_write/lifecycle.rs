@@ -1,5 +1,5 @@
 use super::{
-    EvidenceTarget, GoalId, GoalWriteOutcome, InsertedGoal, MemoryId, Owner, Postgres,
+    EvidenceTarget, GoalId, GoalWriteOutcome, InsertedGoal, MemoryId, OwnerId, Postgres,
     StorageError, Transaction, assert_goal_topology_references, internal,
 };
 
@@ -7,7 +7,7 @@ use super::{
 /// authority to record it: the same inputs for every verb, which is why the
 /// tail below is one function rather than five.
 pub(super) struct LifecycleWrite<'a> {
-    pub(super) owner: &'a Owner,
+    pub(super) owner: &'a OwnerId,
     pub(super) inserted: InsertedGoal,
     pub(super) assignment: MemoryId,
     pub(super) dependencies: &'a [GoalId],

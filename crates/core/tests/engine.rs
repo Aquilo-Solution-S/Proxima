@@ -9,7 +9,7 @@ use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::UserId;
 use proxima_core::llm::SingleClientRouter;
-use proxima_core::owner::{Owner, OwnerRef};
+use proxima_core::owner::OwnerId;
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
@@ -20,26 +20,24 @@ use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
 
-fn fresh_owner() -> (OwnerRef, Owner) {
+fn fresh_owner() -> (OwnerId, OwnerId) {
     let user = UserId::new(Uuid::now_v7());
-    let principal = OwnerRef::Personal(user);
+    let principal = OwnerId::from(user);
     let owner = principal;
     (principal, owner)
 }
 
-fn boot_engine(principal: OwnerRef, owner: Owner) -> Engine {
+fn boot_engine(principal: OwnerId, owner: OwnerId) -> Engine {
     let _ = (principal, owner);
     Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
-fn fresh_caller() -> OwnerRef {
-    OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+fn fresh_caller() -> OwnerId {
+    OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
 fn granted_no_access_authz(auth_path: AuthPath) -> ResolvedAuthz {
-    let OwnerRef::Personal(user) = fresh_caller() else {
-        unreachable!("fresh caller is personal");
-    };
+    let user = (fresh_caller()).as_user();
     AuthzContext::for_subject(user, auth_path)
 }
 
@@ -178,7 +176,7 @@ async fn change_history_ignores_client_principal_as_access_vector() {
     assert!(response.seq_high_water.is_none());
 }
 
-fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
+fn sample_mcp_input(owner: &OwnerId) -> McpCallLogInput {
     McpCallLogInput {
         owner: *owner,
         actor_oid: "oid-1".into(),

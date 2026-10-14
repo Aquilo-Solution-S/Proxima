@@ -24,11 +24,11 @@ use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AccessKind, AgentNoteV1, AuthPath, AuthzContext, ChangeEventKind, ColdObjectStore, Engine,
-    EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerRef, SchemaId,
+    EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -84,7 +84,7 @@ fn erase_context() -> proxima_storage_pg::PgHostStateEraseContext {
 /// makes the rendezvous prove the lock vocabulary under test.
 async fn owner_fence_lock_state(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     mode: &str,
     granted: bool,
 ) -> Result<bool, sqlx::Error> {
@@ -93,21 +93,17 @@ async fn owner_fence_lock_state(
              SELECT 1
                FROM pg_locks
               WHERE locktype = 'advisory'
-                AND granted = $3
-                AND mode = $4
+                AND granted = $2
+                AND mode = $3
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
-    .bind(match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    })
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(granted)
     .bind(mode)
     .fetch_one(pool)
@@ -137,7 +133,7 @@ async fn handle_lock_held(pool: &sqlx::PgPool, handle: Uuid) -> Result<bool, sql
 
 async fn owner_fence_waiter_count(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     mode: &str,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
@@ -145,19 +141,15 @@ async fn owner_fence_waiter_count(
            FROM pg_locks
           WHERE locktype = 'advisory'
             AND NOT granted
-            AND mode = $3
+            AND mode = $2
             AND classid::bigint = ((hashtextextended(
-                'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                'proxima-owner-fence:' || $1::text, 0
             ) >> 32) & 4294967295)
             AND objid::bigint = (hashtextextended(
-                'proxima-owner-fence:' || $1 || ':' || $2::text, 0
+                'proxima-owner-fence:' || $1::text, 0
             ) & 4294967295)",
     )
-    .bind(match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    })
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(mode)
     .fetch_one(pool)
     .await
@@ -311,7 +303,7 @@ fn mcp_draft() -> FactWriteCommand {
 /// read as `owner`.
 async fn hydrated_actor_payloads(
     pg: &PgStorage,
-    owner: OwnerRef,
+    owner: OwnerId,
     memory_id: MemoryId,
 ) -> Result<usize, StorageError> {
     let schemas = memory_schema_specs();
@@ -342,7 +334,7 @@ async fn hydrated_actor_payloads(
 
 async fn assert_owner_pinned_payload_redacted(
     pg: &PgStorage,
-    owner: OwnerRef,
+    owner: OwnerId,
     memory_id: MemoryId,
 ) -> Result<(), StorageError> {
     let snapshots = pg
@@ -373,7 +365,7 @@ async fn pinned_owners(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<Uuid>, sqlx::
         .await
 }
 
-fn history_request(owner: OwnerRef) -> McpCallHistoryRequest {
+fn history_request(owner: OwnerId) -> McpCallHistoryRequest {
     McpCallHistoryRequest {
         owner,
         actor_oid: None,
@@ -385,11 +377,23 @@ fn history_request(owner: OwnerRef) -> McpCallHistoryRequest {
 
 async fn export_bundle(
     pg: &PgStorage,
-    owner: OwnerRef,
+    owner: OwnerId,
 ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
-    let target = match owner {
-        OwnerRef::Personal(user_id) => OwnerExportTarget::PersonalOwner { user_id },
-        OwnerRef::Group(group_id) => OwnerExportTarget::GroupOwner { group_id },
+    // The registry, not the caller, says which export shape names this id.
+    let kind: String =
+        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+            .bind(owner.into_inner())
+            .fetch_one(pg.pool_for_tests())
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let target = if kind == "personal" {
+        OwnerExportTarget::PersonalOwner {
+            user_id: owner.as_user(),
+        }
+    } else {
+        OwnerExportTarget::GroupOwner {
+            group_id: owner.as_group(),
+        }
     };
     pg.export_owner_bundle(
         &ExportAuthorization::new_for_tests(target),
@@ -412,8 +416,18 @@ fn mcp_rows_in(bundle: &proxima_core::owner_inverse::OwnerExportBundle) -> Vec<&
         .collect()
 }
 
-fn destination() -> OwnerRef {
-    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
+fn destination() -> OwnerId {
+    OwnerId::from(GroupId::new(Uuid::now_v7()))
+}
+
+/// A destination Group registered the way a host creates one, for tests that
+/// later erase it through the group path.
+async fn registered_destination(
+    pool: &sqlx::PgPool,
+) -> Result<OwnerId, proxima_core::StorageError> {
+    let group = GroupId::new(Uuid::now_v7());
+    register_group_for_tests(pool, group).await?;
+    Ok(OwnerId::from(group))
 }
 
 async fn fresh_pg() -> (String, PgStorage) {
@@ -506,7 +520,7 @@ async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
 async fn transfer_moves_same_memory_t_and_sidecar() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -542,7 +556,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
              VALUES ($1, 'core/test-fact-v1', $2)
              RETURNING content_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![7_u8; 32])
         .fetch_one(pool)
         .await?;
@@ -573,7 +587,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         .await?;
         assert_eq!(
             content_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "transfer must re-home Content with the Memory"
         );
         let old_left: i64 = sqlx::query_scalar(
@@ -591,7 +605,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(owner_id, dest.stored_owner_id());
+        assert_eq!(owner_id, dest.into_inner());
         let sketch_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
                 .bind(t)
@@ -599,7 +613,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
                 .await?;
         assert_eq!(
             sketch_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "the hot sketch must follow its transferred Memory"
         );
         let dest_sketches =
@@ -657,7 +671,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -674,7 +688,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
                CROSS JOIN generate_series(0, 1) AS chunk_ordinal",
         )
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -684,7 +698,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
                FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
         )
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -693,7 +707,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
                FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
         )
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -741,12 +755,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
                 .into_iter()
                 .flat_map(|version| {
                     [0_i32, 1].map(|ordinal| {
-                        (
-                            "kept-model".to_owned(),
-                            version,
-                            ordinal,
-                            dest.stored_owner_id(),
-                        )
+                        ("kept-model".to_owned(), version, ordinal, dest.into_inner())
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -759,7 +768,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         .bind(t)
         .fetch_all(pool)
         .await?;
-        assert_eq!(head, vec![("kept-model".into(), 2, dest.stored_owner_id())]);
+        assert_eq!(head, vec![("kept-model".into(), 2, dest.into_inner())]);
         let jobs: Vec<(String, Uuid)> = sqlx::query_as(
             "SELECT model_id, owner_id
                FROM proxima_core.embedding_jobs WHERE entity_id = $1",
@@ -767,7 +776,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         .bind(t)
         .fetch_all(pool)
         .await?;
-        assert_eq!(jobs, vec![("kept-model".into(), dest.stored_owner_id())]);
+        assert_eq!(jobs, vec![("kept-model".into(), dest.into_inner())]);
         Ok(())
     }
     .await;
@@ -781,7 +790,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_storage_pg::verbs::forget::cold_object_key;
 
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -797,7 +806,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
              VALUES ($1, 'core/test-fact-v1', $2)
              RETURNING content_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(vec![11_u8; 32])
         .fetch_one(pool)
         .await?;
@@ -818,7 +827,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                FROM generate_series(0, 2) AS chunk_ordinal",
         )
         .bind(first.memory_id.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
@@ -845,7 +854,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             cooled_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "transfer must re-home cooled versions with the series"
         );
         let object_key: String =
@@ -856,8 +865,8 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         let expected = cold_object_key(first.memory_id.into_inner());
         assert_eq!(object_key, expected);
         assert!(
-            !object_key.contains(&owner.stored_owner_id().to_string())
-                && !object_key.contains(&dest.stored_owner_id().to_string()),
+            !object_key.contains(&owner.into_inner().to_string())
+                && !object_key.contains(&dest.into_inner().to_string()),
             "the cold key is owner-free, so a transfer never has to re-mint it"
         );
         let blob_owner: Uuid =
@@ -867,7 +876,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             blob_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "a cooled citation follows its transferred series"
         );
         let stale_ingest_keys: i64 = sqlx::query_scalar(
@@ -891,7 +900,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             cooled_content_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "Content referenced only by a cooled version must follow it"
         );
         for witnessed_t in [first.memory_id.into_inner(), second.memory_id.into_inner()] {
@@ -951,7 +960,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             hydrated_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "the reminted cold record must hydrate under the destination"
         );
 
@@ -968,7 +977,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             sketch_owner,
-            dest.stored_owner_id(),
+            dest.into_inner(),
             "the sketch is read owner-scoped: hydrating it under the giver \
              hands a transferred memory back to the owner that gave it away"
         );
@@ -988,7 +997,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         for announced in &hydrate_announce_owners {
             assert_eq!(
                 *announced,
-                dest.stored_owner_id(),
+                dest.into_inner(),
                 "the hydrate announces to the owner that HAS the memory now"
             );
         }
@@ -1001,7 +1010,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             embed_job_owners,
-            vec![dest.stored_owner_id()],
+            vec![dest.into_inner()],
             "the re-embed job is the destination's work; filing it under the \
              giver also breaks hydrate outright once the giver is erased, \
              because the owner-kind lookup is a fetch_one"
@@ -1020,7 +1029,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
 async fn transfer_accepts_a_cooled_input_for_a_live_series() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -1048,22 +1057,19 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_owner, dest.stored_owner_id());
+        assert_eq!(cooled_owner, dest.into_inner());
         let hot_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(hot_owner, dest.stored_owner_id());
+        assert_eq!(hot_owner, dest.into_inner());
         let head: (Uuid, Uuid) =
             sqlx::query_as("SELECT t, owner_id FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(
-            head,
-            (second.memory_id.into_inner(), dest.stored_owner_id())
-        );
+        assert_eq!(head, (second.memory_id.into_inner(), dest.into_inner()));
 
         let announced_t: Vec<Uuid> = sqlx::query_scalar(
             "SELECT t FROM proxima_core.announce
@@ -1086,7 +1092,7 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
 async fn transfer_moves_a_fully_cooled_headless_series() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -1128,7 +1134,7 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         .bind(first.handle)
         .fetch_all(pool)
         .await?;
-        assert_eq!(owners, vec![dest.stored_owner_id(); 2]);
+        assert_eq!(owners, vec![dest.into_inner(); 2]);
         let after: (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT count(*) FROM proxima_core.memory WHERE handle = $1),
@@ -1150,7 +1156,7 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         assert!(announced.iter().all(|(owner_id, announced_handle, t)| {
             *announced_handle == first.handle
                 && *t == second.memory_id.into_inner()
-                && (*owner_id == owner.stored_owner_id() || *owner_id == dest.stored_owner_id())
+                && (*owner_id == owner.into_inner() || *owner_id == dest.into_inner())
         }));
         Ok(())
     }
@@ -1167,7 +1173,7 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
 async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -1178,7 +1184,7 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'group'::proxima_core.owner_kind)",
         )
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -1186,15 +1192,15 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
                 (group_id, member_user_id, relation)
              VALUES ($1, $2, 'admin'::proxima_core.membership_relation)",
         )
-        .bind(destination.stored_owner_id())
-        .bind(owner.stored_owner_id())
+        .bind(destination.into_inner())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let authz =
-            AuthzContext::for_subject(UserId::new(owner.stored_owner_id()), AuthPath::HostBearer);
+            AuthzContext::for_subject(UserId::new(owner.into_inner()), AuthPath::HostBearer);
         engine
             .transfer_to_owner(&authz, EntityId::Memory(written.memory_id), destination)
             .await?;
@@ -1204,7 +1210,7 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_owner, destination.stored_owner_id());
+        assert_eq!(cooled_owner, destination.into_inner());
         let head_count: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
         )
@@ -1229,7 +1235,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -1347,7 +1353,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head.0, second.memory_id.into_inner());
-        assert_eq!(head.1, dest.stored_owner_id());
+        assert_eq!(head.1, dest.into_inner());
         let unmoved_versions: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM (
@@ -1358,7 +1364,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
               WHERE owner_id <> $2",
         )
         .bind(first.handle)
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -1369,7 +1375,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys
               WHERE owner_id = $1 AND ingest_key = 'k3'",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -1393,7 +1399,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -1487,7 +1493,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(owner_before_release, owner.stored_owner_id());
+        assert_eq!(owner_before_release, owner.into_inner());
 
         let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
             .bind(PROBE_LOCK)
@@ -1507,13 +1513,13 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(source_blob_owner, owner.stored_owner_id());
+        assert_eq!(source_blob_owner, owner.into_inner());
         let source_citation_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(appended.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(source_citation_owner, owner.stored_owner_id());
+        assert_eq!(source_citation_owner, owner.into_inner());
         let source_citation_blob: Uuid =
             sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
                 .bind(appended.memory_id.into_inner())
@@ -1529,7 +1535,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         .bind(target.memory_id.into_inner())
         .fetch_one(pool)
         .await?;
-        assert_eq!(target_owner_and_blob.0, destination.stored_owner_id());
+        assert_eq!(target_owner_and_blob.0, destination.into_inner());
         assert_ne!(
             target_owner_and_blob.1, blob_id,
             "the transferred citation must use the destination mount"
@@ -1539,7 +1545,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
                 .bind(target_owner_and_blob.1)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(mounted_blob_owner, destination.stored_owner_id());
+        assert_eq!(mounted_blob_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -1557,7 +1563,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -1586,7 +1592,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
              BEFORE INSERT ON proxima_core.blob
              FOR EACH ROW
              EXECUTE FUNCTION public.block_destination_blob_insert();",
-            destination = destination.stored_owner_id(),
+            destination = destination.into_inner(),
         )))
         .execute(pool)
         .await?;
@@ -1651,7 +1657,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
                 .bind(source_blob)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(owner_before_release, source.stored_owner_id());
+        assert_eq!(owner_before_release, source.into_inner());
 
         let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
             .bind(PROBE_LOCK)
@@ -1676,7 +1682,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
                 .bind(source_row.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(target_owner, destination.stored_owner_id());
+        assert_eq!(target_owner, destination.into_inner());
         assert_eq!(target_blob, destination_row.cited_object_id.unwrap());
         assert_ne!(target_blob, source_blob);
         Ok(())
@@ -1694,16 +1700,15 @@ async fn transfer_serializes_destination_citation_dedupe() {
 async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+             VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
         )
-        .bind(source.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&source).as_str())
+        .bind(source.into_inner())
         .execute(pool)
         .await?;
         let content_hash = vec![37_u8; 32];
@@ -1712,7 +1717,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&content_hash)
         .fetch_one(pool)
         .await?;
@@ -1725,7 +1730,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
                      'application/pdf', 1, 'pending', $3,
                      now() + interval '1 hour')",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(upload_id)
         .bind(&content_hash)
         .execute(pool)
@@ -1751,7 +1756,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(source_blob_owner, source.stored_owner_id());
+        assert_eq!(source_blob_owner, source.into_inner());
 
         // Model finish's database half after the Fact committed. The real
         // upload service performs this transition under the same owner fence;
@@ -1762,7 +1767,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
                     object_key = 'objects/' || upload_id::text, sha256 = $4
               WHERE owner_id = $1 AND upload_id = $3",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(blob_id)
         .bind(upload_id)
         .bind(&content_hash)
@@ -1789,8 +1794,8 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         .bind(upload_id)
         .fetch_one(pool)
         .await?;
-        assert_eq!(blob_owner, destination.stored_owner_id());
-        assert_eq!(upload_owner, destination.stored_owner_id());
+        assert_eq!(blob_owner, destination.into_inner());
+        assert_eq!(upload_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -1806,16 +1811,15 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
 async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = destination();
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind)",
+             VALUES ($1, 'personal'::proxima_core.owner_kind)",
         )
-        .bind(source.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&source).as_str())
+        .bind(source.into_inner())
         .execute(pool)
         .await?;
         let content_hash = vec![38_u8; 32];
@@ -1824,7 +1828,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&content_hash)
         .fetch_one(pool)
         .await?;
@@ -1838,7 +1842,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
                      now() + interval '1 hour')",
         )
         .bind(upload_id)
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&content_hash)
         .execute(pool)
         .await?;
@@ -1863,7 +1867,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(owner_before_retry, source.stored_owner_id());
+        assert_eq!(owner_before_retry, source.into_inner());
 
         // Model the retry's restage and finish database transitions after it
         // re-hashed the retained object under the 0007 schema.
@@ -1873,7 +1877,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
                     completed_at = now()
               WHERE owner_id = $1 AND upload_id = $3",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(blob_id)
         .bind(upload_id)
         .bind(&content_hash)
@@ -1900,8 +1904,8 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         .bind(upload_id)
         .fetch_one(pool)
         .await?;
-        assert_eq!(blob_owner, destination.stored_owner_id());
-        assert_eq!(upload_owner, destination.stored_owner_id());
+        assert_eq!(blob_owner, destination.into_inner());
+        assert_eq!(upload_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -1917,7 +1921,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
 async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -1929,7 +1933,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&unrelated_hash)
         .fetch_one(pool)
         .await?;
@@ -1947,7 +1951,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
                  'application/octet-stream', 1, 'pending', $2,
                  now() + interval '1 hour')",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&unrelated_hash)
         .execute(pool)
         .await?;
@@ -1970,7 +1974,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
                 .await?;
         assert_eq!(
             unrelated_owner,
-            source.stored_owner_id(),
+            source.into_inner(),
             "the series whose staged upload stayed pending remains at the source"
         );
         let pending_source_rows: i64 = sqlx::query_scalar(
@@ -1978,7 +1982,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
                FROM proxima_core.blob_uploads
               WHERE owner_id = $1 AND status = 'pending'",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(pending_source_rows, 2, "transfer does not consume uploads");
@@ -2000,7 +2004,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
         for (ordinal, status) in [(0_u8, "aborted"), (1_u8, "expired")] {
-            let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+            let source = OwnerId::from(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
             let destination = destination();
             let mut cited = draft();
@@ -2017,7 +2021,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
                      'application/pdf', 1, $3::proxima_core.blob_upload_status,
                          now() + interval '1 hour')",
             )
-            .bind(source.stored_owner_id())
+            .bind(source.into_inner())
             .bind(upload_id)
             .bind(status)
             .execute(pool)
@@ -2039,7 +2043,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
                     .bind(blob_id)
                     .fetch_one(pool)
                     .await?;
-            assert_eq!(moved_blob_owner, destination.stored_owner_id());
+            assert_eq!(moved_blob_owner, destination.into_inner());
             let (terminal_owner, observed_status): (Uuid, String) = sqlx::query_as(
                 "SELECT owner_id, status::text
                    FROM proxima_core.blob_uploads
@@ -2048,7 +2052,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
             .bind(upload_id)
             .fetch_one(pool)
             .await?;
-            assert_eq!(terminal_owner, source.stored_owner_id());
+            assert_eq!(terminal_owner, source.into_inner());
             assert_eq!(observed_status, status);
         }
         Ok(())
@@ -2066,7 +2070,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
 async fn transfer_waits_for_terminal_uploaded_blob_publication() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -2132,7 +2136,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
 async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = destination();
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2149,7 +2153,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
                      now() + interval '1 hour', now())",
         )
         .bind(terminal_upload)
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&hash)
         .execute(pool)
         .await?;
@@ -2177,9 +2181,9 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         .bind(completed_upload)
         .fetch_one(pool)
         .await?;
-        assert_eq!(memory_owner, destination.stored_owner_id());
-        assert_eq!(blob_owner, destination.stored_owner_id());
-        assert_eq!(completed_owner, destination.stored_owner_id());
+        assert_eq!(memory_owner, destination.into_inner());
+        assert_eq!(blob_owner, destination.into_inner());
+        assert_eq!(completed_owner, destination.into_inner());
         let (terminal_owner, terminal_status): (Uuid, String) = sqlx::query_as(
             "SELECT owner_id, status::text
                FROM proxima_core.blob_uploads
@@ -2188,7 +2192,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         .bind(terminal_upload)
         .fetch_one(pool)
         .await?;
-        assert_eq!(terminal_owner, source.stored_owner_id());
+        assert_eq!(terminal_owner, source.into_inner());
         assert_eq!(terminal_status, "aborted");
         Ok(())
     }
@@ -2205,7 +2209,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
 async fn transfer_retries_when_series_membership_drifts_before_mutation() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2265,7 +2269,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         )
         .bind(first.handle)
         .bind(drift_t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
@@ -2290,7 +2294,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_all(pool)
         .await?
         .into_iter()
@@ -2309,7 +2313,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_all(pool)
         .await?
         .into_iter()
@@ -2335,15 +2339,15 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
 async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let left = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let right = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let left = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let right = OwnerId::from(UserId::new(Uuid::now_v7()));
         let left_permit = OwnerWritePermit::new_for_tests(left, AccessKind::Fact);
         let right_permit = OwnerWritePermit::new_for_tests(right, AccessKind::Fact);
         let left_row = pg.ingest_fact_atomic(&left_permit, &draft(), None).await?;
         let right_row = pg.ingest_fact_atomic(&right_permit, &draft(), None).await?;
 
         let pool = pg.pool_for_tests();
-        let first_fenced_owner = if left.stored_owner_id() < right.stored_owner_id() {
+        let first_fenced_owner = if left.into_inner() < right.into_inner() {
             left
         } else {
             right
@@ -2351,11 +2355,10 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
         let mut fence_blocker = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+                 hashtextextended('proxima-owner-fence:' || $1::text, 0)
              )",
         )
-        .bind("personal")
-        .bind(first_fenced_owner.stored_owner_id())
+        .bind(first_fenced_owner.into_inner())
         .execute(&mut *fence_blocker)
         .await?;
 
@@ -2413,8 +2416,8 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
                 .bind(right_row.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(left_owner, right.stored_owner_id());
-        assert_eq!(right_owner, left.stored_owner_id());
+        assert_eq!(left_owner, right.into_inner());
+        assert_eq!(right_owner, left.into_inner());
         Ok(())
     }
     .await;
@@ -2430,7 +2433,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
 async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -2476,7 +2479,7 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
                 .bind(replacement.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(replacement_owner, owner.stored_owner_id());
+        assert_eq!(replacement_owner, owner.into_inner());
         let head: Uuid =
             sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(original.handle)
@@ -2502,7 +2505,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_storage_pg::verbs::forget::cold_object_key;
 
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2515,23 +2518,23 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         assert_eq!(second.handle, first.handle);
         let personal_key = cold_object_key(first.memory_id.into_inner());
 
-        let usurper = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let usurper = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
-        .bind(usurper.stored_owner_id())
+        .bind(usurper.into_inner())
         .execute(pool)
         .await?;
         sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
             .bind(first.handle)
-            .bind(usurper.stored_owner_id())
+            .bind(usurper.into_inner())
             .execute(pool)
             .await?;
         let destination_owner_before: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
         )
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
         let announces_before: i64 =
@@ -2560,7 +2563,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
                 .await?;
         assert_eq!(
             cooled_owner,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "the rolled-back transfer must not re-home the cooled row"
         );
         assert_eq!(
@@ -2572,7 +2575,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
                 .bind(second.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(hot_owner, owner.stored_owner_id());
+        assert_eq!(hot_owner, owner.into_inner());
         let transfer_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
         )
@@ -2590,7 +2593,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         let destination_owner_after: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
         )
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -2608,7 +2611,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
 async fn transfer_refuses_goal_entities() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2655,13 +2658,13 @@ async fn transfer_refuses_goal_entities() {
                 .bind(out.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(head_owner, owner.stored_owner_id());
+        assert_eq!(head_owner, owner.into_inner());
         let row_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.goal WHERE t = $1")
                 .bind(out.t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(row_owner, owner.stored_owner_id());
+        assert_eq!(row_owner, owner.into_inner());
         let transfer_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
         )
@@ -2673,7 +2676,7 @@ async fn transfer_refuses_goal_entities() {
         // entirely, and `goal_head_t_only` freezes the head's owner_id.
         let frozen = sqlx::query("UPDATE proxima_core.goal SET owner_id = $2 WHERE t = $1")
             .bind(out.t)
-            .bind(dest.stored_owner_id())
+            .bind(dest.into_inner())
             .execute(pool)
             .await;
         assert!(frozen.is_err(), "goal must refuse UPDATE entirely");
@@ -2681,13 +2684,13 @@ async fn transfer_refuses_goal_entities() {
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .execute(pool)
         .await?;
         let head_frozen =
             sqlx::query("UPDATE proxima_core.goal_head SET owner_id = $2 WHERE handle = $1")
                 .bind(out.handle)
-                .bind(dest.stored_owner_id())
+                .bind(dest.into_inner())
                 .execute(pool)
                 .await;
         assert!(
@@ -2710,7 +2713,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2754,7 +2757,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
                 .await?;
         assert_eq!(
             wake_owner,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "the wake row must stay with the goal's owner"
         );
 
@@ -2776,7 +2779,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(remaining, 0);
@@ -2792,7 +2795,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2823,8 +2826,8 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
             2,
             "one row per lane: prior owner and destination owner"
         );
-        assert!(lanes.contains(&owner.stored_owner_id()));
-        assert!(lanes.contains(&dest.stored_owner_id()));
+        assert!(lanes.contains(&owner.into_inner()));
+        assert!(lanes.contains(&dest.into_inner()));
         for (_, handle, event_t) in &rows {
             assert_eq!(*handle, written.handle);
             assert_eq!(*event_t, t);
@@ -2837,7 +2840,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(append_op, "append");
-        assert_eq!(append_owner, owner.stored_owner_id());
+        assert_eq!(append_owner, owner.into_inner());
 
         // The log stays append-only: the transfer wrote new rows, and no row
         // accepts UPDATE.
@@ -2896,7 +2899,7 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
 async fn transfer_moves_exclusive_blob_with_the_fact() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2908,7 +2911,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(&hash)
         .fetch_one(pool)
         .await?;
@@ -2932,7 +2935,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(blob_owner, dest.stored_owner_id());
+        assert_eq!(blob_owner, dest.into_inner());
         let stored_blob: Option<Uuid> =
             sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
@@ -2960,7 +2963,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
 async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -2980,7 +2983,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
                 .await?;
         assert_eq!(
             pinned_owner,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "the sidecar is stamped with the owner that made the call"
         );
 
@@ -3010,7 +3013,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
                 .await?;
         assert_eq!(
             still_pinned,
-            vec![owner.stored_owner_id()],
+            vec![owner.into_inner()],
             "the transfer must neither destroy the audit row nor re-home it"
         );
 
@@ -3026,7 +3029,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(memory_owner, dest.stored_owner_id());
+        assert_eq!(memory_owner, dest.into_inner());
 
         // (a) The destination's payload hydrate excludes it. The sidecar
         // read joins the Memory's owner to the row's own, so the row is
@@ -3091,7 +3094,7 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         // (c) And the source can still erase them, which is the half a
         // de-registration would have lost: rows reachable by nobody are
         // rows Art. 17 cannot honour.
-        let user_id = UserId::new(owner.stored_owner_id());
+        let user_id = UserId::new(owner.into_inner());
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "test-drop-retained-audit".into(),
@@ -3129,7 +3132,7 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user_id = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user_id);
+        let owner = OwnerId::from(user_id);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -3163,7 +3166,7 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
                   WHERE t = $1 AND owner_id = $2",
             )
             .bind(t)
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_one(pool)
             .await?,
             0,
@@ -3174,7 +3177,7 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
                 .bind(t)
                 .fetch_one(pool)
                 .await?,
-            destination.stored_owner_id(),
+            destination.into_inner(),
             "source-scope erase does not reach the transferred Memory"
         );
         Ok(())
@@ -3197,10 +3200,10 @@ async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
 async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_trail() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
         let pool = pg.pool_for_tests();
+        let dest = registered_destination(pool).await?;
 
         let first = ingest_mcp_call_fact(&pg, &permit, &[]).await?;
         // A live head keeps the series transferable after the first version
@@ -3219,7 +3222,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         MemoryAuthoringPort::forget_memory(&pg, &dest_permit, first.memory_id).await?;
         assert_eq!(
             pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.stored_owner_id()],
+            vec![owner.into_inner()],
             "a forget by the receiving owner must not cool away another owner's audit row"
         );
 
@@ -3233,7 +3236,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         );
         assert_eq!(
             pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.stored_owner_id()],
+            vec![owner.into_inner()],
             "and the hydrate must not duplicate or re-home it"
         );
         assert_eq!(
@@ -3245,10 +3248,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
 
         // Now the destination erases its whole owner. The Memory goes; the
         // source's audit row stays, and the erase does not fail on it.
-        let group_id = match dest {
-            OwnerRef::Group(group_id) => group_id,
-            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
-        };
+        let group_id = dest.as_group();
         let auth =
             EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
@@ -3267,7 +3267,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         assert_eq!(memories_left, 0, "the destination's memories are gone");
         assert_eq!(
             pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.stored_owner_id()],
+            vec![owner.into_inner()],
             "the source's audit row outlives the Memory it describes"
         );
         let history = pg.read_mcp_call_history(None, &history_request(owner)).await?;
@@ -3291,7 +3291,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
 async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -3300,7 +3300,7 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
         let before: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
         )
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(before, 0, "the destination owner row must not pre-exist");
@@ -3318,18 +3318,20 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
 
         let kind: String =
             sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-                .bind(dest.stored_owner_id())
+                .bind(dest.into_inner())
                 .fetch_one(pool)
                 .await?;
+        // An id the registry has never seen is registered on first sight
+        // as a user's; a Group is registered when the host creates it.
         assert_eq!(
-            kind, "group",
+            kind, "personal",
             "the transfer mints the destination owner row"
         );
         let dest_announce: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.announce
               WHERE op = 'transfer' AND owner_id = $1",
         )
-        .bind(dest.stored_owner_id())
+        .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(dest_announce, 1, "the destination lane's FK holds");
@@ -3351,7 +3353,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = destination();
         let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination_permit = OwnerWritePermit::new_for_tests(destination, AccessKind::Fact);
@@ -3366,11 +3368,10 @@ async fn absent_destination_append_waits_before_owner_insert() {
         let mut fence_blocker = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0)
+                 hashtextextended('proxima-owner-fence:' || $1::text, 0)
              )",
         )
-        .bind("group")
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .execute(&mut *fence_blocker)
         .await?;
 
@@ -3481,7 +3482,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests().clone();
@@ -3600,13 +3601,13 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
                 .bind(target_t)
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(moved_owner, destination.stored_owner_id());
+        assert_eq!(moved_owner, destination.into_inner());
         let admitted_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(admitted.memory_id.into_inner())
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(admitted_owner, destination.stored_owner_id());
+        assert_eq!(admitted_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -3620,7 +3621,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
 async fn transfer_refuses_the_current_owner_as_destination() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
@@ -3657,15 +3658,14 @@ async fn transfer_refuses_the_current_owner_as_destination() {
 /// pass tests the production reader would refuse.
 async fn seed_cited_blob(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     hash: &[u8],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
-    .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     let blob_id: Uuid = sqlx::query_scalar(
@@ -3673,7 +3673,7 @@ async fn seed_cited_blob(
          VALUES ($1, 'core/uploaded-blob-v1', $2)
          RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(hash)
     .fetch_one(pool)
     .await?;
@@ -3685,7 +3685,7 @@ async fn seed_cited_blob(
                  'completed', $2, $3, $3, now() + interval '1 day', now())
          RETURNING upload_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(blob_id)
     .bind(hash)
     .fetch_one(pool)
@@ -3706,7 +3706,7 @@ async fn seed_cited_blob(
 /// cannot pass because a different validation predicate happened to fail.
 async fn seed_malformed_completed_upload(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     blob_id: Uuid,
     hash: &[u8],
 ) -> Result<Uuid, sqlx::Error> {
@@ -3721,7 +3721,7 @@ async fn seed_malformed_completed_upload(
                  now() + interval '1 day', now() + interval '1 minute')",
     )
     .bind(upload_id)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(blob_id)
     .bind(hash)
     .execute(pool)
@@ -3761,17 +3761,16 @@ async fn cite_from(
 async fn transfer_refuses_a_series_citing_another_owners_blob() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         for owner in [source, foreign] {
             sqlx::query(
                 "INSERT INTO proxima_core.owners (owner_id, kind)
-                 VALUES ($1, $2::proxima_core.owner_kind)",
+                 VALUES ($1, 'personal'::proxima_core.owner_kind)",
             )
-            .bind(owner.stored_owner_id())
-            .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+            .bind(owner.into_inner())
             .execute(pool)
             .await?;
         }
@@ -3780,7 +3779,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
             "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
         )
-        .bind(source.stored_owner_id())
+        .bind(source.into_inner())
         .bind(&content_hash)
         .fetch_one(pool)
         .await?;
@@ -3788,7 +3787,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
             "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
         )
-        .bind(foreign.stored_owner_id())
+        .bind(foreign.into_inner())
         .bind(&content_hash)
         .fetch_one(pool)
         .await?;
@@ -3823,8 +3822,8 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         .bind(written.memory_id.into_inner())
         .fetch_one(pool)
         .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
-        assert_eq!(blob_owner, foreign.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
+        assert_eq!(blob_owner, foreign.into_inner());
         Ok(())
     }
     .await;
@@ -3836,7 +3835,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
 async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let hash = vec![44_u8; 32];
@@ -3875,8 +3874,8 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
         .bind(moving.memory_id.into_inner())
         .fetch_one(pool)
         .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
-        assert_eq!(blob_owner, source.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
+        assert_eq!(blob_owner, source.into_inner());
         Ok(())
     }
     .await;
@@ -3888,7 +3887,7 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
 async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let hash = vec![45_u8; 32];
@@ -3921,8 +3920,8 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
         .bind(malformed)
         .fetch_one(pool)
         .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
-        assert_eq!(malformed_owner, source.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
+        assert_eq!(malformed_owner, source.into_inner());
         Ok(())
     }
     .await;
@@ -3934,7 +3933,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
 async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = destination();
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3944,10 +3943,9 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
 
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind)",
+             VALUES ($1, 'group'::proxima_core.owner_kind)",
         )
-        .bind(destination.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&destination).as_str())
+        .bind(destination.into_inner())
         .execute(pool)
         .await?;
         let destination_blob: Uuid = sqlx::query_scalar(
@@ -3955,7 +3953,7 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .bind(&hash)
         .fetch_one(pool)
         .await?;
@@ -3980,14 +3978,14 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
                 .bind(moving.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
         assert_eq!(cited_blob, source_blob);
         let destination_blob_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
                 .bind(destination_blob)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(destination_blob_owner, destination.stored_owner_id());
+        assert_eq!(destination_blob_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -3999,7 +3997,7 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
 async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_set() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = destination();
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -4030,7 +4028,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
                 .bind(moving.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
         assert_eq!(cited_blob, source_blob);
         let malformed_owner: Uuid = sqlx::query_scalar(
             "SELECT owner_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
@@ -4038,7 +4036,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
         .bind(malformed)
         .fetch_one(pool)
         .await?;
-        assert_eq!(malformed_owner, destination.stored_owner_id());
+        assert_eq!(malformed_owner, destination.into_inner());
         Ok(())
     }
     .await;
@@ -4050,8 +4048,8 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
 async fn a_blob_mount_copies_only_source_owned_upload_rows() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let destination = destination();
         let pool = pg.pool_for_tests();
@@ -4059,10 +4057,9 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind)",
+             VALUES ($1, 'personal'::proxima_core.owner_kind)",
         )
-        .bind(foreign.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&foreign).as_str())
+        .bind(foreign.into_inner())
         .execute(pool)
         .await?;
         let foreign_upload = Uuid::now_v7();
@@ -4076,7 +4073,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
                      now() + interval '1 day', now())",
         )
         .bind(foreign_upload)
-        .bind(foreign.stored_owner_id())
+        .bind(foreign.into_inner())
         .bind(blob_id)
         .bind(&hash)
         .execute(pool)
@@ -4105,7 +4102,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
               WHERE blob_id = $1 AND owner_id = $2",
         )
         .bind(moved_blob)
-        .bind(destination.stored_owner_id())
+        .bind(destination.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -4118,7 +4115,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
         .bind(foreign_upload)
         .fetch_one(pool)
         .await?;
-        assert_eq!(foreign_owner, foreign.stored_owner_id());
+        assert_eq!(foreign_owner, foreign.into_inner());
         Ok(())
     }
     .await;
@@ -4130,18 +4127,17 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
 async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let foreign = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let hash = vec![53_u8; 32];
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, $2::proxima_core.owner_kind)",
+             VALUES ($1, 'personal'::proxima_core.owner_kind)",
         )
-        .bind(foreign.stored_owner_id())
-        .bind(proxima_core::OwnerRefKind::of(&foreign).as_str())
+        .bind(foreign.into_inner())
         .execute(pool)
         .await?;
         let foreign_upload = Uuid::now_v7();
@@ -4155,7 +4151,7 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
                      now() + interval '1 day', now())",
         )
         .bind(foreign_upload)
-        .bind(foreign.stored_owner_id())
+        .bind(foreign.into_inner())
         .bind(blob_id)
         .bind(&hash)
         .execute(pool)
@@ -4188,9 +4184,9 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
         .bind(foreign_upload)
         .fetch_one(pool)
         .await?;
-        assert_eq!(memory_owner, source.stored_owner_id());
-        assert_eq!(blob_owner, source.stored_owner_id());
-        assert_eq!(foreign_upload_owner, foreign.stored_owner_id());
+        assert_eq!(memory_owner, source.into_inner());
+        assert_eq!(blob_owner, source.into_inner());
+        assert_eq!(foreign_upload_owner, foreign.into_inner());
         Ok(())
     }
     .await;
@@ -4213,7 +4209,7 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
 async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -4260,7 +4256,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         .bind(moved_to)
         .fetch_one(pool)
         .await?;
-        assert_eq!(dest_owner, dest.stored_owner_id());
+        assert_eq!(dest_owner, dest.into_inner());
         assert_eq!(dest_schema, "core/uploaded-blob-v1");
         assert_eq!(dest_hash, hash, "the dedupe key is the content hash");
 
@@ -4273,7 +4269,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
             .bind(moved_to)
             .fetch_one(pool)
             .await?;
-        assert_eq!(mounted_owner, dest.stored_owner_id());
+        assert_eq!(mounted_owner, dest.into_inner());
         assert_eq!(
             mounted_key, source_key,
             "the mount names the object that already exists; nothing is copied"
@@ -4292,7 +4288,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
                 .await?;
         assert_eq!(
             source_owner,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "a still-cited source row does not change hands"
         );
         let orphaned: i64 = sqlx::query_scalar(
@@ -4300,7 +4296,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
               WHERE blob_id = $1 AND owner_id <> $2",
         )
         .bind(blob_id)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -4325,7 +4321,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
 async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -4350,7 +4346,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         .bind(blob_id)
         .fetch_one(pool)
         .await?;
-        assert_eq!(blob_owner, dest.stored_owner_id());
+        assert_eq!(blob_owner, dest.into_inner());
         assert_eq!(blob_count, 1, "moving in place mints no second row");
 
         let (upload_owner, mounted_from): (Uuid, Option<Uuid>) = sqlx::query_as(
@@ -4360,7 +4356,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         .bind(upload_id)
         .fetch_one(pool)
         .await?;
-        assert_eq!(upload_owner, dest.stored_owner_id());
+        assert_eq!(upload_owner, dest.into_inner());
         assert_eq!(mounted_from, None, "a move is not a mount");
 
         let cited: Option<Uuid> =
@@ -4392,7 +4388,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
 async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -4461,7 +4457,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
 async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let first = destination();
         let second = destination();
@@ -4550,10 +4546,10 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
 async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
     let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
         let pool = pg.pool_for_tests();
+        let dest = registered_destination(pool).await?;
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[15_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
@@ -4581,10 +4577,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 
         // The destination erases. Its row goes; the bytes must not,
         // because the original owner still reads them.
-        let group_id = match dest {
-            OwnerRef::Group(group_id) => group_id,
-            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
-        };
+        let group_id = dest.as_group();
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
             .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
@@ -4607,10 +4600,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         assert_eq!(survivors, 1, "the source's row survives the other's erase");
 
         // Now the last owner goes, and the bytes go with it.
-        let user_id = match owner {
-            OwnerRef::Personal(user_id) => user_id,
-            OwnerRef::Group(_) => panic!("seeded as a personal owner"),
-        };
+        let user_id = owner.as_user();
         let last = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "drop-1".into(),
@@ -4656,10 +4646,10 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() {
     let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
         let pool = pg.pool_for_tests();
+        let dest = registered_destination(pool).await?;
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[17_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
@@ -4698,14 +4688,8 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         .execute(&mut *barrier)
         .await?;
 
-        let group_id = match dest {
-            OwnerRef::Group(group_id) => group_id,
-            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
-        };
-        let user_id = match owner {
-            OwnerRef::Personal(user_id) => user_id,
-            OwnerRef::Group(_) => panic!("seeded as a personal owner"),
-        };
+        let group_id = dest.as_group();
+        let user_id = owner.as_user();
         let group_pg = pg.clone();
         let group_erase = tokio::spawn(async move {
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
@@ -4799,10 +4783,10 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
     let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user_id = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user_id);
+        let owner = OwnerId::from(user_id);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
         let pool = pg.pool_for_tests();
+        let dest = registered_destination(pool).await?;
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[23_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
@@ -4853,7 +4837,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
               WHERE object_key = $1 AND owner_id = $2",
         )
         .bind(&object_key)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(source_rows, 0, "the erased scope's own upload row goes");
@@ -4866,10 +4850,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         // The mount is now the only thing naming the object. When it goes,
         // the object goes: the anti-join withholds keys, it does not leak
         // them.
-        let group_id = match dest {
-            OwnerRef::Group(group_id) => group_id,
-            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
-        };
+        let group_id = dest.as_group();
         let last = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let outcome = pg
             .erase_group_owner(&last, group_id, &contract_sidecar_tables())
@@ -4909,7 +4890,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
 async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_bytes() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
@@ -4989,7 +4970,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
 async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
@@ -5093,7 +5074,7 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
 async fn a_cited_blob_is_held_against_a_concurrent_citation() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 

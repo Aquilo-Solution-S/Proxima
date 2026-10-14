@@ -7,14 +7,14 @@
 mod common;
 
 use common::{migrated_db, test_owner};
-use proxima_core::Owner;
+use proxima_core::OwnerId;
 use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 async fn seed_active_goal(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     assignment_perspective_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
@@ -33,7 +33,7 @@ async fn seed_active_goal(
 
 async fn seed_perspective(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     _label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();

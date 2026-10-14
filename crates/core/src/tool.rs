@@ -10,7 +10,7 @@ use crate::access::AccessKind;
 use crate::authz::TrustedModelIdError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::text_bounds::check_trimmed_len;
-use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, Owner};
+use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, OwnerId};
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -333,7 +333,7 @@ impl ToolCaller {
 
 #[derive(Clone)]
 pub struct ToolCtx {
-    owner: Owner,
+    owner: OwnerId,
     authz: AuthzContext,
     registry: Arc<FlavorRegistryFrozen>,
     caller: Option<ToolCaller>,
@@ -357,7 +357,7 @@ impl std::fmt::Debug for ToolCtx {
 impl ToolCtx {
     #[must_use]
     pub fn new(
-        owner: Owner,
+        owner: OwnerId,
         authz: AuthzContext,
         registry: Arc<FlavorRegistryFrozen>,
         services: ToolServices,
@@ -394,7 +394,7 @@ impl ToolCtx {
 
     #[must_use]
     pub(crate) fn from_parts(
-        owner: Owner,
+        owner: OwnerId,
         authz: AuthzContext,
         registry: Arc<FlavorRegistryFrozen>,
         caller: Option<ToolCaller>,
@@ -414,7 +414,7 @@ impl ToolCtx {
     }
 
     #[must_use]
-    pub fn owner(&self) -> Owner {
+    pub fn owner(&self) -> OwnerId {
         self.owner
     }
 
@@ -945,11 +945,11 @@ mod operator_label_tests {
     use super::{ToolCaller, ToolCtx, ToolError, ToolServices};
     use crate::authz::TrustedModelIdError;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, MAX_OPERATOR_LABEL_CHARS, Owner, OwnerRef, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, MAX_OPERATOR_LABEL_CHARS, OwnerId, UserId,
     };
 
-    fn owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     /// A transport-neutral context shaped the way the MCP blanket impl

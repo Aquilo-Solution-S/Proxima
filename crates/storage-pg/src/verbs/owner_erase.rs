@@ -13,14 +13,12 @@ use proxima_core::storage_ports::{
     HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
     HostStateFactCopyLocator,
 };
-use proxima_core::{
-    ColdObjectStore, GroupId, OwnerRef, OwnerRefKind, SourceId, StorageError, UserId,
-};
+use proxima_core::{ColdObjectStore, GroupId, OwnerId, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::{
     lock_group_membership_tx, lock_owner_fence_exclusive_tx, lock_owner_fence_shared_tx,
-    lock_source_fence_exclusive_tx, owner_binds,
+    lock_source_fence_exclusive_tx,
 };
 use crate::error::{map_err, with_bounded_retry};
 use crate::pg_ident::PgIdent;
@@ -139,18 +137,17 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerRef::Group(group_id);
+    let owner = OwnerId::from(group_id);
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
             let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            lock_group_membership_tx(&mut tx, group_id).await?;
-            if group_member_count(&mut tx, group_id).await? > 0 {
-                return Ok(EraseAttempt::Refused(refused(
-                    auth,
-                    OwnerEraseRefusal::OwnerNotAbandoned,
-                )));
+            if let Some(reason) =
+                erase_precondition(&mut tx, auth, owner, OwnerEraseRefusal::OwnerNotAbandoned)
+                    .await?
+            {
+                return Ok(EraseAttempt::Refused(refused(auth, reason)));
             }
             let cold_purge = erase_selected(
                 &mut tx,
@@ -188,12 +185,18 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerRef::Personal(user_id);
+    let owner = OwnerId::from(user_id);
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
             let mut tx = begin_bulk_erase_tx(pool, platform).await?;
+            if let Some(reason) =
+                erase_precondition(&mut tx, auth, owner, OwnerEraseRefusal::OwnerNotAbandoned)
+                    .await?
+            {
+                return Ok(EraseAttempt::Refused(refused(auth, reason)));
+            }
             let cold_purge = erase_selected(
                 &mut tx,
                 owner,
@@ -220,22 +223,20 @@ pub(crate) async fn erase_group_source_scope_with_lifecycle(
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = auth.audit().owner();
-    let OwnerRef::Group(group_id) = owner else {
-        return Err(StorageError::ConstraintViolation(
-            "group source erase requires group authorization".into(),
-        ));
-    };
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
             let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            lock_group_membership_tx(&mut tx, group_id).await?;
-            if group_member_count(&mut tx, group_id).await? > 0 {
-                return Ok(EraseAttempt::Refused(refused(
-                    auth,
-                    OwnerEraseRefusal::SourceScopeOwnerStillLive,
-                )));
+            if let Some(reason) = erase_precondition(
+                &mut tx,
+                auth,
+                owner,
+                OwnerEraseRefusal::SourceScopeOwnerStillLive,
+            )
+            .await?
+            {
+                return Ok(EraseAttempt::Refused(refused(auth, reason)));
             }
             let cold_purge = erase_selected(
                 &mut tx,
@@ -263,16 +264,21 @@ pub(crate) async fn erase_personal_source_scope_with_lifecycle(
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = auth.audit().owner();
-    if !matches!(owner, OwnerRef::Personal(_)) {
-        return Err(StorageError::ConstraintViolation(
-            "personal source erase requires personal authorization".into(),
-        ));
-    }
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
         async move {
             let mut tx = begin_bulk_erase_tx(pool, platform).await?;
+            if let Some(reason) = erase_precondition(
+                &mut tx,
+                auth,
+                owner,
+                OwnerEraseRefusal::SourceScopeOwnerStillLive,
+            )
+            .await?
+            {
+                return Ok(EraseAttempt::Refused(refused(auth, reason)));
+            }
             let cold_purge = erase_selected(
                 &mut tx,
                 owner,
@@ -333,6 +339,41 @@ async fn finalize_cold_purge(
         host_state_scrubbed,
         cold_object_purge_pending: purge.pending,
     }
+}
+
+/// The erase precondition, decided by the registered kind of the target id
+/// under the membership lock, never by the shape of the caller's request.
+///
+/// A user owner is erased only with the host drop proof the engine verified.
+/// Any other owner (a registered group, or an id never registered) is erased
+/// only once it has no members; `still_live` names that refusal.
+async fn erase_precondition(
+    tx: &mut Tx<'_>,
+    auth: &EraseAuthorization,
+    owner: OwnerId,
+    still_live: OwnerEraseRefusal,
+) -> Result<Option<OwnerEraseRefusal>, StorageError> {
+    let group_id = owner.as_group();
+    lock_group_membership_tx(tx, group_id).await?;
+    let is_user: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+                SELECT 1 FROM proxima_core.owners
+                 WHERE owner_id = $1 AND kind = 'personal'
+            )",
+    )
+    .bind(owner.into_inner())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if is_user {
+        return Ok(
+            (!auth.drop_proof_verified()).then_some(OwnerEraseRefusal::PersonalDropNotVerified)
+        );
+    }
+    if group_member_count(tx, group_id).await? > 0 {
+        return Ok(Some(still_live));
+    }
+    Ok(None)
 }
 
 async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, StorageError> {
@@ -444,10 +485,10 @@ async fn delete_keyed_surfaces(
 async fn delete_owned_surfaces(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     let mut total = 0;
     for surface in surfaces.surfaces() {
         let EraseLeg::Owned { source_scoped } = surfaces.erase_leg(surface.table) else {
@@ -528,7 +569,7 @@ async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> 
 
 async fn erase_selected(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
@@ -588,7 +629,7 @@ async fn erase_selected(
     let blobs = delete_blobs(tx, owner, scope, surfaces).await?;
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
-    sync_selected_heads(tx, owner.stored_owner_id()).await?;
+    sync_selected_heads(tx, owner.into_inner()).await?;
     let mut entries = cold_purge.entries().to_vec();
     entries.extend_from_slice(blobs.cold_purge.entries());
     entries.sort_unstable_by(|a, b| a.object_key.cmp(&b.object_key));
@@ -636,7 +677,7 @@ fn validate_lifecycle_dispatch(
 async fn invoke_host_lifecycle_erase(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
 ) -> Result<(), StorageError> {
@@ -653,32 +694,30 @@ async fn invoke_host_lifecycle_erase(
     .into_iter()
     .map(proxima_core::MemoryId::new)
     .collect();
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     let source_id = match scope {
         SelectionScope::Owner => None,
         SelectionScope::Source(source) => Some(source.as_str()),
     };
-    let original_copies = sqlx::query_as::<_, (OwnerRefKind, uuid::Uuid, uuid::Uuid)>(
-        "SELECT origin.original_owner_kind, origin.original_owner_id, origin.t
+    let original_copies = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
+        "SELECT origin.original_owner_id, origin.t
            FROM proxima_core.publication_origin origin
           WHERE EXISTS (
                     SELECT 1 FROM selected_memories sm
                      WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
                 )
              OR (origin.original_owner_id = $1
-                 AND origin.original_owner_kind = $2
-                 AND ($3::text IS NULL OR origin.source_id = $3))
-          ORDER BY origin.original_owner_kind, origin.original_owner_id, origin.t",
+                 AND ($2::text IS NULL OR origin.source_id = $2))
+          ORDER BY origin.original_owner_id, origin.t",
     )
     .bind(owner_id)
-    .bind(owner_kind)
     .bind(source_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?
     .into_iter()
-    .map(|(kind, owner_id, t)| HostStateFactCopyLocator {
-        original_owner: kind.with_uuid(owner_id),
+    .map(|(owner_id, t)| HostStateFactCopyLocator {
+        original_owner: OwnerId::new(owner_id),
         fact_id: proxima_core::MemoryId::new(t),
     })
     .collect();
@@ -719,7 +758,7 @@ async fn invoke_host_lifecycle_erase(
 pub(crate) async fn invoke_host_lifecycle_exact_erase(
     tx: &mut Tx<'_>,
     context: &crate::PgHostStateEraseContext,
-    owner: OwnerRef,
+    owner: OwnerId,
     physical_facts: &[uuid::Uuid],
 ) -> Result<(), StorageError> {
     validate_lifecycle_dispatch(&context.surfaces, context.lifecycle.as_ref())?;
@@ -766,7 +805,7 @@ pub(crate) async fn invoke_host_lifecycle_exact_erase(
 async fn validate_erase_receipt(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: &HostStateEraseScope,
     selection: &HostStateEraseSelection,
     lifecycle: &crate::RegisteredHostStateLifecycle,
@@ -876,7 +915,7 @@ async fn validate_erase_receipt(
 async fn open_erase_bookkeeping(
     tx: &mut Tx<'_>,
     surfaces: &OwnerSurfaces,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
     // The global lifecycle fence is acquired by `begin_bulk_erase_tx` before
@@ -940,10 +979,10 @@ async fn open_erase_bookkeeping(
 /// scope and copies whose origin and physical selection overlap.
 async fn lock_selected_publication_origins(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     let ids = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT origin.t
            FROM proxima_core.publication_origin origin
@@ -952,12 +991,10 @@ async fn lock_selected_publication_origins(
                      WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
                 )
              OR (origin.original_owner_id = $1
-                 AND origin.original_owner_kind = $2
-                 AND ($3::text IS NULL OR origin.source_id = $3))
+                 AND ($2::text IS NULL OR origin.source_id = $2))
           ORDER BY origin.t",
     )
     .bind(owner_id)
-    .bind(owner_kind)
     .bind(scope.source_bind())
     .fetch_all(&mut **tx)
     .await
@@ -974,10 +1011,10 @@ async fn lock_selected_publication_origins(
 /// removed when their physical Fact is selected.
 async fn revoke_original_publications(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(u64, u64), StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     let source = scope.source_bind();
     let publications = sqlx::query(
         "DELETE FROM proxima_core.publication_outbox outbox
@@ -989,12 +1026,10 @@ async fn revoke_original_publications(
                     SELECT 1 FROM proxima_core.publication_origin origin
                      WHERE origin.t = outbox.t
                        AND origin.original_owner_id = $1
-                       AND origin.original_owner_kind = $2
-                       AND ($3::text IS NULL OR origin.source_id = $3)
+                       AND ($2::text IS NULL OR origin.source_id = $2)
                 )",
     )
     .bind(owner_id)
-    .bind(owner_kind)
     .bind(source)
     .execute(&mut **tx)
     .await
@@ -1007,11 +1042,9 @@ async fn revoke_original_publications(
                      WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
                 )
              OR (origin.original_owner_id = $1
-                 AND origin.original_owner_kind = $2
-                 AND ($3::text IS NULL OR origin.source_id = $3))",
+                 AND ($2::text IS NULL OR origin.source_id = $2))",
     )
     .bind(owner_id)
-    .bind(owner_kind)
     .bind(source)
     .execute(&mut **tx)
     .await
@@ -1065,10 +1098,10 @@ async fn lock_selected_lifecycle_targets(tx: &mut Tx<'_>) -> Result<(), StorageE
 /// then observe the first's deletes.
 async fn lock_selected_object_keys(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     let keys: Vec<String> = match scope {
         SelectionScope::Owner => sqlx::query_scalar(
             "SELECT DISTINCT object_key
@@ -1095,10 +1128,10 @@ async fn lock_selected_object_keys(
 
 async fn create_selected_sets(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    // `owner_id` is NOT NULL on every owned table and `OwnerRef` has no
+    // `owner_id` is NOT NULL on every owned table and `OwnerId` has no
     // id-less kind, so `owner_id` binds non-NULL here and in every erase
     // statement below: plain `=` is exactly `IS NOT DISTINCT FROM` while
     // staying an index condition (`PostgreSQL` has no index strategy for
@@ -1107,7 +1140,7 @@ async fn create_selected_sets(
     // Nothing in this function binds the kind. Every selection here reaches
     // its rows by `owner_id` alone, which is unique across kinds because
     // `proxima_core.owners` refuses a second kind for an id already stored.
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, handle uuid NOT NULL, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -1455,7 +1488,7 @@ async fn assert_selection_fully_deleted(
 /// `t` ever being routed to this primitive by a future caller.
 async fn delete_selected_memories(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
     let result = sqlx::query(
@@ -1465,7 +1498,7 @@ async fn delete_selected_memories(
             AND m.owner_id = $1
             AND ($2::text IS NULL OR m.source_id = $2)",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(scope.source_bind())
     .execute(&mut **tx)
     .await
@@ -1473,14 +1506,14 @@ async fn delete_selected_memories(
     Ok(result.rows_affected())
 }
 
-async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, StorageError> {
+async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerId) -> Result<u64, StorageError> {
     let result = sqlx::query(
         "DELETE FROM proxima_core.goal g
           USING selected_goals s
           WHERE g.t = s.goal_id
             AND g.owner_id = $1",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -1494,10 +1527,10 @@ async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, 
 /// rollback puts back.
 async fn delete_selected_cooled(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(u64, ColdPurgePlan), StorageError> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     // No backend recorded: a cold Memory object is written by the deployment's
     // one wired `ColdObjectStore`, so there is no second store it could be in
     // (see `proxima_core::UNRECORDED_BACKEND`). `cooled` carries no bucket
@@ -1536,7 +1569,7 @@ async fn delete_selected_cooled(
 
 async fn selected_content_ids(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     sqlx::query_scalar(
@@ -1556,7 +1589,7 @@ async fn selected_content_ids(
                 AND c.content_id IS NOT NULL
          ) x",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(scope.source_bind())
     .fetch_all(&mut **tx)
     .await
@@ -1580,8 +1613,8 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
     Ok(result.rows_affected())
 }
 
-async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerId) -> Result<u64, StorageError> {
+    let owner_id = owner.into_inner();
     let result = sqlx::query(
         "DELETE FROM proxima_core.announce a
           WHERE a.owner_id = $1
@@ -1604,26 +1637,21 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
 /// would remain durable in another owner's authority table.
 async fn delete_delegated_authority_grants(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
     if matches!(scope, SelectionScope::Source(_)) {
         return Ok(0);
     }
-    let (owner_kind, owner_id) = owner_binds(&owner);
-    let erased_subject = match owner {
-        OwnerRef::Personal(user_id) => Some(user_id.into_inner()),
-        OwnerRef::Group(_) => None,
-    };
+    // A user's id is also the subject of the grants it was issued: erasing
+    // the owner erases those too. A group's id is never a grant subject.
+    let owner_id = owner.into_inner();
     let result = sqlx::query(
         "DELETE FROM proxima_core.delegated_authority_grants dag
-          WHERE (dag.owner_kind = $1
-                 AND dag.owner_id = $2)
-             OR ($3::uuid IS NOT NULL AND dag.subject_user_id = $3)",
+          WHERE dag.owner_id = $1
+             OR dag.subject_user_id = $1",
     )
-    .bind(owner_kind)
     .bind(owner_id)
-    .bind(erased_subject)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -1643,10 +1671,10 @@ async fn delete_delegated_authority_grants(
 /// attribution, so every wake row remains outside that erase scope.
 async fn delete_wake_configs(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     let result = match scope {
         SelectionScope::Owner => sqlx::query(
             "DELETE FROM proxima_core.wake_config
@@ -1701,11 +1729,11 @@ struct BlobEraseCounts {
 /// going" — [`enqueue_blob_object_keys`] is where that question is asked.
 async fn delete_blobs(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
     surfaces: &OwnerSurfaces,
 ) -> Result<BlobEraseCounts, StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     if matches!(scope, SelectionScope::Source(_)) {
         sqlx::query(
             "DELETE FROM selected_blobs sb
@@ -1850,28 +1878,24 @@ async fn enqueue_blob_object_keys(
 /// a re-provisioned owner/source does not resume from a stale offset.
 async fn delete_source_cursors(
     tx: &mut Tx<'_>,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(&owner);
+    let owner_id = owner.into_inner();
     let result = match scope {
         SelectionScope::Owner => sqlx::query(
             "DELETE FROM proxima_core.source_cursors
-              WHERE owner_kind = $1
-                AND owner_id = $2",
+              WHERE owner_id = $1",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .execute(&mut **tx)
         .await
         .map_err(map_err)?,
         SelectionScope::Source(source_id) => sqlx::query(
             "DELETE FROM proxima_core.source_cursors
-              WHERE owner_kind = $1
-                AND owner_id = $2
-                AND source = $3",
+              WHERE owner_id = $1
+                AND source = $2",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .bind(source_id.as_str())
         .execute(&mut **tx)

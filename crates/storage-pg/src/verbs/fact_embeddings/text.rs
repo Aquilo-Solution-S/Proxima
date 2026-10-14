@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use proxima_core::verbs::schema::MemoryEmbedUnit;
-use proxima_core::{EntityKind, MemoryId, Owner, StorageError};
+use proxima_core::{EntityKind, MemoryId, OwnerId, StorageError};
 use sqlx::{Executor, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ use crate::pg_ident::PgIdent;
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn load_fact_text(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     memory_id: MemoryId,
     units: &[MemoryEmbedUnit],
 ) -> Result<Option<String>, StorageError> {
@@ -33,7 +33,7 @@ pub async fn load_fact_text(
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn load_embedding_text(
     pool: &PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     entity_kind: EntityKind,
     memory_id: MemoryId,
     non_embeddable_schemas: &[String],
@@ -53,7 +53,7 @@ pub async fn load_embedding_text(
 /// Returns storage errors from query execution or invalid stored data.
 pub async fn load_embedding_text_on_connection(
     connection: &mut PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     entity_kind: EntityKind,
     memory_id: MemoryId,
     non_embeddable_schemas: &[String],
@@ -84,7 +84,7 @@ pub async fn load_embedding_text_on_connection(
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn load_embedding_texts(
     pool: &PgPool,
-    items: &[(Owner, EntityKind, MemoryId)],
+    items: &[(OwnerId, EntityKind, MemoryId)],
     non_embeddable_schemas: &[String],
     units: &[MemoryEmbedUnit],
 ) -> Result<Vec<Option<String>>, StorageError> {
@@ -100,7 +100,7 @@ pub async fn load_embedding_texts(
 /// Returns storage errors from query execution or invalid stored data.
 pub async fn load_embedding_texts_on_connection(
     pool: &mut PgConnection,
-    items: &[(Owner, EntityKind, MemoryId)],
+    items: &[(OwnerId, EntityKind, MemoryId)],
     non_embeddable_schemas: &[String],
     units: &[MemoryEmbedUnit],
 ) -> Result<Vec<Option<String>>, StorageError> {
@@ -129,7 +129,7 @@ pub async fn load_embedding_texts_on_connection(
     let mut buckets: HashMap<(String, String, String), Vec<(usize, Uuid)>> = HashMap::new();
     for (index, (owner, _, memory_id)) in items.iter().enumerate() {
         let t = memory_id.into_inner();
-        let Some(schema_id) = schema_by_key.get(&(t, owner.stored_owner_id())) else {
+        let Some(schema_id) = schema_by_key.get(&(t, owner.into_inner())) else {
             continue;
         };
         let Some(unit) = resolve_unit(Some(schema_id.as_str()), non_embeddable_schemas, units)
@@ -191,7 +191,7 @@ pub async fn load_embedding_texts_on_connection(
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn load_fact_text_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     memory_id: MemoryId,
     units: &[MemoryEmbedUnit],
 ) -> Result<Option<String>, StorageError> {
@@ -221,7 +221,7 @@ fn resolve_unit<'a>(
 
 async fn fetch_schema_id<'e, E>(
     exec: E,
-    owner: &Owner,
+    owner: &OwnerId,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError>
 where
@@ -234,7 +234,7 @@ where
             AND m.owner_id = $2",
     )
     .bind(memory_id.into_inner())
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_optional(exec)
     .await
     .map_err(map_err)

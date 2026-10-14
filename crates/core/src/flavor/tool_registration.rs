@@ -287,7 +287,7 @@ mod action_vocabulary_tests {
         McpToolCtx, McpToolError, McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerRef,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerId,
         UserId,
     };
 
@@ -472,7 +472,7 @@ mod action_vocabulary_tests {
     }
 
     pub(super) fn test_ctx() -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),

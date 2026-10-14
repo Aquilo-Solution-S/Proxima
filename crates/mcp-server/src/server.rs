@@ -1030,12 +1030,10 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::{McpAuthorContext, ToolContent};
-    use proxima_core::{
-        AuthzContext, FlavorRegistry, Owner, OwnerRef, ScopeKey, ToolScope, UserId,
-    };
+    use proxima_core::{AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ToolScope, UserId};
 
-    fn fake_owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn fake_owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     #[derive(Debug)]
@@ -1265,7 +1263,7 @@ mod tests {
         ));
 
         // A viewer reads through a read-only host tool and cannot write.
-        let group = OwnerRef::Group(proxima_core::GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(proxima_core::GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner: group,
             authz: AuthzContext::for_subject_with_role(

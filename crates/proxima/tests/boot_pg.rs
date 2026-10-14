@@ -12,8 +12,8 @@ use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload,
-    FlavorRegistry, FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion, ToolScope,
-    UserId,
+    FlavorRegistry, FlavorRegistryError, MemoryId, OwnerId, Role, SchemaId, SchemaVersion,
+    ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 struct GoalTestApp;
 
-fn host_context(owner: Owner, path: AuthPath) -> AuthzContext {
+fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(owner, Role::admin())],
@@ -37,7 +37,7 @@ fn host_context(owner: Owner, path: AuthPath) -> AuthzContext {
 #[derive(Debug)]
 struct TestAuthenticator {
     subject: UserId,
-    owner: Owner,
+    owner: OwnerId,
 }
 
 #[async_trait]
@@ -352,7 +352,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
-        let owner = Owner::Personal(user);
+        let owner = OwnerId::from(user);
         let system = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
 
         let without = Proxima::<GoalTestApp>::app()

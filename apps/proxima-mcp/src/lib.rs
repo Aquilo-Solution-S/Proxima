@@ -604,11 +604,7 @@ fn print_prune_report(
         outcome.events_pruned
     );
     for owner in &outcome.owners {
-        println!(
-            "  {} pruned={}",
-            owner.owner.external_key(),
-            owner.events_pruned
-        );
+        println!("  {} pruned={}", owner.owner, owner.events_pruned);
     }
 }
 

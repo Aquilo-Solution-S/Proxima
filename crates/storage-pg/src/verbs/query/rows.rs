@@ -1,7 +1,7 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{GoalRow, MemoryRow};
 use proxima_core::{
-    GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::PgConnection;
 
@@ -20,7 +20,7 @@ pub(super) fn memory_row_from_db(
         kind: parse_memory_kind(&r.kind)?,
         schema_id,
         schema_version,
-        owner: owner_from_parts(r.owner_kind, r.owner_id)?,
+        owner: owner_from_parts(r.owner_id)?,
         origins: r.origins.into_iter().map(MemoryId::new).collect(),
         refs: r.refs.into_iter().map(MemoryId::new).collect(),
         goal_refs: r.goal_refs.into_iter().map(GoalId::new).collect(),
@@ -33,7 +33,7 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         handle: r.handle,
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
-        owner: owner_from_parts(r.owner_kind, r.owner_id)?,
+        owner: owner_from_parts(r.owner_id)?,
         title: r.title,
         text: r.text,
         state: r.state,
@@ -56,18 +56,10 @@ fn parse_memory_kind(kind: &str) -> Result<proxima_core::change_event::EntityKin
     }
 }
 
-fn owner_from_parts(
-    kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
-) -> Result<Owner, StorageError> {
-    match kind {
-        OwnerRefKind::Personal => owner_id
-            .map(|id| proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)))
-            .ok_or_else(|| StorageError::Internal("personal owner_id missing".into())),
-        OwnerRefKind::Group => owner_id
-            .map(|id| proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)))
-            .ok_or_else(|| StorageError::Internal("group owner_id missing".into())),
-    }
+fn owner_from_parts(owner_id: Option<uuid::Uuid>) -> Result<OwnerId, StorageError> {
+    owner_id
+        .map(OwnerId::new)
+        .ok_or_else(|| StorageError::Internal("owner_id missing".into()))
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -79,7 +71,6 @@ pub(super) struct GoalRowDb {
     /// The time of the series' first version.
     set_at: time::OffsetDateTime,
     schema_id: String,
-    owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     title: String,
     text: Option<String>,
@@ -94,7 +85,6 @@ pub(super) struct MemoryRowDb {
     pub(super) memory_id: uuid::Uuid,
     pub(super) handle: uuid::Uuid,
     pub(super) created_at: time::OffsetDateTime,
-    owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,
     pub(super) sidecar_tables: Vec<String>,

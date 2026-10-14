@@ -786,7 +786,7 @@ mod flat_tool_tests {
     use super::{McpTool, McpUnknownFieldPolicy, prepare_flat_tool_args};
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind};
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerRef, Tool, ToolCtx,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerId, Tool, ToolCtx,
         ToolError, UserId,
     };
 
@@ -832,7 +832,7 @@ mod flat_tool_tests {
 
     #[tokio::test]
     async fn generic_adapter_maps_complete_caller_and_keeps_self_separate() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let caller_self_perspective = MemoryId::new(uuid::Uuid::now_v7());
         let ctx = McpToolCtx {
             owner,

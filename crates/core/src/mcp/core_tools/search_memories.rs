@@ -511,7 +511,7 @@ fn cursor_positions(
         (Some(PageCursor::Ranked(ranked)), MergeKind::Rank) => Ok(lanes
             .iter()
             .map(|lane| {
-                let owner = lane.space.owner.external_key();
+                let owner = lane.space.owner.to_string();
                 ranked
                     .lists
                     .iter()
@@ -531,7 +531,7 @@ fn cursor_positions(
 
 /// One Owner's rows in storage order, with where that list stood.
 struct RankedList {
-    owner: crate::OwnerRef,
+    owner: crate::OwnerId,
     position: ListPosition,
     rows: Vec<RankedMemoryOutput>,
 }
@@ -589,7 +589,7 @@ fn resolve_search_spaces(
         )?]);
     }
     // Dedup by the *resolved* owner, not the raw key: `current` and the
-    // explicit `personal:<uuid>` spelling of the caller's own space both
+    // caller's own bare `<uuid>` spelling of its own space both
     // name the same owner, and searching it twice would return every hit
     // (and its neighbor edges) twice in the merged page.
     let mut seen = std::collections::HashSet::with_capacity(raw_spaces.len());
@@ -754,7 +754,7 @@ fn paginate_rank_fused(
     fingerprint: &str,
 ) -> (Vec<SearchMemoryOutput>, bool, Option<String>) {
     let mut ranked: Vec<(u32, usize, RankedMemoryOutput)> = Vec::new();
-    let mut positions: Vec<(crate::OwnerRef, ListPosition)> = Vec::with_capacity(lists.len());
+    let mut positions: Vec<(crate::OwnerId, ListPosition)> = Vec::with_capacity(lists.len());
     for (index, list) in lists.into_iter().enumerate() {
         let mut rank = list.position.consumed;
         for row in list.rows {
@@ -784,7 +784,7 @@ fn paginate_rank_fused(
             .iter()
             .filter_map(|(owner, position)| {
                 position.after.map(|after| RankedListCursor {
-                    owner: owner.external_key(),
+                    owner: owner.to_string(),
                     after,
                     consumed: position.consumed,
                 })
@@ -885,7 +885,7 @@ fn query_fingerprint(
         .iter()
         .map(|lane| {
             (
-                lane.space.owner.external_key(),
+                lane.space.owner.to_string(),
                 lane.scoring_key().map(ToString::to_string),
             )
         })

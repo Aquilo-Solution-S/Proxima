@@ -9,7 +9,7 @@ use crate::change_event::EntityRef;
 pub use crate::edge::EdgeTargetProjection;
 use crate::edge::{Edge, EdgeKind};
 use crate::verbs::goal_write::GoalState;
-use crate::{GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
+use crate::{GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path.
@@ -164,9 +164,9 @@ impl SearchCursor {
 /// to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     #[serde(skip)]
-    pub read_owners: Vec<OwnerRef>,
+    pub read_owners: Vec<OwnerId>,
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
@@ -268,7 +268,7 @@ pub enum MemoryLineageDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryLineageRequest {
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub start_memory_id: MemoryId,
     pub direction: MemoryLineageDirection,
     pub depth: u8,
@@ -416,7 +416,7 @@ pub struct MemoryRow {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
-    pub owner: Owner,
+    pub owner: OwnerId,
     /// Made-from pins (`memory.origins`). Empty on Facts.
     pub origins: Vec<MemoryId>,
     /// Points-at pins (`memory.refs`).
@@ -452,7 +452,7 @@ pub struct GoalRow {
     /// Version `t` (also [`GoalId`]).
     pub id: GoalId,
     pub schema_id: SchemaId,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub title: String,
     /// The Goal's prompt text as of this version (`goal.text`); `None` when
     /// unknown: a version written before the text was stored whose replay

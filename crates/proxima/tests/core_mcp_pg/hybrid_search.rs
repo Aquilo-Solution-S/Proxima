@@ -7,7 +7,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 async fn remember(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     title: &str,
     body: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -30,7 +30,7 @@ async fn remember(
 async fn search(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     query: &str,
     cursor: Option<&str>,
     floor: Option<f32>,
@@ -58,7 +58,7 @@ async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors()
     let name = split_db.name().to_owned();
     let result: TestResult = async {
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
-        let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         // Admit Facts while the route has no client, so no background job
         // can replace the deliberately distinct vectors below.
         let router = Arc::new(TestEmbeddingRouter::default());
@@ -85,13 +85,13 @@ async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors()
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2::real[]::vector, $3)",
         )
-        .bind(semantic).bind(&vector).bind(owner.stored_owner_id()).execute(&admin).await?;
+        .bind(semantic).bind(&vector).bind(owner.into_inner()).execute(&admin).await?;
         sqlx::query(
             "INSERT INTO proxima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
-        .bind(semantic).bind(owner.stored_owner_id()).execute(&admin).await?;
+        .bind(semantic).bind(owner.into_inner()).execute(&admin).await?;
         router.set_default(BoundEmbeddingClient::bind(test_embedding())?);
 
         for query in [

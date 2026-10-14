@@ -7,7 +7,7 @@ use proxima::{
     AppInfo, FactWrite, FlavorApp, Proxima, ProximaError, QueryRequest, ToolScope, company_owner,
 };
 use proxima_core::{
-    AgentNoteV1, AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, Owner, Role, UserId,
+    AgentNoteV1, AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerId, Role, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -161,7 +161,7 @@ async fn cleanup(fixture: Fixture) {
 /// Boot through the runtime facade, the path `PROXIMA_RUNTIME_GRANTS` takes.
 async fn build(
     fixture: &Fixture,
-    owner: Owner,
+    owner: OwnerId,
     runtime_grants: bool,
     skip_migrations: bool,
 ) -> Result<proxima::BuiltProxima, ProximaError> {
@@ -177,7 +177,7 @@ async fn build(
     app.build().await
 }
 
-fn host_context(owner: Owner) -> AuthzContext {
+fn host_context(owner: OwnerId) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
         UserId::new(Uuid::now_v7()),
         [(owner, Role::admin())],
@@ -261,7 +261,7 @@ async fn assert_runtime_privileges(fixture: &Fixture) {
 
 /// An owner-scoped write and read through the booted engine, under enforced
 /// owner RLS, followed by the storage runtime-role guard itself.
-async fn assert_runtime_serves(fixture: &Fixture, booted: &proxima::BuiltProxima, owner: Owner) {
+async fn assert_runtime_serves(fixture: &Fixture, booted: &proxima::BuiltProxima, owner: OwnerId) {
     let authz = host_context(owner);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),

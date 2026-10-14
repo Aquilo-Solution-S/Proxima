@@ -1,4 +1,4 @@
-use crate::OwnerRef;
+use crate::OwnerId;
 use crate::OwnerScope;
 use crate::read_models::{ActiveGoalSummary, GoalWakeCandidate, GoalWakeCandidateRequest};
 use crate::storage::StorageError;
@@ -59,7 +59,7 @@ pub trait GoalReadPort: Send + Sync {
     async fn list_active_goals(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
@@ -70,7 +70,7 @@ pub trait GoalReadPort: Send + Sync {
     async fn load_goal_wake_configs(
         &self,
         owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerRef],
+        read_owners: &[OwnerId],
         goal_ids: &[crate::GoalId],
     ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError>;
 
@@ -82,7 +82,7 @@ pub trait GoalReadPort: Send + Sync {
     async fn load_goal_evidence(
         &self,
         owner_scope: Option<&OwnerScope>,
-        owner: &OwnerRef,
+        owner: &OwnerId,
         goal_id: crate::GoalId,
     ) -> Result<Option<Vec<crate::MemoryId>>, StorageError>;
 }

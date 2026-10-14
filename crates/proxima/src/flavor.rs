@@ -116,7 +116,7 @@ pub use proxima_core::{
     FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, GoalId,
     GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
-    MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId, OwnerRef,
+    MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId, OwnerId,
     PayloadKeyBuilder, PerspectivePayload, PromptVersion, RequestHeaders, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolId,
     ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint, is_loopback_host,

@@ -17,7 +17,7 @@ pub use crate::migrations::{
     flavor_ledger_table, is_flavor_ledger_id, pending_migrations, preflight_without_migrations,
     run_core_and_flavor_migrations,
 };
-pub use crate::owner_access::ForwarderPolicy;
+pub use crate::owner_access::{ForwarderPolicy, GroupRegistry};
 pub use crate::proxima_host::ProximaHost;
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
@@ -271,10 +271,9 @@ pub use proxima_core::{
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
     FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
-    Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
-    Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, SourceId, StorageError,
-    ToolName, ToolScope, UserId, canonical_json_bytes, env_value, parse_external_key,
-    provider_safe_tool_name,
+    OwnerAccessPort, OwnerId, OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId,
+    ScopeKey, ScopeKeyError, SourceId, StorageError, ToolName, ToolScope, UserId,
+    canonical_json_bytes, env_value, provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
@@ -286,6 +285,18 @@ pub use proxima_mcp_server::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// Owner-registry and membership writes on a host's own transaction.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for each write as it would for a row it inserts itself. The caller's transaction must be platform-scoped
+/// (for example [`PgPlatformScope::begin`]); pass `&mut *tx`. These functions
+/// never begin, commit, roll back, retry or set a scope. The caller retries
+/// its whole transaction on [`StorageError::Retryable`]. All effects follow
+/// from the committed rows; no post-commit action is required.
+pub use proxima_storage_pg::{
+    add_group_member, bootstrap_group_admin, register_group, remove_group_member,
+    remove_group_member_relation, replace_group_member_relation,
+};
 /// Role probes on a host's own transaction (see
 /// [`proxima_storage_pg::roles_for_subject`]): the answers
 /// [`PgOwnerAccessResolver`] gives, with no transaction of their own.

@@ -15,11 +15,11 @@ use proxima_core::storage_ports::{
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    AccessKind, ColdObjectStore, EntityId, GroupId, OwnerRef, SchemaId, SchemaVersion, SourceId,
+    AccessKind, ColdObjectStore, EntityId, GroupId, OwnerId, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -160,7 +160,7 @@ async fn create_citation_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx:
 /// rows hanging off it, cited by one Fact in `source`.
 async fn cite_blob(
     pg: &PgStorage,
-    owner: OwnerRef,
+    owner: OwnerId,
     source: Option<(&str, &str)>,
     seed: u8,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
@@ -170,7 +170,7 @@ async fn cite_blob(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT (owner_id) DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     let blob_id: Uuid = sqlx::query_scalar(
@@ -178,7 +178,7 @@ async fn cite_blob(
          VALUES ($1, 'core/bytes-v1', $2)
          RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![seed; 32])
     .fetch_one(pool)
     .await?;
@@ -189,7 +189,7 @@ async fn cite_blob(
          VALUES ($1, 'bucket', $2, 'cited.pdf', 'application/pdf', 1,
                  'completed', $3, $4, now() + interval '1 hour', now())",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(format!("objects/{seed}"))
     .bind(blob_id)
     .bind(vec![seed; 32])
@@ -220,7 +220,7 @@ async fn cite_blob(
 /// ownership of this blob merely because it is currently unreferenced.
 async fn completed_blob_upload(
     pool: &sqlx::PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     seed: u8,
 ) -> Result<(Uuid, String), Box<dyn std::error::Error>> {
     let blob_id: Uuid = sqlx::query_scalar(
@@ -228,7 +228,7 @@ async fn completed_blob_upload(
          VALUES ($1, 'core/bytes-v1', $2)
          RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![seed; 32])
     .fetch_one(pool)
     .await?;
@@ -240,7 +240,7 @@ async fn completed_blob_upload(
          VALUES ($1, 'bucket', $2, 'unreferenced.pdf', 'application/pdf', 1,
                  'completed', $3, $4, now() + interval '1 hour', now())",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(&object_key)
     .bind(blob_id)
     .bind(vec![seed; 32])
@@ -307,27 +307,12 @@ fn embed_vector() -> pgvector::Vector {
     pgvector::Vector::from(values)
 }
 
-fn owner_kind(owner: OwnerRef) -> &'static str {
-    match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    }
+fn owner_fence_key(owner: OwnerId) -> String {
+    format!("proxima-owner-fence:{}", owner.into_inner())
 }
 
-fn owner_fence_key(owner: OwnerRef) -> String {
-    format!(
-        "proxima-owner-fence:{}:{}",
-        owner_kind(owner),
-        owner.stored_owner_id()
-    )
-}
-
-fn source_fence_key(owner: OwnerRef, source: &str) -> String {
-    format!(
-        "proxima-source-fence:{}:{}:{source}",
-        owner_kind(owner),
-        owner.stored_owner_id()
-    )
+fn source_fence_key(owner: OwnerId, source: &str) -> String {
+    format!("proxima-source-fence:{}:{source}", owner.into_inner())
 }
 
 /// Wait for the exact advisory lock named by a production fence. Looking at
@@ -531,7 +516,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k1"))), None)
@@ -546,7 +531,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         )
         .bind(t)
         .bind(embed_vector())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
@@ -555,11 +540,11 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
              VALUES ($1, 'test-embed', 1024, 2, $2)",
         )
         .bind(t)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let other_written = pg
             .ingest_fact_atomic(&other_permit, &draft(Some(("src", "k-other"))), None)
@@ -701,7 +686,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg.ingest_fact_atomic(&permit, &draft(Some(("src", "k-cooled"))), None).await?;
         let t = written.memory_id.into_inner();
@@ -788,7 +773,7 @@ async fn erase_personal_owner_destroys_wake_config() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
 
         let mut tx = pool.begin().await?;
         let armed = insert_wake_config(&mut tx, &owner, &wake_draft("armed prompt")).await?;
@@ -801,7 +786,7 @@ async fn erase_personal_owner_destroys_wake_config() {
             .await?;
         tx.commit().await?;
 
-        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let mut tx = pool.begin().await?;
         let other_wake = insert_wake_config(&mut tx, &other, &wake_draft("other prompt")).await?;
         tx.commit().await?;
@@ -825,7 +810,7 @@ async fn erase_personal_owner_destroys_wake_config() {
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -881,7 +866,7 @@ async fn erase_source_scope_keeps_all_wake_configs() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         pg.ingest_fact_atomic(&permit, &draft(Some(("src-wake", "k-wake"))), None)
             .await?;
@@ -957,7 +942,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-cold"))), None)
@@ -1013,7 +998,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
@@ -1040,7 +1025,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
              VALUES ('cold/test-second-debt', $1)",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -1129,7 +1114,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
 
@@ -1176,7 +1161,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
         let rows: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(rows, 0, "and the retry finished the erase");
@@ -1208,7 +1193,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
         let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         // Mint the owner row the queue's FK needs.
         pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
@@ -1219,7 +1204,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
              VALUES ('cold/mine', $1, 'wired-bucket'),
                     ('cold/theirs', $1, 'other-bucket')",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -1298,7 +1283,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
@@ -1311,7 +1296,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
                 .fetch_one(pool)
                 .await?;
 
-        let outsider = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let outsider = OwnerId::from(UserId::new(Uuid::now_v7()));
         let outsider_permit = OwnerWritePermit::new_for_tests(outsider, AccessKind::Fact);
         pg.ingest_fact_atomic(&outsider_permit, &draft(None), None)
             .await?;
@@ -1381,7 +1366,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         let pool = pg.pool_for_tests();
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let blob = cite_blob(&pg, owner, Some(("src", "k-blob")), 3).await?;
         // A pending upload names no blob: owner data attributable to no source.
         sqlx::query(
@@ -1390,11 +1375,11 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
              VALUES ($1, 'bucket', 'pending/1', 'draft.pdf', 'application/pdf', 1,
                      now() + interval '1 hour')",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
-        let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
         let neighbour_blob = cite_blob(&pg, neighbour, Some(("src", "k-other")), 5).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
@@ -1419,7 +1404,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         let owner_uploads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(owner_uploads, 0, "no upload row of the owner survives");
@@ -1454,7 +1439,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         let pool = pg.pool_for_tests();
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let kept = cite_blob(&pg, owner, Some(("src-keep", "k-keep")), 7).await?;
         let shared = cite_blob(&pg, owner, Some(("src-drop", "k-shared-drop")), 8).await?;
         let dropped = cite_blob(&pg, owner, Some(("src-drop", "k-drop")), 9).await?;
@@ -1480,7 +1465,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
              VALUES ($1, 'bucket', 'pending/2', 'draft.pdf', 'application/pdf', 1,
                      now() + interval '1 hour')",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
@@ -1544,7 +1529,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
             "SELECT count(*)::bigint FROM proxima_core.blob_uploads
               WHERE owner_id = $1 AND blob_id IS NULL",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -1556,6 +1541,66 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("source-scope blob erase failed");
+}
+
+/// The registry, not the request's shape, decides what an erase needs: a
+/// user's id named through the group path, with no members and no drop
+/// proof, is refused, and its memories stay.
+#[tokio::test]
+async fn erasing_a_users_id_through_the_group_path_without_the_drop_proof_is_refused() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_before_owner_rls_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerId::from(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "u1"))), None)
+            .await?;
+        let t = written.memory_id.into_inner();
+        let as_group = owner.as_group();
+
+        let auth =
+            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: as_group });
+        let outcome = pg
+            .erase_group_owner(&auth, as_group, &contract_sidecar_tables())
+            .await?;
+        let OwnerEraseOutcome::Refused { reason, .. } = outcome else {
+            panic!("expected PersonalDropNotVerified, got {outcome:?}");
+        };
+        assert_eq!(reason, OwnerEraseRefusal::PersonalDropNotVerified);
+
+        let source = SourceId::new("src");
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupSourceScope {
+            group_id: as_group,
+            source_id: source.clone(),
+        });
+        let outcome = pg
+            .erase_group_source_scope(&auth, as_group, &source, &contract_sidecar_tables())
+            .await?;
+        let OwnerEraseOutcome::Refused { reason, .. } = outcome else {
+            panic!("expected PersonalDropNotVerified, got {outcome:?}");
+        };
+        assert_eq!(reason, OwnerEraseRefusal::PersonalDropNotVerified);
+
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(remaining, 1, "a refused erase keeps the user's memories");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("user id through the group path");
 }
 
 #[tokio::test]
@@ -1575,7 +1620,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
         pg.bootstrap_group_admin(group, admin, admin.into_inner())
             .await?;
 
-        let owner = OwnerRef::Group(group);
+        let owner = OwnerId::from(group);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "g1"))), None)
@@ -1628,7 +1673,8 @@ async fn erase_group_owner_completes_when_abandoned() {
         let pool = pg.pool_for_tests();
 
         let group = GroupId::new(Uuid::now_v7());
-        let owner = OwnerRef::Group(group);
+        let owner = OwnerId::from(group);
+        register_group_for_tests(pool, group).await?;
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "g-empty"))), None)
@@ -1707,7 +1753,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let first = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src-old", "k-old"))), None)
@@ -1771,7 +1817,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let target = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src-cool", "k-cool"))), None)
@@ -1780,7 +1826,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
             .ingest_fact_atomic(&permit, &draft(Some(("src-keep", "k-keep"))), None)
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, target.memory_id).await?;
-        let foreign_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let foreign_permit = OwnerWritePermit::new_for_tests(foreign_owner, AccessKind::Fact);
         let mut foreign_source = draft(Some(("foreign", "k-foreign")));
         foreign_source.refs = vec![target.memory_id.into_inner()];
@@ -1889,7 +1935,7 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
+        let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         // A memory, so the erase has something of its own to do and the
         // survival below is not the survival of an empty operation.
@@ -1987,7 +2033,7 @@ async fn owner_erase_includes_a_fact_that_committed_before_its_fence() {
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let seed = pg
             .ingest_fact_atomic(&permit, &draft(Some(("same-source", "seed-owner"))), None)
@@ -2012,21 +2058,11 @@ async fn owner_erase_includes_a_fact_that_committed_before_its_fence() {
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-                user_id: match owner {
-                    OwnerRef::Personal(user_id) => user_id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
+                user_id: owner.as_user(),
                 drop_event_id: "owner-late-fact".into(),
             });
             erase_pg
-                .erase_personal_owner(
-                    &auth,
-                    match owner {
-                        OwnerRef::Personal(user_id) => user_id,
-                        OwnerRef::Group(_) => unreachable!(),
-                    },
-                    &contract_sidecar_tables(),
-                )
+                .erase_personal_owner(&auth, owner.as_user(), &contract_sidecar_tables())
                 .await
         });
         wait_for_ungranted_advisory_label(pool, &owner_fence_key(owner)).await?;
@@ -2081,7 +2117,7 @@ async fn source_erase_includes_a_fact_that_committed_before_its_fence() {
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let seed = pg
             .ingest_fact_atomic(&permit, &draft(Some(("source-race", "seed-source"))), None)
@@ -2106,20 +2142,14 @@ async fn source_erase_includes_a_fact_that_committed_before_its_fence() {
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
-                user_id: match owner {
-                    OwnerRef::Personal(user_id) => user_id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
+                user_id: owner.as_user(),
                 source_id: SourceId::new("source-race"),
                 drop_event_id: "source-late-fact".into(),
             });
             erase_pg
                 .erase_personal_source_scope(
                     &auth,
-                    match owner {
-                        OwnerRef::Personal(user_id) => user_id,
-                        OwnerRef::Group(_) => unreachable!(),
-                    },
+                    owner.as_user(),
                     &SourceId::new("source-race"),
                     &contract_sidecar_tables(),
                 )
@@ -2184,7 +2214,7 @@ async fn source_erase_allows_different_source_admission_while_lifecycle_locked()
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let erased_admission = pg
             .ingest_fact_atomic(&permit, &draft(Some(("source-a", "key-a"))), None)
@@ -2202,20 +2232,14 @@ async fn source_erase_allows_different_source_admission_while_lifecycle_locked()
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
-                user_id: match owner {
-                    OwnerRef::Personal(user_id) => user_id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
+                user_id: owner.as_user(),
                 source_id: SourceId::new("source-a"),
                 drop_event_id: "source-a-erase".into(),
             });
             erase_pg
                 .erase_personal_source_scope(
                     &auth,
-                    match owner {
-                        OwnerRef::Personal(user_id) => user_id,
-                        OwnerRef::Group(_) => unreachable!(),
-                    },
+                    owner.as_user(),
                     &SourceId::new("source-a"),
                     &contract_sidecar_tables(),
                 )
@@ -2288,8 +2312,8 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(
@@ -2318,10 +2342,7 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
 
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
-            let user_id = match owner {
-                OwnerRef::Personal(user_id) => user_id,
-                OwnerRef::Group(_) => unreachable!(),
-            };
+            let user_id = owner.as_user();
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
                 user_id,
                 drop_event_id: "owner-transfer-race".into(),
@@ -2358,13 +2379,13 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(moved_owner, destination.stored_owner_id());
+        assert_eq!(moved_owner, destination.into_inner());
         let destination_head: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(written.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(destination_head, destination.stored_owner_id());
+        assert_eq!(destination_head, destination.into_inner());
         let witness: Option<String> = sqlx::query_scalar(
             "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
         )
@@ -2393,8 +2414,8 @@ async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let written = pg
             .ingest_fact_atomic(
@@ -2423,10 +2444,7 @@ async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
 
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
-            let group_id = match destination {
-                OwnerRef::Group(group_id) => group_id,
-                OwnerRef::Personal(_) => unreachable!(),
-            };
+            let group_id = destination.as_group();
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
             erase_pg
                 .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
@@ -2487,9 +2505,9 @@ async fn destination_source_erase_includes_a_series_transferred_in_before_its_fe
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination_id = GroupId::new(Uuid::now_v7());
-        let destination = OwnerRef::Group(destination_id);
+        let destination = OwnerId::from(destination_id);
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let source_id = SourceId::new("destination-source-race");
         let written = pg
@@ -2575,7 +2593,7 @@ async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
     let (db_name, pg) = fresh_owner_erase_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let seed = pg
             .ingest_fact_atomic(&permit, &draft(Some(("goal-seed", "goal-seed-key"))), None)
@@ -2597,10 +2615,7 @@ async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
 
         let erase_pg = pg.clone();
         let erase = tokio::spawn(async move {
-            let user_id = match owner {
-                OwnerRef::Personal(user_id) => user_id,
-                OwnerRef::Group(_) => unreachable!(),
-            };
+            let user_id = owner.as_user();
             let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
                 user_id,
                 drop_event_id: "owner-late-goal".into(),

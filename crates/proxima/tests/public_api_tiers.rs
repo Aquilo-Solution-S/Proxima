@@ -56,7 +56,7 @@ fn host_api_imports_from_root() {
     assert_send_sync::<proxima::DelegationIssued>();
     assert_send_sync::<proxima::DelegatedPhase>();
     assert_send_sync::<proxima::DelegatedAuthorityService>();
-    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let owner: proxima::OwnerId = proxima::company_owner(uuid::Uuid::nil());
     let _authz: proxima::AuthzContext = proxima::AuthzContext::denied_for_owner(&owner);
     let _narrowed = proxima::AuthzContext::denied_for_owner(&owner).narrowed_to_owner(owner);
     let _cursor: proxima::Cursor = proxima::Cursor::empty();
@@ -87,7 +87,7 @@ impl proxima::HostStateCommand for HostStateTierCommand {
         &[proxima::StateSurfaceName::new("tier.table")];
     type Outcome = ();
 
-    fn owner(&self) -> proxima::Owner {
+    fn owner(&self) -> proxima::OwnerId {
         proxima::company_owner(uuid::Uuid::nil())
     }
 }
@@ -340,7 +340,7 @@ fn host_api_can_build_a_search_read_request() {
     // sanctioned way to query it. Constructing the request rather than
     // merely naming the types means a field added or retyped upstream
     // breaks here instead of at some flavor's next pin bump.
-    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let owner: proxima::OwnerId = proxima::company_owner(uuid::Uuid::nil());
     let request = proxima::SearchReadRequest {
         search: proxima::MemorySearchRequest {
             owner,
@@ -476,8 +476,7 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
         SCHEMA.id
     );
 
-    let owner =
-        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil()));
+    let owner = proxima::flavor::OwnerId::from(proxima::flavor::UserId::new(uuid::Uuid::nil()));
     let memory = proxima::flavor::MemoryId::new(uuid::Uuid::now_v7());
     let goal = proxima::flavor::GoalId::new(uuid::Uuid::now_v7());
     let topology = GoalTopologyWrite::new(
@@ -772,9 +771,11 @@ fn host_api_exposes_role_for_authenticated_adapters() {
     // group context. Without `Role` on the host facade the constructor's
     // parameter type is unnameable. Delegated workers use `DelegatedPhase`
     // instead of constructing this context themselves.
-    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let owner: proxima::OwnerId = proxima::company_owner(uuid::Uuid::nil());
+    // The subject is a different id from the group: an owner id equal to the
+    // subject's own is its personal owner and takes no override.
     let _authz: proxima::AuthzContext = proxima::AuthzContext::for_subject_with_role(
-        proxima::UserId::new(uuid::Uuid::nil()),
+        proxima::UserId::new(uuid::Uuid::max()),
         [(owner, proxima::Role::admin())],
         proxima::AuthPath::HostBearer,
     );
@@ -784,8 +785,8 @@ fn host_api_exposes_role_for_authenticated_adapters() {
     let ceiling = proxima::AccessCeiling::Fact;
     let role = proxima::Role::new(ceiling, ceiling, false).expect("write <= read");
     assert!(role.may_write(proxima::AccessKind::Fact));
-    let user = proxima::UserId::new(uuid::Uuid::nil());
-    let group = proxima::OwnerRef::Group(proxima::GroupId::new(uuid::Uuid::nil()));
+    let user = proxima::UserId::new(uuid::Uuid::max());
+    let group = proxima::OwnerId::from(proxima::GroupId::new(uuid::Uuid::nil()));
     let _roles = proxima::OwnerRoles::for_subject(user, [(group, role)]).expect("group roles");
     let _: Option<proxima::AccessError> = None;
 }
@@ -824,7 +825,7 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
         MemoryTarget, OperatorId, SeriesHandle,
     };
 
-    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let owner: proxima::OwnerId = proxima::company_owner(uuid::Uuid::nil());
     let derived = MemoryId::new(uuid::Uuid::nil());
     let source_fact = MemoryId::new(uuid::Uuid::nil());
 
@@ -1126,21 +1127,19 @@ fn host_names_mcp_catalog_descriptor_types() {
 }
 
 #[test]
-fn host_api_can_name_the_owner_ref_discriminant() {
-    // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Uuid)`.
-    // Every flavor with its own tables calls it to bind owner columns, and
-    // could only ever pass the result straight into a query — the moment one
-    // wants to store it, return it, or match on it, the type has no name.
+fn host_api_binds_an_owner_as_its_bare_id() {
+    // A flavor with its own tables binds an owner as one uuid column. The
+    // id is the whole identity: a user and a group with one uuid are one
+    // owner, and the kind lives only in the core registry.
     let group = proxima::GroupId::new(uuid::Uuid::nil());
-    let (kind, id) = proxima::OwnerRef::Group(group).columns();
-    assert_eq!(kind, proxima::OwnerRefKind::Group);
-    assert_eq!(id, uuid::Uuid::nil());
-
     let user = proxima::UserId::new(uuid::Uuid::nil());
-    let (kind, id) = proxima::OwnerRef::Personal(user).columns();
-    assert_eq!(kind, proxima::OwnerRefKind::Personal);
-    assert_eq!(id, uuid::Uuid::nil());
-    assert_eq!(kind.with_uuid(id), proxima::OwnerRef::Personal(user));
+    assert_eq!(
+        proxima::OwnerId::from(group).into_inner(),
+        uuid::Uuid::nil()
+    );
+    assert_eq!(proxima::OwnerId::from(user), proxima::OwnerId::from(group));
+    let parsed: proxima::OwnerId = uuid::Uuid::nil().to_string().parse().expect("bare uuid");
+    assert_eq!(parsed, proxima::OwnerId::from(user));
 }
 
 #[test]
@@ -1369,8 +1368,8 @@ impl proxima::flavor::OwnerResolver for TierOwnerResolver {
     fn resolve(
         &self,
         _authz: &proxima::AuthzContext,
-        requested: &proxima::Owner,
-    ) -> Result<proxima::Owner, proxima::ProtocolError> {
+        requested: &proxima::OwnerId,
+    ) -> Result<proxima::OwnerId, proxima::ProtocolError> {
         Ok(*requested)
     }
 }
@@ -1384,7 +1383,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
     assert_hook::<dyn AuthorizationHook>();
     assert_resolver::<dyn OwnerResolver>();
 
-    let owner = proxima::Owner::Personal(proxima::UserId::new(uuid::Uuid::nil()));
+    let owner = proxima::OwnerId::from(proxima::UserId::new(uuid::Uuid::nil()));
     let authz = proxima::AuthzContext::single_owner(&owner, proxima::AuthPath::System);
     let input = proxima::flavor::AuthzInput {
         authz: &authz,
@@ -1424,7 +1423,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         state: "Present".into(),
     };
     let _cite = proxima::flavor::FactWrite::new(
-        proxima::flavor::OwnerRef::Personal(proxima::flavor::UserId::new(uuid::Uuid::nil())),
+        proxima::flavor::OwnerId::from(proxima::flavor::UserId::new(uuid::Uuid::nil())),
         "test/src",
         &fact,
     )

@@ -82,6 +82,17 @@ pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;
+/// Owner-registry and membership writes on a caller's platform transaction.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for these writes as for its own rows. No transaction control, scope setting or retry runs; the caller
+/// retries its whole transaction. All effects follow from committed rows.
+pub use access::owner_columns::{
+    add_group_member_on_connection as add_group_member,
+    bootstrap_group_admin_on_connection as bootstrap_group_admin, register_group,
+    remove_group_member_on_connection as remove_group_member,
+    remove_group_member_relation_on_connection as remove_group_member_relation,
+    replace_group_member_relation_on_connection as replace_group_member_relation,
+};
 /// Role probes on a caller's connection (see [`access::roles_for_subject`]):
 /// what the resolver answers, for a host that already holds a transaction.
 pub use access::{group_role, roles_for_subject};
@@ -2595,7 +2606,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26,
+                24, 25, 26, 27,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \

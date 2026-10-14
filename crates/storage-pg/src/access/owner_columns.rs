@@ -1,13 +1,13 @@
-//! Direct `OwnerRef` column helpers.
+//! Direct `OwnerId` column helpers.
 
 use proxima_core::flavor::TransferLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::scope::ScopeKind;
 use proxima_core::{
-    AccessKind, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError,
-    UserId,
+    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use uuid::Uuid;
 
 /// One cross-process boundary shared by every host-capable `UoW` and exclusive
 /// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
@@ -48,35 +48,30 @@ pub(crate) async fn lock_host_lifecycle_fence_shared_session(
 
 pub(crate) async fn lock_owner_fence_exclusive_session(
     conn: &mut sqlx::postgres::PgConnection,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences_session(conn, std::slice::from_ref(owner), true).await
 }
 
 async fn lock_owner_fences_session(
     conn: &mut sqlx::postgres::PgConnection,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
     exclusive: bool,
 ) -> Result<(), StorageError> {
     if owners.is_empty() {
         return Ok(());
     }
-    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
-    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
-    keys.dedup();
-    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
-    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let ids = owner_fence_ids(owners);
     let query = if exclusive {
         sqlx::query(
-            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
         )
     } else {
         sqlx::query(
-            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)) FROM unnest($1::text[], $2::uuid[]) AS f(k, i)",
+            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
         )
     };
     query
-        .bind(&kinds)
         .bind(&ids)
         .execute(&mut *conn)
         .await
@@ -89,15 +84,18 @@ use crate::verbs::fact_embeddings::{
     RouteSpaces, enqueue_series_head_in_tx, purge_series_embedding_spaces_in_tx,
 };
 
-#[must_use]
-pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
-    owner.columns()
+/// Sorted, deduplicated owner UUIDs: the canonical order every multi-owner
+/// fence acquisition takes.
+fn owner_fence_ids(owners: &[OwnerId]) -> Vec<uuid::Uuid> {
+    let mut ids: Vec<uuid::Uuid> = owners.iter().map(|owner| owner.into_inner()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 /// The owner admission fence is a distinct advisory-lock namespace from
-/// lifecycle keys and Memory series handles.  Its key includes the owner kind
-/// as well as the UUID: an identity accidentally reused across owner kinds
-/// must not share a serialization lane. Memory, Goal and wake admission hold
+/// lifecycle keys and Memory series handles. Its key is the owner id alone
+/// (`proxima-owner-fence:<uuid>`): one id is one owner. Memory, Goal and wake admission hold
 /// this lock in shared mode. Source-scoped erase also holds it shared while
 /// taking its source fence exclusively; whole-owner erase takes the
 /// single-owner fence exclusively. Multi-owner transfers use the separate
@@ -109,7 +107,7 @@ pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
 /// advisory lock.
 pub async fn lock_owner_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, std::slice::from_ref(owner), false).await
 }
@@ -122,7 +120,7 @@ pub async fn lock_owner_fence_shared_tx(
 /// with the move.
 pub(crate) async fn lock_owner_fences_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, owners, false).await
 }
@@ -130,7 +128,7 @@ pub(crate) async fn lock_owner_fences_shared_tx(
 /// Acquire an exclusive owner fence for the whole-owner erase boundary.
 pub(crate) async fn lock_owner_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, std::slice::from_ref(owner), true).await
 }
@@ -145,22 +143,22 @@ pub(crate) async fn lock_owner_fence_exclusive_tx(
 /// from forming an owner-fence cycle.
 pub(crate) async fn lock_owner_fences_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
 ) -> Result<(), StorageError> {
     lock_owner_fences(tx, owners, true).await
 }
 
 const LOCK_OWNER_FENCES_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
-           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+           hashtextextended('proxima-owner-fence:' || i::text, 0)
        )
-  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+  FROM unnest($1::uuid[]) AS f(i)";
 
 const LOCK_OWNER_FENCES_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
-           hashtextextended('proxima-owner-fence:' || k || ':' || i::text, 0)
+           hashtextextended('proxima-owner-fence:' || i::text, 0)
        )
-  FROM unnest($1::text[], $2::uuid[]) AS f(k, i)";
+  FROM unnest($1::uuid[]) AS f(i)";
 
 /// The one owner-fence acquisition. The four entry points above differ only in
 /// arity and lock mode; the key, the ordering rule and the bind chain are
@@ -172,21 +170,16 @@ SELECT pg_advisory_xact_lock(
 /// the same reasoning written on `forget::lock_advisory_ids_tx`: a bare
 /// `Function Scan` yields elements in array order, and both lock functions are
 /// `VOLATILE` + `PARALLEL RESTRICTED`, so the projection is evaluated once per
-/// element, in order. Two parallel arrays carry the key because it spans kind
-/// and id, and `unnest` over several arrays advances them together.
+/// element, in order.
 async fn lock_owner_fences(
     tx: &mut Transaction<'_, Postgres>,
-    owners: &[OwnerRef],
+    owners: &[OwnerId],
     exclusive: bool,
 ) -> Result<(), StorageError> {
     if owners.is_empty() {
         return Ok(());
     }
-    let mut keys: Vec<(OwnerRefKind, uuid::Uuid)> = owners.iter().map(owner_binds).collect();
-    keys.sort_unstable_by_key(|(kind, id)| (kind.as_str(), *id));
-    keys.dedup();
-    let kinds: Vec<&str> = keys.iter().map(|(kind, _)| kind.as_str()).collect();
-    let ids: Vec<uuid::Uuid> = keys.iter().map(|(_, id)| *id).collect();
+    let ids = owner_fence_ids(owners);
     let sql = if exclusive {
         LOCK_OWNER_FENCES_EXCLUSIVE_SQL
     } else {
@@ -194,7 +187,6 @@ async fn lock_owner_fences(
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
-        .bind(&kinds)
         .bind(&ids)
         .execute(&mut **tx)
         .await
@@ -206,7 +198,7 @@ async fn lock_owner_fences(
 /// the key, so a source label shared by two owners never serializes them.
 pub(crate) async fn lock_source_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<(), StorageError> {
     lock_source_fence(tx, owner, source, false).await
@@ -216,7 +208,7 @@ pub(crate) async fn lock_source_fence_shared_tx(
 /// owner's shared fence, preserving owner -> source ordering.
 pub(crate) async fn lock_source_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
 ) -> Result<(), StorageError> {
     lock_source_fence(tx, owner, source, true).await
@@ -224,22 +216,21 @@ pub(crate) async fn lock_source_fence_exclusive_tx(
 
 const LOCK_SOURCE_FENCE_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
-           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+           hashtextextended('proxima-source-fence:' || $1::text || ':' || $2, 0)
        )";
 
 const LOCK_SOURCE_FENCE_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
-           hashtextextended('proxima-source-fence:' || $1 || ':' || $2::text || ':' || $3, 0)
+           hashtextextended('proxima-source-fence:' || $1::text || ':' || $2, 0)
        )";
 
 /// One key, one bind chain; only the lock function differs by mode.
 async fn lock_source_fence(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     source: &str,
     exclusive: bool,
 ) -> Result<(), StorageError> {
-    let (kind, owner_id) = owner_binds(owner);
     let sql = if exclusive {
         LOCK_SOURCE_FENCE_EXCLUSIVE_SQL
     } else {
@@ -247,8 +238,7 @@ async fn lock_source_fence(
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
-        .bind(kind.as_str())
-        .bind(owner_id)
+        .bind(owner.into_inner())
         .bind(source)
         .execute(&mut **tx)
         .await
@@ -267,7 +257,7 @@ async fn lock_source_fence(
 /// separates a scope's erase from a write into that same scope. This key
 /// does.
 ///
-/// Key: `proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`.
+/// Key: `proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`.
 /// The scope KIND leads because two flavors' scopes must not collide on a
 /// shared uuid, and the owner portion is repeated for the reason the source
 /// fence repeats it: a scope id that somehow appeared under two owners must
@@ -283,7 +273,7 @@ async fn lock_source_fence(
 const LOCK_SCOPE_FENCE_SHARED_SQL: &str = "\
 SELECT pg_advisory_xact_lock_shared(
            hashtextextended(
-               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               'proxima-scope-fence:' || $1 || ':' || $2::text || ':' || $3::text,
                0
            )
        )";
@@ -291,7 +281,7 @@ SELECT pg_advisory_xact_lock_shared(
 const LOCK_SCOPE_FENCE_EXCLUSIVE_SQL: &str = "\
 SELECT pg_advisory_xact_lock(
            hashtextextended(
-               'proxima-scope-fence:' || $1 || ':' || $2 || ':' || $3::text || ':' || $4::text,
+               'proxima-scope-fence:' || $1 || ':' || $2::text || ':' || $3::text,
                0
            )
        )";
@@ -309,7 +299,7 @@ SELECT pg_advisory_xact_lock(
 pub async fn lock_scope_fence_shared_tx(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_scope_fence(tx, kind, owner, scope_id, false).await
@@ -330,7 +320,7 @@ pub async fn lock_scope_fence_shared_tx(
 pub async fn lock_scope_fence_exclusive_tx(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     lock_scope_fence(tx, kind, owner, scope_id, true).await
@@ -343,11 +333,10 @@ pub async fn lock_scope_fence_exclusive_tx(
 async fn lock_scope_fence(
     tx: &mut Transaction<'_, Postgres>,
     kind: ScopeKind,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     scope_id: uuid::Uuid,
     exclusive: bool,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
     let sql = if exclusive {
         LOCK_SCOPE_FENCE_EXCLUSIVE_SQL
     } else {
@@ -356,8 +345,7 @@ async fn lock_scope_fence(
     // SQL-POLICY: fixed-fragment
     sqlx::query(sql)
         .bind(kind.as_str())
-        .bind(owner_kind.as_str())
-        .bind(owner_id)
+        .bind(owner.into_inner())
         .bind(scope_id)
         .execute(&mut **tx)
         .await
@@ -449,54 +437,104 @@ pub(crate) async fn blob_upload_object_keys(
     .map_err(map_err)
 }
 
-/// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
+/// Register `owner` in `proxima_core.owners` if it is not registered yet.
 ///
-/// The only production owners upsert. Memory / goal / wake / citation /
-/// cited-blob writes all go through this so an `owner_id` reused under a
-/// different kind cannot silently keep the first kind.
+/// The only production owners upsert on the data path. Memory / goal / wake /
+/// citation / cited-blob writes all go through this. A group is registered
+/// when it is created (`register_group`), so an id a write reaches unregistered
+/// is a user seen for the first time and is registered as `personal`. A
+/// registered id keeps the kind it was registered with: the registry is never
+/// rewritten from a write.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
 ///
 /// # Errors
 ///
-/// [`StorageError::ConstraintViolation`] when `owner_id` already exists
-/// with a different kind. Other storage errors from the upsert.
+/// Storage errors from the upsert.
 pub async fn ensure_owner_row(
     conn: &mut sqlx::PgConnection,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<uuid::Uuid, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let owner_kind = OwnerRefKind::of(owner).as_str();
-    // Two statements: `owners` is append-only (no UPDATE), and a CTE that
-    // `DO NOTHING` then SELECTs shares one snapshot — a concurrent first
-    // insert waits, then neither arm sees the committed row (`RowNotFound`
-    // on complete_upload under concurrency). The SELECT is a new statement
-    // so it sees the row the waiter just conflicted with.
-    let inserted: Option<String> = sqlx::query_scalar(
+    let owner_id = owner.into_inner();
+    // `owners` is append-only (no UPDATE): a concurrent first insert waits
+    // on the conflict, then does nothing.
+    sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING
-         RETURNING kind::text",
+         VALUES ($1, 'personal')
+         ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner_id)
-    .bind(owner_kind)
-    .fetch_optional(&mut *conn)
+    .execute(&mut *conn)
     .await
     .map_err(map_err)?;
-    let existing = match inserted {
-        Some(kind) => kind,
-        None => {
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-                .bind(owner_id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(map_err)?
-        }
-    };
-    if existing != owner_kind {
-        return Err(StorageError::ConstraintViolation(
-            "owners.kind conflict for owner_id".into(),
-        ));
-    }
     Ok(owner_id)
+}
+
+/// Register `group` as a group, eagerly, when it is created.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// [`StorageError::Conflict`] when the id is already registered as a user.
+/// Other storage errors from the upsert.
+pub async fn register_group(conn: &mut PgConnection, group: GroupId) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group).await?;
+    insert_group_row(conn, group).await?;
+    if registered_group_on_connection(conn, group).await? {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict(
+            "owner id is registered as a user, not a group".into(),
+        ))
+    }
+}
+
+async fn insert_group_row(conn: &mut PgConnection, group: GroupId) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// Whether `group` is registered as a group in `proxima_core.owners`.
+///
+/// One of the three readers of the registry's kind: the forwarder policy asks
+/// it through [`crate::PgOwnerAccessResolver::is_registered_group`].
+///
+/// # Errors
+///
+/// Storage errors from the probe.
+pub(crate) async fn registered_group_on_connection(
+    conn: &mut sqlx::PgConnection,
+    group: GroupId,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.owners
+              WHERE owner_id = $1 AND kind = 'group'
+         )",
+    )
+    .bind(group.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)
 }
 
 /// # Errors
@@ -504,11 +542,9 @@ pub async fn ensure_owner_row(
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn resolve_membership<'e>(
     executor: impl sqlx::PgExecutor<'e>,
-    owner: &OwnerRef,
+    owner: &OwnerId,
 ) -> Result<Vec<MembershipRow>, StorageError> {
-    let OwnerRef::Personal(user) = owner else {
-        return Ok(Vec::new());
-    };
+    let user = owner.as_user();
 
     let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
         "SELECT group_id, relation
@@ -530,18 +566,74 @@ pub(crate) async fn resolve_membership<'e>(
         .collect())
 }
 
+/// The subject kind and the memberships visible to one resolution probe.
+/// The kind is read in the same query as the memberships so a group-shaped
+/// subject is refused without a second round trip.
+pub(crate) struct SubjectMemberships {
+    pub(crate) subject_is_group: bool,
+    pub(crate) memberships: Vec<MembershipRow>,
+}
+
+/// Resolve a subject's registered kind and memberships in one query.
+/// `group` narrows the membership rows for the point probe used by
+/// `group_role`; `None` enumerates every group for `roles_for_subject`.
+///
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn resolve_subject_membership(
+    conn: &mut sqlx::PgConnection,
+    subject: UserId,
+    group: Option<GroupId>,
+) -> Result<SubjectMemberships, StorageError> {
+    let rows: Vec<(bool, Option<uuid::Uuid>, Option<Relation>)> = sqlx::query_as(
+        "WITH subject AS (
+             SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.owners
+                  WHERE owner_id = $1 AND kind = 'group'
+             ) AS subject_is_group
+         )
+         SELECT subject.subject_is_group, memberships.group_id, memberships.relation
+           FROM subject
+           LEFT JOIN proxima_core.group_memberships AS memberships
+             ON memberships.member_user_id = $1
+            AND ($2::uuid IS NULL OR memberships.group_id = $2)
+          ORDER BY memberships.group_id, memberships.relation",
+    )
+    .bind(subject.into_inner())
+    .bind(group.map(GroupId::into_inner))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_err)?;
+
+    let subject_is_group = rows.first().is_some_and(|(is_group, _, _)| *is_group);
+    let memberships = rows
+        .into_iter()
+        .filter_map(|(_, group, relation)| {
+            Some(MembershipRow {
+                group: GroupId::new(group?),
+                relation: relation?,
+            })
+        })
+        .collect();
+    Ok(SubjectMemberships {
+        subject_is_group,
+        memberships,
+    })
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
 pub(crate) async fn lock_group_membership_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     group_id: GroupId,
 ) -> Result<(), StorageError> {
     sqlx::query(
         "SELECT pg_advisory_xact_lock(hashtextextended('proxima-group-membership:' || $1::text, 0))",
     )
     .bind(group_id.into_inner())
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await
     .map_err(map_err)?;
     Ok(())
@@ -563,41 +655,68 @@ pub(crate) async fn bootstrap_group_admin(
             Some(scope) => scope.begin().await?,
             None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
         };
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        let inserted = sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             SELECT $1, $2, $3
-              WHERE NOT EXISTS (
-                  SELECT 1
-                    FROM proxima_core.group_memberships
-                   WHERE group_id = $1
-                     AND relation = $3
-              )",
-        )
-        .bind(group_id.into_inner())
-        .bind(first_admin_user_id.into_inner())
-        .bind(Relation::Admin)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-
-        if inserted.rows_affected() == 0 {
-            tx.rollback().await.map_err(map_err)?;
-            return Err(StorageError::Conflict(
-                "group already has an Admin membership".into(),
-            ));
-        }
-
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            bootstrap_group_admin_on_connection(&mut tx, group_id, first_admin_user_id).await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
 }
 
+/// Register a group and seed its first Admin; refuse an existing Admin.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
 /// # Errors
 ///
-/// Returns `Internal` on sqlx failure.
+/// Returns [`StorageError::Conflict`] if an Admin exists or the group id is
+/// registered as a user (the membership foreign key); other database failures
+/// are classified as [`StorageError`].
+pub async fn bootstrap_group_admin_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    first_admin_user_id: UserId,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    insert_group_row(conn, group_id).await?;
+    let inserted = sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         SELECT $1, $2, $3
+          WHERE NOT EXISTS (
+              SELECT 1
+                FROM proxima_core.group_memberships
+               WHERE group_id = $1
+                 AND relation = $3
+          )",
+    )
+    .bind(group_id.into_inner())
+    .bind(first_admin_user_id.into_inner())
+    .bind(Relation::Admin)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+
+    if inserted.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "group already has an Admin membership".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Adding a member to an id never seen before creates the group, so the
+/// id is registered as a group first.
+///
+/// # Errors
+///
+/// [`StorageError::Conflict`] when the id is registered as a user: a
+/// membership names a group, never a user. `Internal` on sqlx failure.
 pub(crate) async fn add_group_member(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
@@ -609,23 +728,48 @@ pub(crate) async fn add_group_member(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(relation)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            add_group_member_on_connection(&mut tx, group_id, member_user_id, relation).await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Register an unseen group and add a relation; an existing relation stays.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if the group id is registered as a user
+/// (the membership foreign key); other database failures are classified as
+/// [`StorageError`].
+pub async fn add_group_member_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    insert_group_row(conn, group_id).await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(relation)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// # Errors
@@ -640,21 +784,41 @@ pub(crate) async fn remove_group_member(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result = remove_group_member_on_connection(&mut tx, group_id, member_user_id).await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Remove every relation of a member in a group; an absent member is `Ok`.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] for database failures.
+pub async fn remove_group_member_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// Delete the one `relation` row of `member_user_id` in `group_id`, under the
@@ -673,23 +837,46 @@ pub(crate) async fn remove_group_member_relation(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2
-                AND relation = $3",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(relation)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        let result =
+            remove_group_member_relation_on_connection(&mut tx, group_id, member_user_id, relation)
+                .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Remove one relation of a member in a group; an absent relation is `Ok`.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] for database failures.
+pub async fn remove_group_member_relation_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    relation: Relation,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2
+            AND relation = $3",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(relation)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// Replace the `from` row of `member_user_id` in `group_id` with a `to` row in
@@ -715,41 +902,71 @@ pub(crate) async fn replace_group_member_relation(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        lock_group_membership_tx(&mut tx, group_id).await?;
-        let deleted = sqlx::query(
-            "DELETE FROM proxima_core.group_memberships
-              WHERE group_id = $1
-                AND member_user_id = $2
-                AND relation = $3",
+        let result = replace_group_member_relation_on_connection(
+            &mut tx,
+            group_id,
+            member_user_id,
+            from,
+            to,
         )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(from)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        if deleted.rows_affected() == 0 {
-            tx.rollback().await.map_err(map_err)?;
-            return Err(StorageError::Conflict(
-                "member does not hold the relation being replaced".into(),
-            ));
-        }
-        sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
-                (group_id, member_user_id, relation)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
-        )
-        .bind(group_id.into_inner())
-        .bind(member_user_id.into_inner())
-        .bind(to)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-        tx.commit().await.map_err(map_err)?;
-        Ok(())
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
+}
+
+/// Replace a held relation with another; an existing target relation stays.
+///
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
+/// The caller must supply a platform-scoped transaction (`&mut *tx`). This
+/// function never begins, commits, rolls back, retries or sets a scope; on a
+/// retryable error, the caller retries its whole transaction. All effects are
+/// database rows in that transaction; no post-commit call is needed.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Conflict`] if the member does not hold `from`, with
+/// nothing changed. Other database failures are classified as [`StorageError`];
+/// the caller must roll back the transaction on failure.
+pub async fn replace_group_member_relation_on_connection(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member_user_id: UserId,
+    from: Relation,
+    to: Relation,
+) -> Result<(), StorageError> {
+    lock_group_membership_tx(conn, group_id).await?;
+    let deleted = sqlx::query(
+        "DELETE FROM proxima_core.group_memberships
+          WHERE group_id = $1
+            AND member_user_id = $2
+            AND relation = $3",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(from)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    if deleted.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "member does not hold the relation being replaced".into(),
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO proxima_core.group_memberships
+            (group_id, member_user_id, relation)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+    )
+    .bind(group_id.into_inner())
+    .bind(member_user_id.into_inner())
+    .bind(to)
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 /// True iff `member_user_id` currently holds exactly `relation` on `group_id`.
@@ -766,24 +983,6 @@ pub(crate) async fn has_group_relation_on_connection(
     relation: Relation,
 ) -> Result<bool, StorageError> {
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 AND relation = $3)").bind(group_id.into_inner()).bind(member_user_id.into_inner()).bind(relation).fetch_one(&mut *conn).await.map_err(map_err)
-}
-
-/// Every relation `member_user_id` holds on `group_id`, in the order
-/// [`resolve_membership`] enumerates them — one probe on the primary key
-/// instead of the member's whole membership. The caller folds these through
-/// the same [`OwnerRoles`](proxima_core::OwnerRoles) path as the full
-/// enumeration, so the answer is byte-identical to the eager map's and
-/// bounded by one group whatever the member's fan-out.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub(crate) async fn group_relations_for_member_on_connection(
-    conn: &mut PgConnection,
-    group_id: GroupId,
-    member_user_id: UserId,
-) -> Result<Vec<Relation>, StorageError> {
-    sqlx::query_scalar("SELECT relation FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation").bind(group_id.into_inner()).bind(member_user_id.into_inner()).fetch_all(&mut *conn).await.map_err(map_err)
 }
 
 /// # Errors
@@ -862,8 +1061,8 @@ pub(crate) async fn list_group_members_page<'e>(
 pub(crate) async fn visible_home_owner<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
-    read_owners: &[OwnerRef],
-) -> Result<Option<(OwnerRef, AccessKind)>, StorageError> {
+    read_owners: &[OwnerId],
+) -> Result<Option<(OwnerId, AccessKind)>, StorageError> {
     if read_owners.is_empty() {
         return Ok(None);
     }
@@ -871,14 +1070,14 @@ pub(crate) async fn visible_home_owner<'e>(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     // The entity discriminant is authorization data. Memory visibility spans
     // the hot spine and the cooled identity table, while Goal visibility stays
     // on its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
-    let row: Option<(OwnerRefKind, uuid::Uuid, String)> = match entity {
+    let row: Option<(uuid::Uuid, String)> = match entity {
         EntityId::Memory(memory_id) => {
             sqlx::query_as(
                 "WITH candidates AS (
@@ -886,9 +1085,8 @@ pub(crate) async fn visible_home_owner<'e>(
                      UNION
                      SELECT owner_id, kind FROM proxima_core.cooled WHERE t = $1
                  )
-                 SELECT o.kind::text::proxima_core.owner_kind, c.owner_id, c.kind::text
+                 SELECT c.owner_id, c.kind::text
                    FROM candidates c
-                   JOIN proxima_core.owners o ON o.owner_id = c.owner_id
                   WHERE c.owner_id = ANY($2::uuid[])
                     AND NOT EXISTS (
                         SELECT 1
@@ -903,9 +1101,8 @@ pub(crate) async fn visible_home_owner<'e>(
         }
         EntityId::Goal(goal_id) => {
             sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id, 'goal'
+                "SELECT g.owner_id, 'goal'
                FROM proxima_core.goal g
-               JOIN proxima_core.owners o ON o.owner_id = g.owner_id
               WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])",
             )
             .bind(goal_id.into_inner())
@@ -916,7 +1113,7 @@ pub(crate) async fn visible_home_owner<'e>(
     }
     .map_err(map_err)?;
 
-    row.map(|(owner_kind, id, kind)| Ok((owner_kind.with_uuid(id), access_kind(&kind)?)))
+    row.map(|(id, kind)| Ok((OwnerId::new(id), access_kind(&kind)?)))
         .transpose()
 }
 
@@ -982,7 +1179,7 @@ pub(crate) async fn transfer_to_owner(
     permit: &proxima_core::storage_ports::OwnerWritePermit,
     surfaces: &OwnerSurfaces,
     entity: EntityId,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let from_owner = *permit.owner();
@@ -1005,7 +1202,7 @@ pub(crate) async fn transfer_to_owner(
             "transfer destination is the current owner".into(),
         ));
     }
-    let from_id = from_owner.stored_owner_id();
+    let from_id = from_owner.into_inner();
     with_bounded_retry(move || async move {
         let mut tx =
             crate::platform_scope::begin_owner_lifecycle_transaction(pool, platform, permit)
@@ -1079,7 +1276,7 @@ async fn transfer_memory_t(
     surfaces: &OwnerSurfaces,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
@@ -1165,6 +1362,152 @@ async fn lock_series_membership(
     Ok(actual)
 }
 
+/// The database's closed upload lifecycle, shared by staging and publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(
+    type_name = "proxima_core.blob_upload_status",
+    rename_all = "lowercase"
+)]
+pub enum UploadStatus {
+    Pending,
+    Completed,
+    Aborted,
+    Expired,
+}
+
+/// The result of publishing a staged upload against its cited object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishTransitionDecision {
+    WonPending,
+    AlreadyFinished,
+    OvertookTerminal,
+}
+
+/// Classify a locked upload publication result.
+///
+/// # Errors
+/// Refuses contradictory object identities or affected-row counts.
+pub fn finish_transition_decision(
+    observed_status: UploadStatus,
+    observed_cited_object_id: Option<Uuid>,
+    cited_object_id: Uuid,
+    rows_affected: u64,
+) -> Result<FinishTransitionDecision, StorageError> {
+    match rows_affected {
+        1 => Ok(FinishTransitionDecision::WonPending),
+        0 => match observed_status {
+            UploadStatus::Completed if observed_cited_object_id == Some(cited_object_id) => {
+                Ok(FinishTransitionDecision::AlreadyFinished)
+            }
+            UploadStatus::Completed => Err(StorageError::ConstraintViolation(
+                "upload already completed against a different cited object".into(),
+            )),
+            UploadStatus::Aborted | UploadStatus::Expired => {
+                Ok(FinishTransitionDecision::OvertookTerminal)
+            }
+            UploadStatus::Pending => Err(StorageError::ConstraintViolation(
+                "upload finish did not transition pending row".into(),
+            )),
+        },
+        other => Err(StorageError::ConstraintViolation(format!(
+            "upload finish affected {other} rows"
+        ))),
+    }
+}
+
+/// Publish an upload on the caller's transaction; return its cleanup bucket.
+///
+/// Shared by cited Fact admission and direct blob-port completion. Takes the
+/// owner fence, canonical-key fence and row lock in that order, verifies the
+/// staged hash against the owner-scoped cited object, and settles the row.
+/// Completed replays perform no write. No transaction control or S3 I/O.
+///
+/// # Errors
+/// Refuses absent uploads, unstaged or mismatched bytes, and contradictory
+/// completed objects. Database faults retain their storage error class.
+pub async fn complete_upload_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &OwnerId,
+    upload_id: Uuid,
+    cited_object_id: Uuid,
+) -> Result<String, StorageError> {
+    let key = proxima_core::citations::uploaded_blob_object_key(upload_id);
+    crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
+    crate::access::owner_columns::lock_object_keys_tx(tx, std::slice::from_ref(&key)).await?;
+    let (bucket, status, blob_id, hash): (String, UploadStatus, Option<Uuid>, Option<Vec<u8>>) =
+        sqlx::query_as(
+            "SELECT bucket, status, blob_id, content_hash
+               FROM proxima_core.blob_uploads
+              WHERE owner_id = $1 AND upload_id = $2
+              FOR UPDATE",
+        )
+        .bind(owner.into_inner())
+        .bind(upload_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?
+        .ok_or_else(|| StorageError::ConstraintViolation("upload not found for Owner".into()))?;
+
+    match status {
+        UploadStatus::Completed => {
+            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
+            return Ok(bucket);
+        }
+        UploadStatus::Aborted | UploadStatus::Expired => {
+            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
+        }
+        UploadStatus::Pending => {}
+    }
+    let hash = hash
+        .as_deref()
+        .filter(|hash| hash.len() == 32)
+        .ok_or_else(|| {
+            StorageError::ConstraintViolation(
+                "upload has no exact staged content identity; restage before finish".into(),
+            )
+        })?;
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT content_hash FROM proxima_core.blob
+          WHERE blob_id = $1 AND owner_id = $2
+            AND schema_id = $3 AND content_hash = $4
+          FOR SHARE",
+    )
+    .bind(cited_object_id)
+    .bind(owner.into_inner())
+    .bind(proxima_core::UPLOADED_BLOB_SCHEMA_ID)
+    .bind(hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "cited object does not match the staged upload content identity".into(),
+        )
+    })?;
+
+    let changed = sqlx::query(
+        "UPDATE proxima_core.blob_uploads
+            SET object_key = $1, status = 'completed', blob_id = $2, completed_at = now()
+          WHERE owner_id = $3 AND upload_id = $4 AND status = $5",
+    )
+    .bind(key)
+    .bind(cited_object_id)
+    .bind(owner.into_inner())
+    .bind(upload_id)
+    .bind(status)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    finish_transition_decision(status, blob_id, cited_object_id, changed)?;
+    if changed != 1 {
+        return Err(StorageError::ConstraintViolation(
+            "late upload finish did not transition terminal row".into(),
+        ));
+    }
+    Ok(bucket)
+}
+
 /// Refuse a transfer while upload publication can still attach one of this
 /// series' cited blobs to its source-owned locator.
 async fn ensure_series_uploads_published(
@@ -1172,17 +1515,17 @@ async fn ensure_series_uploads_published(
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    // A staged upload is still an unpublished completion. The Fact
-    // transaction can commit before `finish_upload` records that completion;
-    // moving the cited blob in that window would leave the source upload row
-    // behind and let its later finish point at a destination-owned blob.
+    // Staged rows can still await publication by a direct blob-port caller
+    // or an older host. Engine completion publishes its upload row in the
+    // Fact transaction. Refuse a transfer while another staged row could
+    // later attach this blob under the source owner.
     // The ordinary fence is identity- and series-scoped: an abandoned prepare
     // has no content identity, and an unrelated staged upload cannot claim
     // this series. The one exception is a row staged before 0007: it has a
     // canonical locator and SHA-256 witness but no BLAKE3 column to relate it
     // to a cited blob. That ambiguous upgrade state must fence the owner until
     // a completion retry re-hashes it; otherwise transfer can move the Fact's
-    // blob before finish attaches the source upload row.
+    // blob before completion attaches the source upload row.
     let unpublished_upload: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -1266,7 +1609,7 @@ async fn transfer_memory_handle(
     requested_t: uuid::Uuid,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    to_owner: OwnerRef,
+    to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
     // The destination's `owners` row is not seeded anywhere, so mint it (or
@@ -2119,17 +2462,16 @@ async fn transfer_content_for_handle(
 pub(crate) async fn home_owner<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     entity: EntityId,
-) -> Result<Option<OwnerRef>, StorageError> {
+) -> Result<Option<OwnerId>, StorageError> {
     // The entity discriminant is authorization data, exactly as in
     // `visible_home_owner`. A union over both spines on the bare uuid lets a
     // caller relabel a Memory as a Goal (or vice versa) and resolve the owner
     // space off the wrong spine, so each arm asks its own spine only.
-    let row: Option<(OwnerRefKind, uuid::Uuid)> = match entity {
+    let row: Option<uuid::Uuid> = match entity {
         EntityId::Memory(memory_id) => {
-            sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+            sqlx::query_scalar(
+                "SELECT m.owner_id
                FROM proxima_core.memory m
-               JOIN proxima_core.owners o ON o.owner_id = m.owner_id
               WHERE m.t = $1",
             )
             .bind(memory_id.into_inner())
@@ -2137,10 +2479,9 @@ pub(crate) async fn home_owner<'e>(
             .await
         }
         EntityId::Goal(goal_id) => {
-            sqlx::query_as(
-                "SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+            sqlx::query_scalar(
+                "SELECT g.owner_id
                FROM proxima_core.goal g
-               JOIN proxima_core.owners o ON o.owner_id = g.owner_id
               WHERE g.t = $1",
             )
             .bind(goal_id.into_inner())
@@ -2150,7 +2491,7 @@ pub(crate) async fn home_owner<'e>(
     }
     .map_err(map_err)?;
 
-    Ok(row.map(|(kind, id)| kind.with_uuid(id)))
+    Ok(row.map(OwnerId::new))
 }
 
 #[cfg(test)]

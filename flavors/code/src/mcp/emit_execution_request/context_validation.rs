@@ -4,7 +4,7 @@ use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use uuid::Uuid;
 
-use super::super::sql::{map_storage, owner_columns};
+use super::super::sql::map_storage;
 use super::super::{code_store, engine};
 
 /// Is this `repo_handle` a repository this owner has?
@@ -17,7 +17,7 @@ use super::super::{code_store, engine};
 /// its handle/`t` locks because every payload these tools write declares
 /// the scope — see [`crate::repos::fence`].
 pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), ToolError> {
-    let (owner_kind, owner_id) = owner_columns(&ctx.owner());
+    let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
     let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
         .await
@@ -26,12 +26,10 @@ pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), To
         "SELECT EXISTS(
              SELECT 1
              FROM proxima_code.repos
-             WHERE owner_kind = $1
-               AND owner_id = $2
-               AND repo_id = $3
+             WHERE owner_id = $1
+               AND repo_id = $2
          )",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(repo_id)
     .fetch_one(&mut *tx)

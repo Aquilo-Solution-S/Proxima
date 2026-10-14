@@ -154,10 +154,10 @@ fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
 #[test]
 fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
     use proxima::flavor::{McpPresentationExt, ToolCaller, ToolCtx, ToolServices};
-    use proxima::host::{AuthPath, AuthzContext, McpToolPresentation, MemoryId, Owner, UserId};
+    use proxima::host::{AuthPath, AuthzContext, McpToolPresentation, MemoryId, OwnerId, UserId};
 
     let registry = std::sync::Arc::new(FlavorRegistry::new().try_freeze().unwrap());
-    let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let ctx = ToolCtx::new(
         owner,
         AuthzContext::single_owner(&owner, AuthPath::System),

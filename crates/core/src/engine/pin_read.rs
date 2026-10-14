@@ -10,7 +10,7 @@ use crate::storage_ports::{InboundPinQuery, MemoryReadHandle};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadCursor, EdgeReadRequest, EdgeReadResponse,
 };
-use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerRef, OwnerScope};
+use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerId, OwnerScope};
 
 use super::errors::internal_storage_error;
 
@@ -74,7 +74,7 @@ fn entity_id(entity: Option<EntityRef>) -> Option<uuid::Uuid> {
 async fn resolve_visible_goal_refs(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     nodes: &mut [PinNode],
 ) -> Result<(), ProtocolError> {
     // Only the ids storage typed as Goals are candidates. Before the pin
@@ -186,7 +186,7 @@ fn project_hop_edge(hop: &PinHop, visible: &HashMap<MemoryId, EntityKind>) -> Ed
 async fn load_visible(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     ids: &[MemoryId],
 ) -> Result<HashMap<MemoryId, EntityKind>, ProtocolError> {
     if ids.is_empty() {
@@ -203,7 +203,7 @@ async fn load_visible(
 pub(in crate::engine) async fn read_edges_from_nodes(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, ProtocolError> {
     if matches!(req.filter.source, Some(EntityRef::Goal(_))) {
@@ -260,7 +260,7 @@ pub(in crate::engine) async fn read_edges_from_nodes(
 pub(in crate::engine) async fn edge_exists_from_nodes(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
     let read = EdgeReadRequest {
@@ -306,7 +306,7 @@ fn matching_hops(
 async fn load_incoming_sources(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     target: MemoryId,
     target_filter: EntityRef,
     req: &EdgeReadRequest,
@@ -369,7 +369,7 @@ async fn load_incoming_sources(
 pub(in crate::engine) async fn neighbor_edges_from_nodes(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     memory_ids: &[MemoryId],
     limit: usize,
 ) -> Result<Vec<Edge>, ProtocolError> {
@@ -445,7 +445,7 @@ mod tests {
     use crate::storage_ports::{InboundPinQuery, MemoryReadPort};
     use crate::verbs::query::{EdgeFilter, EdgeReadRequest};
     use crate::{
-        EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, MemoryId, OwnerRef, StorageError,
+        EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, MemoryId, OwnerId, StorageError,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -531,7 +531,7 @@ mod tests {
         async fn load_fact_text(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _owner: &crate::Owner,
+            _owner: &crate::OwnerId,
             _memory_id: MemoryId,
         ) -> Result<Option<String>, StorageError> {
             Ok(None)
@@ -550,7 +550,7 @@ mod tests {
         async fn load_sketches(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
             Ok(Vec::new())
@@ -559,7 +559,7 @@ mod tests {
         async fn load_pin_nodes(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             memory_ids: &[MemoryId],
         ) -> Result<Vec<PinNode>, StorageError> {
             Ok(self
@@ -573,7 +573,7 @@ mod tests {
         async fn load_visible_goal_ids(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             goal_ids: &[crate::GoalId],
         ) -> Result<Vec<crate::GoalId>, StorageError> {
             self.goal_probes
@@ -590,7 +590,7 @@ mod tests {
         async fn load_inbound_pin_nodes(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             query: InboundPinQuery<'_>,
         ) -> Result<Vec<PinNode>, StorageError> {
             Ok(self.inbound(query))
@@ -599,7 +599,7 @@ mod tests {
         async fn query_memories(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             _req: &crate::verbs::query::QueryRequest,
             _schemas: &[crate::read_models::MemorySchemaSpec],
         ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
@@ -609,7 +609,7 @@ mod tests {
         async fn count_memories(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
         ) -> Result<crate::read_models::MemoryCounts, StorageError> {
             Err(StorageError::Internal("unused".into()))
         }
@@ -626,7 +626,7 @@ mod tests {
         async fn walk_memory_lineage(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerRef],
+            _read_owners: &[OwnerId],
             _req: &crate::verbs::query::MemoryLineageRequest,
         ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
             Err(StorageError::Internal("unused".into()))
@@ -635,7 +635,7 @@ mod tests {
         async fn owned_series_handle(
             &self,
             _scope: Option<&crate::OwnerScope>,
-            _owner: crate::Owner,
+            _owner: crate::OwnerId,
             _schema_id: &crate::SchemaId,
             _sidecar_table: &str,
             _columns: &[(&str, crate::verbs::query::SidecarAtom)],
@@ -644,8 +644,8 @@ mod tests {
         }
     }
 
-    fn hub_fixture(n: usize) -> (OwnerRef, MemoryId, Arc<FakePins>) {
-        let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+    fn hub_fixture(n: usize) -> (OwnerId, MemoryId, Arc<FakePins>) {
+        let owner = OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7()));
         let hub = MemoryId::new(uuid::Uuid::now_v7());
         let mut nodes = vec![PinNode {
             id: hub,

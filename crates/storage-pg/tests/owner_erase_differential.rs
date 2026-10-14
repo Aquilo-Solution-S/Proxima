@@ -116,7 +116,7 @@ use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::{
-    AccessKind, AgentNoteV1, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    AccessKind, AgentNoteV1, ColdObjectStore, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -199,7 +199,7 @@ const FIXTURE_GOAL_HANDLES: [Uuid; 3] = [
 /// to name a configuration or the port refuses it. Nothing in this baseline
 /// reads it — the corpus writes under an unregistered `schema_id` and so
 /// projects nowhere (see the module docs) — but the port is entitled to ask.
-fn authorized(owner: OwnerRef, mut draft: FactWriteCommand) -> AuthorizedFactWrite {
+fn authorized(owner: OwnerId, mut draft: FactWriteCommand) -> AuthorizedFactWrite {
     draft.lexical_language =
         Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
     AuthorizedFactWrite::new_for_tests(
@@ -211,7 +211,7 @@ fn authorized(owner: OwnerRef, mut draft: FactWriteCommand) -> AuthorizedFactWri
 }
 
 fn authorized_with_sidecars(
-    owner: OwnerRef,
+    owner: OwnerId,
     draft: FactWriteCommand,
     sidecars: &[SidecarPayload],
 ) -> AuthorizedFactWrite {
@@ -225,7 +225,7 @@ fn authorized_with_sidecars(
 /// the witness, exactly as in production — so a corpus that carries the plan
 /// carries the real thing. Two admissions get one: the target's, which an
 /// owner erase must destroy, and the neighbour's, which it must not touch.
-fn published(owner: OwnerRef, note: &str, write: AuthorizedFactWrite) -> AuthorizedFactWrite {
+fn published(owner: OwnerId, note: &str, write: AuthorizedFactWrite) -> AuthorizedFactWrite {
     let source = PublicationSource::new("urn:proxima:owner-differential")
         .expect("a URN is an absolute source");
     write.with_publication_for_tests(PublicationPlan::new(
@@ -269,17 +269,12 @@ fn call(actor_upn: &str) -> SidecarPayload {
     })
 }
 
-async fn owner_row(pool: &PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
-    let kind = match owner {
-        OwnerRef::Personal(_) => "personal",
-        OwnerRef::Group(_) => "group",
-    };
+async fn owner_row(pool: &PgPool, owner: OwnerId) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT (owner_id) DO NOTHING",
+         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT (owner_id) DO NOTHING",
     )
-    .bind(owner.stored_owner_id())
-    .bind(kind)
+    .bind(owner.into_inner())
     .execute(pool)
     .await?;
     Ok(())
@@ -292,8 +287,8 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     let pool = pg.pool_for_tests();
     let target = UserId::new(Uuid::now_v7());
     let neighbour = UserId::new(Uuid::now_v7());
-    let owner = OwnerRef::Personal(target);
-    let other = OwnerRef::Personal(neighbour);
+    let owner = OwnerId::from(target);
+    let other = OwnerId::from(neighbour);
     owner_row(pool, owner).await?;
     owner_row(pool, other).await?;
 
@@ -305,7 +300,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![21u8; 32])
     .fetch_one(pool)
     .await?;
@@ -313,7 +308,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![22u8; 32])
     .fetch_one(pool)
     .await?;
@@ -321,35 +316,35 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
-    .bind(other.stored_owner_id())
+    .bind(other.into_inner())
     .bind(vec![22u8; 32])
     .fetch_one(pool)
     .await?;
     for (blob_id, owner_id, key, status, has_blob) in [
         (
             Some(blob),
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "objects/cited",
             "completed",
             true,
         ),
         (
             Some(mounted),
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "objects/mounted",
             "completed",
             true,
         ),
         (
             Some(neighbour_blob),
-            other.stored_owner_id(),
+            other.into_inner(),
             "objects/mounted",
             "completed",
             true,
         ),
         (
             None,
-            owner.stored_owner_id(),
+            owner.into_inner(),
             "objects/pending",
             "pending",
             false,
@@ -484,7 +479,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2) RETURNING content_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![11u8; 32])
     .fetch_one(pool)
     .await?;
@@ -492,7 +487,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2) RETURNING content_id",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(vec![12u8; 32])
     .fetch_one(pool)
     .await?;
@@ -500,7 +495,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2)",
     )
-    .bind(other.stored_owner_id())
+    .bind(other.into_inner())
     .bind(vec![13u8; 32])
     .execute(pool)
     .await?;
@@ -559,9 +554,9 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .bind(t)
         .bind(embed_vector())
         .bind(if t == tn {
-            other.stored_owner_id()
+            other.into_inner()
         } else {
-            owner.stored_owner_id()
+            owner.into_inner()
         })
         .execute(pool)
         .await?;
@@ -572,9 +567,9 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         )
         .bind(t)
         .bind(if t == tn {
-            other.stored_owner_id()
+            other.into_inner()
         } else {
-            owner.stored_owner_id()
+            owner.into_inner()
         })
         .execute(pool)
         .await?;
@@ -595,7 +590,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
              VALUES ($1, 'fact_schema', 'core/test-fact-v1', ARRAY['core.remember'], $2)
              RETURNING wake_id",
         )
-        .bind(owner_ref.stored_owner_id())
+        .bind(owner_ref.into_inner())
         .bind(prompt)
         .fetch_one(pool)
         .await?;
@@ -604,7 +599,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
              VALUES ($1, 'core/task-goal-v1', $2, $1)",
         )
         .bind(goal_handle)
-        .bind(owner_ref.stored_owner_id())
+        .bind(owner_ref.into_inner())
         .execute(pool)
         .await?;
         let goal_t: Uuid = sqlx::query_scalar(
@@ -613,7 +608,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
              VALUES ($1, $1, $2, 'a goal', 'Active', $3, $4) RETURNING t",
         )
         .bind(goal_handle)
-        .bind(owner_ref.stored_owner_id())
+        .bind(owner_ref.into_inner())
         .bind(request)
         .bind(wake_id)
         .fetch_one(pool)
@@ -631,7 +626,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
              VALUES ($1, $2, 'goal', 'goal sketch')",
         )
         .bind(goal_t)
-        .bind(owner_ref.stored_owner_id())
+        .bind(owner_ref.into_inner())
         .execute(pool)
         .await
         .ok();
@@ -641,15 +636,11 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     for (owner_ref, source) in [(owner, "src-a"), (owner, "src-b"), (other, "src-a")] {
         sqlx::query(
             "INSERT INTO proxima_core.source_cursors
-                 (owner_kind, owner_id, source, cursor, updated_at)
-             VALUES ($1::proxima_core.owner_kind, $2, $3, $4,
+                 (owner_id, source, cursor, updated_at)
+             VALUES ($1, $2, $3,
                      TIMESTAMPTZ '2026-03-03 00:00:00Z')",
         )
-        .bind(match owner_ref {
-            OwnerRef::Personal(_) => "personal",
-            OwnerRef::Group(_) => "group",
-        })
-        .bind(owner_ref.stored_owner_id())
+        .bind(owner_ref.into_inner())
         .bind(source)
         .bind(vec![51u8; 8])
         .execute(pool)
@@ -658,19 +649,15 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     for (subject, holder) in [(target, owner), (target, other), (neighbour, other)] {
         sqlx::query(
             "INSERT INTO proxima_core.delegated_authority_grants
-                 (delegation_id, subject_user_id, owner_kind, owner_id, tool_name,
+                 (delegation_id, subject_user_id, owner_id, tool_name,
                   read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
-             VALUES ($1, $2, $3::proxima_core.owner_kind, $4, 'core_remember',
+             VALUES ($1, $2, $3, 'core_remember',
                      'fact', 'fact', TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
                      TIMESTAMPTZ '2026-01-01 00:00:00Z')",
         )
         .bind(Uuid::now_v7())
         .bind(subject.into_inner())
-        .bind(match holder {
-            OwnerRef::Personal(_) => "personal",
-            OwnerRef::Group(_) => "group",
-        })
-        .bind(holder.stored_owner_id())
+        .bind(holder.into_inner())
         .execute(pool)
         .await?;
     }

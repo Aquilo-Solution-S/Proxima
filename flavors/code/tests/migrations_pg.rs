@@ -129,8 +129,6 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         for (table, column) in [
-            ("repos", "owner_kind"),
-            ("repo_ingestion_runs", "owner_kind"),
             ("repo_ingestion_runs", "status"),
             ("repo_ingestion_runs", "stage"),
             ("file_revision_v1", "state"),
@@ -177,7 +175,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .await?;
         assert_eq!(
             org_cols.0, 0,
-            "legacy owner org column must be absent from proxima_code after Owner=OwnerRef collapse; found {}",
+            "legacy owner org column must be absent from proxima_code after Owner=OwnerId collapse; found {}",
             org_cols.0
         );
 
@@ -289,13 +287,28 @@ async fn flavor_migrations_apply_to_fresh_db() {
     result.expect("flavor_migrations_apply_to_fresh_db failed");
 }
 
-/// `OwnerRef` has no id-less kind, so the flavor's owner columns carry the
+/// `OwnerId` has no id-less kind, so the flavor's owner columns carry the
 /// invariant as plain NOT NULL rather than a shape/world CHECK pair.
 async fn assert_owner_ref_constraints(
     pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for table in ["repos", "repo_ingestion_runs"] {
-        for column in ["owner_kind", "owner_id"] {
+        // The owner is its bare id: the kind lives only in the core registry.
+        let kind_columns: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_code'
+                AND table_name = $1
+                AND column_name = 'owner_kind'",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            kind_columns, 0,
+            "proxima_code.{table} carries no owner_kind"
+        );
+        for column in ["owner_id"] {
             let nullable: String = sqlx::query_scalar(
                 "SELECT is_nullable
                    FROM information_schema.columns

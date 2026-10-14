@@ -22,7 +22,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::{
     AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalId, GoalPayload, InputContractId,
-    ModelId, OperatorId, OwnerRef, PendingWork, PromptVersion, SchemaId, SchemaVersion,
+    ModelId, OperatorId, OwnerId, PendingWork, PromptVersion, SchemaId, SchemaVersion,
     SimpleTextGoalV1, StorageError, ToolId, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -112,7 +112,7 @@ fn wake_on(
 }
 
 fn decompose_request<'a>(
-    owner: OwnerRef,
+    owner: OwnerId,
     parent_goal_id: proxima_core::GoalId,
     registry: &'a proxima_core::FlavorRegistryFrozen,
     assignment: proxima_core::MemoryId,
@@ -150,7 +150,7 @@ fn decompose_request<'a>(
 }
 
 fn active_draft(
-    owner: OwnerRef,
+    owner: OwnerId,
     assignment: proxima_core::MemoryId,
     request_id: &str,
     title: &str,
@@ -197,7 +197,7 @@ fn assert_exact_replay(first: &GoalWriteOutcome, replay: &GoalWriteOutcome) {
 
 async fn erase_target(
     pg: &PgStorage,
-    owner: &OwnerRef,
+    owner: &OwnerId,
     target: proxima_core::MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = pg.pool_for_tests().begin().await?;
@@ -215,7 +215,7 @@ async fn erase_target(
 
 type ReplayState = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
 
-async fn replay_state(pg: &PgStorage, owner: OwnerRef) -> Result<ReplayState, sqlx::Error> {
+async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sqlx::Error> {
     sqlx::query_as(
         "SELECT
             (SELECT count(*)::bigint FROM proxima_core.goal WHERE owner_id = $1),
@@ -231,7 +231,7 @@ async fn replay_state(pg: &PgStorage, owner: OwnerRef) -> Result<ReplayState, sq
             (SELECT count(*)::bigint FROM proxima_core.memory_head WHERE owner_id = $1),
             (SELECT count(*)::bigint FROM proxima_core.task_goal_v1)",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(pg.pool_for_tests())
     .await
 }
@@ -243,7 +243,7 @@ async fn replay_state(pg: &PgStorage, owner: OwnerRef) -> Result<ReplayState, sq
 async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let mut listenable = FlavorRegistry::new();
         listenable.publish_goal_changes();
@@ -403,7 +403,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
 async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
@@ -1005,7 +1005,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
 async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let assignment = ingest_grounded_perspective(&pg, &permit).await?;
@@ -1104,7 +1104,7 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
 async fn a_goal_without_a_replay_declaration_fails_closed() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let assignment = ingest_grounded_perspective(&pg, &permit).await?;

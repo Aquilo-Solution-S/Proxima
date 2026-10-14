@@ -96,7 +96,7 @@ pub(super) async fn prepare_goal_insert<'a>(
             "SELECT handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
         )
         .bind(prior.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_optional(&mut **tx)
         .await
         .map_err(crate::error::map_err)?;

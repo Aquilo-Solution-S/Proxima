@@ -7,7 +7,7 @@ mod manifest_tests {
     use crate::protocol::resource as protocol_resource;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GoalId, MemoryId, OwnerRef, UserId,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GoalId, MemoryId, OwnerId, UserId,
     };
 
     #[test]
@@ -169,7 +169,7 @@ mod manifest_tests {
     }
 
     fn prefixed_ctx() -> McpToolCtx {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),

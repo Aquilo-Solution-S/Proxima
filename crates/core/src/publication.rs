@@ -31,7 +31,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid};
-use crate::{Owner, SchemaId, SchemaVersion};
+use crate::{OwnerId, SchemaId, SchemaVersion};
 
 pub mod intake;
 
@@ -551,7 +551,7 @@ pub struct PublicationDraft {
     /// deployment binds one. NEVER the caller-supplied `model_id` label.
     pub model_id: Option<String>,
     /// The server-resolved owner of the Fact being admitted.
-    pub owner: Owner,
+    pub owner: OwnerId,
     /// Extension attributes the HOST bound to this write's authorization
     /// context. Never assembled by the code producing the payload, and
     /// never reachable from anything on the wire.
@@ -567,7 +567,7 @@ impl PublicationDraft {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         source: PublicationSource,
-        owner: Owner,
+        owner: OwnerId,
         model_id: Option<String>,
         extensions: PublicationExtensions,
         data: serde_json::Value,
@@ -651,7 +651,7 @@ impl<'a> PublicationStamp<'a> {
         &self,
         schema_id: SchemaId,
         schema_version: SchemaVersion,
-        owner: Owner,
+        owner: OwnerId,
         data: serde_json::Value,
     ) -> PublicationPlan {
         PublicationPlan::new(
@@ -829,7 +829,7 @@ impl SealedPublication {
         let PublicationPlan { draft, limits } = plan;
         let event_id = format_prefixed_uuid(t, PrefixedUuidClass::Fact);
         let time = uuid_v7_rfc3339_millis(t)?;
-        let owner = draft.owner.external_key();
+        let owner = draft.owner.to_string();
         let subject = position.subject_attribute();
         let sequence = position.sequence_attribute();
         let envelope = CloudEventEnvelope {
@@ -927,7 +927,7 @@ mod tests {
             SchemaId::new("test/listenable-v1".into()),
             SchemaVersion::new(1),
             PublicationSource::new("urn:proxima:test").expect("source"),
-            Owner::Personal(UserId::new(Uuid::nil())),
+            OwnerId::from(UserId::new(Uuid::nil())),
             Some("model-x".into()),
             PublicationExtensions::new(),
             serde_json::json!({ "body": "hello" }),

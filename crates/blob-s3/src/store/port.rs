@@ -9,7 +9,7 @@ use proxima_core::storage_ports::{
     CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared,
 };
-use proxima_core::{AuthzContext, OwnerRef, StorageError};
+use proxima_core::{AuthzContext, OwnerId, StorageError};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -38,6 +38,7 @@ pub(super) fn blob_error_to_storage(err: BlobError) -> StorageError {
         }
         BlobError::S3(message) => StorageError::Unavailable(format!("S3 error: {message}")),
         BlobError::Db(err) => StorageError::Unavailable(format!("db error: {err}")),
+        BlobError::Storage(error) => error,
         BlobError::Denied(message) => {
             StorageError::ConstraintViolation(format!("access denied: {message}"))
         }
@@ -55,7 +56,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn prepare_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         filename: &str,
         mime: &str,
         byte_len: u64,
@@ -90,7 +91,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn stage_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError> {
         Self::stage_upload(
@@ -108,7 +109,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn finish_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
         cited_object_id: Uuid,
     ) -> Result<(), StorageError> {
@@ -120,7 +121,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn abort_upload(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobUploadAborted, StorageError> {
         let outcome = Self::abort_upload(
@@ -141,7 +142,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn read_url(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         cited_object_id: uuid::Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError> {
         let outcome = Self::read_url(
@@ -163,7 +164,7 @@ impl CitedBlobPort for CitedBlobStore {
     async fn find_held_blobs(
         &self,
         authz: &AuthzContext,
-        owner: OwnerRef,
+        owner: OwnerId,
         content_hashes: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, StorageError> {
         // No shape to translate: the inherent verb already answers in the

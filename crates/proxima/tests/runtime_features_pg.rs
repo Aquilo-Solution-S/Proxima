@@ -21,7 +21,7 @@ use proxima::{
 use proxima_core::publication::{PublicationConfig, PublicationSource};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerId, Role, UserId,
 };
 use proxima_pg_testkit::SplitRoleDb;
 use tracing::field::{Field, Visit};
@@ -106,7 +106,7 @@ impl DurableIntake for DiscardIntake {
 #[derive(Debug)]
 struct StubAuth {
     subject: UserId,
-    owner: Owner,
+    owner: OwnerId,
 }
 
 #[async_trait]

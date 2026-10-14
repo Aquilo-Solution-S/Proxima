@@ -4,8 +4,8 @@ use std::time::Duration;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GetMemoriesReadRequest,
-    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerRef, Proxima, Role,
-    ToolScope, UserId,
+    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ToolScope,
+    UserId,
 };
 use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
@@ -103,7 +103,7 @@ async fn forget_without_s3_preserves_content_across_restart() -> TestResult<()> 
 
 async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let admin_pool = sqlx::PgPool::connect(&db_url(database)).await?;
-    let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let authz = host_context(owner, AuthPath::HostBearer);
     let initial = boot(database, owner).await?;
     let expected = note("cold durability");
@@ -176,9 +176,10 @@ async fn database_only_content_remains_readable_and_erasable_without_s3() -> Tes
 
 async fn database_only_control(database: &str) -> TestResult<()> {
     let group = GroupId::new(Uuid::now_v7());
-    let owner = OwnerRef::Group(group);
+    let owner = OwnerId::from(group);
     let authz = host_context(owner, AuthPath::HostBearer);
     let initial = boot(database, owner).await?;
+    register_group(&sqlx::PgPool::connect(&db_url(database)).await?, group).await?;
     let expected = note("database-only control");
     let written = initial
         .host()
@@ -242,7 +243,7 @@ impl FlavorApp for CoreApp {
     }
 }
 
-async fn boot(database: &str, owner: OwnerRef) -> TestResult<BuiltProxima> {
+async fn boot(database: &str, owner: OwnerId) -> TestResult<BuiltProxima> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
     Ok(Proxima::<CoreApp>::app()
         .database_url(runtime_url)
@@ -259,7 +260,7 @@ async fn stop(runtime: BuiltProxima) {
     pool.close().await;
 }
 
-fn host_context(owner: OwnerRef, path: AuthPath) -> AuthzContext {
+fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
     // This is the trusted host's resolved subject role, not a caller-chosen
     // group or the intentionally unauthorized single_owner(group) shortcut.
     proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
@@ -334,4 +335,17 @@ async fn lifecycle(pool: &sqlx::PgPool, handle: Uuid) -> TestResult<LifecycleSta
         head,
         announcements,
     })
+}
+
+/// Register `group` as a Group, the way a host creates one before writing
+/// under it: the group erase path admits only a registered Group.
+async fn register_group(pool: &sqlx::PgPool, group: GroupId) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(pool)
+    .await
+    .map(drop)
 }

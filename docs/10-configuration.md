@@ -303,14 +303,37 @@ group)` (`proxima::host`, `proxima_storage_pg`), not with the resolver, which
 opens its own transaction, and not with raw `proxima_core.group_memberships`
 queries. They run the queries `PgOwnerAccessResolver` runs and fold them
 through `OwnerRoles::for_subject`: same answers, several relations in one group
-give their join, a Personal owner is never resolved. They begin, commit and
+give their join. A subject registered as a group is refused with
+`AccessError::SubjectIsGroup` before deriving any role; an unregistered subject
+keeps its personal role. The registry kind is read in the membership query. They begin, commit and
 set nothing, and read what the connection's scope allows: every group on a
 platform-scoped transaction, the groups the membership read policy admits
-under an owner scope. A row inserted earlier in the same transaction is
+under an owner scope. The owner registry is read under the same policy, so an
+owner scope that does not admit the subject's own id hides the row that would
+refuse a group-registered subject: resolve on a platform-scoped transaction. A row inserted earlier in the same transaction is
 visible. There is no bool probe: a membership bit does not authorize a write
 (Lean `Causa.Authorization` `may_write`); ask for the role and use
 `Role::manages` or its ceilings. `PgOwnerAccessResolver` is these two functions
 inside a transaction it opens and rolls back.
+
+### Roles inside a host transaction
+
+Owner registry and membership writes inside a host transaction. The host
+facade exports `register_group`, `bootstrap_group_admin`,
+`add_group_member`, `remove_group_member`, `remove_group_member_relation` and
+`replace_group_member_relation`; each takes `&mut PgConnection` and accepts the
+host's `&mut *tx`. `register_group`, `bootstrap_group_admin`, `add_group_member`,
+`remove_group_member`, `remove_group_member_relation` and
+`replace_group_member_relation` share the membership advisory lock.
+They write the same registry and membership rows as their pool forms, but never begin, commit, roll back, set a
+scope or retry. No authorization runs, the authorization hooks included:
+the host vouches for the write as it would for a row it inserts itself. The
+caller's transaction must be platform-scoped. The caller retries its whole
+transaction when needed. The pool forms retain their transaction and retry
+behavior by calling these connection forms, so their committed effects remain
+unchanged. There is no post-commit action in these forms.
+`AuthzOperation::Membership` authorization hooks run only on the Engine
+membership verbs.
 
 Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
 (or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the
@@ -849,7 +872,7 @@ locator.
 ## Owner Scoping
 
 Owner access control is per-row on graph data (see
-[01 §Owner](01-event-source.md#owner--scoping-primitive)). `OwnerRef` is
+[01 §Owner](01-event-source.md#owner--scoping-primitive)). `OwnerId` is
 the row-scoping handle. MCP serving does not configure a default owner:
 the bearer resolves to `OwnerRoles`, the client selects an authorized
 owner during `initialize` (`X-Proxima-Owner` for HTTP) — or, sending none,

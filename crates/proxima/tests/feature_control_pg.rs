@@ -19,7 +19,8 @@ use proxima::{
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
+    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerId, Role,
+    UserId,
 };
 use proxima_pg_testkit::{SplitRoleDb, db_url};
 use tokio::sync::Notify;
@@ -52,7 +53,7 @@ impl FlavorApp for BareApp {
 #[derive(Debug)]
 struct StubAuth {
     subject: UserId,
-    owner: Owner,
+    owner: OwnerId,
 }
 
 #[async_trait]
@@ -119,7 +120,7 @@ impl EmbeddingClient for GatedEmbedding {
 struct World {
     db: SplitRoleDb,
     inspection: sqlx::PgPool,
-    owner: Owner,
+    owner: OwnerId,
     subject: UserId,
     client: Arc<GatedEmbedding>,
 }
@@ -242,7 +243,7 @@ impl World {
 async fn serving(
     client: &reqwest::Client,
     base: &str,
-    owner: Owner,
+    owner: OwnerId,
 ) -> (reqwest::StatusCode, reqwest::StatusCode) {
     let ready = client
         .get(format!("{base}/readyz"))

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use proxima_core::{Owner, parse_external_key};
+use proxima_core::OwnerId;
 use tokio::sync::RwLock;
 
 /// Idle lifetime of a session binding. A binding not observed within this
@@ -20,7 +20,7 @@ const SESSION_IDLE_TTL: Duration = Duration::from_hours(1);
 const MAX_SESSIONS: usize = 4096;
 
 struct Binding {
-    owner: Owner,
+    owner: OwnerId,
     last_seen: AtomicU64,
 }
 
@@ -67,11 +67,11 @@ impl McpSessionBindings {
         }
     }
 
-    pub async fn bind(&self, session_id: impl Into<String>, owner: Owner) {
+    pub async fn bind(&self, session_id: impl Into<String>, owner: OwnerId) {
         self.bind_at(session_id.into(), owner, Instant::now()).await;
     }
 
-    async fn bind_at(&self, session_id: String, owner: Owner, now: Instant) {
+    async fn bind_at(&self, session_id: String, owner: OwnerId, now: Instant) {
         let mut guard = self.inner.write().await;
         let map = &mut *guard;
         self.prune(map, now);
@@ -84,11 +84,11 @@ impl McpSessionBindings {
         );
     }
 
-    pub async fn owner_for(&self, session_id: &str) -> Option<Owner> {
+    pub async fn owner_for(&self, session_id: &str) -> Option<OwnerId> {
         self.owner_for_at(session_id, Instant::now()).await
     }
 
-    async fn owner_for_at(&self, session_id: &str, now: Instant) -> Option<Owner> {
+    async fn owner_for_at(&self, session_id: &str, now: Instant) -> Option<OwnerId> {
         let now = self.timestamp_at(now);
         {
             let guard = self.inner.read().await;
@@ -145,29 +145,29 @@ impl McpSessionBindings {
 }
 
 #[must_use]
-pub fn parse_owner_key(raw: &str) -> Option<Owner> {
-    parse_external_key(raw).ok()
+pub fn parse_owner_key(raw: &str) -> Option<OwnerId> {
+    raw.parse().ok()
 }
 
 #[must_use]
-pub fn owner_key(owner: Owner) -> String {
-    owner.external_key()
+pub fn owner_key(owner: OwnerId) -> String {
+    owner.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::{GroupId, OwnerRef, UserId};
+    use proxima_core::{GroupId, OwnerId, UserId};
     use uuid::Uuid;
 
-    fn user_owner() -> Owner {
-        OwnerRef::Personal(UserId::new(Uuid::now_v7()))
+    fn user_owner() -> OwnerId {
+        OwnerId::from(UserId::new(Uuid::now_v7()))
     }
 
     #[test]
     fn owner_keys_round_trip() {
-        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
 
         assert_eq!(parse_owner_key(&owner_key(personal)), Some(personal));
         assert_eq!(parse_owner_key(&owner_key(group)), Some(group));
@@ -177,6 +177,16 @@ mod tests {
             None
         );
         assert_eq!(parse_owner_key("personal:not-a-uuid"), None);
+    }
+
+    /// The `X-Proxima-Owner` header carries the bare id: the old
+    /// kind-prefixed spelling of a valid id is refused, with no alias.
+    #[test]
+    fn an_old_kind_prefixed_owner_header_is_refused() {
+        let id = Uuid::now_v7();
+        assert_eq!(parse_owner_key(&format!("personal:{id}")), None);
+        assert_eq!(parse_owner_key(&format!("group:{id}")), None);
+        assert_eq!(parse_owner_key(&id.to_string()), Some(OwnerId::new(id)));
     }
 
     #[tokio::test]

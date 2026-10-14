@@ -539,7 +539,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
         stamped.commit().await?;
 
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-        let owner = proxima_core::Owner::Personal(proxima_core::UserId::new(owner_id));
+        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(owner_id));
 
         let mut compared = 0_usize;
         for (schema_id, _, t) in &seeds {

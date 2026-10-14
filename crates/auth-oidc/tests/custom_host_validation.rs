@@ -23,8 +23,7 @@ use proxima_auth_oidc::{
 };
 use proxima_core::{
     AccessError, ActionName, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
-    GroupId, Owner, OwnerAccessPort, OwnerRef, OwnerRoles, Role, ScopeKey, ToolName, ToolScope,
-    UserId,
+    GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, ScopeKey, ToolName, ToolScope, UserId,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -104,7 +103,7 @@ struct StaticOwnerAccess {
 #[async_trait]
 impl OwnerAccessPort for StaticOwnerAccess {
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
-        OwnerRoles::for_subject(subject, [(OwnerRef::Group(self.group), Role::editor())])
+        OwnerRoles::for_subject(subject, [(OwnerId::from(self.group), Role::editor())])
     }
 }
 
@@ -116,8 +115,8 @@ impl OwnerAccessPort for StaticOwnerAccess {
 struct TwoAudienceHost {
     agent_validator: OidcTokenValidator,
     owner_validator: OidcTokenValidator,
-    agent_principal: Owner,
-    owner_principal: Owner,
+    agent_principal: OwnerId,
+    owner_principal: OwnerId,
     owner_access: Arc<dyn OwnerAccessPort>,
 }
 
@@ -145,17 +144,15 @@ impl TwoAudienceHost {
                 .expect("valid agent oidc config"),
             owner_validator: OidcTokenValidator::new(owner_config, keys)
                 .expect("valid owner oidc config"),
-            agent_principal: OwnerRef::Personal(UserId::new(Uuid::from_u128(0xA9E1))),
-            owner_principal: OwnerRef::Personal(UserId::new(Uuid::from_u128(0x0E1E))),
+            agent_principal: OwnerId::from(UserId::new(Uuid::from_u128(0xA9E1))),
+            owner_principal: OwnerId::from(UserId::new(Uuid::from_u128(0x0E1E))),
             owner_access,
         }
     }
 
     async fn authenticate(&self, token: &str) -> Result<AuthzContext, AuthError> {
         if let Ok(claims) = self.agent_validator.validate(token).await {
-            let OwnerRef::Personal(subject) = self.agent_principal else {
-                unreachable!("agent principal is always Personal");
-            };
+            let subject = self.agent_principal.as_user();
             let roles = self
                 .owner_access
                 .resolve_roles_for_subject(subject)
@@ -166,9 +163,7 @@ impl TwoAudienceHost {
                 .with_tool_scope(ToolScope::Palette(vec![key("core_goal:set")])));
         }
         if let Ok(claims) = self.owner_validator.validate(token).await {
-            let OwnerRef::Personal(subject) = self.owner_principal else {
-                unreachable!("owner principal is always Personal");
-            };
+            let subject = self.owner_principal.as_user();
             return Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer)
                 .with_expires_at(Some(claims.expires_at))
                 .with_tool_scope(ToolScope::All));
@@ -200,10 +195,7 @@ async fn agent_audience_resolves_narrowed_tool_scope() {
         .expect("agent authenticates");
 
     assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
-    assert!(ctx.may_write(
-        &OwnerRef::Group(group),
-        proxima_core::AccessKind::Perspective
-    ));
+    assert!(ctx.may_write(&OwnerId::from(group), proxima_core::AccessKind::Perspective));
     assert!(allows_leaf(ctx.tool_scope(), "core_goal", "set"));
     assert!(!ctx.tool_scope().allows(&key("core_membership")));
     assert!(!allows_leaf(
@@ -307,7 +299,7 @@ async fn a_mapped_runner_principal_reaches_the_edge_with_its_trusted_model_id() 
     // Owner narrowing is the last thing the edge does before dispatch; the
     // bound identity must still be there afterwards.
     let narrowed = ctx
-        .narrowed_to_owner(OwnerRef::Group(group))
+        .narrowed_to_owner(OwnerId::from(group))
         .expect("editor narrows to the group owner");
     assert_eq!(narrowed.trusted_model_id(), Some(RUNNER_MODEL));
 }

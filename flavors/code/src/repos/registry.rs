@@ -1,7 +1,7 @@
 use super::records::{RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use super::scope::RepoScope;
-use proxima_core::{Owner, OwnerScope};
+use proxima_core::{OwnerId, OwnerScope};
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -13,19 +13,17 @@ use uuid::Uuid;
 pub async fn list_repos(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
 ) -> Result<Vec<RepoRecord>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
 
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
+         WHERE owner_id = $1 \
          ORDER BY created_at ASC",
     )
-    .bind(kind)
     .bind(principal_id)
     .fetch_all(&mut *tx)
     .await?;
@@ -44,11 +42,11 @@ pub async fn list_repos(
 pub async fn list_repos_page(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     after: Option<(time::OffsetDateTime, Uuid)>,
     limit: i64,
 ) -> Result<Vec<RepoRecord>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let after_created_at = after.map(|(created_at, _)| created_at);
     let after_repo_id = after.map(|(_, repo_id)| repo_id);
 
@@ -56,14 +54,12 @@ pub async fn list_repos_page(
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND ($3::timestamptz IS NULL \
-                OR (created_at, repo_id) > ($3::timestamptz, $4::uuid)) \
+         WHERE owner_id = $1 \
+           AND ($2::timestamptz IS NULL \
+                OR (created_at, repo_id) > ($2::timestamptz, $3::uuid)) \
          ORDER BY created_at ASC, repo_id ASC \
-         LIMIT $5",
+         LIMIT $4",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(after_created_at)
     .bind(after_repo_id)
@@ -84,27 +80,26 @@ pub async fn list_repos_page(
 pub async fn register_repo(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     canonical_path: &str,
     display_name: &str,
     scope: &RepoScope,
 ) -> Result<RepoRecord, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let target_branch = detect_target_branch(canonical_path);
 
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "INSERT INTO proxima_code.repos \
-            (owner_kind, owner_id, \
+            (owner_id, \
              repo_id, canonical_path, display_name, target_branch, created_at, \
              include_globs, exclude_globs) \
-         VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8) \
-         ON CONFLICT (owner_kind, owner_id, canonical_path) \
+         VALUES ($1, $2, $3, $4, $5, now(), $6, $7) \
+         ON CONFLICT (owner_id, canonical_path) \
          DO NOTHING \
          RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .bind(canonical_path)
@@ -124,12 +119,10 @@ pub async fn register_repo(
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
              SELECT 1 FROM proxima_code.repos \
-             WHERE owner_kind = $1 \
-               AND owner_id = $2 \
-               AND canonical_path = $3 \
+             WHERE owner_id = $1 \
+               AND canonical_path = $2 \
          )",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(canonical_path)
     .fetch_one(&mut *tx)
@@ -154,7 +147,7 @@ pub async fn register_repo(
 pub async fn set_repo_target_branch(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     target_branch: Option<&str>,
 ) -> Result<RepoRecord, RepoRegistryError> {
@@ -186,24 +179,22 @@ pub async fn set_repo_target_branch(
 pub async fn set_repo_scope(
     pool: &PgPool,
     scope_witness: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     scope: &RepoScope,
 ) -> Result<RepoRecord, RepoRegistryError> {
     scope
         .compile()
         .map_err(|source| RepoRegistryError::InvalidScope { repo_id, source })?;
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let mut tx = begin_compatible_owner_transaction(pool, scope_witness).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
-            SET include_globs = $4, exclude_globs = $5 \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3 \
+            SET include_globs = $3, exclude_globs = $4 \
+         WHERE owner_id = $1 \
+           AND repo_id = $2 \
          RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .bind(&scope.include)
@@ -222,20 +213,18 @@ pub async fn set_repo_scope(
 pub async fn get_repo(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<Option<RepoRecord>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
 
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3",
+         WHERE owner_id = $1 \
+           AND repo_id = $2",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .fetch_optional(&mut *tx)
@@ -248,21 +237,19 @@ pub async fn get_repo(
 async fn update_target_branch(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     target_branch: Option<&str>,
 ) -> Result<RepoRecord, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
-         SET target_branch = $4 \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3 \
+         SET target_branch = $3 \
+         WHERE owner_id = $1 \
+           AND repo_id = $2 \
          RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .bind(target_branch)
@@ -329,22 +316,20 @@ fn verify_target_branch(
 pub async fn update_cursor(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     cursor_bytes: &[u8],
     polled_at: time::OffsetDateTime,
 ) -> Result<(), RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
 
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     sqlx::query(
         "UPDATE proxima_code.repos \
-         SET last_cursor = $3, last_polled_at = $4 \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $5",
+         SET last_cursor = $2, last_polled_at = $3 \
+         WHERE owner_id = $1 \
+           AND repo_id = $4",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(cursor_bytes)
     .bind(polled_at)

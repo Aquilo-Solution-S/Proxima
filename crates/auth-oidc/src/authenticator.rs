@@ -398,7 +398,7 @@ mod tests {
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
-    use proxima_core::{AccessError, GroupId, Owner, OwnerRef, OwnerRoles, Role, UserId};
+    use proxima_core::{AccessError, GroupId, OwnerId, OwnerRoles, Role, UserId};
     use serde::Serialize;
     use uuid::Uuid;
 
@@ -517,7 +517,7 @@ mod tests {
         decoding: DecodingKey,
         token_subject: &str,
         subject: UserId,
-        roles: Vec<(Owner, Role)>,
+        roles: Vec<(OwnerId, Role)>,
     ) -> OidcAuthenticator {
         let mut map = OidcSubjectMap::new();
         map.insert(ISSUER, token_subject, subject).expect("insert");
@@ -530,7 +530,7 @@ mod tests {
     /// one subject, `AccessError::Resolution` for anyone else.
     struct StaticOwnerAccess {
         subject: UserId,
-        roles: Vec<(Owner, Role)>,
+        roles: Vec<(OwnerId, Role)>,
     }
 
     #[async_trait]
@@ -555,7 +555,7 @@ mod tests {
         map.insert(ISSUER, "subject-1", subject).expect("insert");
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             subject,
-            roles: vec![(OwnerRef::Group(group), Role::admin())],
+            roles: vec![(OwnerId::from(group), Role::admin())],
         });
         let auth = OidcAuthenticator::new(
             config(),
@@ -573,7 +573,7 @@ mod tests {
 
         assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
         assert_eq!(ctx.subject(), Some(subject));
-        assert!(ctx.may_manage(&OwnerRef::Group(group)));
+        assert!(ctx.may_manage(&OwnerId::from(group)));
         assert!(ctx.expires_at().is_some());
     }
 
@@ -641,7 +641,7 @@ mod tests {
     async fn mapped_subject_authenticates_with_personal_owner_access() {
         let keys = test_keys();
         let subject = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(subject);
+        let owner = OwnerId::from(subject);
         let auth = mapped_authenticator(
             config(),
             KID,

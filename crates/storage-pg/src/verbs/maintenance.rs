@@ -11,7 +11,7 @@
 
 use crate::platform_scope::PgPlatformScope;
 use proxima_core::ColdObjectStore;
-use proxima_core::{Owner, OwnerRefKind, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -44,7 +44,7 @@ pub struct ChangeEventPruneOptions {
 /// Per-owner outcome of a `change_event` prune pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PruneOwnerOutcome {
-    pub owner: Owner,
+    pub owner: OwnerId,
     /// Events deleted (dry run: events that would be deleted).
     pub events_pruned: u64,
 }
@@ -214,13 +214,13 @@ pub(crate) async fn prune_change_log(
         ));
     }
     let mut tx = begin_platform(pool, platform).await?;
-    let candidates: Vec<(OwnerRefKind, Uuid)> = sqlx::query_as(
-        "SELECT DISTINCT o.kind, a.owner_id
+    let candidates: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT a.owner_id
            FROM proxima_core.announce a
            JOIN proxima_core.owners o ON o.owner_id = a.owner_id
           WHERE COALESCE(uuid_extract_timestamp(a.seq), TIMESTAMPTZ '1970-01-01')
                 < now() - make_interval(secs => ($1::bigint)::double precision)
-          ORDER BY o.kind, a.owner_id",
+          ORDER BY a.owner_id",
     )
     .bind(options.older_than_seconds)
     .fetch_all(tx.as_mut())
@@ -232,8 +232,8 @@ pub(crate) async fn prune_change_log(
         dry_run: options.dry_run,
         ..ChangeEventPruneOutcome::default()
     };
-    for (owner_kind, owner_id) in candidates {
-        let owner = decode_owner(owner_kind, owner_id);
+    for owner_id in candidates {
+        let owner = OwnerId::new(owner_id);
         let owner_outcome = prune_owner(pool, platform, owner, options).await?;
         outcome.events_pruned += owner_outcome.events_pruned;
         outcome.owners.push(owner_outcome);
@@ -244,10 +244,10 @@ pub(crate) async fn prune_change_log(
 async fn prune_owner(
     pool: &PgPool,
     platform: Option<&PgPlatformScope>,
-    owner: Owner,
+    owner: OwnerId,
     options: ChangeEventPruneOptions,
 ) -> Result<PruneOwnerOutcome, StorageError> {
-    let (_owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     let mut events_pruned: u64 = 0;
     loop {
         let mut tx = begin_platform(pool, platform).await?;
@@ -295,8 +295,4 @@ async fn prune_owner(
             });
         }
     }
-}
-
-fn decode_owner(owner_kind: OwnerRefKind, owner_id: Uuid) -> Owner {
-    owner_kind.with_uuid(owner_id)
 }

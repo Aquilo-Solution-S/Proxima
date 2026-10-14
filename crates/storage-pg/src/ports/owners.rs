@@ -4,7 +4,7 @@ use proxima_core::storage_ports::{
 };
 
 use proxima_core::{
-    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation, StorageError, UserId,
+    Cursor, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
 };
 
 use super::validate_permit_owner;
@@ -15,10 +15,10 @@ impl OwnerAccessReadPort for PgStorage {
     async fn resolve_membership(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        member: &OwnerRef,
+        member: &OwnerId,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         if let Some(scope) = owner_scope {
-            if scope.is_expired() || *member != OwnerRef::Personal(scope.subject()) {
+            if scope.is_expired() || *member != OwnerId::from(scope.subject()) {
                 return Err(StorageError::ConstraintViolation(
                     "membership lookup requires its authenticated subject".into(),
                 ));
@@ -40,8 +40,8 @@ impl OwnerAccessReadPort for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
         entity: EntityId,
-        read_owners: &[OwnerRef],
-    ) -> Result<Option<(OwnerRef, proxima_core::AccessKind)>, StorageError> {
+        read_owners: &[OwnerId],
+    ) -> Result<Option<(OwnerId, proxima_core::AccessKind)>, StorageError> {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result =
@@ -53,7 +53,7 @@ impl OwnerAccessReadPort for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
         entity: EntityId,
-    ) -> Result<Option<OwnerRef>, StorageError> {
+    ) -> Result<Option<OwnerId>, StorageError> {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result = access::owner_columns::home_owner(tx.as_mut(), entity).await;
@@ -87,7 +87,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        validate_permit_owner(permit, &OwnerId::from(group_id))?;
         access::owner_columns::add_group_member(
             &self.pool,
             permit.owner_scope(),
@@ -105,7 +105,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         group_id: GroupId,
         member_user_id: UserId,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        validate_permit_owner(permit, &OwnerId::from(group_id))?;
         access::owner_columns::remove_group_member(
             &self.pool,
             permit.owner_scope(),
@@ -122,7 +122,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         member_user_id: UserId,
         relation: Relation,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        validate_permit_owner(permit, &OwnerId::from(group_id))?;
         access::owner_columns::remove_group_member_relation(
             &self.pool,
             permit.owner_scope(),
@@ -142,7 +142,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         to: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerRef::Group(group_id))?;
+        validate_permit_owner(permit, &OwnerId::from(group_id))?;
         access::owner_columns::replace_group_member_relation(
             &self.pool,
             permit.owner_scope(),
@@ -188,7 +188,7 @@ impl OwnerTransferPort for PgStorage {
         &self,
         permit: &OwnerWritePermit,
         entity: EntityId,
-        to_owner: OwnerRef,
+        to_owner: OwnerId,
         surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
         embedding_spaces: &[proxima_core::EmbeddingSpace],
     ) -> Result<bool, StorageError> {
@@ -218,7 +218,7 @@ impl SourceCursorPort for PgStorage {
     async fn load_source_cursor(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         source: &str,
     ) -> Result<Option<Cursor>, StorageError> {
         let mut tx =
@@ -246,7 +246,7 @@ impl SourceCursorPort for PgStorage {
     async fn source_cursor_age(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {
         let mut tx =

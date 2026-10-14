@@ -45,7 +45,7 @@
 //! [`repo_registered_tx`] under it — the flavor-owned half of the same
 //! guarantee, spelled once, here.
 
-use proxima_core::{Owner, ScopeDecl, ScopeKind};
+use proxima_core::{OwnerId, ScopeDecl, ScopeKind};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -71,7 +71,6 @@ pub const CODE_REPO_SCOPE_DECL: ScopeDecl = ScopeDecl {
     kind: CODE_REPO_SCOPE,
     registry_table: "proxima_code.repos",
     id_column: "repo_id",
-    owner_kind_column: "owner_kind",
     owner_id_column: "owner_id",
 };
 
@@ -84,7 +83,7 @@ const REPO_REGISTERED_SQL: &str = "\
 SELECT EXISTS(
     SELECT 1
       FROM proxima_code.repos
-     WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+     WHERE owner_id = $1 AND repo_id = $2
 )";
 
 /// Whether `repo_id` is still registered for `owner`, asked in a
@@ -95,12 +94,11 @@ SELECT EXISTS(
 /// Database errors from the read.
 pub(crate) async fn repo_registered_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<bool, RepoRegistryError> {
-    let (kind, owner_id) = owner.columns();
+    let owner_id = owner.into_inner();
     Ok(sqlx::query_scalar(REPO_REGISTERED_SQL)
-        .bind(kind)
         .bind(owner_id)
         .bind(repo_id)
         .fetch_one(&mut **tx)
@@ -122,7 +120,6 @@ mod tests {
         for name in [
             CODE_REPO_SCOPE_DECL.registry_table,
             CODE_REPO_SCOPE_DECL.id_column,
-            CODE_REPO_SCOPE_DECL.owner_kind_column,
             CODE_REPO_SCOPE_DECL.owner_id_column,
         ] {
             assert!(

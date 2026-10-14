@@ -8,7 +8,7 @@ use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind};
 pub(super) async fn prepare_goal_wake_plan(
     tx: &mut Transaction<'_, Postgres>,
     context: GoalAtomicContext<'_>,
-    owner: &proxima_core::Owner,
+    owner: &proxima_core::OwnerId,
     wake_write: WakeWrite<'_>,
 ) -> Result<GoalWakePlan, StorageError> {
     match wake_write {
@@ -23,7 +23,7 @@ pub(super) async fn prepare_goal_wake_plan(
                 "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
             )
             .bind(source_goal_id.into_inner())
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_optional(&mut **tx)
             .await
             .map_err(map_err)?;

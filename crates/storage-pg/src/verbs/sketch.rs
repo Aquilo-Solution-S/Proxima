@@ -1,6 +1,6 @@
 //! Persisted recall/think one-liners. Rebuildable plumbing (not Lean).
 
-use proxima_core::{EntityKind, MemoryId, OwnerRef, OwnerRefKind, SidecarPayload, StorageError};
+use proxima_core::{EntityKind, MemoryId, OwnerId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -12,7 +12,7 @@ pub const SKETCH_CHARS: usize = 160;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SketchRow {
     pub id: MemoryId,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub kind: EntityKind,
     pub text: String,
 }
@@ -84,7 +84,7 @@ pub async fn upsert_sketch(
 
 pub async fn load_sketches_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[OwnerRef],
+    read_owners: &[OwnerId],
     ids: &[MemoryId],
 ) -> Result<Vec<SketchRow>, StorageError> {
     if ids.is_empty() || read_owners.is_empty() {
@@ -94,15 +94,15 @@ pub async fn load_sketches_on_connection(
     let owners: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
-    let rows: Vec<(Uuid, Uuid, OwnerRefKind, String, String)> = sqlx::query_as("SELECT s.t, s.owner_id, o.kind::text::proxima_core.owner_kind, s.kind::text, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[])").bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as("SELECT s.t, s.owner_id, s.kind::text, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[])").bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()
-        .filter_map(|(t, oid, kind, k, text)| {
+        .filter_map(|(t, oid, k, text)| {
             Some(SketchRow {
                 id: MemoryId::new(t),
-                owner: owner_from(kind, oid),
+                owner: OwnerId::new(oid),
                 kind: parse_kind(&k)?,
                 text,
             })
@@ -130,8 +130,4 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
         "goal" => Some(EntityKind::Goal),
         _ => None,
     }
-}
-
-fn owner_from(kind: OwnerRefKind, owner_id: Uuid) -> OwnerRef {
-    kind.with_uuid(owner_id)
 }

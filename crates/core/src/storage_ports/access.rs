@@ -1,13 +1,13 @@
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
-use crate::{EntityId, GroupId, MembershipRow, OwnerRef, Relation, UserId};
+use crate::{EntityId, GroupId, MembershipRow, OwnerId, Relation, UserId};
 
 #[async_trait::async_trait]
 pub trait OwnerAccessReadPort: Send + Sync {
     async fn resolve_membership(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
-        member: &OwnerRef,
+        member: &OwnerId,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
     /// Home owner and kind of `entity` when its owner is in `read_owners`.
@@ -16,14 +16,14 @@ pub trait OwnerAccessReadPort: Send + Sync {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
-        read_owners: &[OwnerRef],
-    ) -> Result<Option<(OwnerRef, crate::AccessKind)>, StorageError>;
+        read_owners: &[OwnerId],
+    ) -> Result<Option<(OwnerId, crate::AccessKind)>, StorageError>;
 
     async fn home_owner(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
-    ) -> Result<Option<OwnerRef>, StorageError>;
+    ) -> Result<Option<OwnerId>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -74,7 +74,7 @@ pub trait OwnerTransferPort: Send + Sync {
         &self,
         permit: &OwnerWritePermit,
         entity: EntityId,
-        to_owner: OwnerRef,
+        to_owner: OwnerId,
         surfaces: &crate::owner_inverse::OwnerSurfaces,
         embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<bool, StorageError>;
@@ -175,7 +175,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
 mod tests {
     use super::OwnerMembershipAdminPort;
     use crate::storage_ports::OwnerWritePermit;
-    use crate::{AccessKind, GroupId, OwnerRef, Relation, StorageError, UserId};
+    use crate::{AccessKind, GroupId, OwnerId, Relation, StorageError, UserId};
     use uuid::Uuid;
 
     /// A port written before the relation-level methods existed: it supplies
@@ -236,7 +236,7 @@ mod tests {
     async fn a_port_without_the_relation_methods_refuses_them_by_name() {
         let group = GroupId::new(Uuid::now_v7());
         let member = UserId::new(Uuid::now_v7());
-        let permit = OwnerWritePermit::new_for_tests(OwnerRef::Group(group), AccessKind::Goal);
+        let permit = OwnerWritePermit::new_for_tests(OwnerId::from(group), AccessKind::Goal);
         let port = LegacyMembershipAdmin;
 
         let removed = port

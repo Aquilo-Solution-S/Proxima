@@ -3,7 +3,7 @@
 //! route no longer names.
 
 use proxima_core::{
-    EmbeddingPurgeOutcome, EmbeddingSpace, EmbeddingSpaceCounts, Owner, StorageError,
+    EmbeddingPurgeOutcome, EmbeddingSpace, EmbeddingSpaceCounts, OwnerId, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -96,14 +96,14 @@ struct CoverageRow {
 pub(crate) async fn embedding_coverage(
     pool: &sqlx::PgPool,
     platform: Option<&crate::PgPlatformScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     spaces: &[EmbeddingSpace],
     non_embeddable_schemas: &[String],
 ) -> Result<Vec<(EmbeddingSpace, EmbeddingSpaceCounts)>, StorageError> {
     let (models, dims) = space_columns(spaces);
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let result = sqlx::query_as::<_, CoverageRow>(EMBEDDING_COVERAGE_SQL)
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(non_embeddable_schemas)
         .bind(&models)
         .bind(&dims)
@@ -211,13 +211,13 @@ WITH keep AS (
 pub(crate) async fn purge_embedding_spaces(
     pool: &sqlx::PgPool,
     platform: Option<&crate::PgPlatformScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     keep: &[EmbeddingSpace],
     limit: i64,
 ) -> Result<EmbeddingPurgeOutcome, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
-    let result = purge_in_tx(&mut tx, owner.stored_owner_id(), keep, None, limit).await;
+    let result = purge_in_tx(&mut tx, owner.into_inner(), keep, None, limit).await;
     crate::owner_scope::finish_transaction(tx, result).await
 }
 

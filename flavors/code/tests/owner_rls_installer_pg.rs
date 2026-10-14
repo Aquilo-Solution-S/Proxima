@@ -496,7 +496,7 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "seed, then one probe per scope")]
 async fn projection_rows_follow_their_memory_kind() {
-    use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerRef, Role, UserId};
+    use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerId, Role, UserId};
 
     let db = TestDb::fresh().await;
     apply_current_migrations(&db.pg)
@@ -568,7 +568,7 @@ async fn projection_rows_follow_their_memory_kind() {
     let runtime = sqlx::PgPool::connect(&runtime_url)
         .await
         .expect("runtime pool");
-    let group = OwnerRef::Group(GroupId::new(owner));
+    let group = OwnerId::from(GroupId::new(owner));
     let mut both = vec![fact, abstraction];
     both.sort();
     for (role, readable) in [

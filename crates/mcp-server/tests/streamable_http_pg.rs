@@ -8,7 +8,7 @@ mod common;
 use async_trait::async_trait;
 use common::{create_db, drop_db, initialize, initialized, split_role_urls};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, OwnerId,
     RevalidationConfig,
 };
 use proxima_mcp_server::{
@@ -248,13 +248,13 @@ use common::nil_owner;
 
 #[derive(Debug)]
 struct TestHostAuth {
-    owner: Owner,
+    owner: OwnerId,
     ttl: Option<Duration>,
     epoch: AtomicU64,
 }
 
 impl TestHostAuth {
-    fn new(owner: Owner, ttl: Option<Duration>) -> Self {
+    fn new(owner: OwnerId, ttl: Option<Duration>) -> Self {
         Self {
             owner,
             ttl,
@@ -266,13 +266,11 @@ impl TestHostAuth {
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn authz(&self) -> Result<AuthzContext, AuthError> {
-        let OwnerRef::Personal(subject) = self.owner else {
-            return Err(AuthError::InvalidCredentials);
-        };
-        Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer)
+    fn authz(&self) -> AuthzContext {
+        let subject = self.owner.as_user();
+        AuthzContext::for_subject(subject, AuthPath::HostBearer)
             .with_expires_at(self.ttl.map(|ttl| std::time::SystemTime::now() + ttl))
-            .with_auth_epoch(self.epoch.load(Ordering::SeqCst)))
+            .with_auth_epoch(self.epoch.load(Ordering::SeqCst))
     }
 }
 
@@ -280,12 +278,12 @@ impl TestHostAuth {
 impl Authenticator for TestHostAuth {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
         match creds {
-            Credentials::Bearer(token) if token == "host-token" => self.authz(),
+            Credentials::Bearer(token) if token == "host-token" => Ok(self.authz()),
             Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
         }
     }
 
-    async fn current_auth_epoch(&self, _principal: &proxima_core::OwnerRef) -> u64 {
+    async fn current_auth_epoch(&self, _principal: &proxima_core::OwnerId) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
 }

@@ -1,7 +1,7 @@
 //! WakeConfig + fire (one write-act per match).
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::{Owner, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -34,7 +34,7 @@ pub struct WakeConfigDraft {
 
 pub async fn insert_wake_config(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     draft: &WakeConfigDraft,
 ) -> Result<Uuid, StorageError> {
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
@@ -148,7 +148,7 @@ pub async fn matching_wake_ids(pool: &PgPool, incoming_t: Uuid) -> Result<Vec<Uu
 /// One write-act Fact for the fire (not per Memory).
 pub async fn fire_wake(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
 ) -> Result<Uuid, StorageError> {
     let outcome = ingest_write_act(tx, owner).await?;
     Ok(outcome.memory_id.into_inner())
@@ -158,7 +158,7 @@ pub async fn fire_wake(
 #[cfg(any(test, feature = "test-fixtures"))]
 pub async fn write_armed_goal(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     title: &str,
     request_id: &str,
     wake_id: Uuid,

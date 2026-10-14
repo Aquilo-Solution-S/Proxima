@@ -24,7 +24,7 @@ use crate::access::{AccessKind, OwnerAccessPort, OwnerRoles, Role};
 use crate::auth::{AuthError, Credentials};
 use crate::error::ProtocolError;
 use crate::publication::{PublicationExtensions, PublicationExtensionsError};
-use crate::{GroupId, Owner, OwnerRef, UserId};
+use crate::{GroupId, OwnerId, UserId};
 
 pub use hooks::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
@@ -36,8 +36,8 @@ pub use scope_key::{ActionName, ResourceKey, ScopeKey, ScopeKeyError, ScopeKeyPa
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     subject: Option<UserId>,
-    principal: OwnerRef,
-    accessible_principals: HashSet<OwnerRef>,
+    principal: OwnerId,
+    accessible_principals: HashSet<OwnerId>,
     /// Streams terminate past this; `None` = no expiry.
     expires_at: Option<SystemTime>,
     /// Revocation generation; hosts bump it to force re-auth.
@@ -53,7 +53,7 @@ pub struct Identity {
 
 impl Identity {
     #[must_use]
-    pub fn can_access_principal(&self, principal: &OwnerRef) -> bool {
+    pub fn can_access_principal(&self, principal: &OwnerId) -> bool {
         self.accessible_principals.contains(principal)
     }
 }
@@ -311,7 +311,7 @@ pub struct AuthzContext {
     publication_extensions: PublicationExtensions,
     /// The owner the HOST names for a request that selects none. Always an
     /// owner `owner_roles` carries; see [`AuthzContext::with_default_owner`].
-    default_owner: Option<OwnerRef>,
+    default_owner: Option<OwnerId>,
     /// The registered tool whose handler this context was handed to. Stamped
     /// by the registration's call wrapper, never by a caller, and read by
     /// verbs whose admission depends on the calling tool's declaration
@@ -536,21 +536,20 @@ impl AuthzContext {
     /// explicitly opts into insecure single-owner access.
     ///
     /// The boot-held witness gates this credential-free path. Both the roles
-    /// and the sealed scope grant only `owner`; a Group's synthetic subject
-    /// does not grant access to its Personal owner. This context grants no
+    /// and the sealed scope grant only `owner`, as the synthetic subject's own
+    /// id. This context grants no
     /// System-path authority and must never authenticate a network request.
     ///
     /// # Panics
     ///
     /// Panics only if the exact owner role constructed here cannot be narrowed.
     #[must_use]
-    pub fn for_insecure_single_owner(authority: &SystemAuthority, owner: Owner) -> Self {
+    pub fn for_insecure_single_owner(authority: &SystemAuthority, owner: OwnerId) -> Self {
         let _ = authority;
-        let (subject, role) = match owner {
-            OwnerRef::Personal(subject) => (subject, Role::personal()),
-            OwnerRef::Group(group) => (UserId::new(group.into_inner()), Role::admin()),
-        };
-        let roles = OwnerRoles::scoped_to(subject, owner, role);
+        // The one role rule: the owner is the synthetic subject's own id, so
+        // it holds the personal role, which never manages.
+        let subject = owner.as_user();
+        let roles = OwnerRoles::scoped_to(subject, owner, Role::personal());
         let mut context = Self::server_resolved(roles.clone(), AuthPath::HostBearer);
         context.owner_scope = Some(OwnerScope::from_verified_roles(roles, None));
         context
@@ -583,7 +582,7 @@ impl AuthzContext {
     }
 
     #[must_use]
-    pub fn principal(&self) -> OwnerRef {
+    pub fn principal(&self) -> OwnerId {
         self.identity.principal
     }
 
@@ -617,7 +616,7 @@ impl AuthzContext {
 
     /// The owner a request that selects none acts for, if the host named one.
     #[must_use]
-    pub const fn default_owner(&self) -> Option<OwnerRef> {
+    pub const fn default_owner(&self) -> Option<OwnerId> {
         self.default_owner
     }
 
@@ -632,11 +631,11 @@ impl AuthzContext {
     }
 
     #[must_use]
-    pub fn can_access_owner(&self, owner: &OwnerRef) -> bool {
+    pub fn can_access_owner(&self, owner: &OwnerId) -> bool {
         self.identity.can_access_principal(owner)
     }
 
-    pub(crate) fn accessible_owners(&self) -> impl Iterator<Item = OwnerRef> + '_ {
+    pub(crate) fn accessible_owners(&self) -> impl Iterator<Item = OwnerId> + '_ {
         self.identity.accessible_principals.iter().copied()
     }
 
@@ -646,26 +645,26 @@ impl AuthzContext {
     }
 
     #[must_use]
-    pub fn scoped_owner(&self, owner: OwnerRef) -> Owner {
+    pub fn scoped_owner(&self, owner: OwnerId) -> OwnerId {
         owner
     }
 
     #[must_use]
-    pub fn may_read(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn may_read(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         self.owner_roles
             .as_ref()
             .is_some_and(|roles| roles.may_read(owner, kind))
     }
 
     #[must_use]
-    pub fn may_write(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn may_write(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         self.owner_roles
             .as_ref()
             .is_some_and(|roles| roles.may_write(owner, kind))
     }
 
     #[must_use]
-    pub fn may_manage(&self, owner: &OwnerRef) -> bool {
+    pub fn may_manage(&self, owner: &OwnerId) -> bool {
         self.owner_roles
             .as_ref()
             .is_some_and(|roles| roles.may_manage(owner))
@@ -675,19 +674,19 @@ impl AuthzContext {
     /// one. Durable delegation records this role only as an upper bound and
     /// resolves it again at every redemption.
     #[must_use]
-    pub fn role_for_owner(&self, owner: &OwnerRef) -> Option<crate::access::Role> {
+    pub fn role_for_owner(&self, owner: &OwnerId) -> Option<crate::access::Role> {
         self.owner_roles.as_ref()?.role_for(owner)
     }
 
     #[must_use]
-    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
         self.owner_roles
             .as_ref()
             .map_or_else(Vec::new, |roles| roles.readable_owners(kind))
     }
 
     #[must_use]
-    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
         self.owner_roles
             .as_ref()
             .map_or_else(Vec::new, |roles| roles.writable_owners(kind))
@@ -703,7 +702,7 @@ impl AuthzContext {
         Self {
             identity: Identity {
                 subject: Some(subject),
-                principal: OwnerRef::Personal(subject),
+                principal: OwnerId::from(subject),
                 accessible_principals,
                 expires_at: None,
                 auth_epoch: 0,
@@ -807,7 +806,7 @@ impl AuthzContext {
     ///
     /// `None` when the context carries no role for `owner`.
     #[must_use]
-    pub fn with_default_owner(mut self, owner: OwnerRef) -> Option<Self> {
+    pub fn with_default_owner(mut self, owner: OwnerId) -> Option<Self> {
         self.role_for_owner(&owner)?;
         self.default_owner = Some(owner);
         Some(self)
@@ -831,19 +830,11 @@ impl AuthzContext {
     /// Narrow to `owner`. The result is bound to that one owner, so it
     /// names no default.
     #[must_use]
-    pub fn narrowed_to_owner(mut self, owner: OwnerRef) -> Option<Self> {
+    pub fn narrowed_to_owner(mut self, owner: OwnerId) -> Option<Self> {
         let roles = self.owner_roles.as_ref()?;
         let subject = roles.subject();
-        let narrowed_roles = match owner {
-            OwnerRef::Personal(user) if user == subject => {
-                OwnerRoles::scoped_to(subject, owner, Role::personal())
-            }
-            OwnerRef::Group(_) => {
-                let role = roles.role_for(&owner)?;
-                OwnerRoles::scoped_to(subject, owner, role)
-            }
-            OwnerRef::Personal(_) => return None,
-        };
+        let role = roles.role_for(&owner)?;
+        let narrowed_roles = OwnerRoles::scoped_to(subject, owner, role);
         let accessible_principals = narrowed_roles
             .readable_owners(AccessKind::Fact)
             .into_iter()
@@ -937,20 +928,18 @@ impl AuthzContext {
     #[must_use]
     pub fn for_subject_with_role<I>(subject: UserId, roles: I, auth_path: AuthPath) -> Self
     where
-        I: IntoIterator<Item = (OwnerRef, crate::access::Role)>,
+        I: IntoIterator<Item = (OwnerId, crate::access::Role)>,
     {
         Self::server_resolved(OwnerRoles::for_subject(subject, roles).unwrap(), auth_path)
     }
 
-    /// Compatibility helper for already-owner-scoped trusted surfaces. It is
-    /// server-resolved for personal owners; group access must be represented by
-    /// an explicit subject role and cannot be minted from a bare group owner.
+    /// Compatibility helper for already-owner-scoped trusted surfaces: the
+    /// owner is read as the subject's own id, which holds the personal role.
+    /// Access to any other owner must be represented by an explicit subject
+    /// role.
     #[must_use]
-    pub fn single_owner(owner: &Owner, auth_path: AuthPath) -> Self {
-        match *owner {
-            OwnerRef::Personal(subject) => Self::for_subject(subject, auth_path),
-            OwnerRef::Group(_) => Self::denied_for_owner(owner),
-        }
+    pub fn single_owner(owner: &OwnerId, auth_path: AuthPath) -> Self {
+        Self::for_subject(owner.as_user(), auth_path)
     }
 
     /// Fail-closed, zero-capability context. Carries `owner`'s identity for
@@ -962,7 +951,7 @@ impl AuthzContext {
     /// principal the denial was about, and no owner kind exists to stand in
     /// as a placeholder.
     #[must_use]
-    pub fn denied_for_owner(owner: &Owner) -> Self {
+    pub fn denied_for_owner(owner: &OwnerId) -> Self {
         Self {
             identity: Identity {
                 subject: None,
@@ -1000,7 +989,7 @@ pub trait Authenticator: Send + Sync {
     /// Current revocation epoch for a principal. A host bumps the returned
     /// value to force active streams authenticated at a lower epoch to
     /// terminate. The default never revokes.
-    async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
+    async fn current_auth_epoch(&self, _principal: &OwnerId) -> u64 {
         0
     }
 }
@@ -1195,8 +1184,8 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time;
 
-    fn owner() -> Owner {
-        OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()))
+    fn owner() -> OwnerId {
+        OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }
 
     /// No bearer, no authenticator: the runtime's witness alone mints a
@@ -1205,7 +1194,7 @@ mod tests {
     fn a_system_context_is_sealed_from_the_witness_without_a_bearer() {
         let authority = SystemAuthority::new(SystemAuthorityBinding::fresh());
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(group, Role::admin())]).expect("roles");
 
         let context = AuthzContext::for_system(&authority, roles);
@@ -1215,17 +1204,20 @@ mod tests {
         assert!(context.owner_scope().is_some(), "the owner scope is sealed");
         assert!(context.may_write(&group, AccessKind::Fact));
         assert!(
-            !context.can_access_owner(&OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()))),
+            !context.can_access_owner(&OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))),
             "no owner beyond the roles it was given"
         );
     }
 
     #[test]
-    fn insecure_single_owner_scope_cannot_expand_to_a_synthetic_personal_owner() {
+    fn insecure_single_owner_scope_cannot_expand_beyond_its_owner() {
+        // With bare owner ids the synthetic subject's own id *is* the owner,
+        // so the old "same uuid, other kind" owner no longer exists; the
+        // property kept is that the scope reaches no owner but its own.
         let authority = SystemAuthority::new(SystemAuthorityBinding::fresh());
         let group_id = GroupId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(group_id);
-        let personal = OwnerRef::Personal(UserId::new(group_id.into_inner()));
+        let group = OwnerId::from(group_id);
+        let personal = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let context = AuthzContext::for_insecure_single_owner(&authority, group);
 
         assert_eq!(context.auth_path(), AuthPath::HostBearer);
@@ -1246,14 +1238,11 @@ mod tests {
     }
 
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
-        let principal = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let principal = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let mut accessible_principals = HashSet::with_capacity(1);
         accessible_principals.insert(principal);
         Identity {
-            subject: match principal {
-                OwnerRef::Personal(user) => Some(user),
-                OwnerRef::Group(_) => None,
-            },
+            subject: Some(principal.as_user()),
             principal,
             accessible_principals,
             expires_at,
@@ -1281,7 +1270,7 @@ mod tests {
             Err(AuthError::AuthRequired)
         }
 
-        async fn current_auth_epoch(&self, _principal: &OwnerRef) -> u64 {
+        async fn current_auth_epoch(&self, _principal: &OwnerId) -> u64 {
             self.epoch.load(Ordering::SeqCst)
         }
     }
@@ -1323,7 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn only_core_authentication_seals_an_owner_scope() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let context = AuthzContext::for_subject_with_role(
             subject,
             [(group, Role::editor())],
@@ -1386,7 +1375,7 @@ mod tests {
 
     #[test]
     fn unauthenticated_denied_context_grants_no_owner_access() {
-        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let ctx = AuthzContext::denied_for_owner(&owner);
 
         assert_eq!(ctx.auth_path(), AuthPath::Denied);
@@ -1401,24 +1390,24 @@ mod tests {
     #[test]
     fn resolved_subject_context_gets_role_ceilings() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
 
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
 
         assert_eq!(ctx.subject(), Some(subject));
-        assert!(ctx.may_write(&OwnerRef::Personal(subject), AccessKind::Goal));
+        assert!(ctx.may_write(&OwnerId::from(subject), AccessKind::Goal));
         assert!(ctx.may_write(&group, AccessKind::Perspective));
         assert!(!ctx.may_write(&group, AccessKind::Goal));
         assert!(!ctx.may_manage(&group));
 
         let readable = ctx.readable_owners(AccessKind::Goal);
         assert_eq!(readable.len(), 2, "own personal owner plus the one group");
-        assert!(readable.contains(&OwnerRef::Personal(subject)));
+        assert!(readable.contains(&OwnerId::from(subject)));
         assert!(readable.contains(&group));
 
         let writable = ctx.writable_owners(AccessKind::Goal);
-        assert!(writable.contains(&OwnerRef::Personal(subject)));
+        assert!(writable.contains(&OwnerId::from(subject)));
         assert!(!writable.contains(&group));
     }
 
@@ -1431,7 +1420,7 @@ mod tests {
     fn a_host_resolved_role_narrows_to_exactly_that_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let group_id = GroupId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(group_id);
+        let group = OwnerId::from(group_id);
         let roles = OwnerRoles::for_subject(subject, []).unwrap();
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
 
@@ -1465,7 +1454,7 @@ mod tests {
         assert!(
             !narrowed
                 .identity
-                .can_access_principal(&OwnerRef::Personal(subject)),
+                .can_access_principal(&OwnerId::from(subject)),
             "accessible principals are recomputed from the narrowed roles"
         );
     }
@@ -1478,8 +1467,8 @@ mod tests {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let first_id = GroupId::new(uuid::Uuid::now_v7());
         let second_id = GroupId::new(uuid::Uuid::now_v7());
-        let first = OwnerRef::Group(first_id);
-        let second = OwnerRef::Group(second_id);
+        let first = OwnerId::from(first_id);
+        let second = OwnerId::from(second_id);
         let ctx = AuthzContext::server_resolved(
             OwnerRoles::for_subject(subject, []).unwrap(),
             AuthPath::HostBearer,
@@ -1508,7 +1497,7 @@ mod tests {
     #[test]
     fn a_host_resolved_role_never_authorizes_a_foreign_personal_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let stranger = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let ctx = AuthzContext::server_resolved(
             OwnerRoles::for_subject(subject, []).unwrap(),
             AuthPath::HostBearer,
@@ -1519,13 +1508,13 @@ mod tests {
         assert!(ctx.clone().narrowed_to_owner(stranger).is_none());
 
         let own = ctx
-            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .narrowed_to_owner(OwnerId::from(subject))
             .expect("the subject's own personal owner narrows");
         assert_eq!(
-            own.role_for_owner(&OwnerRef::Personal(subject)),
+            own.role_for_owner(&OwnerId::from(subject)),
             Some(Role::personal())
         );
-        assert!(!own.may_manage(&OwnerRef::Personal(subject)));
+        assert!(!own.may_manage(&OwnerId::from(subject)));
     }
 
     /// Only host-resolved paths narrow. A denied (or otherwise
@@ -1548,19 +1537,19 @@ mod tests {
     #[test]
     fn a_default_owner_must_be_one_the_context_carries() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let tenant = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
-        let elsewhere = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let tenant = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let elsewhere = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(tenant, Role::editor())]).unwrap();
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
         assert_eq!(ctx.default_owner(), None);
 
-        for carried in [tenant, OwnerRef::Personal(subject)] {
+        for carried in [tenant, OwnerId::from(subject)] {
             let named = ctx.clone().with_default_owner(carried).expect("carried");
             assert_eq!(named.default_owner(), Some(carried));
         }
         assert!(ctx.clone().with_default_owner(elsewhere).is_none());
         assert!(
-            ctx.with_default_owner(OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())))
+            ctx.with_default_owner(OwnerId::from(UserId::new(uuid::Uuid::now_v7())))
                 .is_none(),
             "another subject's personal owner is never carried"
         );
@@ -1576,14 +1565,14 @@ mod tests {
     #[test]
     fn narrowing_drops_the_default() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let tenant = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let tenant = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(tenant, Role::editor())]).unwrap();
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
             .with_default_owner(tenant)
             .expect("carried");
 
         let narrowed = ctx
-            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .narrowed_to_owner(OwnerId::from(subject))
             .expect("own personal owner");
         assert_eq!(narrowed.default_owner(), None);
     }
@@ -1594,7 +1583,7 @@ mod tests {
     #[test]
     fn a_trusted_model_id_survives_owner_narrowing_and_revalidation() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
 
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
@@ -1616,7 +1605,7 @@ mod tests {
         assert_eq!(narrowed.subject(), Some(subject));
 
         let personal = ctx
-            .narrowed_to_owner(OwnerRef::Personal(subject))
+            .narrowed_to_owner(OwnerId::from(subject))
             .expect("own personal owner narrows");
         assert_eq!(personal.trusted_model_id(), Some("runner/pinned"));
     }
@@ -2235,7 +2224,7 @@ mod tests {
         // stream does not — they are run context, not identity material.
         let narrowed = ctx
             .clone()
-            .narrowed_to_owner(OwnerRef::Personal(
+            .narrowed_to_owner(OwnerId::from(
                 ctx.identity_for_revalidation().subject.expect("a subject"),
             ))
             .expect("a subject may narrow to itself");

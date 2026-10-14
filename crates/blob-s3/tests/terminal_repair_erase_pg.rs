@@ -15,7 +15,7 @@ use proxima_core::owner_inverse::{
 use proxima_core::storage_ports::OwnerInversePort;
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
-    AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerRef, StorageError,
+    AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerId, StorageError,
 };
 use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -231,9 +231,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
         .clone()
         .with_cold(Arc::new(DeferPurge(Arc::new(store.cold_store()))));
     let erase_task = tokio::spawn(async move {
-        let OwnerRef::Personal(user_id) = owner else {
-            panic!("fixture must be personal");
-        };
+        let user_id = owner.as_user();
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "terminal-repair-race".into(),
@@ -357,20 +355,20 @@ async fn wait_for_probe(pool: &sqlx::PgPool, probe: Probe) -> TestResult<()> {
     }
 }
 
-async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerRef) -> TestResult<bool> {
+async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerId) -> TestResult<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1 FROM pg_locks
               WHERE locktype = 'advisory' AND NOT granted AND mode = 'ExclusiveLock'
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:personal:' || $1::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:personal:' || $1::text, 0
+                    'proxima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(pool)
     .await?)
 }

@@ -4,7 +4,7 @@
 //! erase or export authority; the existing owner inverse authorization and
 //! hard-erase transaction remain the only entry points.
 
-use crate::{MemoryId, OwnerRef, SourceId};
+use crate::{MemoryId, OwnerId, SourceId};
 
 use super::{HostStateParticipantId, StateSurfaceName};
 
@@ -12,7 +12,7 @@ use super::{HostStateParticipantId, StateSurfaceName};
 /// published. The current owner may differ after transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HostStateFactCopyLocator {
-    pub original_owner: OwnerRef,
+    pub original_owner: OwnerId,
     pub fact_id: MemoryId,
 }
 
@@ -66,7 +66,7 @@ pub enum HostStateEraseScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostStateEraseRequest {
     participant: HostStateParticipantId,
-    owner: OwnerRef,
+    owner: OwnerId,
     scope: HostStateEraseScope,
     /// Exact physical Facts and immutable original-owner copies selected by
     /// the already-authorized core erase.
@@ -78,7 +78,7 @@ impl HostStateEraseRequest {
     #[must_use]
     pub fn new(
         participant: HostStateParticipantId,
-        owner: OwnerRef,
+        owner: OwnerId,
         scope: HostStateEraseScope,
         selection: HostStateEraseSelection,
         declared_tables: Vec<StateSurfaceName>,
@@ -101,7 +101,7 @@ impl HostStateEraseRequest {
     }
 
     #[must_use]
-    pub const fn owner(&self) -> OwnerRef {
+    pub const fn owner(&self) -> OwnerId {
         self.owner
     }
 
@@ -139,7 +139,7 @@ pub struct HostStateEraseTableCount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostStateEraseReceipt {
     pub participant: HostStateParticipantId,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub scope: HostStateEraseScope,
     pub selection: HostStateEraseSelection,
     pub counts: Vec<HostStateEraseTableCount>,
@@ -149,7 +149,7 @@ pub struct HostStateEraseReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostStateExportRequest {
     participant: HostStateParticipantId,
-    owner: OwnerRef,
+    owner: OwnerId,
     included_tables: Vec<StateSurfaceName>,
 }
 
@@ -157,7 +157,7 @@ impl HostStateExportRequest {
     #[must_use]
     pub fn new(
         participant: HostStateParticipantId,
-        owner: OwnerRef,
+        owner: OwnerId,
         included_tables: Vec<StateSurfaceName>,
     ) -> Self {
         Self {
@@ -173,7 +173,7 @@ impl HostStateExportRequest {
     }
 
     #[must_use]
-    pub const fn owner(&self) -> OwnerRef {
+    pub const fn owner(&self) -> OwnerId {
         self.owner
     }
 
@@ -196,21 +196,21 @@ pub struct HostStateExportTable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostStateExportReceipt {
     pub participant: HostStateParticipantId,
-    pub owner: OwnerRef,
+    pub owner: OwnerId,
     pub tables: Vec<HostStateExportTable>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{HostStateEraseSelection, HostStateFactCopyLocator};
-    use crate::{MemoryId, OwnerRef, UserId};
+    use crate::{MemoryId, OwnerId, UserId};
     use uuid::Uuid;
 
     #[test]
     fn erase_selection_is_a_canonical_set() {
         let first = MemoryId::new(Uuid::now_v7());
         let second = MemoryId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let locator = HostStateFactCopyLocator {
             original_owner: owner,
             fact_id: first,

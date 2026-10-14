@@ -1,5 +1,5 @@
 use super::{
-    EdgeEndpoint, EntityKind, EvidenceTarget, GoalId, MemoryId, Owner, Postgres, StorageError,
+    EdgeEndpoint, EntityKind, EvidenceTarget, GoalId, MemoryId, OwnerId, Postgres, StorageError,
     Transaction,
 };
 
@@ -14,7 +14,7 @@ use super::{
 /// is what a declared pointer from one node to another IS.
 pub(super) async fn assert_goal_topology_references(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    owner: &OwnerId,
     goal_id: GoalId,
     assignment: MemoryId,
     dependencies: &[GoalId],

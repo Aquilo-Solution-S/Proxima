@@ -98,7 +98,7 @@ pub(crate) async fn read_own_sidecar_on_connection(
     builder.push(owner_ident.as_str());
     // SQL-POLICY: fixed-fragment
     builder.push(" = ");
-    builder.push_bind(permit.owner().stored_owner_id());
+    builder.push_bind(permit.owner().into_inner());
     for (ident, value) in &predicates {
         // SQL-POLICY: PgIdent
         builder.push(" AND s.");

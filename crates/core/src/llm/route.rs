@@ -98,7 +98,7 @@ impl EmbeddingRoute {
             .collect()
     }
 
-    /// The client that embeds `space` for this Owner, or `None` when the
+    /// The client that embeds `space` for this owner, or `None` when the
     /// route no longer names it: a job queued for such a space is stale.
     #[must_use]
     pub fn client_for(&self, space: &EmbeddingSpace) -> Option<&BoundEmbeddingClient> {
@@ -169,7 +169,7 @@ pub trait EmbeddingRouter: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// [`EmbeddingRouteError`] when the host cannot say, for this Owner.
-    async fn route(&self, owner: &crate::Owner) -> Result<EmbeddingRoute, EmbeddingRouteError>;
+    async fn route(&self, owner: &crate::OwnerId) -> Result<EmbeddingRoute, EmbeddingRouteError>;
 }
 
 /// One client for every Owner: the single-endpoint host.
@@ -203,7 +203,7 @@ impl SingleClientRouter {
 
 #[async_trait]
 impl EmbeddingRouter for SingleClientRouter {
-    async fn route(&self, _owner: &crate::Owner) -> Result<EmbeddingRoute, EmbeddingRouteError> {
+    async fn route(&self, _owner: &crate::OwnerId) -> Result<EmbeddingRoute, EmbeddingRouteError> {
         Ok(EmbeddingRoute::current(self.client.clone()))
     }
 }

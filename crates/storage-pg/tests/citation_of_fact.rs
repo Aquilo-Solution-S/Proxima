@@ -4,7 +4,7 @@
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{CitationPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{AccessKind, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -39,7 +39,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         let _seed = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
@@ -50,7 +50,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(&hash)
         .fetch_one(pool)
         .await?;

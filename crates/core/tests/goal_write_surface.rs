@@ -7,8 +7,8 @@ use proxima_core::verbs::goal_write::{
     GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, IdempotencyKey,
 };
 use proxima_core::{
-    FlavorRegistry, GoalPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
-    SchemaVersion, TrimmedLenViolation, UserId,
+    FlavorRegistry, GoalPayload, MemoryId, OwnerId, PayloadKeyBuilder, SchemaId, SchemaVersion,
+    TrimmedLenViolation, UserId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -167,7 +167,7 @@ fn a_wake_tool_id_is_bounded_in_the_unit_its_message_names() {
 
 #[test]
 fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_target() {
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
     let request_id = IdempotencyKey::new("onboarding:initial-goal:1").expect("stable key");
 

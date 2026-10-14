@@ -13,6 +13,41 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.30
+
+Existing v0.0.29 databases upgrade in place, in version order. The release
+ships one additive core migration and one code-flavor migration. An owner is
+one owner id, a bare UUID; the kind (user or group) lives only in
+`proxima_core.owners.kind`.
+
+| Lane | Migration |
+|---|---|
+| Core | `0027_v033_owner_id.sql`: `owners_owner_id_kind_key UNIQUE (owner_id, kind)`; every group a membership names is registered as `group` (the upgrade stops if a membership names an id registered as a user); `group_memberships.group_kind` (always `group`, `group_memberships_group_kind_chk`) with `group_memberships_group_registered_fk (group_id, group_kind) → owners (owner_id, kind)`; `owner_kind` dropped from `delegated_authority_grants`; `source_cursors` keyed `(owner_id, source)`; `publication_origin.original_owner_kind` and its check dropped, `publication_origin_owner_source_idx` rebuilt on `(original_owner_id, source_id, t)` |
+| Code flavor | `20261014000020_v033_owner_id.sql`: `owner_kind` dropped from `proxima_code.repos` and `repo_ingestion_runs`; `repos_pkey (owner_id, repo_id)`, `repos_unique_path`, the two run indexes and `runs_repo_fk` rebuilt without it |
+
+**Registry.** A group is registered when it is created (its first admin or
+first member); a user when first seen. Only three checks read the kind: the
+forwarder policy (a role only in a registered group), the erase precondition
+(a user's id needs the host's drop proof, a group's needs zero members, which
+ever erase path names it), and the membership foreign key above.
+
+**Fences.** The owner, source and scope advisory-lock keys are built from the
+bare id (`proxima-owner-fence:<uuid>`). Stop every older binary before the
+upgrade: an older binary's fence no longer excludes a newer one.
+
+**Hashes.** `FactReceiptId`, derived and interpretation ids and the code repo
+fingerprint hash the bare id. **A replay across the upgrade no longer
+deduplicates:** an ingest replayed after the upgrade with the same idempotency
+key as one made before it mints a new id instead of returning the old one.
+
+**Wire.** `X-Proxima-Owner`, MCP space keys, `core_transfer.to_owner`, the
+membership tool's `group`, the search output `owner`, CloudEvents
+`proximaowner` and change events carry the bare UUID. The old
+`personal:<uuid>` / `group:<uuid>` spellings are refused; there is no alias.
+
+Re-running either file changes nothing: every constraint and column is added
+or dropped only when needed.
+
 ## v0.0.28
 
 Existing v0.0.27 databases upgrade in place, in version order. The release

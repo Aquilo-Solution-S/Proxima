@@ -97,16 +97,14 @@ impl std::fmt::Display for ScopeRef {
 /// Every name storage needs is here, and storage spells none of its own:
 /// the liveness probe is generated as
 /// `SELECT EXISTS(SELECT 1 FROM <registry_table>
-///                 WHERE <owner_kind_column> = $1
-///                   AND <owner_id_column> = $2
-///                   AND <id_column> = $3)`,
+///                 WHERE <owner_id_column> = $1
+///                   AND <id_column> = $2)`,
 /// which is why a renamed column is a declaration edit and not a second
 /// place to keep in sync.
 ///
-/// The owner is TWO columns because an [`crate::Owner`] is a kind and an
-/// id, and both are in the key of every flavor registry in the tree. A
-/// scope id that somehow appeared under two owners must not serialize them
-/// — the same reason the owner portion is repeated in the source fence key.
+/// The owner is one column, the [`crate::OwnerId`]'s UUID. A scope id that
+/// somehow appeared under two owners must not serialize them — the same
+/// reason the owner portion is repeated in the source fence key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeDecl {
     pub kind: ScopeKind,
@@ -114,8 +112,6 @@ pub struct ScopeDecl {
     pub registry_table: &'static str,
     /// Column holding the scope id.
     pub id_column: &'static str,
-    /// Column holding the owner kind discriminant.
-    pub owner_kind_column: &'static str,
     /// Column holding the owner id.
     pub owner_id_column: &'static str,
 }
@@ -124,7 +120,7 @@ impl ScopeDecl {
     /// Names a declaration must satisfy before storage will splice it.
     ///
     /// Core cannot reach `PgIdent` (that is a backend concern), so it checks
-    /// the shape every backend needs: a qualified table and three non-empty
+    /// the shape every backend needs: a qualified table and two non-empty
     /// column names. The backend validates the identifiers again at the
     /// splice; this is the freeze-time refusal that names the DECLARATION
     /// rather than failing at the first write.
@@ -136,7 +132,7 @@ impl ScopeDecl {
         if !self.registry_table.contains('.') {
             return Some("registry table must be schema-qualified");
         }
-        for column in [self.id_column, self.owner_kind_column, self.owner_id_column] {
+        for column in [self.id_column, self.owner_id_column] {
             if column.is_empty() {
                 return Some("scope registry column names must not be empty");
             }
@@ -183,7 +179,6 @@ mod tests {
             kind: KIND,
             registry_table: "repos",
             id_column: "repo_id",
-            owner_kind_column: "owner_kind",
             owner_id_column: "owner_id",
         };
         assert_eq!(
@@ -206,7 +201,6 @@ mod tests {
             kind: KIND,
             registry_table: "proxima_code.repos",
             id_column: "",
-            owner_kind_column: "owner_kind",
             owner_id_column: "owner_id",
         };
         assert_eq!(

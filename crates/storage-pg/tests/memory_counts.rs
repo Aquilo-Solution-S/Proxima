@@ -11,7 +11,7 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, EdgeEndpoint, Engine, EntityKind, FlavorRegistry, GroupId,
-    MemoryId, OwnerRef, Role, SchemaId, SchemaVersion, UserId,
+    MemoryId, OwnerId, Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -62,7 +62,7 @@ fn seeded_counts(extra_facts: u64) -> MemoryCounts {
 /// rows); an Abstraction over that series and a Perspective over the
 /// Abstraction; a Goal written Active then Achieved on one handle and a second
 /// Paused Goal (two Goal heads over three rows).
-async fn seed(pg: &PgStorage, owner: OwnerRef, extra_facts: u64) -> TestResult<Seeded> {
+async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Seeded> {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let forgettable = pg
         .ingest_fact_atomic(&permit, &memory("fact", None), None)
@@ -118,12 +118,12 @@ async fn seed(pg: &PgStorage, owner: OwnerRef, extra_facts: u64) -> TestResult<S
 
 /// Rows of `proxima_core.memory` for one owner and kind: what counting the
 /// versions instead of the heads would report.
-async fn memory_rows(pg: &PgStorage, owner: OwnerRef, kind: &str) -> TestResult<u64> {
+async fn memory_rows(pg: &PgStorage, owner: OwnerId, kind: &str) -> TestResult<u64> {
     let rows: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint FROM proxima_core.memory
           WHERE owner_id = $1 AND kind = $2::proxima_core.memory_kind",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(kind)
     .fetch_one(pg.pool_for_tests())
     .await?;
@@ -135,13 +135,13 @@ fn engine(pg: &PgStorage) -> Engine {
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
-fn personal() -> (UserId, OwnerRef) {
+fn personal() -> (UserId, OwnerId) {
     let user = UserId::new(Uuid::now_v7());
-    (user, OwnerRef::Personal(user))
+    (user, OwnerId::from(user))
 }
 
-fn group() -> OwnerRef {
-    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
+fn group() -> OwnerId {
+    OwnerId::from(GroupId::new(Uuid::now_v7()))
 }
 
 fn sum(a: MemoryCounts, b: MemoryCounts) -> MemoryCounts {

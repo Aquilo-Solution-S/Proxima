@@ -17,7 +17,7 @@ use proxima_core::{
     Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient, EmbeddingRouter,
     FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig, ToolScope,
 };
-use proxima_core::{EngineHandle, Owner};
+use proxima_core::{EngineHandle, OwnerId};
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
     body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
@@ -128,7 +128,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
-    pub fn owner(mut self, owner: Owner) -> Self {
+    pub fn owner(mut self, owner: OwnerId) -> Self {
         self.overlay = self.overlay.owner(owner);
         self
     }
@@ -1042,7 +1042,7 @@ fn runtime_owner_access(
     host: Option<Arc<dyn OwnerAccessPort>>,
     forwarder: Option<ForwarderPolicy>,
 ) -> Arc<dyn OwnerAccessPort> {
-    let port = host.unwrap_or_else(|| {
+    let resolver = {
         let host = app_ctx.host();
         Arc::new(match &host.platform_scope {
             Some(scope) => {
@@ -1050,9 +1050,12 @@ fn runtime_owner_access(
             }
             None => PgOwnerAccessResolver::new(host.pool.clone()),
         })
-    });
+    };
+    let port: Arc<dyn OwnerAccessPort> = host.unwrap_or_else(|| resolver.clone());
     match forwarder {
-        Some(policy) => policy.wrap(port),
+        // The registry is always this runtime's own: the kind lives only in
+        // `proxima_core.owners`, whatever port resolves memberships.
+        Some(policy) => policy.wrap(port, resolver),
         None => port,
     }
 }
@@ -1275,7 +1278,7 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::{
         AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
-        FlavorRegistryError, Owner, Role, UserId,
+        FlavorRegistryError, OwnerId,
     };
     use proxima_storage_pg::PgPoolConfig;
     use uuid::Uuid;
@@ -1426,29 +1429,20 @@ mod tests {
     }
 
     struct StubAuth {
-        owner: Owner,
+        owner: OwnerId,
     }
 
     #[async_trait]
     impl Authenticator for StubAuth {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
-            let context = match self.owner {
-                Owner::Personal(subject) => {
-                    AuthzContext::for_subject(subject, AuthPath::HostBearer)
-                }
-                Owner::Group(group) => AuthzContext::for_subject_with_role(
-                    UserId::new(group.into_inner()),
-                    [(self.owner, Role::admin())],
-                    AuthPath::HostBearer,
-                ),
-            };
+            let context = AuthzContext::for_subject(self.owner.as_user(), AuthPath::HostBearer);
             Ok(context
                 .narrowed_to_owner(self.owner)
                 .expect("stub owner is self-accessible"))
         }
     }
 
-    fn owner() -> Owner {
+    fn owner() -> OwnerId {
         company_owner(Uuid::now_v7())
     }
 

@@ -12,7 +12,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EdgeEndpoint, EntityKind, GoalChange, GoalId, MemoryId, Owner, SchemaId, SchemaVersion,
+    EdgeEndpoint, EntityKind, GoalChange, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion,
     StorageError,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};

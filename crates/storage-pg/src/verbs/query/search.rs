@@ -52,7 +52,7 @@ use proxima_core::verbs::query::{
     SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
 };
 use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
-use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
+use proxima_core::{MemoryId, OwnerId, SchemaId, StorageError};
 use sqlx::PgConnection;
 
 use super::embedding_candidates::{
@@ -439,7 +439,7 @@ async fn scan_one_flavor_on_connection(
         .read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let schema_ids: Vec<&str> = flavor
         .schemas
@@ -812,7 +812,7 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 /// these predicates the window is the global top-`overfetch` of the
 /// ADMISSIBLE set, and the top-`limit` of an admissible set is contained in
 /// its own top-`overfetch` whenever `overfetch >= limit`, which
-/// [`overfetch`] guarantees. Owner, `since` and `until` are already row
+/// [`overfetch`] guarantees. owner, `since` and `until` are already row
 /// predicates on the candidate side, and `schema_id` narrows the
 /// participating schema set in `core_search_flavors` before a statement is
 /// rendered. That the list is complete is checked mechanically by
@@ -1128,7 +1128,7 @@ async fn scan_embeddings_on_connection(
         .read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let schema_sets: Vec<Vec<&str>> = flavors
         .iter()
@@ -1194,7 +1194,7 @@ async fn admit_hits_on_connection(
         .read_owners
         .iter()
         .copied()
-        .map(OwnerRef::stored_owner_id)
+        .map(OwnerId::into_inner)
         .collect();
     let hit_ts: Vec<uuid::Uuid> = hits.keys().copied().collect();
     let sql = search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly));
@@ -1374,7 +1374,7 @@ mod tests {
     const D1024: super::Lane = super::Lane::of(proxima_core::EmbeddingDim::D1024);
 
     use super::{
-        EntityKind, MemorySearchRequest, OwnerRef, SearchMode, SearchOrder, SupersessionStatus,
+        EntityKind, MemorySearchRequest, OwnerId, SearchMode, SearchOrder, SupersessionStatus,
         TagMatch,
     };
 
@@ -1828,10 +1828,8 @@ mod tests {
     /// A request the builders can render every clause of.
     pub(super) fn request_with_tags() -> MemorySearchRequest {
         MemorySearchRequest {
-            owner: OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::nil())),
-            read_owners: vec![OwnerRef::Personal(proxima_core::UserId::new(
-                uuid::Uuid::nil(),
-            ))],
+            owner: OwnerId::from(proxima_core::UserId::new(uuid::Uuid::nil())),
+            read_owners: vec![OwnerId::from(proxima_core::UserId::new(uuid::Uuid::nil()))],
             query: "needle".into(),
             mode: SearchMode::Lexical,
             supersession: SupersessionStatus::HeadsOnly,

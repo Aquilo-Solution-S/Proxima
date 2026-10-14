@@ -16,7 +16,7 @@ use proxima::{
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallRecord};
 use proxima_core::{
-    ColdObjectStore, Engine, McpCallLogInput, MemoryHydrationStatus, Owner, ProtocolError, Role,
+    ColdObjectStore, Engine, McpCallLogInput, MemoryHydrationStatus, OwnerId, ProtocolError, Role,
     UserId,
 };
 use proxima_pg_testkit::db_url;
@@ -50,7 +50,7 @@ impl FlavorApp for EmptyApp {
     }
 }
 
-fn admin_authz_for(owner: Owner) -> AuthzContext {
+fn admin_authz_for(owner: OwnerId) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(
         AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
@@ -62,7 +62,7 @@ fn admin_authz_for(owner: Owner) -> AuthzContext {
     )
 }
 
-fn call(owner: &Owner, at: time::OffsetDateTime) -> McpCallLogInput {
+fn call(owner: &OwnerId, at: time::OffsetDateTime) -> McpCallLogInput {
     McpCallLogInput {
         owner: *owner,
         actor_oid: "oid-1".into(),
@@ -82,7 +82,7 @@ fn call(owner: &Owner, at: time::OffsetDateTime) -> McpCallLogInput {
 async fn history(
     engine: &Engine,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
 ) -> Result<Vec<McpCallRecord>, ProtocolError> {
     let response = proxima::read_mcp_call_history(
         engine,

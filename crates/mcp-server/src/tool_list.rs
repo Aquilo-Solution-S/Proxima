@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use proxima_core::Owner;
+use proxima_core::OwnerId;
 use rmcp::service::{Peer, RoleServer, SubscriptionSink};
 
 /// Tells one owner's connected MCP clients that their tool list changed.
@@ -36,7 +36,7 @@ pub struct ToolListNotifier {
 #[derive(Default)]
 struct Inner {
     next_id: AtomicU64,
-    listeners: Mutex<HashMap<Owner, Vec<(u64, Listener)>>>,
+    listeners: Mutex<HashMap<OwnerId, Vec<(u64, Listener)>>>,
 }
 
 #[derive(Clone)]
@@ -78,7 +78,7 @@ impl ToolListNotifier {
     /// Send `notifications/tools/list_changed` to every live listener of
     /// `owner` and to no one else. Returns how many it reached; a listener
     /// that can no longer be reached is dropped.
-    pub async fn notify(&self, owner: &Owner) -> usize {
+    pub async fn notify(&self, owner: &OwnerId) -> usize {
         let listeners = {
             let mut map = self.lock();
             let Some(entries) = map.get_mut(owner) else {
@@ -98,7 +98,7 @@ impl ToolListNotifier {
         reached
     }
 
-    pub(crate) fn register_session(&self, owner: Owner, peer: Peer<RoleServer>) {
+    pub(crate) fn register_session(&self, owner: OwnerId, peer: Peer<RoleServer>) {
         self.insert(owner, Listener::Session(peer));
     }
 
@@ -106,7 +106,7 @@ impl ToolListNotifier {
     /// the stream ends.
     pub(crate) fn register_subscription(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         sink: SubscriptionSink,
     ) -> Registration {
         let id = self.insert(owner, Listener::Subscription(sink));
@@ -117,7 +117,7 @@ impl ToolListNotifier {
         }
     }
 
-    fn insert(&self, owner: Owner, listener: Listener) -> u64 {
+    fn insert(&self, owner: OwnerId, listener: Listener) -> u64 {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let mut map = self.lock();
         let entries = map.entry(owner).or_default();
@@ -128,7 +128,7 @@ impl ToolListNotifier {
         id
     }
 
-    fn remove(&self, owner: &Owner, id: u64) {
+    fn remove(&self, owner: &OwnerId, id: u64) {
         let mut map = self.lock();
         if let Some(entries) = map.get_mut(owner) {
             entries.retain(|(entry, _)| *entry != id);
@@ -140,7 +140,7 @@ impl ToolListNotifier {
 
     /// No code holding this lock can panic mid-update, so a poisoned map
     /// is still consistent.
-    fn lock(&self) -> MutexGuard<'_, HashMap<Owner, Vec<(u64, Listener)>>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<OwnerId, Vec<(u64, Listener)>>> {
         self.inner
             .listeners
             .lock()
@@ -152,7 +152,7 @@ impl ToolListNotifier {
 /// deregisters the stream.
 pub(crate) struct Registration {
     notifier: ToolListNotifier,
-    owner: Owner,
+    owner: OwnerId,
     id: u64,
 }
 

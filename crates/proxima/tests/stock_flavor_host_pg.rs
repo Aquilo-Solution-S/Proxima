@@ -114,7 +114,7 @@ impl Tool for Probe {
                 header_names: headers
                     .map(|headers| headers.iter().map(|(name, _)| name.to_owned()).collect())
                     .unwrap_or_default(),
-                owner: owner.external_key(),
+                owner: owner.to_string(),
                 role: ctx
                     .authz()
                     .role_for_owner(&owner)
@@ -299,6 +299,27 @@ impl Stack {
         Ok((running, format!("http://{addr}")))
     }
 
+    /// A fresh Group id, registered as a Group the way a host creates one:
+    /// a forwarder holds its fixed role only on a registered Group.
+    async fn new_group(&self) -> TestResult<Uuid> {
+        let group = Uuid::now_v7();
+        let pool = sqlx::PgPool::connect(self.database.platform_url()).await?;
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group'::proxima_core.owner_kind)",
+        )
+        .bind(group)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        pool.close().await;
+        Ok(group)
+    }
+
     fn cleanup(self) {
         self.idp.server.abort();
         // The clone drops with `self`.
@@ -306,7 +327,7 @@ impl Stack {
 }
 
 fn group_key(group: Uuid) -> String {
-    format!("group:{group}")
+    group.to_string()
 }
 
 // --- MCP over HTTP ---------------------------------------------------------
@@ -435,7 +456,7 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
     let result: TestResult = async {
         let (running, base) = stack.boot(&[]).await?;
         let client = reqwest::Client::new();
-        let group = Uuid::now_v7();
+        let group = stack.new_group().await?;
         let forwarder = stack.idp.bearer(FORWARDER_SUB)?;
 
         let session = open_session(&client, &base, &forwarder, &group_key(group)).await?;
@@ -477,13 +498,7 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
         // A mapped subject that is not a forwarder: its token is good for its
         // own owner, and refused for the Group it does not belong to.
         let member = stack.idp.bearer(MEMBER_SUB)?;
-        open_session(
-            &client,
-            &base,
-            &member,
-            &format!("personal:{}", stack.member),
-        )
-        .await?;
+        open_session(&client, &base, &member, &stack.member.to_string()).await?;
         let refused = initialize(&client, &base, &member, &group_key(group)).await?;
         assert_eq!(
             refused.status(),
@@ -508,7 +523,7 @@ async fn a_viewer_forwarder_is_refused_the_write_an_editor_forwarder_gets() {
     let result: TestResult = async {
         let (running, base) = stack.boot(&[("PROXIMA_FORWARDER_ROLE", "viewer")]).await?;
         let client = reqwest::Client::new();
-        let group = Uuid::now_v7();
+        let group = stack.new_group().await?;
         let forwarder = stack.idp.bearer(FORWARDER_SUB)?;
 
         let session = open_session(&client, &base, &forwarder, &group_key(group)).await?;
@@ -651,7 +666,7 @@ async fn sigterm_drains_the_request_in_flight_and_exits_ok() {
         let (running, base) = stack.boot(&[]).await?;
         let addr = running.mcp_addr().ok_or("MCP listener did not bind")?;
         let bearer = stack.idp.bearer(FORWARDER_SUB)?;
-        let owner = group_key(Uuid::now_v7());
+        let owner = group_key(stack.new_group().await?);
 
         let in_flight = tokio::spawn({
             let url = format!("{base}{SLOW_PATH}");

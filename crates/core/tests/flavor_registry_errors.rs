@@ -7,7 +7,7 @@ use proxima_core::mcp::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, Owner,
+    AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, OwnerId,
     SchemaId, SchemaVersion, ScopeKeyError, ScopeKeyPart,
 };
 
@@ -439,7 +439,11 @@ stub_tool!(
 struct TestResolver;
 
 impl OwnerResolver for TestResolver {
-    fn resolve(&self, _authz: &AuthzContext, requested: &Owner) -> Result<Owner, ProtocolError> {
+    fn resolve(
+        &self,
+        _authz: &AuthzContext,
+        requested: &OwnerId,
+    ) -> Result<OwnerId, ProtocolError> {
         Ok(*requested)
     }
 }

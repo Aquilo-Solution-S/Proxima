@@ -8,7 +8,7 @@
 
 use std::time::SystemTime;
 
-use crate::{AccessKind, GroupId, OwnerRef, OwnerRoles, Role, UserId};
+use crate::{AccessKind, GroupId, OwnerId, OwnerRoles, Role, UserId};
 
 /// Server-authenticated owner authority carried alongside an [`AuthzContext`](crate::AuthzContext).
 ///
@@ -19,7 +19,7 @@ use crate::{AccessKind, GroupId, OwnerRef, OwnerRoles, Role, UserId};
 pub struct OwnerScope {
     pub(crate) roles: OwnerRoles,
     expires_at: Option<SystemTime>,
-    selected: Option<OwnerRef>,
+    selected: Option<OwnerId>,
 }
 
 impl OwnerScope {
@@ -44,7 +44,7 @@ impl OwnerScope {
         })
     }
 
-    pub(crate) fn narrow(&self, owner: OwnerRef) -> Option<Self> {
+    pub(crate) fn narrow(&self, owner: OwnerId) -> Option<Self> {
         let subject = self.roles.subject();
         let role = self.roles.role_for(&owner)?;
         Some(Self {
@@ -71,22 +71,22 @@ impl OwnerScope {
     }
 
     #[must_use]
-    pub fn role_for_owner(&self, owner: &OwnerRef) -> Option<Role> {
+    pub fn role_for_owner(&self, owner: &OwnerId) -> Option<Role> {
         self.roles.role_for(owner)
     }
 
     #[must_use]
-    pub fn may_read(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn may_read(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         !self.is_expired() && self.roles.may_read(owner, kind)
     }
 
     #[must_use]
-    pub fn may_write(&self, owner: &OwnerRef, kind: AccessKind) -> bool {
+    pub fn may_write(&self, owner: &OwnerId, kind: AccessKind) -> bool {
         !self.is_expired() && self.roles.may_write(owner, kind)
     }
 
     #[must_use]
-    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+    pub fn readable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
         if self.is_expired() {
             Vec::new()
         } else {
@@ -95,7 +95,7 @@ impl OwnerScope {
     }
 
     #[must_use]
-    pub fn managed_owners(&self) -> Vec<OwnerRef> {
+    pub fn managed_owners(&self) -> Vec<OwnerId> {
         self.readable_owners(AccessKind::Fact)
             .into_iter()
             .filter(|owner| self.role_for_owner(owner).is_some_and(Role::manages))
@@ -103,7 +103,7 @@ impl OwnerScope {
     }
 
     #[must_use]
-    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerRef> {
+    pub fn writable_owners(&self, kind: AccessKind) -> Vec<OwnerId> {
         if self.is_expired() {
             Vec::new()
         } else {
@@ -122,12 +122,12 @@ mod tests {
         let group = GroupId::new(uuid::Uuid::now_v7());
         let other = GroupId::new(uuid::Uuid::now_v7());
         let roles =
-            OwnerRoles::for_subject(subject, [(OwnerRef::Group(group), Role::editor())]).unwrap();
+            OwnerRoles::for_subject(subject, [(OwnerId::from(group), Role::editor())]).unwrap();
         let original = OwnerScope::from_verified_roles(roles, None);
-        let narrowed = original.narrow(OwnerRef::Group(group)).unwrap();
-        assert!(narrowed.narrow(OwnerRef::Personal(subject)).is_none());
+        let narrowed = original.narrow(OwnerId::from(group)).unwrap();
+        assert!(narrowed.narrow(OwnerId::from(subject)).is_none());
         assert!(narrowed.add_group_role(other, Role::admin()).is_none());
-        assert!(narrowed.narrow(OwnerRef::Group(group)).is_some());
-        assert!(original.narrow(OwnerRef::Personal(subject)).is_some());
+        assert!(narrowed.narrow(OwnerId::from(group)).is_some());
+        assert!(original.narrow(OwnerId::from(subject)).is_some());
     }
 }

@@ -22,7 +22,7 @@ use proxima_core::storage_ports::{
     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStatePayloadOwners,
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
-use proxima_core::{Owner, StorageError};
+use proxima_core::{OwnerId, StorageError};
 use sqlx::{Postgres, Transaction};
 
 use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
@@ -35,15 +35,15 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// ```compile_fail
 /// # use async_trait::async_trait;
 /// # use proxima_core::storage_ports::{HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit, StateSurfaceName};
-/// # use proxima_core::{Owner, StorageError};
+/// # use proxima_core::{OwnerId, StorageError};
 /// # use proxima_storage_pg::{AgreedCommand, HostStateHandler};
 /// # use sqlx::{Postgres, Transaction};
-/// # struct Bump { owner: Owner }
+/// # struct Bump { owner: OwnerId }
 /// # impl HostStateCommand for Bump {
 /// #     const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("example");
 /// #     const TABLES: &'static [StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
 /// #     type Outcome = u8;
-/// #     fn owner(&self) -> Owner { self.owner }
+/// #     fn owner(&self) -> OwnerId { self.owner }
 /// # }
 /// struct BumpHandler;
 ///
@@ -104,7 +104,7 @@ impl<C: HostStatePayloadOwners> AgreedCommand<C> {
     /// Lean `PayloadAllowed`: the command's owner and every owner its payload
     /// names equal the owner the engine stamped on the permit. The one place
     /// this is checked, and the only way to build the value.
-    fn agree(command: C, stamped: &Owner) -> Result<Self, StorageError> {
+    fn agree(command: C, stamped: &OwnerId) -> Result<Self, StorageError> {
         if command.owner() == *stamped
             && command
                 .payload_owners()
@@ -257,7 +257,7 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 ///     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStatePayloadOwners,
 ///     HostStateWritePermit, StateSurfaceName,
 /// };
-/// use proxima_core::{Owner, StorageError};
+/// use proxima_core::{OwnerId, StorageError};
 /// use proxima_storage_pg::{
 ///     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
 /// };
@@ -267,20 +267,20 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
 ///
 /// struct Bump {
-///     owner: Owner,
+///     owner: OwnerId,
 /// }
 ///
 /// impl HostStateCommand for Bump {
 ///     const PARTICIPANT_ID: HostStateParticipantId = PARTICIPANT;
 ///     const TABLES: &'static [StateSurfaceName] = TABLES;
 ///     type Outcome = u8;
-///     fn owner(&self) -> Owner {
+///     fn owner(&self) -> OwnerId {
 ///         self.owner
 ///     }
 /// }
 ///
 /// impl HostStatePayloadOwners for Bump {
-///     fn payload_owners(&self) -> Vec<Owner> {
+///     fn payload_owners(&self) -> Vec<OwnerId> {
 ///         Vec::new()
 ///     }
 /// }
@@ -312,17 +312,17 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// #     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit,
 /// #     StateSurfaceName,
 /// # };
-/// # use proxima_core::{Owner, StorageError};
+/// # use proxima_core::{OwnerId, StorageError};
 /// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgCommandDispatcher};
 /// # use sqlx::{Postgres, Transaction};
 /// # const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("example");
 /// # const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
-/// # struct Bump { owner: Owner }
+/// # struct Bump { owner: OwnerId }
 /// # impl HostStateCommand for Bump {
 /// #     const PARTICIPANT_ID: HostStateParticipantId = PARTICIPANT;
 /// #     const TABLES: &'static [StateSurfaceName] = TABLES;
 /// #     type Outcome = u8;
-/// #     fn owner(&self) -> Owner { self.owner }
+/// #     fn owner(&self) -> OwnerId { self.owner }
 /// # }
 /// # struct BumpHandler;
 /// # #[async_trait]
@@ -489,12 +489,12 @@ mod tests {
                 const PARTICIPANT_ID: HostStateParticipantId = $participant;
                 const TABLES: &'static [StateSurfaceName] = $tables;
                 type Outcome = ();
-                fn owner(&self) -> Owner {
-                    Owner::Group(GroupId::new(Uuid::nil()))
+                fn owner(&self) -> OwnerId {
+                    OwnerId::from(GroupId::new(Uuid::nil()))
                 }
             }
             impl HostStatePayloadOwners for $name {
-                fn payload_owners(&self) -> Vec<Owner> {
+                fn payload_owners(&self) -> Vec<OwnerId> {
                     Vec::new()
                 }
             }
@@ -592,30 +592,30 @@ mod tests {
 
     #[derive(Debug)]
     struct Naming {
-        owner: Owner,
-        payload: Vec<Owner>,
+        owner: OwnerId,
+        payload: Vec<OwnerId>,
     }
 
     impl HostStateCommand for Naming {
         const PARTICIPANT_ID: HostStateParticipantId = PARTICIPANT;
         const TABLES: &'static [StateSurfaceName] = &[TABLE_A];
         type Outcome = ();
-        fn owner(&self) -> Owner {
+        fn owner(&self) -> OwnerId {
             self.owner
         }
     }
 
     impl HostStatePayloadOwners for Naming {
-        fn payload_owners(&self) -> Vec<Owner> {
+        fn payload_owners(&self) -> Vec<OwnerId> {
             self.payload.clone()
         }
     }
 
     #[test]
     fn the_command_owner_and_every_payload_owner_must_equal_the_stamped_owner() {
-        let stamped = Owner::Group(GroupId::new(Uuid::from_u128(1)));
-        let foreign = Owner::Personal(UserId::new(Uuid::from_u128(2)));
-        let agreeing = |payload: Vec<Owner>| {
+        let stamped = OwnerId::from(GroupId::new(Uuid::from_u128(1)));
+        let foreign = OwnerId::from(UserId::new(Uuid::from_u128(2)));
+        let agreeing = |payload: Vec<OwnerId>| {
             AgreedCommand::agree(
                 Naming {
                     owner: stamped,

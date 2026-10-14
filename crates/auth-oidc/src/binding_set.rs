@@ -385,7 +385,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
     use proxima_core::{
-        AccessError, ActionName, AuthPath, OwnerRef, OwnerRoles, Role, ScopeKey, ToolName, UserId,
+        AccessError, ActionName, AuthPath, OwnerId, OwnerRoles, Role, ScopeKey, ToolName, UserId,
         access::AccessKind,
     };
     use serde::Serialize;
@@ -442,13 +442,13 @@ mod tests {
             if subject == self.agent {
                 return OwnerRoles::for_subject(
                     subject,
-                    [(OwnerRef::Group(self.agent_group), Role::editor())],
+                    [(OwnerId::from(self.agent_group), Role::editor())],
                 );
             }
             if subject == self.owner {
                 return OwnerRoles::for_subject(
                     subject,
-                    [(OwnerRef::Group(self.owner_group), Role::admin())],
+                    [(OwnerId::from(self.owner_group), Role::admin())],
                 );
             }
             OwnerRoles::for_subject(subject, [])
@@ -620,7 +620,7 @@ mod tests {
             .expect("agent binding authenticates");
 
         assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
-        assert!(ctx.may_write(&OwnerRef::Group(agent_group), AccessKind::Perspective));
+        assert!(ctx.may_write(&OwnerId::from(agent_group), AccessKind::Perspective));
         assert!(allows_leaf(ctx.tool_scope(), "core_goal", "set"));
         assert!(!ctx.tool_scope().allows(&key("core_membership")));
         assert!(!allows_leaf(
@@ -875,7 +875,7 @@ mod tests {
                 Self::Widen => AuthzContext::for_subject_with_role(
                     subject,
                     [(
-                        OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7())),
+                        OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7())),
                         Role::admin(),
                     )],
                     AuthPath::HostBearer,

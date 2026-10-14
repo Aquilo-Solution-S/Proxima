@@ -1,6 +1,6 @@
 //! Storage is the only writer of the transaction-local owner scope.
 
-use proxima_core::{AccessKind, OwnerRef, OwnerScope, StorageError};
+use proxima_core::{AccessKind, OwnerId, OwnerScope, StorageError};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -25,8 +25,8 @@ pub async fn begin_owner_transaction(
     Ok(transaction)
 }
 
-fn owner_ids(owners: Vec<OwnerRef>) -> Vec<Uuid> {
-    owners.into_iter().map(OwnerRef::stored_owner_id).collect()
+fn owner_ids(owners: Vec<OwnerId>) -> Vec<Uuid> {
+    owners.into_iter().map(OwnerId::into_inner).collect()
 }
 
 pub(crate) async fn finish_transaction<T>(

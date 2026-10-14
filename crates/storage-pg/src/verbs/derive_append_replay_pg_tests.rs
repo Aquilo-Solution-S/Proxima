@@ -9,7 +9,7 @@ use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerRef, SchemaId,
+    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerId, SchemaId,
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -34,7 +34,7 @@ fn fact_draft() -> FactWriteCommand {
     }
 }
 
-fn derived_draft(owner: OwnerRef, handle: Uuid) -> DerivedDraft<'static> {
+fn derived_draft(owner: OwnerId, handle: Uuid) -> DerivedDraft<'static> {
     DerivedDraft {
         memory_id: handle,
         owner,
@@ -111,7 +111,7 @@ async fn fresh_pg() -> (String, PgStorage) {
 async fn same_origins_and_refs_replay() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
         let origin = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
@@ -155,8 +155,8 @@ async fn head_snapshot(
 async fn replay_metadata_mismatch_never_replays_or_mutates() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let other_permit = OwnerWritePermit::new_for_tests(other_owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
@@ -220,7 +220,7 @@ async fn replay_metadata_mismatch_never_replays_or_mutates() {
 async fn same_origins_different_refs_is_conflict() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
         let origin = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
@@ -264,7 +264,7 @@ async fn same_origins_different_refs_is_conflict() {
 async fn different_origins_append_new_t() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
         let pool = pg.pool_for_tests();
         let origin_a = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;

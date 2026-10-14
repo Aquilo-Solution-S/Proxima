@@ -22,7 +22,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::MemoryId;
-use crate::owner::{OwnerRef, OwnerRefKind};
+use crate::owner::OwnerId;
 use crate::storage::StorageError;
 
 /// Fail-closed result of checking whether one exact captured Fact may still
@@ -54,7 +54,7 @@ pub trait PublicationOriginEligibilityPort: Send + Sync {
     /// Returns a storage error when the fenced check or commit fails.
     async fn check_committed(
         &self,
-        original_owner: OwnerRef,
+        original_owner: OwnerId,
         fact_id: MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError>;
 
@@ -71,7 +71,7 @@ pub trait PublicationOriginEligibilityPort: Send + Sync {
     async fn check_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        original_owner: OwnerRef,
+        original_owner: OwnerId,
         fact_id: MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError>;
 }
@@ -273,7 +273,6 @@ pub struct ClaimedPublication {
     /// `CloudEvents` `id` (`F:<uuid>`), and the key an intake deduplicates on.
     pub event_id: String,
     pub owner_id: Uuid,
-    pub owner_kind: OwnerRefKind,
     pub schema_id: String,
     pub schema_version: u32,
     pub event_type: String,

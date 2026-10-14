@@ -2,7 +2,7 @@
 
 use super::records::{RepoIngestionRun, RepoRegistryError, RunStage, RunStatus, StageCounters};
 use super::rows::RunRow;
-use proxima_core::{Owner, OwnerScope};
+use proxima_core::{OwnerId, OwnerScope};
 use proxima_storage_pg::PgPlatformScope;
 use proxima_storage_pg::begin_compatible_owner_transaction;
 use sqlx::PgPool;
@@ -27,7 +27,7 @@ pub(crate) const ABANDONED_RUN: &str =
 pub async fn start_run(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<RepoIngestionRun, RepoRegistryError> {
     let (run, _) = start_run_with_created(pool, owner_scope, owner, repo_id).await?;
@@ -54,10 +54,10 @@ pub async fn start_run(
 pub async fn start_run_with_created(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<(RepoIngestionRun, bool), RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let new_run_id = Uuid::now_v7();
 
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
@@ -74,10 +74,10 @@ pub async fn start_run_with_created(
 
     let inserted = sqlx::query_as::<_, RunRow>(
         "INSERT INTO proxima_code.repo_ingestion_runs \
-            (run_id, owner_kind, owner_id, \
+            (run_id, owner_id, \
              repo_id, status, stage) \
-         VALUES ($1, $2, $3, $4, 'queued', 'starting') \
-         ON CONFLICT (owner_kind, owner_id, repo_id) \
+         VALUES ($1, $2, $3, 'queued', 'starting') \
+         ON CONFLICT (owner_id, repo_id) \
              WHERE status IN ('queued', 'running') \
          DO NOTHING \
          RETURNING run_id, repo_id, status, stage, \
@@ -89,7 +89,6 @@ pub async fn start_run_with_created(
                    error_message, started_at, updated_at, finished_at",
     )
     .bind(new_run_id)
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .fetch_optional(&mut *tx)
@@ -108,12 +107,11 @@ pub async fn start_run_with_created(
                 chunks_source, chunks_generated, chunks_vendored, chunks_lockfile,
                 error_message, started_at, updated_at, finished_at
            FROM proxima_code.repo_ingestion_runs
-          WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
+          WHERE owner_id = $1 AND repo_id = $2
             AND status IN ('queued', 'running')
           ORDER BY started_at DESC
           LIMIT 1",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .fetch_optional(&mut *tx)
@@ -126,18 +124,17 @@ pub async fn start_run_with_created(
 
 async fn retire_stale_runs_on(
     conn: &mut sqlx::PgConnection,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<u64, sqlx::Error> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let result = sqlx::query(
         "UPDATE proxima_code.repo_ingestion_runs SET \
-            status = 'failed', error_message = $4, updated_at = now(), finished_at = now() \
-          WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3 \
+            status = 'failed', error_message = $3, updated_at = now(), finished_at = now() \
+          WHERE owner_id = $1 AND repo_id = $2 \
             AND status IN ('queued', 'running') \
-            AND updated_at < now() - make_interval(secs => $5)",
+            AND updated_at < now() - make_interval(secs => $4)",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .bind(ABANDONED_RUN)
@@ -177,10 +174,10 @@ pub async fn touch_run(
 pub async fn get_owner_run(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     run_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
@@ -191,10 +188,9 @@ pub async fn get_owner_run(
                    chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
-         WHERE run_id = $1 AND owner_kind = $2 AND owner_id = $3",
+         WHERE run_id = $1 AND owner_id = $2",
     )
     .bind(run_id)
-    .bind(kind)
     .bind(principal_id)
     .fetch_optional(&mut *tx)
     .await?;
@@ -209,10 +205,10 @@ pub async fn get_owner_run(
 pub async fn latest_run(
     pool: &PgPool,
     owner_scope: Option<&OwnerScope>,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
+    let principal_id = owner.into_inner();
     let mut tx = begin_compatible_owner_transaction(pool, owner_scope).await?;
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
@@ -223,11 +219,10 @@ pub async fn latest_run(
                    chunks_source, chunks_generated, chunks_vendored, chunks_lockfile, \
                 error_message, started_at, updated_at, finished_at \
          FROM proxima_code.repo_ingestion_runs \
-         WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3 \
+         WHERE owner_id = $1 AND repo_id = $2 \
          ORDER BY started_at DESC, run_id DESC \
          LIMIT 1",
     )
-    .bind(kind)
     .bind(principal_id)
     .bind(repo_id)
     .fetch_optional(&mut *tx)

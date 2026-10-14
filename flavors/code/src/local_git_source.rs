@@ -37,7 +37,7 @@ mod git;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, Owner, ToolError};
+use proxima_core::{AuthzContext, Cursor, Engine, MemoryId, OwnerId, ToolError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -181,7 +181,7 @@ impl<'a> CodeIngestContext<'a> {
 
     async fn file_revision_heads(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: Uuid,
         file_paths: &[String],
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
@@ -198,7 +198,7 @@ impl<'a> CodeIngestContext<'a> {
 
     async fn present_file_revision_heads_except(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: Uuid,
         keep_paths: &[String],
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
@@ -218,7 +218,7 @@ impl<'a> CodeIngestContext<'a> {
 
     async fn chunk_series_heads(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: Uuid,
         file_path: &str,
     ) -> Result<Vec<proxima_storage_pg::query::ChunkSeriesHead>, IngestError> {
@@ -232,7 +232,7 @@ impl<'a> CodeIngestContext<'a> {
     /// present chunk is absent. A chunk stored without a class is `source`.
     async fn chunk_head_classes(
         &self,
-        owner: Owner,
+        owner: OwnerId,
         repo_id: Uuid,
         file_paths: &[String],
     ) -> Result<HashMap<String, FileClass>, IngestError> {
@@ -289,12 +289,12 @@ fn file_revision_head_from_row(
 pub struct LocalGitSource {
     pub repo_id: Uuid,
     pub repo_path: PathBuf,
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 impl LocalGitSource {
     #[must_use]
-    pub fn new(repo_id: Uuid, repo_path: PathBuf, owner: Owner) -> Self {
+    pub fn new(repo_id: Uuid, repo_path: PathBuf, owner: OwnerId) -> Self {
         Self {
             repo_id,
             repo_path,

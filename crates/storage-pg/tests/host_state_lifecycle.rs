@@ -24,7 +24,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, EntityId, GroupId, MemoryId, OwnerRef, SchemaId, SchemaVersion, SourceId,
+    AccessKind, EntityId, GroupId, MemoryId, OwnerId, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
@@ -158,7 +158,7 @@ enum EraseFault {
     None,
     CallbackError,
     ForeignParticipant,
-    ForeignOwnerKind,
+    ForeignOwner,
     ForeignScope,
     ForeignPhysicalSelection,
     ForeignOriginalOwnerSelection,
@@ -181,7 +181,7 @@ enum ExportFault {
     ExtraField,
     PersistentWrite,
     ForeignParticipant,
-    ForeignOwnerKind,
+    ForeignOwner,
     MissingTable,
     DuplicateTable,
     ForeignTable,
@@ -264,7 +264,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
     ) -> Result<HostStateEraseReceipt, StorageError> {
         *self.last_request.lock().expect("request mutex") = Some(request.clone());
         let fault = *self.erase_fault.lock().expect("fault mutex");
-        let owner_id = request.owner().stored_owner_id();
+        let owner_id = request.owner().into_inner();
         let selected_ids = request
             .selected_fact_ids()
             .iter()
@@ -274,7 +274,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             .selection()
             .original_copies()
             .iter()
-            .map(|locator| locator.original_owner.stored_owner_id())
+            .map(|locator| locator.original_owner.into_inner())
             .collect::<Vec<_>>();
         let original_copy_fact_ids = request
             .selection()
@@ -473,11 +473,8 @@ impl PgHostStateLifecyclePort for Lifecycle {
             EraseFault::ForeignParticipant => {
                 receipt.participant = HostStateParticipantId::new("wrong_participant");
             }
-            EraseFault::ForeignOwnerKind => {
-                receipt.owner = match request.owner() {
-                    OwnerRef::Personal(user) => OwnerRef::Group(GroupId::new(user.into_inner())),
-                    OwnerRef::Group(group) => OwnerRef::Personal(UserId::new(group.into_inner())),
-                };
+            EraseFault::ForeignOwner => {
+                receipt.owner = OwnerId::new(Uuid::now_v7());
             }
             EraseFault::ForeignScope | EraseFault::ExactForeignScope => {
                 receipt.scope = HostStateEraseScope::WholeOwner;
@@ -491,14 +488,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             EraseFault::ForeignOriginalOwnerSelection => {
                 let mut copies = request.selection().original_copies().to_vec();
                 if let Some(locator) = copies.first_mut() {
-                    locator.original_owner = match locator.original_owner {
-                        OwnerRef::Personal(user) => {
-                            OwnerRef::Group(GroupId::new(user.into_inner()))
-                        }
-                        OwnerRef::Group(group) => {
-                            OwnerRef::Personal(UserId::new(group.into_inner()))
-                        }
-                    };
+                    locator.original_owner = OwnerId::new(Uuid::now_v7());
                 }
                 receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
                     request.selection().physical_facts().to_vec(),
@@ -550,7 +540,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                  VALUES ($1, $2, 'export-write', decode('01', 'hex'))",
             )
             .bind(Uuid::now_v7())
-            .bind(request.owner().stored_owner_id())
+            .bind(request.owner().into_inner())
             .execute(&mut **tx)
             .await
             .map_err(|error| pg_error(&error))?;
@@ -576,14 +566,14 @@ impl PgHostStateLifecyclePort for Lifecycle {
                   WHERE owner_id = $1
                   ORDER BY fact_id",
             )
-            .bind(request.owner().stored_owner_id())
+            .bind(request.owner().into_inner())
             .fetch_all(&mut **tx)
             .await
             .map_err(|error| pg_error(&error))?;
             if fault == ExportFault::ExtraField {
                 rows.push(json!({
                     "fact_id": Uuid::now_v7(),
-                    "owner_id": request.owner().stored_owner_id(),
+                    "owner_id": request.owner().into_inner(),
                     "source_id": "extra",
                     "payload": "\\x01",
                     "storage_secret": "must-not-escape"
@@ -600,11 +590,8 @@ impl PgHostStateLifecyclePort for Lifecycle {
             ExportFault::ForeignParticipant => {
                 receipt.participant = HostStateParticipantId::new("wrong_export_participant");
             }
-            ExportFault::ForeignOwnerKind => {
-                receipt.owner = match request.owner() {
-                    OwnerRef::Personal(user) => OwnerRef::Group(GroupId::new(user.into_inner())),
-                    OwnerRef::Group(group) => OwnerRef::Personal(UserId::new(group.into_inner())),
-                };
+            ExportFault::ForeignOwner => {
+                receipt.owner = OwnerId::new(Uuid::now_v7());
             }
             ExportFault::MissingTable => {
                 receipt.tables.pop();
@@ -806,7 +793,7 @@ fn draft(source_id: &str, ingest_key: &str) -> FactWriteCommand {
     }
 }
 
-async fn ingest(pg: &PgStorage, owner: OwnerRef, source: &str, key: &str) -> MemoryId {
+async fn ingest(pg: &PgStorage, owner: OwnerId, source: &str, key: &str) -> MemoryId {
     pg.ingest_fact_atomic(
         &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
         &draft(source, key),
@@ -819,7 +806,7 @@ async fn ingest(pg: &PgStorage, owner: OwnerRef, source: &str, key: &str) -> Mem
 
 async fn seed_host_fact(
     pool: &PgPool,
-    owner: OwnerRef,
+    owner: OwnerId,
     fact_id: MemoryId,
     source: &str,
     payload: &[u8],
@@ -830,7 +817,7 @@ async fn seed_host_fact(
          VALUES ($1, $2, $3, $4)",
     )
     .bind(fact_id.into_inner())
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(source)
     .bind(payload)
     .execute(pool)
@@ -838,65 +825,75 @@ async fn seed_host_fact(
     .expect("host Fact row seeded");
 }
 
-async fn seed_metadata(pool: &PgPool, owner: OwnerRef) {
+async fn seed_metadata(pool: &PgPool, owner: OwnerId) {
     seed_metadata_for_source(pool, owner, "source-a").await;
 }
 
-async fn seed_metadata_for_source(pool: &PgPool, owner: OwnerRef, source: &str) {
+async fn seed_metadata_for_source(pool: &PgPool, owner: OwnerId, source: &str) {
     sqlx::query(
         "INSERT INTO proxima_core.test_host_lifecycle_metadata (owner_id, source_id, metadata)
          VALUES ($1, $2, 'opaque')",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(source)
     .execute(pool)
     .await
     .expect("host metadata row seeded");
 }
 
-async fn seed_generic_counter_row(pool: &PgPool, owner: OwnerRef) {
+async fn seed_generic_counter_row(pool: &PgPool, owner: OwnerId) {
     sqlx::query(
         "INSERT INTO proxima_core.test_host_lifecycle_generic_rows (owner_id, value)
          VALUES ($1, 'generic')",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .execute(pool)
     .await
     .expect("generic counter row seeded");
 }
 
-fn erase_auth(owner: OwnerRef, source: Option<SourceId>) -> EraseAuthorization {
-    match (owner, source) {
-        (OwnerRef::Personal(user), None) => {
-            EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-                user_id: user,
-                drop_event_id: "test-drop".into(),
-            })
-        }
-        (OwnerRef::Personal(user), Some(source_id)) => {
+/// A user owner's erase authorization, carrying the verified drop proof.
+fn erase_auth(owner: OwnerId, source: Option<SourceId>) -> EraseAuthorization {
+    let user_id = owner.as_user();
+    match source {
+        None => EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "test-drop".into(),
+        }),
+        Some(source_id) => {
             EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
-                user_id: user,
+                user_id,
                 source_id,
                 drop_event_id: "test-drop".into(),
-            })
-        }
-        (OwnerRef::Group(group), None) => {
-            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: group })
-        }
-        (OwnerRef::Group(group), Some(source_id)) => {
-            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupSourceScope {
-                group_id: group,
-                source_id,
             })
         }
     }
 }
 
-async fn host_fact_count(pool: &PgPool, owner: OwnerRef) -> i64 {
+/// A group owner's erase authorization: no drop proof, only abandonment.
+fn group_erase_auth(owner: OwnerId) -> EraseAuthorization {
+    EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner {
+        group_id: owner.as_group(),
+    })
+}
+
+/// Register `owner` as a group, as group creation does in production.
+async fn register_group(pool: &PgPool, owner: OwnerId) {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'group'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+    )
+    .bind(owner.into_inner())
+    .execute(pool)
+    .await
+    .expect("group registers");
+}
+
+async fn host_fact_count(pool: &PgPool, owner: OwnerId) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*)::bigint FROM proxima_core.test_host_lifecycle_facts WHERE owner_id = $1",
     )
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .fetch_one(pool)
     .await
     .expect("host row count")
@@ -926,8 +923,8 @@ async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind()
     let (db_name, pg, lifecycle) = fresh_pg(5).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let source_a = SourceId::new("source-a");
         let source_b = SourceId::new("source-b");
         let hot_a = ingest(&pg, owner, source_a.as_str(), "hot-a").await;
@@ -958,15 +955,7 @@ async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind()
             host_state_scrubbed,
             ..
         } = pg
-            .erase_personal_source_scope(
-                &auth,
-                match owner {
-                    OwnerRef::Personal(id) => id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
-                &source_a,
-                pg.surfaces(),
-            )
+            .erase_personal_source_scope(&auth, owner.as_user(), &source_a, pg.surfaces())
             .await?
         else {
             panic!("source erase should complete");
@@ -1001,16 +990,14 @@ async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind()
         assert_eq!(core_fact_count(pool, hot_b).await, 1);
         assert_eq!(core_fact_count(pool, other_a).await, 1);
 
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        register_group(pool, group).await;
         let group_fact = ingest(&pg, group, "group-source", "group-fact").await;
         seed_host_fact(pool, group, group_fact, "group-source", &[9, 8, 7]).await;
         seed_metadata(pool, group).await;
         seed_generic_counter_row(pool, group).await;
         let group_export_auth = ExportAuthorization::new_for_tests(OwnerExportTarget::GroupOwner {
-            group_id: match group {
-                OwnerRef::Group(id) => id,
-                OwnerRef::Personal(_) => unreachable!(),
-            },
+            group_id: group.as_group(),
         });
         let group_bundle = pg
             .export_owner_bundle(&group_export_auth, pg.surfaces())
@@ -1018,20 +1005,13 @@ async fn source_erase_binds_exact_hot_and_cooled_fact_selection_and_owner_kind()
         assert_eq!(group_bundle.owner, group);
         assert_eq!(group_bundle.tables[FACTS_TABLE].len(), 1);
         assert!(!group_bundle.tables.contains_key(METADATA_TABLE));
-        let auth = erase_auth(group, None);
+        let auth = group_erase_auth(group);
         let OwnerEraseOutcome::Completed {
             counts,
             host_state_deleted,
             ..
         } = pg
-            .erase_group_owner(
-                &auth,
-                match group {
-                    OwnerRef::Group(id) => id,
-                    OwnerRef::Personal(_) => unreachable!(),
-                },
-                pg.surfaces(),
-            )
+            .erase_group_owner(&auth, group.as_group(), pg.surfaces())
             .await?
         else {
             panic!("group erase should complete");
@@ -1052,9 +1032,9 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let original_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let transferred_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-        let unrelated_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let original_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let transferred_owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        let unrelated_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let source = SourceId::new("combined-source");
         let both = ingest(&pg, original_owner, source.as_str(), "both-selected").await;
         let original_only =
@@ -1077,13 +1057,13 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
         // cover production capture into this same index.
         sqlx::query(
             "INSERT INTO proxima_core.publication_origin
-                 (t, original_owner_id, original_owner_kind, source_id)
+                 (t, original_owner_id, source_id)
              VALUES
-                 ($1, $2, 'personal', $4),
-                 ($3, $2, 'personal', $4)",
+                 ($1, $2, $4),
+                 ($3, $2, $4)",
         )
         .bind(both.into_inner())
-        .bind(original_owner.stored_owner_id())
+        .bind(original_owner.into_inner())
         .bind(original_only.into_inner())
         .bind(source.as_str())
         .execute(pool)
@@ -1109,10 +1089,7 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
         } = pg
             .erase_personal_source_scope(
                 &auth,
-                match original_owner {
-                    OwnerRef::Personal(id) => id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
+                original_owner.as_user(),
                 &source,
                 pg.surfaces(),
             )
@@ -1155,8 +1132,8 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
         .fetch_all(pool)
         .await?;
         let mut expected = vec![
-            (transferred_owner.stored_owner_id(), original_only.into_inner()),
-            (unrelated_owner.stored_owner_id(), unrelated.into_inner()),
+            (transferred_owner.into_inner(), original_only.into_inner()),
+            (unrelated_owner.into_inner(), unrelated.into_inner()),
         ];
         expected.sort_unstable();
         assert_eq!(remaining, expected, "the OR inverse preserves neither-selected rows");
@@ -1175,19 +1152,17 @@ async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation(
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests().clone();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let OwnerRef::Personal(user_id) = owner else {
-            unreachable!()
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let source = SourceId::new("exclusive-source-first");
         let fact = ingest(&pg, owner, source.as_str(), "exclusive-source-fact").await;
         sqlx::query(
             "INSERT INTO proxima_core.publication_origin
-                 (t, original_owner_id, original_owner_kind, source_id)
-             VALUES ($1, $2, 'personal', $3)",
+                 (t, original_owner_id, source_id)
+             VALUES ($1, $2, $3)",
         )
         .bind(fact.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(source.as_str())
         .execute(&pool)
         .await?;
@@ -1290,8 +1265,8 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other_owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let source = SourceId::new("exact-physical-source");
         let selected = ingest(&pg, owner, source.as_str(), "exact-selected").await;
         let unrelated = ingest(&pg, owner, source.as_str(), "exact-unrelated").await;
@@ -1339,13 +1314,13 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
         .await?;
         assert_eq!(
             remaining,
-            vec![(owner.stored_owner_id(), unrelated.into_inner())],
+            vec![(owner.into_inner(), unrelated.into_inner())],
             "physical selection removes every owner copy of the target and preserves other Facts"
         );
         let metadata_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
@@ -1364,19 +1339,19 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let wrong_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let wrong_owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let source = SourceId::new("exact-receipt-source");
         let selected = ingest(&pg, owner, source.as_str(), "exact-receipt-selected").await;
         seed_host_fact(pool, owner, selected, source.as_str(), &[1, 2, 3]).await;
         seed_metadata(pool, owner).await;
         sqlx::query(
             "INSERT INTO proxima_core.publication_origin
-                 (t, original_owner_id, original_owner_kind, source_id)
-             VALUES ($1, $2, 'personal', $3)",
+                 (t, original_owner_id, source_id)
+             VALUES ($1, $2, $3)",
         )
         .bind(selected.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(source.as_str())
         .execute(pool)
         .await?;
@@ -1446,7 +1421,7 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
             let metadata_payload: Vec<u8> = sqlx::query_scalar(
                 "SELECT payload FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_one(pool)
             .await?;
             assert_eq!(
@@ -1468,18 +1443,18 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let source = SourceId::new("rollback-source");
         let fact = ingest(&pg, owner, source.as_str(), "rollback-fact").await;
         seed_host_fact(pool, owner, fact, source.as_str(), &[42, 0, 254]).await;
         seed_metadata_for_source(pool, owner, source.as_str()).await;
         sqlx::query(
             "INSERT INTO proxima_core.publication_origin
-                 (t, original_owner_id, original_owner_kind, source_id)
-             VALUES ($1, $2, 'personal', $3)",
+                 (t, original_owner_id, source_id)
+             VALUES ($1, $2, $3)",
         )
         .bind(fact.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(source.as_str())
         .execute(pool)
         .await?;
@@ -1493,19 +1468,17 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
                      'com.proxima.test.lifecycle', $3, $4, $5)",
         )
         .bind(fact.into_inner())
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .bind(fact.into_inner().to_string())
         .bind(outbox_bytes.as_slice())
         .bind(outbox_digest.as_slice())
         .execute(pool)
         .await?;
-        let OwnerRef::Personal(user_id) = owner else {
-            unreachable!()
-        };
+        let user_id = owner.as_user();
         for fault in [
             EraseFault::CallbackError,
             EraseFault::ForeignParticipant,
-            EraseFault::ForeignOwnerKind,
+            EraseFault::ForeignOwner,
             EraseFault::ForeignScope,
             EraseFault::ForeignPhysicalSelection,
             EraseFault::ForeignOriginalOwnerSelection,
@@ -1528,14 +1501,14 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
             let metadata: i64 = sqlx::query_scalar(
                 "SELECT count(*)::bigint FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_one(pool)
             .await?;
             assert_eq!(metadata, 1, "metadata rolled back for {fault:?}");
             let metadata_payload: Vec<u8> = sqlx::query_scalar(
                 "SELECT payload FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
-            .bind(owner.stored_owner_id())
+            .bind(owner.into_inner())
             .fetch_one(pool)
             .await?;
             assert_eq!(metadata_payload, vec![0xaa], "scrub rolled back for {fault:?}");
@@ -1577,7 +1550,7 @@ async fn erase_receipt_separates_actual_payload_scrubbing_from_row_deletion() {
     let (db_name, pg, lifecycle) = fresh_pg(3).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let source = SourceId::new("source-a");
         let fact = ingest(&pg, owner, source.as_str(), "scrub-fact").await;
         seed_host_fact(pool, owner, fact, source.as_str(), &[0, 0x80, 0xff]).await;
@@ -1593,10 +1566,7 @@ async fn erase_receipt_separates_actual_payload_scrubbing_from_row_deletion() {
         } = pg
             .erase_personal_source_scope(
                 &auth,
-                match owner {
-                    OwnerRef::Personal(id) => id,
-                    OwnerRef::Group(_) => unreachable!(),
-                },
+                owner.as_user(),
                 &source,
                 pg.surfaces(),
             )
@@ -1613,7 +1583,7 @@ async fn erase_receipt_separates_actual_payload_scrubbing_from_row_deletion() {
         let facts = sqlx::query(
             "SELECT fact_id, payload FROM proxima_core.test_host_lifecycle_facts WHERE owner_id = $1",
         )
-        .bind(owner.stored_owner_id())
+        .bind(owner.into_inner())
         .fetch_all(pool)
         .await?;
         assert_eq!(facts.len(), 1, "scrubbing retains the host row");
@@ -1724,11 +1694,8 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
         let direct = PgStorage::connect(&db_url(&db_name)).await?;
         let direct_surfaces =
             OwnerSurfaces::try_from_surfaces(vec![FACTS_SURFACE, METADATA_SURFACE])?;
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let user_id = match owner {
-            OwnerRef::Personal(id) => id,
-            OwnerRef::Group(_) => unreachable!(),
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let erase_auth = erase_auth(owner, None);
         assert!(
             direct
@@ -1756,16 +1723,13 @@ async fn export_uses_one_detached_read_only_connection_and_allowlist() {
     let (db_name, pg, lifecycle) = fresh_pg(1).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let fact = ingest(&pg, owner, "export-source", "export-fact").await;
         let bytes = [0, 1, 0x80, 0xfe, 0xff];
         seed_host_fact(pool, owner, fact, "export-source", &bytes).await;
         seed_metadata(pool, owner).await;
         let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
-            user_id: match owner {
-                OwnerRef::Personal(id) => id,
-                OwnerRef::Group(_) => unreachable!(),
-            },
+            user_id: owner.as_user(),
         });
         let bundle = pg.export_owner_bundle(&auth, pg.surfaces()).await?;
         let rows = bundle.tables.get(FACTS_TABLE).expect("host Facts exported");
@@ -1787,7 +1751,7 @@ async fn export_uses_one_detached_read_only_connection_and_allowlist() {
             ExportFault::ExtraField,
             ExportFault::PersistentWrite,
             ExportFault::ForeignParticipant,
-            ExportFault::ForeignOwnerKind,
+            ExportFault::ForeignOwner,
             ExportFault::MissingTable,
             ExportFault::DuplicateTable,
             ExportFault::ForeignTable,
@@ -1853,10 +1817,8 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let OwnerRef::Personal(user_id) = owner else {
-            unreachable!()
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let source = SourceId::new("fence-source");
         let fact = ingest(&pg, owner, source.as_str(), "fence-fact").await;
         seed_host_fact(pool, owner, fact, source.as_str(), &[1, 3, 5]).await;
@@ -1919,7 +1881,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
         // must close, not return, the locked backend connection to the pool.
         let mut owner_lock = pool.acquire().await?;
         let lock_id = sqlx::query_scalar::<_, i64>(
-            "SELECT hashtextextended('proxima-owner-fence:personal:' || $1::text, 0)",
+            "SELECT hashtextextended('proxima-owner-fence:' || $1::text, 0)",
         )
         .bind(user_id.into_inner())
         .fetch_one(&mut *owner_lock)
@@ -2006,11 +1968,8 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let user_id = match owner {
-            OwnerRef::Personal(id) => id,
-            OwnerRef::Group(_) => unreachable!(),
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let fact = ingest(&pg, owner, "snapshot-source", "snapshot-fact").await;
         seed_host_fact(pool, owner, fact, "snapshot-source", &[0x10, 0x20]).await;
         let delegation_id = Uuid::now_v7();
@@ -2018,17 +1977,17 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         let mut seed = pool.begin().await?;
         sqlx::query(
             "INSERT INTO proxima_core.source_cursors
-                (owner_kind, owner_id, source, cursor)
-             VALUES ('personal', $1, 'snapshot-source', decode('aabb', 'hex'))",
+                (owner_id, source, cursor)
+             VALUES ($1, 'snapshot-source', decode('aabb', 'hex'))",
         )
         .bind(user_id.into_inner())
         .execute(&mut *seed)
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.delegated_authority_grants
-                (delegation_id, subject_user_id, owner_kind, owner_id, tool_name,
+                (delegation_id, subject_user_id, owner_id, tool_name,
                  read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
-             VALUES ($1, $2, 'personal', $3, 'core_remember', 'fact', 'fact',
+             VALUES ($1, $2, $3, 'core_remember', 'fact', 'fact',
                      TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
                      TIMESTAMPTZ '2026-01-01 00:00:00Z')",
         )
@@ -2043,7 +2002,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         sqlx::query(
             "UPDATE proxima_core.source_cursors
                 SET cursor = decode('ccdd', 'hex')
-              WHERE owner_kind = 'personal' AND owner_id = $1 AND source = 'snapshot-source'",
+              WHERE owner_id = $1 AND source = 'snapshot-source'",
         )
         .bind(user_id.into_inner())
         .execute(&mut *writer)
@@ -2123,10 +2082,8 @@ async fn cancelling_erase_after_host_callback_dml_rolls_back_and_releases_fences
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let OwnerRef::Personal(user_id) = owner else {
-            unreachable!()
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let source = SourceId::new("cancel-after-host-dml");
         let fact = ingest(&pg, owner, source.as_str(), "cancel-host-dml").await;
         let original_payload = vec![0x11, 0x22, 0x33];
@@ -2207,10 +2164,8 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
         .execute(pool)
         .await?;
 
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let OwnerRef::Personal(user_id) = owner else {
-            unreachable!()
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         let source = SourceId::new("cancel-before-commit");
         let fact = ingest(&pg, owner, source.as_str(), "cancel-commit").await;
         let original_payload = vec![0x55, 0x66, 0x77];
@@ -2299,16 +2254,13 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
 async fn cancelling_max_one_export_waiting_on_owner_lock_closes_its_detached_connection() {
     let (db_name, pg, _lifecycle) = fresh_pg(1).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let user_id = match owner {
-            OwnerRef::Personal(id) => id,
-            OwnerRef::Group(_) => unreachable!(),
-        };
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let user_id = owner.as_user();
         ingest(&pg, owner, "cancel-source", "cancel-fact").await;
         let barrier_pool = PgPool::connect(&db_url(&db_name)).await?;
         let mut barrier = barrier_pool.acquire().await?;
         let lock_id = sqlx::query_scalar::<_, i64>(
-            "SELECT hashtextextended('proxima-owner-fence:personal:' || $1::text, 0)",
+            "SELECT hashtextextended('proxima-owner-fence:' || $1::text, 0)",
         )
         .bind(user_id.into_inner())
         .fetch_one(&mut *barrier)

@@ -4,7 +4,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome,
-    EmbeddingSpace, EmbeddingWriteOutcome, MemoryId, Owner, StorageError,
+    EmbeddingSpace, EmbeddingWriteOutcome, MemoryId, OwnerId, StorageError,
 };
 
 use crate::{PgStorage, verbs};
@@ -13,7 +13,7 @@ use crate::{PgStorage, verbs};
 impl EmbeddingTextPort for PgStorage {
     async fn load_embedding_texts_for_host(
         &self,
-        items: &[(Owner, proxima_core::EntityKind, MemoryId)],
+        items: &[(OwnerId, proxima_core::EntityKind, MemoryId)],
         non_embeddable_schemas: &[String],
         _proof: OperatorMaintenanceProof,
     ) -> Result<Vec<Option<String>>, StorageError> {
@@ -31,7 +31,7 @@ impl EmbeddingTextPort for PgStorage {
     async fn load_embedding_text(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         entity_kind: proxima_core::EntityKind,
         memory_id: MemoryId,
         non_embeddable_schemas: &[String],
@@ -54,7 +54,7 @@ impl EmbeddingTextPort for PgStorage {
     async fn load_embedding_texts(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        items: &[(proxima_core::Owner, proxima_core::EntityKind, MemoryId)],
+        items: &[(proxima_core::OwnerId, proxima_core::EntityKind, MemoryId)],
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError> {
         let mut tx =
@@ -73,7 +73,7 @@ impl EmbeddingTextPort for PgStorage {
     async fn list_facts_missing_embedding(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
         space: &EmbeddingSpace,
         limit: usize,
         non_embeddable_schemas: &[String],
@@ -95,7 +95,7 @@ impl EmbeddingTextPort for PgStorage {
 impl EmbeddingWritePort for PgStorage {
     async fn insert_embedding(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         entity: EmbeddableEntityRef,
         vectors: &[proxima_core::SpaceVector],
         proof: proxima_core::storage_ports::EmbeddingWriteProof,
@@ -116,7 +116,7 @@ impl EmbeddingJobPort for PgStorage {
     async fn claim_pending_embedding_jobs(
         &self,
         limit: i64,
-        skip_owners: &[Owner],
+        skip_owners: &[OwnerId],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let rows =
@@ -205,7 +205,7 @@ impl EmbeddingJobPort for PgStorage {
     async fn count_embedding_job_status(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<EmbeddingJobStatusCounts, StorageError> {
         let mut tx = crate::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result = verbs::fact_embeddings::count_embedding_job_status(tx.as_mut(), owner).await;
@@ -256,10 +256,10 @@ impl EmbeddingMaintenancePort for PgStorage {
 
     async fn embedding_owner_page(
         &self,
-        after: Option<Owner>,
+        after: Option<OwnerId>,
         limit: i64,
         _proof: OperatorMaintenanceProof,
-    ) -> Result<Vec<Owner>, StorageError> {
+    ) -> Result<Vec<OwnerId>, StorageError> {
         verbs::fact_embeddings::embedding_owner_page(
             &self.pool,
             self.platform_scope.as_ref(),
@@ -271,7 +271,7 @@ impl EmbeddingMaintenancePort for PgStorage {
 
     async fn embedding_coverage(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         spaces: &[proxima_core::EmbeddingSpace],
         non_embeddable_schemas: &[String],
         _proof: OperatorMaintenanceProof,
@@ -294,7 +294,7 @@ impl EmbeddingMaintenancePort for PgStorage {
 
     async fn purge_embedding_spaces(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
         keep: &[proxima_core::EmbeddingSpace],
         limit: i64,
         _proof: OperatorMaintenanceProof,

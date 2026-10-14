@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{AccessKind, AuthzContext, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
+use crate::{AccessKind, AuthzContext, OwnerId};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
@@ -34,7 +34,7 @@ pub struct MemorySpacesTool;
 
 impl McpTool for MemorySpacesTool {
     const NAME: &'static str = protocol_tool::CORE_MEMORY_SPACES;
-    const DESCRIPTION: &'static str = "List the memory spaces you can use and their keys (`current`, `personal:<uuid>`, `group:<uuid>`) for other tools' space/spaces arguments.";
+    const DESCRIPTION: &'static str = "List the memory spaces you can use and their keys (`current` or an owner's `<uuid>`) for other tools' space/spaces arguments.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = MemorySpacesArgs;
     type Output = MemorySpacesOutput;
@@ -80,7 +80,7 @@ pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
 pub struct ResolvedMemorySpace {
     pub key: String,
     pub label: String,
-    pub owner: Owner,
+    pub owner: OwnerId,
 }
 
 /// Resolve the memory space a write lands in, and narrow the caller's
@@ -168,74 +168,49 @@ pub fn resolve_space_owner(
         })
 }
 
-fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
+fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<OwnerId> {
     let mut owners = ctx.authz.accessible_owners().collect::<Vec<_>>();
-    owners.sort_by_key(|owner| {
-        let (kind, id) = owner.columns();
-        (*owner != ctx.owner, owner_kind_sort_key(kind), id)
-    });
+    let own = ctx.authz.principal();
+    owners.sort_by_key(|owner| (*owner != ctx.owner, *owner != own, *owner));
     owners
-}
-
-const fn owner_kind_sort_key(kind: OwnerRefKind) -> u8 {
-    match kind {
-        OwnerRefKind::Personal => 0,
-        OwnerRefKind::Group => 1,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemorySpaceKey {
     Current,
-    Owner(Owner),
+    Owner(OwnerId),
 }
 
 impl MemorySpaceKey {
     const CURRENT: &'static str = "current";
-    const PERSONAL_PREFIX: &'static str = "personal:";
-    const GROUP_PREFIX: &'static str = "group:";
 
     #[must_use]
-    pub const fn owner(owner: Owner) -> Self {
+    pub const fn owner(owner: OwnerId) -> Self {
         Self::Owner(owner)
     }
 
+    /// `current` or a bare owner UUID. A kind-prefixed key is refused like
+    /// any malformed id.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         if raw == Self::CURRENT {
             return Some(Self::Current);
         }
-        if let Some(id) = raw.strip_prefix(Self::PERSONAL_PREFIX) {
-            return uuid::Uuid::parse_str(id)
-                .ok()
-                .map(|id| Self::Owner(OwnerRef::Personal(UserId::new(id))));
-        }
-        raw.strip_prefix(Self::GROUP_PREFIX).and_then(|id| {
-            uuid::Uuid::parse_str(id)
-                .ok()
-                .map(|id| Self::Owner(OwnerRef::Group(GroupId::new(id))))
-        })
+        raw.parse::<OwnerId>().ok().map(Self::Owner)
     }
 
     #[must_use]
     pub fn to_wire(self) -> String {
         match self {
             Self::Current => Self::CURRENT.to_string(),
-            Self::Owner(owner) => match owner {
-                OwnerRef::Personal(user) => {
-                    format!("{}{}", Self::PERSONAL_PREFIX, user.into_inner())
-                }
-                OwnerRef::Group(group) => format!("{}{}", Self::GROUP_PREFIX, group.into_inner()),
-            },
+            Self::Owner(owner) => owner.to_string(),
         }
     }
 }
 
-pub(crate) fn space_label(owner: &Owner) -> String {
-    match owner {
-        OwnerRef::Personal(user) => format!("Personal {}", user.into_inner()),
-        OwnerRef::Group(group) => format!("Group {}", group.into_inner()),
-    }
+/// Display label only; it decides nothing.
+pub(crate) fn space_label(owner: &OwnerId) -> String {
+    format!("Owner {owner}")
 }
 
 /// Engine-free `McpToolCtx` builders shared by unit tests across the core
@@ -246,18 +221,18 @@ pub(crate) mod test_ctx {
 
     use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpToolCtx};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
 
     /// Build a server-resolved caller context: personal role on `subject`'s own
     /// owner plus the given per-group roles.
-    pub(crate) fn ctx_for(subject: UserId, group_roles: Vec<(OwnerRef, Role)>) -> McpToolCtx {
+    pub(crate) fn ctx_for(subject: UserId, group_roles: Vec<(OwnerId, Role)>) -> McpToolCtx {
         make_ctx(
-            OwnerRef::Personal(subject),
+            OwnerId::from(subject),
             AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
         )
     }
 
-    pub(crate) fn make_ctx(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
+    pub(crate) fn make_ctx(owner: OwnerId, authz: AuthzContext) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz,
@@ -280,7 +255,7 @@ pub(crate) mod test_ctx {
 mod tests {
     use crate::access::Role;
     use crate::mcp::McpTool;
-    use crate::{GroupId, OwnerRef, UserId};
+    use crate::{GroupId, OwnerId, UserId};
 
     use super::test_ctx::ctx_for;
     use super::*;
@@ -297,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn memory_spaces_reports_per_space_writability() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let shared_key = MemorySpaceKey::owner(shared).to_wire();
         let ctx = ctx_for(subject, vec![(shared, Role::editor())]);
 
@@ -314,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn memory_spaces_viewer_group_is_not_writable() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let shared_key = MemorySpaceKey::owner(shared).to_wire();
         let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
 
@@ -330,18 +305,18 @@ mod tests {
     #[test]
     fn resolution_omitted_space_matches_current_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_for(subject, vec![(shared, Role::editor())]);
 
         let resolved = resolve_space_owner(&ctx, None, SpaceDefault::Current).unwrap();
         assert_eq!(resolved.key, "current");
-        assert_eq!(resolved.owner, OwnerRef::Personal(subject));
+        assert_eq!(resolved.owner, OwnerId::from(subject));
     }
 
     #[test]
     fn resolution_accepts_explicit_owner_keys() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
 
         let group_key = MemorySpaceKey::owner(shared).to_wire();
@@ -350,17 +325,17 @@ mod tests {
         assert_eq!(group.key, group_key);
 
         // The caller's own space canonicalizes to `current` even when
-        // named by its explicit personal:<uuid> spelling.
-        let own_key = MemorySpaceKey::owner(OwnerRef::Personal(subject)).to_wire();
+        // named by its own bare id.
+        let own_key = MemorySpaceKey::owner(OwnerId::from(subject)).to_wire();
         let own = resolve_space_owner(&ctx, Some(&own_key), SpaceDefault::Current).unwrap();
-        assert_eq!(own.owner, OwnerRef::Personal(subject));
+        assert_eq!(own.owner, OwnerId::from(subject));
         assert_eq!(own.key, "current");
     }
 
     #[test]
     fn identity_default_resolves_to_principal_not_space_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let authz = crate::AuthzContext::for_subject_with_role(
             subject,
             vec![(shared, Role::editor())],
@@ -376,14 +351,14 @@ mod tests {
         // ...while the Identity default follows the authenticated
         // principal regardless of which space the session is bound to.
         let identity = resolve_space_owner(&ctx, None, SpaceDefault::Identity).unwrap();
-        assert_eq!(identity.owner, OwnerRef::Personal(subject));
+        assert_eq!(identity.owner, OwnerId::from(subject));
     }
 
     #[test]
     fn space_key_wire_round_trip_covers_every_owner_kind() {
         for owner in [
-            OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())),
-            OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7())),
+            OwnerId::from(UserId::new(uuid::Uuid::now_v7())),
+            OwnerId::from(GroupId::new(uuid::Uuid::now_v7())),
         ] {
             let wire = MemorySpaceKey::owner(owner).to_wire();
             assert_eq!(
@@ -402,10 +377,37 @@ mod tests {
         assert_eq!(MemorySpaceKey::parse("world"), None);
     }
 
+    /// The old kind-prefixed spelling names no space: it is refused like any
+    /// malformed id, for the caller's own id and for a group it belongs to.
+    #[test]
+    fn an_old_kind_prefixed_space_key_is_refused() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = GroupId::new(uuid::Uuid::now_v7());
+        let ctx = ctx_for(subject, vec![(OwnerId::from(shared), Role::editor())]);
+        for key in [
+            format!("personal:{}", subject.into_inner()),
+            format!("group:{}", shared.into_inner()),
+        ] {
+            assert_eq!(MemorySpaceKey::parse(&key), None, "{key}");
+            let err = resolve_space_owner(&ctx, Some(&key), SpaceDefault::Current).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown memory space"),
+                "{key}: {err}"
+            );
+        }
+        let bare = shared.into_inner().to_string();
+        assert_eq!(
+            resolve_space_owner(&ctx, Some(&bare), SpaceDefault::Current)
+                .unwrap()
+                .owner,
+            OwnerId::from(shared)
+        );
+    }
+
     #[test]
     fn resolution_rejects_owner_without_visibility() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let hidden = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let hidden = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_for(subject, vec![]);
         let hidden_key = MemorySpaceKey::owner(hidden).to_wire();
 

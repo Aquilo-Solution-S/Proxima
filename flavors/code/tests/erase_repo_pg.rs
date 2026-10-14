@@ -4,7 +4,7 @@ use common::{migrated_db, test_owner};
 use proxima::flavor::{EraseMode, SeriesSelection};
 use proxima_code::testkit::{build_engine, erase_repo, register_repo};
 use proxima_code::{CodeFlavorStore, CommitV1, RepoEraseReceipt, RepoRegistryError, RepoScope};
-use proxima_core::{AuthPath, AuthzContext, FactPayload, MemoryId, Owner};
+use proxima_core::{AuthPath, AuthzContext, FactPayload, MemoryId, OwnerId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::{MAX_TRANSACTION_ATTEMPTS, PgStorage};
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// `erase_own_series`, under the owner's own authority.
 async fn erase_repo_as_owner(
     pg: &PgStorage,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let engine = build_engine(pg.clone());
@@ -38,11 +38,11 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 
 async fn insert_repo_commit_with_test_request(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     memory_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -157,7 +157,7 @@ async fn exercise_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
     insert_repo_commit_with_test_request(pool, &owner, repo_id, memory_id).await?;
     let other_memory_id = Uuid::now_v7();
     insert_repo_commit_with_test_request(pool, &owner, other_repo_id, other_memory_id).await?;
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
          VALUES ($1, $2, 'fact', 'erase-repo-target'), ($3, $2, 'fact', 'erase-repo-keep')",
@@ -278,7 +278,7 @@ async fn assert_other_repo_preserved(
 
 async fn assert_repo_rebuild_allowed(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
     repo_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -320,12 +320,12 @@ async fn an_ingest_only_principal_cannot_erase_a_repository() {
     let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
-        let group = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
-        .bind(group.stored_owner_id())
+        .bind(group.into_inner())
         .execute(pool)
         .await?;
         let (with_rows, empty) = (Uuid::now_v7(), Uuid::now_v7());
@@ -430,7 +430,7 @@ type Tx = sqlx::Transaction<'static, sqlx::Postgres>;
 
 async fn insert_memory(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
     sidecars: &[&str],
 ) -> Result<(), sqlx::Error> {
@@ -444,7 +444,7 @@ async fn insert_memory(
 /// fixture that stamps one writes the row in the same transaction.
 async fn insert_memory_in_tx(
     tx: &mut Tx,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
     sidecars: &[&str],
 ) -> Result<(), sqlx::Error> {
@@ -464,7 +464,7 @@ async fn insert_memory_in_tx(
 /// see [`insert_memory_in_tx`].
 async fn insert_next_version_in_tx(
     tx: &mut Tx,
-    owner: &Owner,
+    owner: &OwnerId,
     handle: Uuid,
     t: Uuid,
     sidecars: &[&str],
@@ -476,7 +476,7 @@ async fn insert_next_version_in_tx(
     )
     .bind(handle)
     .bind(t)
-    .bind(owner.stored_owner_id())
+    .bind(owner.into_inner())
     .bind(CommitV1::SCHEMA_ID)
     .bind(stamp(sidecars))
     .execute(&mut **tx)
@@ -503,7 +503,7 @@ fn stamp(sidecars: &[&str]) -> Vec<String> {
 /// [`insert_memory`], returning the series handle it minted.
 async fn insert_series(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
     sidecars: &[&str],
 ) -> Result<Uuid, sqlx::Error> {
@@ -517,11 +517,11 @@ async fn insert_series(
 /// [`insert_memory_in_tx`].
 async fn insert_series_in_tx(
     tx: &mut Tx,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
     sidecars: &[&str],
 ) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
+    let owner_id = owner.into_inner();
     let handle = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -602,7 +602,7 @@ struct WorkItemFixture {
 /// assignment and the perspective are reached through `repo_id`.
 async fn seed_acceptance(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     work_item: Uuid,
 ) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
     // `acceptance_criterion_v1` hangs off the criteria row, not off a
@@ -664,7 +664,7 @@ async fn seed_acceptance(
 
 async fn seed_work_item_fixture(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
     register_repo(
@@ -1275,7 +1275,7 @@ async fn a_superseded_version_filed_elsewhere_is_part_of_the_footprint() {
 /// naming only the second version. Returns `(owner, erased_repo, ids)`.
 async fn seed_superseded_series(
     pool: &sqlx::PgPool,
-) -> Result<(Owner, Uuid, [Uuid; 4]), Box<dyn std::error::Error>> {
+) -> Result<(OwnerId, Uuid, [Uuid; 4]), Box<dyn std::error::Error>> {
     let owner = test_owner();
     let erased_repo = Uuid::now_v7();
     let other_repo = Uuid::now_v7();
@@ -1618,7 +1618,7 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
 /// test.
 async fn insert_assignment_with_timeout(
     pool: &sqlx::PgPool,
-    owner: &Owner,
+    owner: &OwnerId,
     t: Uuid,
     repo_id: Uuid,
     work_item: Uuid,
@@ -1897,12 +1897,12 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
             seed_work_item_fixture(pool, &owner, repo_id).await?;
 
         // The real verb, not a hand-written UPDATE.
-        let stranger = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        let stranger = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
-        .bind(stranger.stored_owner_id())
+        .bind(stranger.into_inner())
         .execute(pool)
         .await?;
         let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
@@ -1981,7 +1981,7 @@ async fn an_erase_unit_holds_the_owner_boundary_against_transfer() {
         let repo_id = Uuid::now_v7();
         let WorkItemFixture { work_item, .. } =
             seed_work_item_fixture(pool, &owner, repo_id).await?;
-        let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
+        let destination = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
         let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
 
         let engine = build_engine(pg.clone());

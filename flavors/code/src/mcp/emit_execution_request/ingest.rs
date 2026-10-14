@@ -1,5 +1,5 @@
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
-use proxima_core::{EdgeEndpoint, FactPayload, FactWrite, Owner, ToolError, UnitOfWork};
+use proxima_core::{EdgeEndpoint, FactPayload, FactWrite, OwnerId, ToolError, UnitOfWork};
 
 use crate::ingest::{
     ACCEPTANCE_CRITERIA_OBJECT_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
@@ -17,7 +17,7 @@ pub(super) struct FactProvenance<'a> {
 
 async fn ingest_mcp_fact<P>(
     uow: &mut UnitOfWork<'_>,
-    owner: Owner,
+    owner: OwnerId,
     source_id: &'static str,
     cited_object_schema: &'static str,
     payload: &P,
@@ -44,7 +44,7 @@ where
 
 pub(super) async fn ingest_execution_request(
     uow: &mut UnitOfWork<'_>,
-    owner: Owner,
+    owner: OwnerId,
     payload: &ExecutionRequestV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {
@@ -61,7 +61,7 @@ pub(super) async fn ingest_execution_request(
 
 pub(super) async fn ingest_acceptance_criteria(
     uow: &mut UnitOfWork<'_>,
-    owner: Owner,
+    owner: OwnerId,
     payload: &AcceptanceCriteriaV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {
@@ -78,7 +78,7 @@ pub(super) async fn ingest_acceptance_criteria(
 
 pub(super) async fn ingest_test_request(
     uow: &mut UnitOfWork<'_>,
-    owner: Owner,
+    owner: OwnerId,
     payload: &TestRequestV1,
     provenance: FactProvenance<'_>,
 ) -> Result<FactIngestOutcome, ToolError> {

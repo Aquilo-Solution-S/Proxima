@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{AppInfo, BuiltProxima, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
-use proxima_core::{AgentNoteV1, AuthPath, AuthzContext, Owner, ToolCtx, ToolServices, UserId};
+use proxima_core::{AgentNoteV1, AuthPath, AuthzContext, OwnerId, ToolCtx, ToolServices, UserId};
 use proxima_pg_testkit::SplitRoleDb;
 use proxima_storage_pg::PgPoolConfig;
 
@@ -37,7 +37,7 @@ impl FlavorApp for CodeApp {
     }
 }
 
-async fn boot(db: &SplitRoleDb, owner: Owner) -> BuiltProxima {
+async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxima {
     Proxima::<CodeApp>::app()
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
@@ -74,7 +74,7 @@ async fn memory_count(booted: &BuiltProxima, authz: &AuthzContext) -> usize {
 async fn committed(
     booted: &BuiltProxima,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     note: &AgentNoteV1,
 ) -> bool {
     booted
@@ -91,7 +91,7 @@ async fn a_dropped_request_still_records_its_fact() {
     let db = SplitRoleDb::create("proxima_detached_ingest", &[])
         .await
         .expect("PG required");
-    let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let booted = boot(&db, owner).await;
     let engine = booted.host().engine();
     let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
@@ -148,10 +148,8 @@ async fn a_dropped_request_still_records_its_fact() {
         .await
         .expect("admin pool");
     let mut fence = fence.acquire().await.expect("fence connection");
-    let (kind, id) = owner.columns();
-    sqlx::query("SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || $1 || ':' || $2::text, 0))")
-        .bind(kind.as_str())
-        .bind(id)
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || $1::text, 0))")
+        .bind(owner.into_inner())
         .execute(&mut *fence)
         .await
         .expect("hold the owner fence");

@@ -333,10 +333,10 @@ The declaration has two halves, and freeze checks them against each other.
 linked flavors, not in core.
 
 Storage GENERATES from the declaration and spells no name of its own — the
-fence key (`proxima-scope-fence:<scope_kind>:<owner_kind>:<owner_id>:<scope_id>`)
+fence key (`proxima-scope-fence:<scope_kind>:<owner_id>:<scope_id>`)
 and the liveness probe
-(`SELECT EXISTS(SELECT 1 FROM <registry_table> WHERE <owner_kind_column> = $1
-AND <owner_id_column> = $2 AND <id_column> = $3)`). A renamed column is a
+(`SELECT EXISTS(SELECT 1 FROM <registry_table> WHERE <owner_id_column> = $1
+AND <id_column> = $2)`). A renamed column is a
 declaration edit, not a second place to keep in sync.
 
 Freeze refusals, in the shape of the sidecar-declaration guards:

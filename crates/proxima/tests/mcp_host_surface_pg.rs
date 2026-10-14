@@ -21,8 +21,8 @@ use proxima::{
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallRecord};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, Credentials, McpToolError, OwnerRef, OwnerRoles,
-    ToolEffect, UserId,
+    AuthError, AuthPath, Authenticator, Credentials, McpToolError, OwnerId, OwnerRoles, ToolEffect,
+    UserId,
 };
 use proxima_pg_testkit::SplitRoleDb;
 use serde_json::{Value, json};
@@ -136,7 +136,7 @@ fn mcp_post(client: &reqwest::Client, base: &str, subject: UserId) -> reqwest::R
         .header("Authorization", format!("Bearer {TOKEN}"))
         .header(
             "X-Proxima-Owner",
-            proxima_mcp_server::owner_key(OwnerRef::Personal(subject)),
+            proxima_mcp_server::owner_key(OwnerId::from(subject)),
         )
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
@@ -208,7 +208,7 @@ async fn assert_only_served_calls_recorded(
         AuthPath::HostBearer,
     ));
     let request = McpCallHistoryRequest {
-        owner: OwnerRef::Personal(subject),
+        owner: OwnerId::from(subject),
         actor_oid: Some(subject.into_inner().to_string()),
         limit: 10,
         include_body: true,
@@ -329,7 +329,7 @@ async fn the_resolved_edge_puts_bearer_auth_on_mcp_only() -> TestResult {
     assert!(
         edge.tool_host()
             .host_tools_for(&proxima::McpAuthContext {
-                owner: OwnerRef::Personal(subject),
+                owner: OwnerId::from(subject),
                 authz: AuthzContext::for_subject(subject, AuthPath::HostBearer),
             })
             .await?
@@ -499,7 +499,7 @@ async fn recorded_calls(
         AuthPath::HostBearer,
     ));
     let request = McpCallHistoryRequest {
-        owner: OwnerRef::Personal(subject),
+        owner: OwnerId::from(subject),
         actor_oid: Some(subject.into_inner().to_string()),
         limit: 10,
         include_body: true,
@@ -682,7 +682,7 @@ async fn the_memory_counts_resource_is_read_over_mcp_and_leaves_no_call_record()
     const URI: &str = "proxima://memories/counts";
     let db = SplitRoleDb::create("proxima_memory_counts", &[]).await?;
     let subject = UserId::new(Uuid::now_v7());
-    let owner = OwnerRef::Personal(subject);
+    let owner = OwnerId::from(subject);
     let running = app(&db)
         .authenticator(Arc::new(StubAuth { subject }))
         .record_mcp_calls(true)

@@ -29,8 +29,8 @@ use proxima_core::storage_ports::{
 use proxima_core::test_fixtures::{ConstantEmbedding, TestEmbeddingRouter};
 use proxima_core::{
     AccessCeiling, AccessKind, AgentNoteV1, AuthPath, ChangeEventKind, ColdObjectStore,
-    EdgeTargetProjection, EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, Owner,
-    OwnerRef, OwnerRoles, Role, StorageError, UploadedBlobPayload, UserId,
+    EdgeTargetProjection, EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, OwnerId,
+    OwnerRoles, Role, StorageError, UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use serde_json::{Value, json};
@@ -96,7 +96,7 @@ fn roles() -> [(&'static str, Role); 6] {
     ]
 }
 
-fn context(group: OwnerRef, role: Role) -> AuthzContext {
+fn context(group: OwnerId, role: Role) -> AuthzContext {
     proxima_core::test_fixtures::authenticated_context(
         AuthzContext::for_subject_with_role(
             UserId::new(Uuid::now_v7()),
@@ -110,7 +110,7 @@ fn context(group: OwnerRef, role: Role) -> AuthzContext {
 async fn call(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     name: &str,
     args: Value,
 ) -> Result<Value, proxima::CoreMcpError> {
@@ -154,7 +154,7 @@ impl Seeded {
 async fn remember(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     title: &str,
 ) -> Result<Value, proxima::CoreMcpError> {
     call(
@@ -170,7 +170,7 @@ async fn remember(
 async fn derive(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     (kind, title): (EntityKind, &str),
     source: &Value,
 ) -> Result<Value, proxima::CoreMcpError> {
@@ -194,7 +194,7 @@ async fn derive(
 async fn set_goal(
     tools: &CoreMcpTools,
     authz: &AuthzContext,
-    owner: Owner,
+    owner: OwnerId,
     seeded: &Seeded,
 ) -> Result<Value, proxima::CoreMcpError> {
     call(
@@ -222,7 +222,7 @@ async fn set_goal(
 
 /// A Fact, an Abstraction over it, a Perspective over that and a Goal
 /// assigned to the Perspective, all written by an admin of `group`.
-async fn seed(tools: &CoreMcpTools, group: OwnerRef) -> TestResult<Seeded> {
+async fn seed(tools: &CoreMcpTools, group: OwnerId) -> TestResult<Seeded> {
     let admin = context(group, Role::admin());
     let fact = remember(tools, &admin, group, "kindrule fact").await?;
     let abstraction = derive(
@@ -332,7 +332,7 @@ fn hidden(error: &ProtocolError) -> bool {
 async fn assert_reads(
     built: &BuiltProxima,
     tools: &CoreMcpTools,
-    group: OwnerRef,
+    group: OwnerId,
     name: &str,
     role: Role,
     seeded: &Seeded,
@@ -568,7 +568,7 @@ async fn assert_reads(
 /// covers the kind it writes.
 async fn assert_writes(
     tools: &CoreMcpTools,
-    group: OwnerRef,
+    group: OwnerId,
     name: &str,
     role: Role,
     seeded: &Seeded,
@@ -620,14 +620,16 @@ async fn assert_writes(
 /// A blob port that stages whatever it is asked to: completion then runs the
 /// engine's own gate and write path against Postgres, without S3.
 #[derive(Debug)]
-struct StagedBlobs;
+struct StagedBlobs {
+    pool: PgPool,
+}
 
 #[async_trait::async_trait]
 impl CitedBlobPort for StagedBlobs {
     async fn prepare_upload(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        _: OwnerId,
         _: &str,
         _: &str,
         _: u64,
@@ -638,7 +640,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn stage_upload(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        owner: OwnerId,
         upload_id: &str,
     ) -> Result<CitedBlobStaged, StorageError> {
         // A distinct address per upload: the upload id's bytes, twice.
@@ -646,6 +648,22 @@ impl CitedBlobPort for StagedBlobs {
         let mut content_hash = [0_u8; 32];
         content_hash[..16].copy_from_slice(id.as_bytes());
         content_hash[16..].copy_from_slice(id.as_bytes());
+        // Match real staging's transfer row; Engine completion now settles it
+        // atomically with the cited Fact. The role assertions below stay intact.
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, content_hash, sha256, expires_at)
+             VALUES ($1, $2, 'kindrule', $3, 'kindrule.txt', 'text/plain',
+                     8, $4, $4, now() + interval '1 hour')",
+        )
+        .bind(id)
+        .bind(owner.into_inner())
+        .bind(format!("objects/{upload_id}"))
+        .bind(&content_hash[..])
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
         Ok(CitedBlobStaged {
             payload: UploadedBlobPayload {
                 content_hash,
@@ -665,7 +683,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn finish_upload(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        _: OwnerId,
         _: &str,
         _: Uuid,
     ) -> Result<(), StorageError> {
@@ -675,7 +693,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn abort_upload(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        _: OwnerId,
         _: &str,
     ) -> Result<CitedBlobUploadAborted, StorageError> {
         Ok(CitedBlobUploadAborted { aborted: true })
@@ -684,7 +702,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn read_url(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        _: OwnerId,
         _: Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError> {
         Err(StorageError::Internal("completion only".into()))
@@ -693,7 +711,7 @@ impl CitedBlobPort for StagedBlobs {
     async fn find_held_blobs(
         &self,
         _: &AuthzContext,
-        _: OwnerRef,
+        _: OwnerId,
         _: &[[u8; 32]],
     ) -> Result<Vec<CitedBlobHeld>, StorageError> {
         Ok(Vec::new())
@@ -702,8 +720,16 @@ impl CitedBlobPort for StagedBlobs {
 
 /// An upload Fact is a Fact write: completion succeeds exactly for the roles
 /// that write Facts, `Role::ingest()` included.
-async fn assert_upload(built: &BuiltProxima, group: OwnerRef, name: &str, role: Role) {
-    let service = CitedBlobService::new(Arc::new(StagedBlobs));
+async fn assert_upload(
+    built: &BuiltProxima,
+    admin: &PgPool,
+    group: OwnerId,
+    name: &str,
+    role: Role,
+) {
+    let service = CitedBlobService::new(Arc::new(StagedBlobs {
+        pool: admin.clone(),
+    }));
     // The upload Fact's owner is the one writable owner of the context, so
     // the caller narrows to the space first, as `core_upload` does.
     let authz = context(group, role)
@@ -725,7 +751,7 @@ async fn assert_upload(built: &BuiltProxima, group: OwnerRef, name: &str, role: 
 async fn assert_s3_writes(
     built: &BuiltProxima,
     tools: &CoreMcpTools,
-    group: OwnerRef,
+    group: OwnerId,
     name: &str,
     role: Role,
 ) -> TestResult {
@@ -830,7 +856,7 @@ async fn assert_backfill(
     built: &BuiltProxima,
     admin: &PgPool,
     router: &TestEmbeddingRouter,
-    group: OwnerRef,
+    group: OwnerId,
 ) -> TestResult {
     for (index, (name, role)) in roles().into_iter().enumerate() {
         let model = format!("kindrule-backfill-{index}");
@@ -851,7 +877,7 @@ async fn assert_backfill(
                   OR EXISTS (SELECT 1 FROM proxima_core.embedding_heads h
                               WHERE h.entity_id = m.t AND h.model_id = $2))",
         )
-        .bind(group.stored_owner_id())
+        .bind(group.into_inner())
         .bind(&model)
         .fetch_all(admin)
         .await?;
@@ -882,7 +908,7 @@ async fn assert_backfill(
 
 async fn boot(
     database: &str,
-    owner: Owner,
+    owner: OwnerId,
     router: Arc<TestEmbeddingRouter>,
     s3: Option<S3RuntimeConfig>,
 ) -> TestResult<BuiltProxima> {
@@ -904,7 +930,7 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
     let split_db = clone_split_core_db("proxima_kind_rule").await?;
     let database = split_db.name().to_owned();
     let result: TestResult = async {
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let router = Arc::new(TestEmbeddingRouter::default());
         let s3 = S3RuntimeConfig::present_in_env()
             .then(|| {
@@ -918,7 +944,7 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
         let tools = built.host().core_mcp_tools();
         let seeded = seed(&tools, group).await?;
         let admin = PgPool::connect(&db_url(&database)).await?;
-        embed(&admin, &seeded, group.stored_owner_id()).await?;
+        embed(&admin, &seeded, group.into_inner()).await?;
         router.set_default(BoundEmbeddingClient::bind(Arc::new(
             ConstantEmbedding::prefixed("test-embed", &[1.0, 0.0, 0.0]),
         ))?);
@@ -926,7 +952,7 @@ async fn every_role_reads_and_writes_exactly_up_to_its_limit() -> TestResult {
         for (name, role) in roles() {
             assert_reads(&built, &tools, group, name, role, &seeded).await?;
             assert_writes(&tools, group, name, role, &seeded).await?;
-            assert_upload(&built, group, name, role).await;
+            assert_upload(&built, &admin, group, name, role).await;
             if s3.is_some() {
                 assert_s3_writes(&built, &tools, group, name, role).await?;
             } else {
@@ -951,7 +977,7 @@ async fn only_a_for_system_context_writes_as_system() -> TestResult {
     let split_db = clone_split_core_db("proxima_kind_rule_system").await?;
     let database = split_db.name().to_owned();
     let result: TestResult = async {
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = boot(
             &database,
             group,
@@ -1107,7 +1133,7 @@ fn sqlstate(error: &sqlx::Error) -> Option<String> {
 async fn assert_fact_scope_sql(
     database: &str,
     admin: &PgPool,
-    group: OwnerRef,
+    group: OwnerId,
     seeded: &Seeded,
 ) -> TestResult {
     let census: Vec<String> = sqlx::query_scalar(
@@ -1161,7 +1187,7 @@ async fn assert_fact_scope_sql(
          VALUES ($1, 'test-embed', $2, 'failed_permanent', 1024)",
     )
     .bind(abstraction)
-    .bind(group.stored_owner_id())
+    .bind(group.into_inner())
     .execute(admin)
     .await?;
 
@@ -1321,11 +1347,11 @@ async fn an_embedding_row_of_a_goal_needs_the_goal_limit() -> TestResult {
     let split_db = clone_split_core_db("proxima_kind_rule_goal_vec").await?;
     let database = split_db.name().to_owned();
     let result: TestResult = async {
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = boot(&database, group, Arc::default(), None).await?;
         let seeded = seed(&built.host().core_mcp_tools(), group).await?;
         let admin = PgPool::connect(&db_url(&database)).await?;
-        let owner_id = group.stored_owner_id();
+        let owner_id = group.into_inner();
         let goal: Uuid =
             sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE owner_id = $1 LIMIT 1")
                 .bind(owner_id)
@@ -1428,7 +1454,7 @@ async fn a_derivation_meets_no_content_above_its_limit() -> TestResult {
     let split_db = clone_split_core_db("proxima_kind_rule_content").await?;
     let database = split_db.name().to_owned();
     let result: TestResult = async {
-        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+        let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = boot(
             &database,
             group,

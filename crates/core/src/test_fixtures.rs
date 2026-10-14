@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use proxima_core::llm::{EmbeddingClient, EmbeddingDim, LlmError};
-use proxima_core::{Owner, OwnerRef, UserId};
+use proxima_core::{OwnerId, UserId};
 
 /// Fixture embeddings sit on the default 1024-wide lane.
 const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
@@ -83,12 +83,12 @@ impl EmbeddingClient for ConstantEmbedding {
 }
 
 /// A host router a test rewires while the engine runs: a default route for
-/// every Owner, overridden per Owner by a route or a refusal.
+/// every owner, overridden per Owner by a route or a refusal.
 #[derive(Debug, Default)]
 pub struct TestEmbeddingRouter {
     default: std::sync::RwLock<Option<proxima_core::llm::BoundEmbeddingClient>>,
     owners: std::sync::RwLock<
-        std::collections::HashMap<Owner, Result<proxima_core::llm::EmbeddingRoute, String>>,
+        std::collections::HashMap<OwnerId, Result<proxima_core::llm::EmbeddingRoute, String>>,
     >,
 }
 
@@ -105,7 +105,11 @@ impl TestEmbeddingRouter {
     ///
     /// # Panics
     /// On a poisoned lock.
-    pub fn set_owner(&self, owner: Owner, client: Option<proxima_core::llm::BoundEmbeddingClient>) {
+    pub fn set_owner(
+        &self,
+        owner: OwnerId,
+        client: Option<proxima_core::llm::BoundEmbeddingClient>,
+    ) {
         self.set_route(
             owner,
             client.map_or_else(
@@ -119,7 +123,7 @@ impl TestEmbeddingRouter {
     ///
     /// # Panics
     /// On a poisoned lock.
-    pub fn set_route(&self, owner: Owner, route: proxima_core::llm::EmbeddingRoute) {
+    pub fn set_route(&self, owner: OwnerId, route: proxima_core::llm::EmbeddingRoute) {
         self.owners
             .write()
             .expect("router lock")
@@ -130,7 +134,7 @@ impl TestEmbeddingRouter {
     ///
     /// # Panics
     /// On a poisoned lock.
-    pub fn refuse(&self, owner: Owner, message: &str) {
+    pub fn refuse(&self, owner: OwnerId, message: &str) {
         self.owners
             .write()
             .expect("router lock")
@@ -142,7 +146,7 @@ impl TestEmbeddingRouter {
 impl proxima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
     async fn route(
         &self,
-        owner: &Owner,
+        owner: &OwnerId,
     ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
         match self.owners.read().expect("router lock").get(owner) {
             Some(Ok(route)) => Ok(route.clone()),
@@ -161,8 +165,8 @@ impl proxima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
 }
 
 #[must_use]
-pub fn owner_fixture() -> Owner {
-    OwnerRef::Personal(UserId::new(uuid::Uuid::nil()))
+pub fn owner_fixture() -> OwnerId {
+    OwnerId::from(UserId::new(uuid::Uuid::nil()))
 }
 
 /// A Fact payload that declares itself listenable (issue #305).

@@ -14,7 +14,7 @@ use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::{
-    FlavorRegistry, OwnerAccessPort, OwnerRef, ToolScope, UserId, provider_safe_tool_name,
+    FlavorRegistry, OwnerAccessPort, OwnerId, ToolScope, UserId, provider_safe_tool_name,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::PgOwnerAccessResolver;
@@ -137,7 +137,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
     };
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
     let subject = UserId::new(Uuid::now_v7());
-    let owner_key = OwnerRef::Personal(subject).external_key();
+    let owner_key = OwnerId::from(subject).to_string();
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;
@@ -164,7 +164,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         .tool_scope(ToolScope::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
-        .owner(OwnerRef::Personal(subject))
+        .owner(OwnerId::from(subject))
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),

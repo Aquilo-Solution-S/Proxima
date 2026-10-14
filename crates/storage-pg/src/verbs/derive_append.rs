@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId,
+    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::{Postgres, Transaction};
@@ -24,7 +24,7 @@ type InputProofRow = (uuid::Uuid, EntityKind, Option<uuid::Uuid>, bool, bool);
 #[derive(Debug, Clone)]
 pub(crate) struct DerivedDraft<'a> {
     pub memory_id: uuid::Uuid,
-    pub owner: Owner,
+    pub owner: OwnerId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -97,7 +97,7 @@ async fn append_derived_timeseries(
               WHERE t = $1 AND owner_id = $2",
         )
         .bind(prior.into_inner())
-        .bind(draft.owner.stored_owner_id())
+        .bind(draft.owner.into_inner())
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -208,7 +208,7 @@ async fn load_derived_replay_head(
             AND kind = $3::proxima_core.memory_kind AND schema_id = $4",
     )
     .bind(handle)
-    .bind(draft.owner.stored_owner_id())
+    .bind(draft.owner.into_inner())
     .bind(kind)
     .bind(draft.schema_id.as_str())
     .fetch_optional(&mut **tx)
@@ -264,7 +264,7 @@ async fn settle_derived_embedding(
     };
     crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
         tx,
-        draft.owner.stored_owner_id(),
+        draft.owner.into_inner(),
         memory_id.into_inner(),
         deferred.into_iter().chain(draft.queued_spaces),
     )
@@ -407,7 +407,7 @@ async fn load_pin_ids(
         .map_err(map_err)
 }
 
-fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
+fn validate_permit_owner(permit: &OwnerWritePermit, owner: &OwnerId) -> Result<(), StorageError> {
     if permit.owner() == owner {
         Ok(())
     } else {

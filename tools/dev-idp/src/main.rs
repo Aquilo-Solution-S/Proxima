@@ -324,7 +324,7 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
          \n\
          claude mcp add --transport http proxima {server_url}/mcp \\\n\
          \x20 --header \"Authorization: Bearer {token}\" \\\n\
-         \x20 --header \"X-Proxima-Owner: personal:{user_id}\"\n"
+         \x20 --header \"X-Proxima-Owner: <the user id from PROXIMA_OIDC_SUBJECT_MAP above>\"\n"
     );
     println!("Serving. Ctrl-C to stop.");
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::storage_ports::publication::{OriginScope, PublicationOriginEligibilityPort};
-use proxima_core::{Engine, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, Owner};
+use proxima_core::{Engine, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, OwnerId};
 use proxima_storage_pg::{
     PgHostStateEraseContext, PgPlatformScope, PgSidecarRegistryFrozen, PgTuning,
 };
@@ -32,7 +32,7 @@ pub struct ProximaHost {
     pub(crate) origin_scope: OriginScope,
     pub(crate) publication_origin_eligibility: Arc<dyn PublicationOriginEligibilityPort>,
     pub(crate) blobs: Option<CitedBlobStore>,
-    pub(crate) owner: Option<Owner>,
+    pub(crate) owner: Option<OwnerId>,
     pub(crate) services: FlavorServices,
 }
 
@@ -56,7 +56,7 @@ impl ProximaHost {
 
     /// The configured engine `Owner`, if any.
     #[must_use]
-    pub const fn owner(&self) -> Option<Owner> {
+    pub const fn owner(&self) -> Option<OwnerId> {
         self.owner
     }
 
@@ -226,7 +226,7 @@ struct IneligibleForTests;
 impl PublicationOriginEligibilityPort for IneligibleForTests {
     async fn check_committed(
         &self,
-        _original_owner: Owner,
+        _original_owner: OwnerId,
         _fact_id: proxima_core::MemoryId,
     ) -> Result<
         proxima_core::storage_ports::publication::PublicationOriginEligibility,
@@ -238,7 +238,7 @@ impl PublicationOriginEligibilityPort for IneligibleForTests {
     async fn check_in_transaction(
         &self,
         _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _original_owner: Owner,
+        _original_owner: OwnerId,
         _fact_id: proxima_core::MemoryId,
     ) -> Result<
         proxima_core::storage_ports::publication::PublicationOriginEligibility,

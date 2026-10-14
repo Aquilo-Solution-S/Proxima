@@ -5,7 +5,7 @@ use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FactIngestPort, FlavorRegistry, Owner, SchemaId,
+    AccessKind, AuthPath, AuthzContext, Engine, FactIngestPort, FlavorRegistry, OwnerId, SchemaId,
     SchemaVersion, StorageError,
 };
 use proxima_pg_testkit::drop_db;
@@ -36,16 +36,12 @@ fn draft() -> FactWriteCommand {
     }
 }
 
-async fn write_permit(owner: &Owner) -> Result<OwnerWritePermit, StorageError> {
-    let Owner::Personal(user_id) = owner else {
-        return Err(StorageError::Internal(
-            "series-head fixture expects a personal owner".into(),
-        ));
-    };
+async fn write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError> {
+    let user_id = owner.as_user();
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     engine
         .authorize_owner_write(
-            &AuthzContext::for_subject(*user_id, AuthPath::HostBearer),
+            &AuthzContext::for_subject(user_id, AuthPath::HostBearer),
             owner,
             AccessKind::Fact,
         )

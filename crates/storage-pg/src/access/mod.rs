@@ -3,7 +3,7 @@ pub mod scope_surfaces;
 
 use async_trait::async_trait;
 use proxima_core::{
-    AccessError, GroupId, OwnerAccessPort, OwnerRef, OwnerRoles, Relation, Role, StorageError,
+    AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Relation, Role, StorageError,
     UserId,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -134,6 +134,23 @@ impl PgOwnerAccessResolver {
         }
         .map_err(|err| resolution_error(&err))
     }
+
+    /// Whether `group` is registered as a group in the owner registry.
+    ///
+    /// The forwarder policy's question: a forwarder holds its role only in
+    /// a registered group, never in a user's owner.
+    ///
+    /// # Errors
+    ///
+    /// [`AccessError::Resolution`] when the probe fails.
+    pub async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
+        let mut tx = self.begin_probe_transaction().await?;
+        let result = owner_columns::registered_group_on_connection(&mut tx, group)
+            .await
+            .map_err(|err| resolution_error(&err));
+        tx.rollback().await.ok();
+        result
+    }
 }
 
 #[async_trait]
@@ -175,26 +192,42 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
 ///
 /// It does not begin, commit or roll back, and sets no scope: it reads what the
 /// connection's scope lets it read, which is every group on a platform-scoped
-/// transaction. A row inserted earlier in the same open transaction is
-/// visible. There is no bool probe: ask for the role and use
-/// [`Role::manages`] or its ceilings, because a membership bit does not
-/// authorize a write (`Causa.Authorization` `may_write`).
+/// transaction. The owner registry is read the same way: an owner scope that
+/// does not admit the subject's own id hides the row that refuses a
+/// group-registered subject, so resolve on a platform-scoped transaction. A
+/// row inserted earlier in the same open transaction is visible. There is no
+/// bool probe: ask for the role and use [`Role::manages`] or its ceilings,
+/// because a membership bit does not authorize a write
+/// (`Causa.Authorization` `may_write`).
 ///
 /// # Errors
 ///
-/// Returns [`AccessError::Resolution`] when the query fails.
+/// Returns [`AccessError::Resolution`] when the query fails, or
+/// [`AccessError::SubjectIsGroup`] when `subject` is registered as a group.
 pub async fn roles_for_subject(
     conn: &mut PgConnection,
     subject: UserId,
 ) -> Result<OwnerRoles, AccessError> {
-    let memberships = owner_columns::resolve_membership(&mut *conn, &OwnerRef::Personal(subject))
+    resolve_subject_roles(conn, subject, None).await
+}
+
+async fn resolve_subject_roles(
+    conn: &mut PgConnection,
+    subject: UserId,
+    group: Option<GroupId>,
+) -> Result<OwnerRoles, AccessError> {
+    let resolved = owner_columns::resolve_subject_membership(&mut *conn, subject, group)
         .await
         .map_err(|err| resolution_error(&err))?;
+    if resolved.subject_is_group {
+        return Err(AccessError::SubjectIsGroup(subject));
+    }
     OwnerRoles::for_subject(
         subject,
-        memberships
+        resolved
+            .memberships
             .into_iter()
-            .map(|row| (OwnerRef::Group(row.group), row.relation.role())),
+            .map(|row| (OwnerId::from(row.group), row.relation.role())),
     )
 }
 
@@ -225,29 +258,22 @@ pub async fn roles_for_subject(
 /// #     conn: &mut sqlx::PgConnection,
 /// #     user: proxima_core::UserId,
 /// # ) {
-/// let personal = proxima_core::OwnerRef::Personal(user);
+/// let personal = OwnerId::from(user);
 /// let _ = proxima_storage_pg::group_role(conn, user, personal).await;
 /// # }
 /// ```
 ///
 /// # Errors
 ///
-/// Returns [`AccessError::Resolution`] when the query fails.
+/// Returns [`AccessError::Resolution`] when the query fails, or
+/// [`AccessError::SubjectIsGroup`] when `subject` is registered as a group.
 pub async fn group_role(
     conn: &mut PgConnection,
     subject: UserId,
     group: GroupId,
 ) -> Result<Option<Role>, AccessError> {
-    let owner = OwnerRef::Group(group);
-    let relations = owner_columns::group_relations_for_member_on_connection(conn, group, subject)
-        .await
-        .map_err(|err| resolution_error(&err))?;
-    let roles = OwnerRoles::for_subject(
-        subject,
-        relations
-            .into_iter()
-            .map(|relation| (owner, relation.role())),
-    )?;
+    let owner = OwnerId::from(group);
+    let roles = resolve_subject_roles(conn, subject, Some(group)).await?;
     Ok(roles.role_for(&owner))
 }
 
@@ -261,7 +287,7 @@ impl PgOwnerAccessResolver {
     /// full enumeration — a single indexed `EXISTS` query for callers that
     /// only need one relation check (e.g. gating a manage-only action).
     ///
-    /// Only [`OwnerRef::Group`] owners carry row-backed relations in
+    /// Only registered group owners carry row-backed relations in
     /// `proxima_core.group_memberships`; Personal access is
     /// derived by the kernel rules, never by a membership row, so probing
     /// either always returns `Ok(false)` — fail closed rather than mint a
@@ -273,12 +299,10 @@ impl PgOwnerAccessResolver {
     pub async fn has_role_for_owner(
         &self,
         subject: UserId,
-        owner: OwnerRef,
+        owner: OwnerId,
         role: Relation,
     ) -> Result<bool, StorageError> {
-        let OwnerRef::Group(group) = owner else {
-            return Ok(false);
-        };
+        let group = owner.as_group();
         let platform_scope = self.platform_scope_lazy().await?;
         if let Some(platform) = platform_scope.as_ref() {
             let mut tx = platform.begin().await?;

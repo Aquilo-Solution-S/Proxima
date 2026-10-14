@@ -384,7 +384,7 @@ mod tests {
     }
 
     /// What `mcp_auth_layer` binds for a verified personal owner.
-    fn auth_for(owner: proxima_core::Owner) -> crate::McpAuthContext {
+    fn auth_for(owner: proxima_core::OwnerId) -> crate::McpAuthContext {
         crate::McpAuthContext {
             owner,
             authz: proxima_core::AuthzContext::single_owner(
@@ -395,8 +395,8 @@ mod tests {
         }
     }
 
-    fn personal_owner() -> proxima_core::Owner {
-        proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()))
+    fn personal_owner() -> proxima_core::OwnerId {
+        proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn rpc_request(version: &str, body: &serde_json::Value) -> Request<Body> {
@@ -543,7 +543,7 @@ mod tests {
     }
 
     /// A `2026-07-28` `tools/call` for `name`, as `owner`.
-    fn tools_call(name: &str, owner: proxima_core::Owner) -> Request<Body> {
+    fn tools_call(name: &str, owner: proxima_core::OwnerId) -> Request<Body> {
         let mut request = per_request_rpc(
             "2026-07-28",
             "tools/call",
@@ -1092,7 +1092,7 @@ mod tests {
     /// resource and (with `rest`) `GET /v1/how-to`.
     async fn guidance_of(
         host: crate::server::McpToolHost,
-        owner: proxima_core::Owner,
+        owner: proxima_core::OwnerId,
     ) -> Vec<(&'static str, String)> {
         let mut texts = Vec::new();
         for (what, request) in instruction_requests(&auth_for(owner)) {
@@ -1450,7 +1450,7 @@ mod tests {
     /// stream, as a `2025-11-25` client does.
     async fn open_session(
         service: &super::McpStreamableService,
-        owner: proxima_core::Owner,
+        owner: proxima_core::OwnerId,
     ) -> Messages {
         let mut initialize = rpc_request(
             "2025-11-25",
@@ -1500,7 +1500,7 @@ mod tests {
     /// waits for its acknowledgment.
     async fn open_subscription(
         service: &super::McpStreamableService,
-        owner: proxima_core::Owner,
+        owner: proxima_core::OwnerId,
     ) -> Messages {
         let mut listen = per_request_rpc(
             "2026-07-28",
@@ -1523,7 +1523,7 @@ mod tests {
 
     /// `notify` until `owner`'s listener is registered: a subscription is
     /// acknowledged a moment before `listen` registers it.
-    async fn notify_registered(notifier: &crate::ToolListNotifier, owner: &proxima_core::Owner) {
+    async fn notify_registered(notifier: &crate::ToolListNotifier, owner: &proxima_core::OwnerId) {
         for _ in 0..100 {
             if notifier.notify(owner).await == 1 {
                 return;
