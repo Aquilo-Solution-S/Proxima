@@ -1058,7 +1058,10 @@ const TABLES: &[(&str, Rows)] = &[
     ("goal_change_v1", Rows::FactSidecar),
     ("goal_head", Rows::Goal),
     ("goal_replay_declaration", Rows::Goal),
+    ("group_edges", Rows::NoKind),
+    ("group_lock_request", Rows::NoKind),
     ("group_memberships", Rows::NoKind),
+    ("group_role_projection", Rows::NoKind),
     ("ingest_keys", Rows::NoKind),
     ("installation", Rows::NoKind),
     ("interpretation_v1", Rows::Memory("t")),
@@ -1197,6 +1200,60 @@ async fn assert_fact_scope_sql(
     let scope = ingest.owner_scope().ok_or("authenticated scope")?;
     let admin_context = context(group, Role::admin());
     let full_scope = admin_context.owner_scope().ok_or("authenticated scope")?;
+
+    // Group topology and its folded projection are owner-control metadata.
+    // They must be visible to the managed group endpoint where policy allows,
+    // while a Fact-only scope cannot forge either endpoint or projection row.
+    let extra_group = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
+        .bind(extra_group)
+        .execute(admin)
+        .await?;
+    let mut topology = proxima_storage_pg::begin_owner_transaction(&runtime, scope).await?;
+    let edge = sqlx::query(
+        "INSERT INTO proxima_core.group_edges
+            (child_group_id, parent_group_id, relation)
+         VALUES ($1, $2, 'viewer')",
+    )
+    .bind(extra_group)
+    .bind(group.into_inner())
+    .execute(&mut *topology)
+    .await;
+    assert!(
+        edge.is_err(),
+        "Fact-only scope must not write group topology"
+    );
+    topology.rollback().await?;
+    let mut topology = proxima_storage_pg::begin_owner_transaction(&runtime, scope).await?;
+    let projection = sqlx::query(
+        "INSERT INTO proxima_core.group_role_projection
+            (member_user_id, group_id, read_ceiling, write_ceiling, manage)
+         VALUES ($1, $2, 'fact', 'none', false)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(group.into_inner())
+    .execute(&mut *topology)
+    .await;
+    assert!(
+        projection.is_err(),
+        "Fact-only scope must not write the folded projection"
+    );
+    topology.rollback().await?;
+    let mut topology = proxima_storage_pg::begin_owner_transaction(&runtime, scope).await?;
+    let gateway = sqlx::query(
+        "INSERT INTO proxima_core.group_lock_request (request_id, left_group_id)
+         VALUES ($1, $2)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(group.into_inner())
+    .execute(&mut *topology)
+    .await;
+    assert!(
+        gateway.is_err(),
+        "Fact-only scope must not forge a lock request"
+    );
+    topology.rollback().await?;
+
     let mut uncovered = Vec::new();
     let mut unprobed = Vec::new();
     for (table, rows) in TABLES {

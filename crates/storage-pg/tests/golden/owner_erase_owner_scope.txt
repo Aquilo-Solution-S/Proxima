@@ -77,7 +77,10 @@
 ## proxima_core.goal_head (1)
 {"handle":"<id037>","owner_id":"<id031>","schema_id":"core/task-goal-v1","t":"<id037>"}
 ## proxima_core.goal_replay_declaration (0)
+## proxima_core.group_edges (0)
+## proxima_core.group_lock_request (0)
 ## proxima_core.group_memberships (0)
+## proxima_core.group_role_projection (0)
 ## proxima_core.ingest_keys (1)
 {"ingest_key":"n1","owner_id":"<id031>","source_id":"src-a","t":"<id029>"}
 ## proxima_core.interpretation_v1 (0)

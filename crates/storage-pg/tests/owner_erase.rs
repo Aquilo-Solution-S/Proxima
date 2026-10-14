@@ -1906,24 +1906,11 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     result.expect("source-scope cooled erase failed");
 }
 
-/// Erasing a member does not shrink the groups it belonged to.
-///
-/// `group_memberships` is a `Surface` with `EraseRule::Never { why }`, and
-/// nothing else in the tree asserts the position that declaration takes. The
-/// differential harness cannot: it enumerates relations from
-/// `information_schema` rather than from the contract, and its corpus never
-/// writes a membership naming an erased member, so it reports a row here as
-/// present either way. That is the difference between "we did not change this"
-/// and "this is what we hold".
-///
-/// Two halves, because `EraseRule::Never` makes two claims. The row is still
-/// there — a group does not silently lose a member row when the member is
-/// dropped, and a host that must remove a departed user calls
-/// `remove_group_member` first, deliberately. And the receipt says nothing
-/// about it: the surface declares `CounterRule::Uncounted`, so the erase
-/// reports no counter for this table at all rather than reporting zero.
+/// Specialized person erasure removes their written relations and projected
+/// roles, preserving other members. Generic surface erasure stays excluded;
+/// access metadata remains outside corpus counters.
 #[tokio::test]
-async fn erasing_a_member_leaves_the_memberships_that_name_it() {
+async fn erasing_a_member_removes_its_relations_and_preserves_other_members() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1959,6 +1946,10 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
         .execute(pool)
         .await?;
 
+        let bystander = UserId::new(Uuid::now_v7());
+        sqlx::query("INSERT INTO proxima_core.group_memberships(group_id,member_user_id,relation) VALUES($1,$2,'viewer')")
+            .bind(group_id).bind(bystander.into_inner()).execute(pool).await?;
+
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop".into(),
@@ -1979,10 +1970,16 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
         .fetch_one(pool)
         .await?;
         assert_eq!(
-            surviving, 1,
-            "a membership is a relation between two owners; erasing one of \
-             them does not make it the other's to lose"
+            surviving, 0,
+            "erasing a person removes their relations so the reference climb cannot restore their roles"
         );
+
+        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.group_memberships WHERE group_id=$1 AND member_user_id=$2")
+            .bind(group_id).bind(bystander.into_inner()).fetch_one(pool).await?;
+        assert_eq!(remaining, 1, "other members keep their written relations");
+        let projected: Vec<Uuid> = sqlx::query_scalar("SELECT member_user_id FROM proxima_core.group_role_projection WHERE group_id=$1")
+            .bind(group_id).fetch_all(pool).await?;
+        assert_eq!(projected, vec![bystander.into_inner()], "only the bystander keeps a projected role");
 
         assert!(
             counts.get("memories") >= 1,
@@ -1994,7 +1991,8 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
         // changing the position without changing this test is a failure
         // rather than a silently stale assertion. `Uncounted` is why the
         // receipt above names no counter for this table: the erase's only
-        // interaction with it is the abandonment precondition's COUNT.
+        // membership cleanup belongs to specialized owner erasure, outside
+        // the generic surface sweep.
         let surface = proxima_core::FLAVOR_0
             .all_surfaces()
             .find(|surface| surface.table == "proxima_core.group_memberships")
@@ -2015,7 +2013,7 @@ async fn erasing_a_member_leaves_the_memberships_that_name_it() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("erasing_a_member_leaves_the_memberships_that_name_it failed");
+    result.expect("erasing_a_member_removes_its_relations_and_preserves_other_members failed");
 }
 
 /// An admission that crossed the shared owner fence before an owner erase

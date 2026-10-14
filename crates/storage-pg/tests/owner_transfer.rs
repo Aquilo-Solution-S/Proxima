@@ -15,6 +15,7 @@ use proxima_core::storage_ports::{
     ChangeEventPort, McpCallReadPort, MemoryInspectPort, MemoryReadPort, OwnerInversePort,
     OwnerTransferPort, OwnerWritePermit,
 };
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
@@ -34,7 +35,9 @@ use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
 };
-use proxima_storage_pg::{PgStorage, core_pg_sidecars};
+use proxima_storage_pg::{
+    PgStorage, add_group_member, core_pg_sidecars, register_group, replace_group_member_relation,
+};
 use uuid::Uuid;
 
 const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
@@ -1223,6 +1226,87 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("Engine headless transfer failed");
+}
+
+#[tokio::test]
+async fn engine_transfer_uses_folded_nested_destination_role() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let person = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let child = GroupId::new(Uuid::now_v7());
+        let parent = GroupId::new(Uuid::now_v7());
+        let permit = OwnerWritePermit::new_for_tests(person, AccessKind::Fact);
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+
+        let mut transaction = pool.begin().await?;
+        register_group(&mut transaction, child).await?;
+        register_group(&mut transaction, parent).await?;
+        add_group_member(
+            &mut transaction,
+            child,
+            person,
+            proxima_core::Relation::Admin,
+        )
+        .await?;
+        add_group_member(
+            &mut transaction,
+            parent,
+            OwnerId::from(child),
+            proxima_core::Relation::Admin,
+        )
+        .await?;
+        transaction.commit().await?;
+
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let authz = authenticated_context(AuthzContext::for_subject_with_role(
+            person.as_user(),
+            [(OwnerId::from(child), proxima_core::Role::admin())],
+            AuthPath::HostBearer,
+        ));
+        engine
+            .transfer_to_owner(
+                &authz,
+                EntityId::Memory(first.memory_id),
+                OwnerId::from(parent),
+            )
+            .await?;
+
+        let mut second_draft = draft();
+        second_draft.ingest_key = Some("nested-transfer-second".into());
+        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
+        let mut transaction = pool.begin().await?;
+        replace_group_member_relation(
+            &mut transaction,
+            parent,
+            OwnerId::from(child),
+            proxima_core::Relation::Admin,
+            proxima_core::Relation::Viewer,
+        )
+        .await?;
+        transaction.commit().await?;
+
+        let refused = engine
+            .transfer_to_owner(
+                &authz,
+                EntityId::Memory(second.memory_id),
+                OwnerId::from(parent),
+            )
+            .await
+            .expect_err("viewer-capped nested destination cannot transfer");
+        assert_eq!(refused.code, proxima_core::ErrorCode::Forbidden);
+        let owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(second.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(owner, person.into_inner());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("nested destination transfer proof failed");
 }
 
 /// The transfer captures and locks the complete series handle before its
