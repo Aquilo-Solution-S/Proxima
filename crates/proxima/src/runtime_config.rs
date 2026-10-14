@@ -5,6 +5,7 @@ use std::time::Duration;
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::publication::PublicationConfig;
 use proxima_core::publication::intake::DurableIntake;
+use proxima_core::storage_ports::OwnerDropProofHandle;
 use proxima_core::storage_ports::publication::ConsumerName;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
@@ -87,6 +88,7 @@ pub struct RuntimeBuilder {
     runtime_grants: Option<bool>,
     request_headers: Option<Vec<String>>,
     owner_access: Option<Arc<dyn OwnerAccessPort>>,
+    owner_drop_proof: Option<OwnerDropProofHandle>,
     forwarder: Option<ForwarderPolicy>,
     /// Every host bag handed to [`Self::services`], across layers; merged
     /// with [`FlavorServices::try_extend`] at resolve so a type two layers
@@ -146,6 +148,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("runtime_grants", &self.runtime_grants)
             .field("request_headers", &self.request_headers)
             .field("has_owner_access", &self.owner_access.is_some())
+            .field("has_owner_drop_proof", &self.owner_drop_proof.is_some())
             .field("forwarder", &self.forwarder)
             .field("services", &self.services)
             .field("health_endpoints", &self.health_endpoints)
@@ -204,6 +207,7 @@ impl RuntimeBuilder {
             runtime_grants: self.runtime_grants.or(base.runtime_grants),
             request_headers: self.request_headers.or(base.request_headers),
             owner_access: self.owner_access.or(base.owner_access),
+            owner_drop_proof: self.owner_drop_proof.or(base.owner_drop_proof),
             forwarder: self.forwarder.or(base.forwarder),
             services: base.services.into_iter().chain(self.services).collect(),
             health_endpoints: self.health_endpoints.or(base.health_endpoints),
@@ -468,6 +472,16 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
         self.owner_access = Some(owner_access);
+        self
+    }
+
+    /// The host's proof that a person was dropped
+    /// ([`proxima_core::OwnerDropProofPort`]), which `erase_personal_owner` and
+    /// `erase_personal_source_scope` require before they erase anything. With
+    /// none installed both refuse with `DropProofPortUnavailable`.
+    #[must_use]
+    pub fn owner_drop_proof(mut self, owner_drop_proof: OwnerDropProofHandle) -> Self {
+        self.owner_drop_proof = Some(owner_drop_proof);
         self
     }
 
@@ -925,6 +939,7 @@ impl RuntimeBuilder {
             embedding_router: self.embedding_router,
             host_state_participant: self.host_state_participant,
             owner_access: self.owner_access,
+            owner_drop_proof: self.owner_drop_proof,
             services,
             late_owner_access,
         };
@@ -1252,6 +1267,8 @@ pub struct RuntimeParts {
     pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// The host's owner-access port; `None` uses the runtime-pool resolver.
     pub owner_access: Option<Arc<dyn OwnerAccessPort>>,
+    /// The host's personal-owner drop proof ([`RuntimeBuilder::owner_drop_proof`]).
+    pub owner_drop_proof: Option<OwnerDropProofHandle>,
     /// The merged host service bag ([`RuntimeBuilder::services`]).
     pub services: FlavorServices,
     /// Bound at boot to the runtime's owner-access port when the
@@ -1284,6 +1301,7 @@ impl std::fmt::Debug for RuntimeParts {
                 &self.host_state_participant.is_some(),
             )
             .field("has_owner_access", &self.owner_access.is_some())
+            .field("has_owner_drop_proof", &self.owner_drop_proof.is_some())
             .field("services", &self.services)
             .field("env_authenticator", &self.late_owner_access.is_some())
             .finish()

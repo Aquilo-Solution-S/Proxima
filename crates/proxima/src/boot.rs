@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use proxima_core::authz::SystemAuthority;
 use proxima_core::llm::{EmbeddingClient, EmbeddingRouter};
+use proxima_core::storage_ports::OwnerDropProofHandle;
 use proxima_core::storage_ports::publication::{OriginScope, PublicationOriginEligibilityPort};
 use proxima_core::{
     ColdObjectStore, Engine, EngineHandle, FlavorRegistry, StorageError, composed_schema_names,
@@ -128,7 +129,13 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let platform_scope = pg.platform_scope_for_host();
     let (pg, blobs) = compose_blob_stores(pg, config.s3.clone())?;
 
-    let engine = compose_engine(registry, &pg, config, embedding_router)?;
+    let engine = compose_engine(
+        registry,
+        &pg,
+        config,
+        embedding_router,
+        parts.owner_drop_proof.clone(),
+    )?;
     // The one handle on the captured outbox. Host-only: it is not in
     // `StoragePorts`, so no flavor, tool or write session can reach a
     // captured event, and a publisher task gets it from here.
@@ -454,8 +461,8 @@ fn wire_cold_store(
 }
 
 /// Compose the engine over the frozen registry and wired storage, attaching
-/// the deployment tool scope, the publication configuration and the host's
-/// embedding router.
+/// the deployment tool scope, the publication configuration, the host's
+/// embedding router and the host's personal-owner drop proof.
 ///
 /// `try_with_publication_config` is on the UNCONDITIONAL path, with the
 /// parsed config even when it binds no source. That is the whole boot
@@ -467,9 +474,14 @@ fn compose_engine(
     pg: &PgStorage,
     config: &RuntimeConfig,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
+    owner_drop_proof: Option<OwnerDropProofHandle>,
 ) -> Result<Engine, ProximaError> {
+    let mut storage_ports = Arc::new(pg.clone()).storage_ports_builder();
+    if let Some(proof) = owner_drop_proof {
+        storage_ports = storage_ports.owner_drop_proof(proof);
+    }
     let mut engine = Engine::new(registry)
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+        .with_storage_ports(storage_ports.build())
         .with_embedding_runtime_policy(config.embedding_runtime_policy)
         .try_with_publication_config(config.publication.clone())
         .map_err(|error| ProximaError::Config(error.to_string()))?

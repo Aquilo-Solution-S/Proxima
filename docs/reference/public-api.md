@@ -356,7 +356,9 @@ Callers submit requests and inspect outcomes. Callers do not provide
 abandonment witnesses. Engine derives the operation identity from
 `AuthzContext`, verifies personal-owner drop proof before minting a sealed
 `EraseAuthorization`, and storage rechecks group abandonment in-transaction
-under the membership lock before hard deletion.
+under the membership lock before hard deletion. The host installs that proof
+(`OwnerDropProofPort`) with `.owner_drop_proof(..)` on the builder; with none
+installed both personal verbs refuse with `DropProofPortUnavailable`.
 
 `OwnerEraseCounts` is a name→count map, not a fixed struct: its key set is
 exactly the `counter` names the frozen flavor contracts declare, seeded to

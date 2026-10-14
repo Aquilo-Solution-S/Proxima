@@ -11,7 +11,7 @@ use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
-    DelegatedAuthorityService,
+    DelegatedAuthorityService, OwnerDropProofHandle,
 };
 use proxima_core::{
     Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient, EmbeddingRouter,
@@ -249,6 +249,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
         self.overlay = self.overlay.owner_access(owner_access);
+        self
+    }
+
+    /// See [`RuntimeBuilder::owner_drop_proof`].
+    #[must_use]
+    pub fn owner_drop_proof(mut self, owner_drop_proof: OwnerDropProofHandle) -> Self {
+        self.overlay = self.overlay.owner_drop_proof(owner_drop_proof);
         self
     }
 
