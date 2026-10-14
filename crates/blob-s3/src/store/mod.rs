@@ -154,15 +154,11 @@ mod tests {
 
     #[tokio::test]
     async fn store_debug_redacts_secret_before_and_after_client_initialization() {
-        let config = S3RuntimeConfig::from_env().unwrap();
-        let secret =
-            proxima_core::env_value(&proxima_core::process_env, "PROXIMA_S3_SECRET_ACCESS_KEY")
-                .expect("PROXIMA_S3_SECRET_ACCESS_KEY");
-        assert!(!secret.is_empty());
-        let store = CitedBlobStore::new(lazy_test_pool(), config).unwrap();
-        assert!(!format!("{store:?}").contains(&secret));
+        let secret = "test-secret-key";
+        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None)).unwrap();
+        assert!(!format!("{store:?}").contains(secret));
         store.client().await.unwrap();
-        assert!(!format!("{store:?}").contains(&secret));
+        assert!(!format!("{store:?}").contains(secret));
     }
 
     #[tokio::test]

@@ -260,16 +260,14 @@ pub(crate) fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
 mod tests {
     use super::*;
 
+    /// A later pair overrides an earlier one with the same key.
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
             pairs
                 .iter()
+                .rev()
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_string())
-                .or_else(|| match key {
-                    "PROXIMA_S3_ACCESS_KEY_ID" | "PROXIMA_S3_SECRET_ACCESS_KEY" => process_env(key),
-                    _ => None,
-                })
         }
     }
 
@@ -277,6 +275,8 @@ mod tests {
         let mut pairs = vec![
             ("PROXIMA_S3_BUCKET", "b"),
             ("PROXIMA_S3_REGION", "eu-central-1"),
+            ("PROXIMA_S3_ACCESS_KEY_ID", "test-access-key"),
+            ("PROXIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
         ];
         pairs.extend_from_slice(extra);
         pairs
@@ -347,9 +347,12 @@ mod tests {
     async fn client_uses_only_configured_credentials_region_and_endpoint() {
         use aws_sdk_s3::presigning::PresigningConfig;
 
-        let mut config = S3RuntimeConfig::from_env().unwrap();
-        config.region = "eu-central-1".into();
-        config.force_path_style = true;
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
+            ("PROXIMA_S3_ENDPOINT_URL", "http://127.0.0.1:9000"),
+            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+        ])))
+        .unwrap()
+        .expect("bucket is set");
         let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let client = Client::from_conf(
             config
@@ -399,7 +402,9 @@ mod tests {
 
     #[test]
     fn config_debug_redacts_the_secret_and_shows_the_access_key_id() {
-        let config = S3RuntimeConfig::from_env().unwrap();
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[])))
+            .unwrap()
+            .expect("bucket is set");
         let debug = format!("{config:?}");
         assert!(!config.key_pair.secret_access_key.is_empty());
         assert!(!debug.contains(&config.key_pair.secret_access_key));
@@ -414,6 +419,8 @@ mod tests {
             ("PROXIMA_S3_REGION", " eu-central-1\n"),
             ("PROXIMA_S3_UPLOAD_TTL_SECONDS", "900\n"),
             ("PROXIMA_S3_FORCE_PATH_STYLE", " true "),
+            ("PROXIMA_S3_ACCESS_KEY_ID", "test-access-key"),
+            ("PROXIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
         ]))
         .unwrap()
         .expect("bucket is set");
