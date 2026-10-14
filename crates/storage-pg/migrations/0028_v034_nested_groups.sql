@@ -449,6 +449,13 @@ DECLARE
     existing_kind proxima_core.owner_kind;
 BEGIN
     PERFORM set_config('app.proxima_scope', 'platform', true);
+    -- Personal registration is the v0.0.30 first-seen path.  The owners
+    -- primary key and immutable-owner trigger already serialize it; taking a
+    -- per-owner advisory lock here would add one lock to every memory write.
+    IF NEW.kind = 'personal' THEN
+        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        RETURN NEW;
+    END IF;
     IF NEW.kind = 'group' THEN
         PERFORM proxima_core.lock_group_tree(NEW.owner_id);
     END IF;
@@ -532,6 +539,9 @@ BEGIN
 END
 $nested_group_rls$;
 
+GRANT SELECT ON proxima_core.group_edges, proxima_core.group_role_projection TO PUBLIC;
+GRANT INSERT ON proxima_core.group_lock_request TO PUBLIC;
+
 -- Seed upgraded databases after the trigger guard exists.
 DROP TRIGGER IF EXISTS group_projection_write_guard ON proxima_core.group_role_projection;
 SELECT proxima_core.rebuild_group_role_projection(
@@ -549,5 +559,6 @@ REVOKE ALL ON FUNCTION proxima_core.group_edge_before_write() FROM PUBLIC;
 REVOKE ALL ON FUNCTION proxima_core.group_projection_after_write() FROM PUBLIC;
 REVOKE ALL ON FUNCTION proxima_core.owner_group_kind_guard() FROM PUBLIC;
 REVOKE ALL ON FUNCTION proxima_core.group_lock_request_cleanup() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxima_core.group_lock_request_trigger() FROM PUBLIC;
 REVOKE ALL ON FUNCTION proxima_core.lock_group_tree(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION proxima_core.lock_group_trees(uuid, uuid) FROM PUBLIC;

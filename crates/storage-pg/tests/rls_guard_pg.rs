@@ -260,6 +260,28 @@ async fn apply_owner_rls_fixtures(pool: &PgPool) {
     .execute(transaction.as_mut())
     .await
     .unwrap();
+    // Migration 0028 is already present in the historical base lane. Remove
+    // its topology/projection objects before replaying 0014, whose census is
+    // intentionally evaluated before later schema additions.
+    sqlx::raw_sql(
+        "DROP TABLE IF EXISTS proxima_core.group_role_projection CASCADE;
+         DROP TABLE IF EXISTS proxima_core.group_edges CASCADE;
+         DROP TABLE IF EXISTS proxima_core.group_lock_request CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_projection_after_write() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_projection_write_guard() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_membership_before_write() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_edge_before_write() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_lock_request_trigger() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_lock_request_cleanup() CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.group_tree_root(uuid) CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.lock_group_tree(uuid) CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.lock_group_trees(uuid, uuid) CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.rebuild_group_role_projection(uuid[]) CASCADE;
+         DROP FUNCTION IF EXISTS proxima_core.owner_group_kind_guard() CASCADE;",
+    )
+    .execute(transaction.as_mut())
+    .await
+    .unwrap();
     for migration in core
         .iter()
         .filter(|migration| lane.contains(&migration.version))

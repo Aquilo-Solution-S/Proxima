@@ -2612,7 +2612,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27,
+                24, 25, 26, 27, 28,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2630,7 +2630,8 @@ mod tests {
              0023_v029_kind_scoped_owner_rls.sql, \
              0024_v030_owner_rls_table_installer.sql, \
              0025_v031_goal_text_outbox_receipt.sql and \
-             0026_v032_outbox_consumers.sql"
+             0026_v032_outbox_consumers.sql, 0027_v033_owner_id.sql and \
+             0028_v034_nested_groups.sql"
         );
     }
 
