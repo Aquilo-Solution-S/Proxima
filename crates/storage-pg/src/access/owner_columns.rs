@@ -485,11 +485,13 @@ pub async fn ensure_owner_row(
 ) -> Result<uuid::Uuid, StorageError> {
     let owner_id = owner.into_inner();
     // `owners` is append-only (no UPDATE): a concurrent first insert waits
-    // on the conflict, then does nothing.
+    // on whichever owner uniqueness constraint it reaches, then does nothing.
+    // No conflict target is intentional: v0.0.30 also enforces
+    // `(owner_id, kind)`, and either arbiter must settle the same first sighting.
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
-         ON CONFLICT (owner_id) DO NOTHING",
+         ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
     .execute(&mut *conn)
@@ -527,7 +529,7 @@ async fn insert_group_row(conn: &mut PgConnection, group: GroupId) -> Result<(),
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'group')
-         ON CONFLICT (owner_id) DO NOTHING",
+         ON CONFLICT DO NOTHING",
     )
     .bind(group.into_inner())
     .execute(&mut *conn)

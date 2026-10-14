@@ -458,21 +458,33 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
         pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
 
         let mut joins = Vec::new();
         for _ in 0..8 {
             let pool = pool.clone();
+            let barrier = barrier.clone();
             joins.push(tokio::spawn(async move {
                 let mut conn = pool
                     .acquire()
                     .await
                     .map_err(|err| StorageError::Unavailable(format!("acquire: {err}")))?;
+                barrier.wait().await;
                 ensure_owner_row(&mut conn, &owner).await
             }));
         }
         for join in joins {
             join.await??;
         }
+        let owner_rows: (i64, String) = sqlx::query_as(
+            "SELECT count(*)::bigint, coalesce(min(kind::text), '')
+               FROM proxima_core.owners
+              WHERE owner_id = $1",
+        )
+        .bind(owner.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(owner_rows, (1, "personal".to_owned()));
         Ok(())
     }
     .await;
