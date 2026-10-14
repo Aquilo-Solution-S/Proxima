@@ -616,9 +616,9 @@ fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerId) -> Result<(
 
 fn member_manage_authority(authz: &AuthzContext, member: OwnerId) -> MembershipMemberAuthority {
     if authz.may_manage(&member) {
-        MembershipMemberAuthority::ManageGranted
+        MembershipMemberAuthority::CallerManagesMember
     } else {
-        MembershipMemberAuthority::NotRequired
+        MembershipMemberAuthority::CallerDoesNotManageMember
     }
 }
 

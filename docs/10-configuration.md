@@ -316,6 +316,7 @@ Authorize from `Role::manages` or its ceilings.
 | Group | At most one parent and one relation, default viewer; self/cycle refused, no depth limit |
 | Climb | `Role::meet` at each parent link, `Role::join` across every relation/path; no downward role propagation |
 | Projection | One row per reached person/group; database triggers maintain it within every membership transaction, raw SQL included |
+| Member authority | `MembershipWritePermit` carries `CallerManagesMember` or `CallerDoesNotManageMember`; the former is required when the member resolves to a group |
 | Engine attach | Manage both parent and attached group |
 | Engine detach | Manage either endpoint; person removal still requires parent manage |
 | Engine relation change | Parent manage |

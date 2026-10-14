@@ -242,7 +242,7 @@ mod tests {
         let membership_permit = MembershipWritePermit::new(
             &permit,
             OwnerId::from(group),
-            MembershipMemberAuthority::NotRequired,
+            MembershipMemberAuthority::CallerDoesNotManageMember,
             crate::storage_ports::MembershipEndpointAuthority::Parent,
         );
         let port = LegacyMembershipAdmin;

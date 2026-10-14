@@ -205,7 +205,7 @@ so Content reuse never crosses a limit.
 | Item | Contract |
 |---|---|
 | `OwnerWritePermit` | sealed storage-tier proof: `(OwnerId, AccessKind)`; constructor is not public |
-| `MembershipWritePermit` | sealed membership proof: parent owner permit plus typed member and endpoint authority; membership port implementations must accept it |
+| `MembershipWritePermit` | sealed membership proof: parent owner permit plus typed member authority (`CallerManagesMember` or `CallerDoesNotManageMember`) and endpoint authority; membership port implementations must accept it |
 | minting path | `Engine::authorize_owner_write(authz, owner, kind)` after server-resolved owner access |
 | `AuthPath::System` | writes only through a context `AuthzContext::for_system(&SystemAuthority, OwnerRoles)` built from this Engine's witness; any other System context is refused |
 | host witness | `BuiltProxima::system_authority()` / `RunningProxima::system_authority()` expose a borrowed witness to embedding hosts |

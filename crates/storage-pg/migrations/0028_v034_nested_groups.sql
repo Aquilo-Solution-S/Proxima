@@ -146,25 +146,11 @@ BEGIN
             MESSAGE = 'nested group membership writes require READ COMMITTED';
     END IF;
     LOOP
-        WITH RECURSIVE parents(group_id, depth) AS (
-            SELECT p_group, 0
-          UNION ALL
-            SELECT e.parent_group_id, p.depth + 1
-              FROM parents p JOIN proxima_core.group_edges e
-                ON e.child_group_id = p.group_id
-        )
-        SELECT group_id INTO before_root FROM parents ORDER BY depth DESC LIMIT 1;
+        before_root := proxima_core.group_tree_root(p_group);
         before_root := COALESCE(before_root, p_group);
         PERFORM pg_advisory_xact_lock(
             hashtextextended('proxima-group-tree:' || before_root::text, 0));
-        WITH RECURSIVE parents(group_id, depth) AS (
-            SELECT p_group, 0
-          UNION ALL
-            SELECT e.parent_group_id, p.depth + 1
-              FROM parents p JOIN proxima_core.group_edges e
-                ON e.child_group_id = p.group_id
-        )
-        SELECT group_id INTO after_root FROM parents ORDER BY depth DESC LIMIT 1;
+        after_root := proxima_core.group_tree_root(p_group);
         after_root := COALESCE(after_root, p_group);
         EXIT WHEN before_root = after_root;
     END LOOP;
@@ -303,19 +289,24 @@ BEGIN
         DELETE FROM proxima_core.group_role_projection WHERE member_user_id = user_id;
         INSERT INTO proxima_core.group_role_projection
         (member_user_id, group_id, read_ceiling, write_ceiling, manage)
-    WITH RECURSIVE paths(member_user_id, group_id, read_rank, write_rank, manages) AS (
+    WITH RECURSIVE relation_roles(relation, read_rank, write_rank, manages) AS (
+        VALUES ('admin'::proxima_core.membership_relation, 4, 4, true),
+               ('editor'::proxima_core.membership_relation, 4, 3, false),
+               ('viewer'::proxima_core.membership_relation, 4, 0, false),
+               ('ingest'::proxima_core.membership_relation, 1, 1, false)
+    ), paths(member_user_id, group_id, read_rank, write_rank, manages) AS (
         SELECT m.member_user_id, m.group_id,
-               CASE m.relation WHEN 'admin' THEN 4 WHEN 'editor' THEN 4 WHEN 'viewer' THEN 4 ELSE 1 END,
-               CASE m.relation WHEN 'admin' THEN 4 WHEN 'editor' THEN 3 WHEN 'ingest' THEN 1 ELSE 0 END,
-               m.relation = 'admin'
+               r.read_rank, r.write_rank, r.manages
           FROM proxima_core.group_memberships m
+          JOIN relation_roles r ON r.relation = m.relation
          WHERE m.member_user_id = user_id
         UNION ALL
         SELECT p.member_user_id, e.parent_group_id,
-               LEAST(p.read_rank, CASE e.relation WHEN 'admin' THEN 4 WHEN 'editor' THEN 4 WHEN 'viewer' THEN 4 ELSE 1 END),
-               LEAST(p.write_rank, CASE e.relation WHEN 'admin' THEN 4 WHEN 'editor' THEN 3 WHEN 'ingest' THEN 1 ELSE 0 END),
-               p.manages AND e.relation = 'admin'
+               LEAST(p.read_rank, r.read_rank),
+               LEAST(p.write_rank, r.write_rank),
+               p.manages AND r.manages
           FROM paths p JOIN proxima_core.group_edges e ON e.child_group_id = p.group_id
+          JOIN relation_roles r ON r.relation = e.relation
     ), folded AS (
         SELECT member_user_id, group_id, max(read_rank) AS read_rank,
                max(write_rank) AS write_rank, bool_or(manages) AS manages

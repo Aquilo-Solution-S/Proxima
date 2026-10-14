@@ -836,7 +836,7 @@ pub async fn add_group_member_on_connection(
         group_id,
         member,
         relation,
-        MembershipMemberAuthority::ManageGranted,
+        MembershipMemberAuthority::CallerManagesMember,
     )
     .await
 }
@@ -851,9 +851,29 @@ async fn add_group_member_on_connection_authorized(
     let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
     insert_group_row(conn, group_id).await?;
     if member_is_group {
-        if !matches!(member_authority, MembershipMemberAuthority::ManageGranted) {
+        if !matches!(
+            member_authority,
+            MembershipMemberAuthority::CallerManagesMember
+        ) {
             return Err(StorageError::MembershipForbidden(
                 "attaching a group requires manage authority on the attached group".into(),
+            ));
+        }
+        let existing: Option<(Uuid, Relation)> = sqlx::query_as(
+            "SELECT parent_group_id, relation
+               FROM proxima_core.group_edges
+              WHERE child_group_id = $1",
+        )
+        .bind(member.into_inner())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        if let Some((existing_parent, existing_relation)) = existing {
+            if existing_parent == group_id.into_inner() && existing_relation == relation {
+                return Ok(());
+            }
+            return Err(StorageError::Conflict(
+                "group is already attached to a parent".into(),
             ));
         }
         let inserted = sqlx::query(
@@ -937,7 +957,7 @@ pub async fn remove_group_member_on_connection(
         conn,
         group_id,
         member,
-        MembershipMemberAuthority::ManageGranted,
+        MembershipMemberAuthority::CallerManagesMember,
         MembershipEndpointAuthority::Parent,
     )
     .await
@@ -953,7 +973,10 @@ async fn remove_group_member_on_connection_authorized(
     let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
     if member_is_group
         && matches!(endpoint_authority, MembershipEndpointAuthority::Member)
-        && !matches!(member_authority, MembershipMemberAuthority::ManageGranted)
+        && !matches!(
+            member_authority,
+            MembershipMemberAuthority::CallerManagesMember
+        )
     {
         return Err(StorageError::MembershipForbidden(
             "detaching a group requires manage authority on the attached group".into(),
@@ -1042,7 +1065,7 @@ pub async fn remove_group_member_relation_on_connection(
         group_id,
         member,
         relation,
-        MembershipMemberAuthority::ManageGranted,
+        MembershipMemberAuthority::CallerManagesMember,
         MembershipEndpointAuthority::Parent,
     )
     .await
@@ -1059,7 +1082,10 @@ async fn remove_group_member_relation_on_connection_authorized(
     let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
     if member_is_group
         && matches!(endpoint_authority, MembershipEndpointAuthority::Member)
-        && !matches!(member_authority, MembershipMemberAuthority::ManageGranted)
+        && !matches!(
+            member_authority,
+            MembershipMemberAuthority::CallerManagesMember
+        )
     {
         return Err(StorageError::MembershipForbidden(
             "detaching a group requires manage authority on the attached group".into(),

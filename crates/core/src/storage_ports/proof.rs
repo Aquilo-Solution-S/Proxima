@@ -31,8 +31,8 @@ pub struct OwnerWritePermit {
 /// when the member id resolves to a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipMemberAuthority {
-    NotRequired,
-    ManageGranted,
+    CallerDoesNotManageMember,
+    CallerManagesMember,
 }
 
 /// Endpoint whose manage authority admitted a membership removal.
@@ -72,7 +72,7 @@ impl<'a> MembershipWritePermit<'a> {
             },
             member_authority: match member_authority {
                 Some(authority) => authority,
-                None => MembershipMemberAuthority::NotRequired,
+                None => MembershipMemberAuthority::CallerDoesNotManageMember,
             },
             endpoint_authority: match endpoint_authority {
                 Some(authority) => authority,

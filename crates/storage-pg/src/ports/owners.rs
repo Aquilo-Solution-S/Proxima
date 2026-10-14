@@ -20,7 +20,7 @@ fn validate_membership_permit(
             validate_permit_owner(permit.owner(), &OwnerId::from(group))?;
         }
         MembershipEndpointAuthority::Member => {
-            if permit.member_authority() != MembershipMemberAuthority::ManageGranted
+            if permit.member_authority() != MembershipMemberAuthority::CallerManagesMember
                 || permit.owner().owner() != &member
             {
                 return Err(StorageError::MembershipForbidden(

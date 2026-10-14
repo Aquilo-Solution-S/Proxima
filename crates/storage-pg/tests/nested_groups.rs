@@ -312,6 +312,71 @@ async fn database_lattice_equals_rust_for_all_relations_and_cap_chains() -> Test
 }
 
 #[tokio::test]
+async fn readding_same_group_edge_is_a_noop() -> TestResult {
+    let h = Harness::new(None).await?;
+    let groups = h.groups(2).await?;
+    let person = OwnerId::new(Uuid::now_v7());
+    h.add(groups[1], person, Relation::Admin).await?;
+    h.add(groups[0], OwnerId::from(groups[1]), Relation::Viewer)
+        .await?;
+    let before: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
+        "SELECT child_group_id, parent_group_id, relation
+         FROM proxima_core.group_edges
+         WHERE child_group_id = $1",
+    )
+    .bind(groups[1].into_inner())
+    .fetch_all(&h.pool)
+    .await?;
+    assert_eq!(before.len(), 1, "one stored group edge");
+    let projection_before: Vec<(Uuid, Uuid, String, String, bool)> = sqlx::query_as(
+        "SELECT member_user_id, group_id, read_ceiling::text, write_ceiling::text, manage
+         FROM proxima_core.group_role_projection
+         WHERE member_user_id = $1
+         ORDER BY group_id",
+    )
+    .bind(person.into_inner())
+    .fetch_all(&h.pool)
+    .await?;
+
+    h.add(groups[0], OwnerId::from(groups[1]), Relation::Viewer)
+        .await?;
+
+    let conflict = h
+        .add(groups[0], OwnerId::from(groups[1]), Relation::Editor)
+        .await
+        .expect_err("a different relation requires replacement");
+    assert!(matches!(
+        conflict.downcast_ref::<proxima_core::StorageError>(),
+        Some(proxima_core::StorageError::Conflict(message))
+            if message == "group is already attached to a parent"
+    ));
+
+    let after: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
+        "SELECT child_group_id, parent_group_id, relation
+         FROM proxima_core.group_edges
+         WHERE child_group_id = $1",
+    )
+    .bind(groups[1].into_inner())
+    .fetch_all(&h.pool)
+    .await?;
+    let projection_after: Vec<(Uuid, Uuid, String, String, bool)> = sqlx::query_as(
+        "SELECT member_user_id, group_id, read_ceiling::text, write_ceiling::text, manage
+         FROM proxima_core.group_role_projection
+         WHERE member_user_id = $1
+         ORDER BY group_id",
+    )
+    .bind(person.into_inner())
+    .fetch_all(&h.pool)
+    .await?;
+    assert_eq!(before, after, "same edge re-add changes no edge row");
+    assert_eq!(
+        projection_before, projection_after,
+        "same edge re-add changes no projection"
+    );
+    h.assert_projection().await
+}
+
+#[tokio::test]
 async fn roles_climb_only_and_take_weakest_path_then_strongest_alternative() -> TestResult {
     let h = Harness::new(None).await?;
     let g = h.groups(4).await?;
