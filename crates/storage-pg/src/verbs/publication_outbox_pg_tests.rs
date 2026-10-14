@@ -1803,7 +1803,7 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
             outcome,
             proxima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
         ),
-        "expected a completed erase, got {outcome:?}"
+        "expected a completed erase"
     );
 
     let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT t FROM proxima_core.publication_outbox")
