@@ -445,7 +445,8 @@ pub(crate) async fn blob_upload_object_keys(
 /// registered id keeps the kind it was registered with: the registry is never
 /// rewritten from a write.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -475,7 +476,8 @@ pub async fn ensure_owner_row(
 
 /// Register `group` as a group, eagerly, when it is created.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -605,7 +607,8 @@ pub(crate) async fn bootstrap_group_admin(
 
 /// Register a group and seed its first Admin; refuse an existing Admin.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -677,7 +680,8 @@ pub(crate) async fn add_group_member(
 
 /// Register an unseen group and add a relation; an existing relation stays.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -731,7 +735,8 @@ pub(crate) async fn remove_group_member(
 
 /// Remove every relation of a member in a group; an absent member is `Ok`.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -785,7 +790,8 @@ pub(crate) async fn remove_group_member_relation(
 
 /// Remove one relation of a member in a group; an absent relation is `Ok`.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are
@@ -854,7 +860,8 @@ pub(crate) async fn replace_group_member_relation(
 
 /// Replace a held relation with another; an existing target relation stays.
 ///
-/// No authorization runs: the host vouches for this write as for its own rows.
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for this write as for its own rows.
 /// The caller must supply a platform-scoped transaction (`&mut *tx`). This
 /// function never begins, commits, rolls back, retries or sets a scope; on a
 /// retryable error, the caller retries its whole transaction. All effects are

@@ -287,8 +287,8 @@ pub use proxima_mcp_server::{
 pub use proxima_storage_pg::PgOwnerAccessResolver;
 /// Owner-registry and membership writes on a host's own transaction.
 ///
-/// No authorization runs: the host vouches for each write as it would for a
-/// row it inserts itself. The caller's transaction must be platform-scoped
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for each write as it would for a row it inserts itself. The caller's transaction must be platform-scoped
 /// (for example [`PgPlatformScope::begin`]); pass `&mut *tx`. These functions
 /// never begin, commit, roll back, retry or set a scope. The caller retries
 /// its whole transaction on [`StorageError::Retryable`]. All effects follow

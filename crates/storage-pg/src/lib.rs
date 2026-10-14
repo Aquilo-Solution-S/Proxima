@@ -83,8 +83,8 @@ pub mod verbs;
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;
 /// Owner-registry and membership writes on a caller's platform transaction.
-/// No authorization runs: the host vouches for these writes as for its own
-/// rows. No transaction control, scope setting or retry runs; the caller
+/// No authorization runs, the authorization hooks included: the host vouches
+/// for these writes as for its own rows. No transaction control, scope setting or retry runs; the caller
 /// retries its whole transaction. All effects follow from committed rows.
 pub use access::owner_columns::{
     add_group_member_on_connection as add_group_member,

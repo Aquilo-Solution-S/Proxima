@@ -321,14 +321,15 @@ facade exports `register_group`, `bootstrap_group_admin`,
 host's `&mut *tx`. `register_group`, `bootstrap_group_admin`, `add_group_member`,
 `remove_group_member`, `remove_group_member_relation` and
 `replace_group_member_relation` share the membership advisory lock.
-They write the same registry and
-membership rows as their pool forms, but never begin, commit, roll back, set a
-scope or retry. No authorization runs:
+They write the same registry and membership rows as their pool forms, but never begin, commit, roll back, set a
+scope or retry. No authorization runs, the authorization hooks included:
 the host vouches for the write as it would for a row it inserts itself. The
 caller's transaction must be platform-scoped. The caller retries its whole
 transaction when needed. The pool forms retain their transaction and retry
 behavior by calling these connection forms, so their committed effects remain
 unchanged. There is no post-commit action in these forms.
+`AuthzOperation::Membership` authorization hooks run only on the Engine
+membership verbs.
 
 Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
 (or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the
