@@ -10,10 +10,12 @@ capability vocabulary, and storage ports. Flavor crates contribute build-time
 vocabulary. Composite binaries choose flavor crates at build time and
 freeze the registry at startup.
 
-Proxima is a framework: core plus linked flavor crates composed into an
-app. Generic agent memory and Goal substrate are core; domain
-vocabularies such as code remain flavors. There is no external
-flavor/tool catalog and no runtime registration.
+Proxima is a framework: core plus flavors composed into an app. A flavor
+is what a Proxima host serves under its own id. It is either linked into
+the host at build time as a flavor crate, or installed and run outside the
+host process. Generic agent memory and Goal substrate are core; domain
+vocabularies such as code remain flavors. The registry described here holds
+the linked flavor crates; it has no runtime registration path.
 
 The formal kernel is `docs/lean/Causa/`, not the Rust crate
 boundary.
@@ -45,8 +47,8 @@ composite binary
   wires storage + embedding client + transports
 ```
 
-No runtime registration tier. Schemas, tools, sources, and prompts are
-build-time vocabulary. Connections are not vocabulary at all: a flavor
+A linked flavor crate's schemas, tools, sources, and prompts are
+build-time vocabulary; the registry has no runtime registration tier. Connections are not vocabulary at all: a flavor
 connects nodes only by declaring `references()` on its payloads, and the two
 edge kinds are closed to core.
 

@@ -107,7 +107,7 @@ name = "core_mcp_pg"
 required-features = ["testkit"]
 
 [[test]]
-name = "stock_pack_host_pg"
+name = "stock_flavor_host_pg"
 required-features = ["testkit"]
 
 [[test]]

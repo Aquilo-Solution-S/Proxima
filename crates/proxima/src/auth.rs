@@ -430,7 +430,7 @@ mod tests {
         assert!(oidc_from_lookup(&insecure, owner_access()).is_err());
     }
 
-    /// The pack-call shape: tokens minted by an issuer the host has no
+    /// The flavor-call shape: tokens minted by an issuer the host has no
     /// network path to, verified against a key set shipped in its config.
     mod pinned_jwks {
         use std::io::ErrorKind;
@@ -452,8 +452,8 @@ mod tests {
         use crate::auth::{JWKS_JSON, JWKS_URI, oidc_from_lookup};
         use crate::runtime_config::ProximaError;
 
-        const KID: &str = "pack-call-1";
-        const FLEET: &str = "pack-fleet";
+        const KID: &str = "flavor-call-1";
+        const FLEET: &str = "flavor-fleet";
         const CALLER: &str = "centauri";
 
         /// An issuer that never answers. Plaintext loopback passes the
@@ -554,7 +554,7 @@ mod tests {
                 &env(&[
                     ("PROXIMA_OIDC_ISSUER", issuer),
                     ("PROXIMA_OIDC_AUDIENCE", FLEET),
-                    ("PROXIMA_PUBLIC_URL", "https://pack.test"),
+                    ("PROXIMA_PUBLIC_URL", "https://flavor.test"),
                     ("PROXIMA_OIDC_SUBJECT_MAP", &subject_map),
                     (JWKS_JSON, jwks),
                     // A regression to the HTTP resolver stalls on the silent
@@ -619,7 +619,7 @@ mod tests {
             let both = env(&[
                 ("PROXIMA_OIDC_ISSUER", "https://centauri.test"),
                 ("PROXIMA_OIDC_AUDIENCE", FLEET),
-                ("PROXIMA_PUBLIC_URL", "https://pack.test"),
+                ("PROXIMA_PUBLIC_URL", "https://flavor.test"),
                 ("PROXIMA_OIDC_SUBJECT_MAP", &format!("{CALLER}:{user}")),
                 (JWKS_URI, "https://centauri.test/keys"),
                 (JWKS_JSON, &jwks(KID, &signing_key())),

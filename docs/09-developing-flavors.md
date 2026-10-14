@@ -4,7 +4,10 @@
 
 ## Contract
 
-Flavor = build-time vocabulary crate.
+A flavor is what a Proxima host serves under its own id: linked into the
+host at build time, or installed and run outside the host process. This
+guide covers the linked kind, a flavor crate, which is build-time
+vocabulary.
 
 | Owns | Examples |
 |---|---|

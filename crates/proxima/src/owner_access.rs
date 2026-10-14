@@ -21,7 +21,7 @@ const FORWARDER_ROLE: &str = "PROXIMA_FORWARDER_ROLE";
 /// Group it selects per request (`X-Proxima-Owner: group:<uuid>`).
 ///
 /// For a host that serves many parties through one authenticated subject: a
-/// pack host forwards each party's call under its own token and names the
+/// flavor host forwards each party's call under its own token and names the
 /// party's Group, and the Group need not list the forwarder as a member. The
 /// policy answers only the per-Group probe the edge makes for a Group the
 /// subject's membership map lacks — real memberships still win, a Personal
