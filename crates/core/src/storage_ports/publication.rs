@@ -34,32 +34,6 @@ pub enum PublicationOriginEligibility {
     Ineligible,
 }
 
-/// The aggregate state of one publication record.
-///
-/// Claims belong to a consumer's `publication_delivery` lane. A record
-/// therefore has no `Claimed` state; the SQL enum and this closed Rust type
-/// enforce the same boundary.
-///
-/// ```
-/// use proxima_core::storage_ports::publication::PublicationRecordState;
-/// let pending = PublicationRecordState::Pending;
-/// assert_ne!(pending, PublicationRecordState::Published);
-/// ```
-///
-/// ```compile_fail
-/// use proxima_core::storage_ports::publication::PublicationRecordState;
-/// let _ = PublicationRecordState::Claimed;
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(
-    type_name = "proxima_core.publication_record_state",
-    rename_all = "snake_case"
-)]
-pub enum PublicationRecordState {
-    Pending,
-    Published,
-}
-
 /// Narrow host-only check over immutable publication origin and the core
 /// hard-delete witness. It is deliberately separate from `StoragePorts` and
 /// grants neither Fact reads nor writes.

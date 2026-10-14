@@ -232,7 +232,7 @@ pub use proxima_core::publication::{SubjectPosition, SubjectPositionError};
 /// outbox record could delay or suppress an export.
 pub use proxima_core::storage_ports::publication::{
     AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, ConsumerNameError,
-    PublicationOutboxPort, PublicationRecordState, PublisherId, PublisherIdError, ReleaseOutcome,
+    PublicationOutboxPort, PublisherId, PublisherIdError, ReleaseOutcome,
 };
 /// This installation's identity and the host-only provenance check.
 ///

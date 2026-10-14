@@ -3,9 +3,7 @@
 
 use std::borrow::Cow;
 
-use proxima_core::storage_ports::publication::{
-    ConsumerName, PublicationConsumerPort, PublicationRecordState,
-};
+use proxima_core::storage_ports::publication::{ConsumerName, PublicationConsumerPort};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
 use proxima_storage_pg::{PgPlatformScope, PgStorage, begin_migration_transaction, core_migrator};
 use sqlx::PgPool;
@@ -201,13 +199,13 @@ async fn a_delivered_legacy_record_upgrades_unchanged_and_record_state_rejects_c
         let (t, envelope) = insert_owner_and_legacy_record(pool, true).await?;
         run_current_migrations(&pg).await?;
         assert_eq!(
-            sqlx::query_scalar::<_, PublicationRecordState>(
-                "SELECT state FROM proxima_core.publication_outbox WHERE t = $1",
+            sqlx::query_scalar::<_, String>(
+                "SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1",
             )
             .bind(t)
             .fetch_one(pool)
             .await?,
-            PublicationRecordState::Published
+            "published"
         );
         assert_eq!(
             sqlx::query_scalar::<_, Vec<u8>>(
