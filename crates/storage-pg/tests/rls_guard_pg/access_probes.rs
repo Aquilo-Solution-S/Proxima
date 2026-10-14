@@ -149,7 +149,13 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
         .unwrap();
 
     engine
-        .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+        .replace_member_relation(
+            &authz,
+            group,
+            member.into(),
+            Relation::Admin,
+            Relation::Viewer,
+        )
         .await
         .expect("replace under the manage scope");
     assert_eq!(
@@ -157,7 +163,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
         vec![Relation::Viewer, Relation::Ingest]
     );
     engine
-        .remove_member_relation(&authz, group, member, Relation::Ingest)
+        .remove_member_relation(&authz, group, member.into(), Relation::Ingest)
         .await
         .expect("remove one relation under the manage scope");
     assert_eq!(
@@ -167,7 +173,13 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
 
     // Not holding `from` is a refusal, not an RLS-filtered silent success.
     let err = engine
-        .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Editor)
+        .replace_member_relation(
+            &authz,
+            group,
+            member.into(),
+            Relation::Admin,
+            Relation::Editor,
+        )
         .await
         .expect_err("the member no longer holds Admin");
     assert_eq!(err.code, proxima_core::ErrorCode::InvalidArgument);

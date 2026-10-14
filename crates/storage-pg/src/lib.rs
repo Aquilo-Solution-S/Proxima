@@ -639,6 +639,12 @@ const SUPPORT_RELATION_MARKERS: &str = r"SELECT CASE
            THEN 'missing relation proxima_core.agent_note_v1'
          WHEN to_regclass('proxima_core.group_memberships') IS NULL
            THEN 'missing relation proxima_core.group_memberships'
+         WHEN to_regclass('proxima_core.group_edges') IS NULL
+           THEN 'missing relation proxima_core.group_edges'
+         WHEN to_regclass('proxima_core.group_role_projection') IS NULL
+           THEN 'missing relation proxima_core.group_role_projection'
+         WHEN to_regclass('proxima_core.group_lock_request') IS NULL
+           THEN 'missing relation proxima_core.group_lock_request'
          WHEN to_regclass('proxima_core.cold_purge_pending') IS NULL
            THEN 'missing relation proxima_core.cold_purge_pending'
          WHEN to_regclass('proxima_core.publication_outbox') IS NULL

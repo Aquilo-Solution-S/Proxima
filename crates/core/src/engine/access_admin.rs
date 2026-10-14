@@ -5,6 +5,9 @@ use crate::authz::{
 use crate::error::ProtocolError;
 use crate::owner_inverse::OwnerEraseTarget;
 use crate::storage::StorageError;
+use crate::storage_ports::{
+    MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
+};
 use crate::{GroupId, OwnerId, UserId};
 
 use super::Engine;
@@ -13,7 +16,7 @@ use super::Engine;
 /// keyset total order `(member_user_id, relation)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupMemberPage {
-    pub members: Vec<(UserId, Relation)>,
+    pub members: Vec<(OwnerId, Relation)>,
     /// More members exist past this page; resume from the last returned
     /// `(member, relation)` pair.
     pub has_more: bool,
@@ -77,13 +80,13 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         let group_owner = OwnerId::from(group);
         let permit = self.authorize_owner_admin(authz, &group_owner).await?;
         require_group_manage(authz, &group_owner)?;
-        let member_principal = OwnerId::from(member);
+        let member_principal = member;
         self.veto_and_observe_access_admin(
             authz,
             &group_owner,
@@ -95,18 +98,24 @@ impl Engine {
                 relation,
             },
         )?;
+        let membership_permit = MembershipWritePermit::new(
+            permit.owner_write_permit(),
+            group_owner,
+            member_manage_authority(authz, member),
+            MembershipEndpointAuthority::Parent,
+        );
         self.storage()
             .access_admin
             .owner_membership_admin
             .add_group_member(
-                permit.owner_write_permit(),
+                &membership_permit,
                 group,
                 member,
                 relation,
                 actor_uuid(authz),
             )
             .await
-            .map_err(|err| storage_error("add_group_member", &err))
+            .map_err(|err| membership_storage_error("add_group_member", err))
     }
 
     /// Remove all membership rows for a user in one group.
@@ -119,12 +128,13 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
     ) -> Result<(), ProtocolError> {
         let group_owner = OwnerId::from(group);
-        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
-        require_group_manage(authz, &group_owner)?;
-        let member_principal = OwnerId::from(member);
+        let (permit, endpoint_authority) = self
+            .authorize_membership_detach(authz, group_owner, member)
+            .await?;
+        let member_principal = member;
         let current_relations = self
             .storage()
             .access_admin
@@ -148,12 +158,18 @@ impl Engine {
                 },
             )?;
         }
+        let membership_permit = MembershipWritePermit::new(
+            permit.owner_write_permit(),
+            group_owner,
+            member_manage_authority(authz, member),
+            endpoint_authority,
+        );
         self.storage()
             .access_admin
             .owner_membership_admin
-            .remove_group_member(permit.owner_write_permit(), group, member)
+            .remove_group_member(&membership_permit, group, member)
             .await
-            .map_err(|err| storage_error("remove_group_member", &err))
+            .map_err(|err| membership_storage_error("remove_group_member", err))
     }
 
     /// Remove one relation of a user in one group; the user's other relations
@@ -172,12 +188,13 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
         relation: Relation,
     ) -> Result<(), ProtocolError> {
         let group_owner = OwnerId::from(group);
-        let permit = self.authorize_owner_admin(authz, &group_owner).await?;
-        require_group_manage(authz, &group_owner)?;
+        let (permit, endpoint_authority) = self
+            .authorize_membership_detach(authz, group_owner, member)
+            .await?;
         self.veto_and_observe_access_admin(
             authz,
             &group_owner,
@@ -185,16 +202,22 @@ impl Engine {
             AuthzOperation::Membership {
                 change: MembershipChange::Remove,
                 group,
-                member: OwnerId::from(member),
+                member,
                 relation,
             },
         )?;
+        let membership_permit = MembershipWritePermit::new(
+            permit.owner_write_permit(),
+            group_owner,
+            member_manage_authority(authz, member),
+            endpoint_authority,
+        );
         self.storage()
             .access_admin
             .owner_membership_admin
-            .remove_group_member_relation(permit.owner_write_permit(), group, member, relation)
+            .remove_group_member_relation(&membership_permit, group, member, relation)
             .await
-            .map_err(|err| storage_error("remove_group_member_relation", &err))
+            .map_err(|err| membership_storage_error("remove_group_member_relation", err))
     }
 
     /// Replace the `from` relation of a user in one group with `to`,
@@ -214,7 +237,7 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
         from: Relation,
         to: Relation,
     ) -> Result<(), ProtocolError> {
@@ -227,7 +250,7 @@ impl Engine {
                 "must differ from the relation being replaced",
             ));
         }
-        let member_principal = OwnerId::from(member);
+        let member_principal = member;
         for (change, relation) in [
             (MembershipChange::Remove, from),
             (MembershipChange::Add, to),
@@ -244,11 +267,17 @@ impl Engine {
                 },
             )?;
         }
+        let membership_permit = MembershipWritePermit::new(
+            permit.owner_write_permit(),
+            group_owner,
+            member_manage_authority(authz, member),
+            MembershipEndpointAuthority::Parent,
+        );
         self.storage()
             .access_admin
             .owner_membership_admin
             .replace_group_member_relation(
-                permit.owner_write_permit(),
+                &membership_permit,
                 group,
                 member,
                 from,
@@ -271,7 +300,7 @@ impl Engine {
         authz: &AuthzContext,
         group: GroupId,
         limit: u32,
-        after: Option<(UserId, Relation)>,
+        after: Option<(OwnerId, Relation)>,
     ) -> Result<GroupMemberPage, ProtocolError> {
         let group_owner = OwnerId::from(group);
         self.authorize_owner_admin(authz, &group_owner).await?;
@@ -286,6 +315,29 @@ impl Engine {
         let has_more = members.len() > usize::try_from(limit).unwrap_or(usize::MAX);
         members.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(GroupMemberPage { members, has_more })
+    }
+
+    async fn authorize_membership_detach(
+        &self,
+        authz: &AuthzContext,
+        parent: OwnerId,
+        member: OwnerId,
+    ) -> Result<(super::pipeline::WritePermit, MembershipEndpointAuthority), ProtocolError> {
+        if authz.may_manage(&parent) {
+            return Ok((
+                self.authorize_owner_admin(authz, &parent).await?,
+                MembershipEndpointAuthority::Parent,
+            ));
+        }
+        if authz.may_manage(&member) {
+            return Ok((
+                self.authorize_owner_admin(authz, &member).await?,
+                MembershipEndpointAuthority::Member,
+            ));
+        }
+        Err(ProtocolError::forbidden(
+            "requires manage on the parent or attached group",
+        ))
     }
 
     /// Transfer one memory's owner to `to_owner`. This is an owner
@@ -514,8 +566,7 @@ impl Engine {
             if OwnerId::from(row.group) != *to_owner {
                 return false;
             }
-            let role = row.relation.role();
-            role.administers() && role.manages()
+            row.role.administers() && row.role.manages()
         });
         if consents { Ok(()) } else { Err(refused()) }
     }
@@ -563,6 +614,14 @@ fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerId) -> Result<(
     }
 }
 
+fn member_manage_authority(authz: &AuthzContext, member: OwnerId) -> MembershipMemberAuthority {
+    if authz.may_manage(&member) {
+        MembershipMemberAuthority::ManageGranted
+    } else {
+        MembershipMemberAuthority::NotRequired
+    }
+}
+
 fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
     authz
         .subject()
@@ -571,6 +630,10 @@ fn actor_uuid(authz: &AuthzContext) -> uuid::Uuid {
 
 fn storage_error(context: &str, err: &StorageError) -> ProtocolError {
     super::errors::internal_storage_error(context, err)
+}
+
+fn membership_storage_error(context: &str, err: StorageError) -> ProtocolError {
+    super::errors::map_write_storage_error(err, "membership", context)
 }
 
 fn bootstrap_storage_error(err: StorageError) -> ProtocolError {
@@ -771,13 +834,13 @@ mod tests {
         );
 
         let add_err = engine
-            .add_member(&authz, group, member, Relation::Viewer)
+            .add_member(&authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("test storage rejects membership writes after hook observation");
         assert_eq!(add_err.code, ErrorCode::Internal);
 
         let remove_err = engine
-            .remove_member(&authz, group, member)
+            .remove_member(&authz, group, member.into())
             .await
             .expect_err("test storage rejects membership writes after hook observation");
         assert_eq!(remove_err.code, ErrorCode::Internal);
@@ -864,7 +927,13 @@ mod tests {
         // (the double rejects the write with `Internal`).
         let (engine, seen) = relation_engine(group, member, None);
         let err = engine
-            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .replace_member_relation(
+                &authz,
+                group,
+                member.into(),
+                Relation::Admin,
+                Relation::Viewer,
+            )
             .await
             .expect_err("the double does not implement the replacement, so the default refuses");
         assert_eq!(err.code, ErrorCode::Internal);
@@ -888,7 +957,13 @@ mod tests {
             Some((MembershipChange::Remove, Relation::Admin)),
         );
         let err = engine
-            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .replace_member_relation(
+                &authz,
+                group,
+                member.into(),
+                Relation::Admin,
+                Relation::Viewer,
+            )
             .await
             .expect_err("a veto on Remove(from) must refuse");
         assert_eq!(err.code, ErrorCode::Forbidden);
@@ -904,7 +979,13 @@ mod tests {
             Some((MembershipChange::Add, Relation::Viewer)),
         );
         let err = engine
-            .replace_member_relation(&authz, group, member, Relation::Admin, Relation::Viewer)
+            .replace_member_relation(
+                &authz,
+                group,
+                member.into(),
+                Relation::Admin,
+                Relation::Viewer,
+            )
             .await
             .expect_err("a veto on Add(to) must refuse");
         assert_eq!(err.code, ErrorCode::Forbidden);
@@ -927,7 +1008,7 @@ mod tests {
             .replace_member_relation(
                 &admin_of(group),
                 group,
-                member,
+                member.into(),
                 Relation::Editor,
                 Relation::Editor,
             )
@@ -955,7 +1036,7 @@ mod tests {
 
         let (engine, seen) = relation_engine(group, member, None);
         let err = engine
-            .remove_member_relation(&authz, group, member, Relation::Viewer)
+            .remove_member_relation(&authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("the double rejects the write");
         assert_eq!(err.code, ErrorCode::Internal);
@@ -970,7 +1051,7 @@ mod tests {
             Some((MembershipChange::Remove, Relation::Viewer)),
         );
         let err = engine
-            .remove_member_relation(&authz, group, member, Relation::Viewer)
+            .remove_member_relation(&authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("a veto must refuse");
         assert_eq!(err.code, ErrorCode::Forbidden);
@@ -1002,7 +1083,7 @@ mod tests {
             .replace_member_relation(
                 &write_only_authz,
                 group,
-                member,
+                member.into(),
                 Relation::Admin,
                 Relation::Viewer,
             )
@@ -1010,7 +1091,7 @@ mod tests {
             .expect_err("write-without-manage must not replace a relation");
         assert_eq!(denied.code, ErrorCode::Forbidden);
         let denied = engine
-            .remove_member_relation(&write_only_authz, group, member, Relation::Viewer)
+            .remove_member_relation(&write_only_authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("write-without-manage must not remove a relation");
         assert_eq!(denied.code, ErrorCode::Forbidden);
@@ -1021,12 +1102,18 @@ mod tests {
 
         let admin = admin_of(group);
         let past_gate = engine
-            .replace_member_relation(&admin, group, member, Relation::Admin, Relation::Viewer)
+            .replace_member_relation(
+                &admin,
+                group,
+                member.into(),
+                Relation::Admin,
+                Relation::Viewer,
+            )
             .await
             .expect_err("the double rejects the write after the gate opens");
         assert_eq!(past_gate.code, ErrorCode::Internal);
         let past_gate = engine
-            .remove_member_relation(&admin, group, member, Relation::Viewer)
+            .remove_member_relation(&admin, group, member.into(), Relation::Viewer)
             .await
             .expect_err("the double rejects the write after the gate opens");
         assert_eq!(past_gate.code, ErrorCode::Internal);
@@ -1163,14 +1250,14 @@ mod tests {
                 membership_storage_with_home(member, group, Some(group_owner)).storage_ports(),
             );
         let denied = engine
-            .add_member(&write_only_authz, group, member, Relation::Viewer)
+            .add_member(&write_only_authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("write-without-manage must not add members");
         assert_eq!(denied.code, ErrorCode::Forbidden);
 
         // remove_member: same gate, fails closed before enumerating members.
         let denied = engine
-            .remove_member(&write_only_authz, group, member)
+            .remove_member(&write_only_authz, group, member.into())
             .await
             .expect_err("write-without-manage must not remove members");
         assert_eq!(denied.code, ErrorCode::Forbidden);
@@ -1232,7 +1319,7 @@ mod tests {
         // manage == true (Role::admin) passes the manage gate and reaches storage,
         // which this stub rejects with an Internal error — proving the gate opened.
         let past_gate = engine
-            .add_member(&admin_authz, group, member, Relation::Viewer)
+            .add_member(&admin_authz, group, member.into(), Relation::Viewer)
             .await
             .expect_err("stub storage rejects the write after the gate opens");
         assert_eq!(past_gate.code, ErrorCode::Internal);

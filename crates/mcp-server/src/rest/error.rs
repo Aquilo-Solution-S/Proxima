@@ -253,9 +253,14 @@ const fn protocol_status(code: ErrorCode) -> (StatusCode, &'static str, &'static
 
 const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'static str) {
     match err {
-        StorageError::ConstraintViolation(_) => {
+        StorageError::ConstraintViolation(_) | StorageError::MembershipIsolation => {
             (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
         }
+        StorageError::MembershipForbidden(_) => (
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Membership authorization refused",
+        ),
         StorageError::NotFound => (StatusCode::NOT_FOUND, "not-found", "Not found"),
         StorageError::ScopeMissing { .. } => (
             StatusCode::NOT_FOUND,

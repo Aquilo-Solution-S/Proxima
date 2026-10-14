@@ -12,7 +12,7 @@ use crate::mcp::{
     CoreActionMeta, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
-use crate::{GroupId, UserId};
+use crate::{GroupId, OwnerId};
 
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the last
 /// `(member, relation)` pair under `c`. The fingerprint binds the group.
@@ -51,7 +51,7 @@ pub struct CoreMembershipTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreMembershipArgs {
-    /// Add one user membership relation to a Group space.
+    /// Add one person or subgroup relation to a Group space.
     AddMember(AddMemberArgs),
     /// Remove all membership relations for one user in a Group space.
     RemoveMember(RemoveMemberArgs),
@@ -63,10 +63,11 @@ pub enum CoreMembershipArgs {
 pub struct AddMemberArgs {
     /// Group space key from `core_memory_spaces`: the group's bare `<uuid>`.
     pub group: String,
-    /// The user's UUID, bare: users take no handle prefix.
+    /// The person's or subgroup's bare owner UUID.
     pub member: String,
     /// Membership relation (case-insensitive): `admin`, `editor`,
-    /// `viewer`, or `ingest`.
+    /// `viewer`, or `ingest`; defaults to `viewer`.
+    #[serde(default = "default_relation")]
     pub relation: String,
 }
 
@@ -74,7 +75,8 @@ pub struct AddMemberArgs {
 pub struct RemoveMemberArgs {
     /// Group space key from `core_memory_spaces`: the group's bare `<uuid>`.
     pub group: String,
-    /// The user's UUID, bare. Every relation they hold in the group goes.
+    /// The person's or subgroup's bare owner UUID. Every relation they hold in
+    /// the group goes.
     pub member: String,
 }
 
@@ -133,7 +135,7 @@ fn member_fingerprint(group: GroupId) -> String {
 impl McpTool for CoreMembershipTool {
     const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
     const DESCRIPTION: &'static str =
-        "Manage who belongs to a group memory space: add, remove, or list members.";
+        "Manage a group tree: add a person or subgroup, remove one, or list members.";
     /// Membership governs who can reach the owner's memory at all, so every
     /// key of this tool belongs to the owner alone. Declared on the
     /// descriptor rather than hardcoded by name in each host that computes
@@ -143,7 +145,7 @@ impl McpTool for CoreMembershipTool {
         McpActionArgSpec {
             action: "add_member",
             allowed_fields: &["group", "member", "relation"],
-            required_fields: &["group", "member", "relation"],
+            required_fields: &["group", "member"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
@@ -181,7 +183,7 @@ trait MembershipEngine: Sync {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
         relation: Relation,
     ) -> BoxFuture<'a, Result<(), ProtocolError>>;
 
@@ -189,7 +191,7 @@ trait MembershipEngine: Sync {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
     ) -> BoxFuture<'a, Result<(), ProtocolError>>;
 
     fn list_members<'a>(
@@ -197,7 +199,7 @@ trait MembershipEngine: Sync {
         authz: &'a AuthzContext,
         group: GroupId,
         limit: u32,
-        after: Option<(UserId, Relation)>,
+        after: Option<(OwnerId, Relation)>,
     ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>>;
 }
 
@@ -206,7 +208,7 @@ impl MembershipEngine for crate::Engine {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
         relation: Relation,
     ) -> BoxFuture<'a, Result<(), ProtocolError>> {
         Box::pin(crate::Engine::add_member(
@@ -218,7 +220,7 @@ impl MembershipEngine for crate::Engine {
         &'a self,
         authz: &'a AuthzContext,
         group: GroupId,
-        member: UserId,
+        member: OwnerId,
     ) -> BoxFuture<'a, Result<(), ProtocolError>> {
         Box::pin(crate::Engine::remove_member(self, authz, group, member))
     }
@@ -228,7 +230,7 @@ impl MembershipEngine for crate::Engine {
         authz: &'a AuthzContext,
         group: GroupId,
         limit: u32,
-        after: Option<(UserId, Relation)>,
+        after: Option<(OwnerId, Relation)>,
     ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>> {
         Box::pin(crate::Engine::list_members(
             self, authz, group, limit, after,
@@ -244,7 +246,7 @@ async fn execute_membership(
     match args {
         CoreMembershipArgs::AddMember(args) => {
             let group = resolve_group(ctx, &args.group)?;
-            let member = parse_user_id(&args.member)?;
+            let member = parse_owner_id(&args.member)?;
             let relation = parse_relation(&args.relation)?;
             engine
                 .add_member(&ctx.authz, group, member, relation)
@@ -253,7 +255,7 @@ async fn execute_membership(
         }
         CoreMembershipArgs::RemoveMember(args) => {
             let group = resolve_group(ctx, &args.group)?;
-            let member = parse_user_id(&args.member)?;
+            let member = parse_owner_id(&args.member)?;
             engine.remove_member(&ctx.authz, group, member).await?;
             Ok(CoreMembershipOutput::RemoveMember(MutationOutput {
                 ok: true,
@@ -268,7 +270,10 @@ async fn execute_membership(
                 .as_deref()
                 .map(|raw| {
                     let pos: MemberCursorPos = MEMBER_CURSOR.decode(&fingerprint, raw)?;
-                    Ok::<_, McpToolError>((UserId::new(pos.member), parse_relation(&pos.relation)?))
+                    Ok::<_, McpToolError>((
+                        OwnerId::new(pos.member),
+                        parse_relation(&pos.relation)?,
+                    ))
                 })
                 .transpose()?;
             let page = engine.list_members(&ctx.authz, group, limit, after).await?;
@@ -332,10 +337,10 @@ fn resolve_group(ctx: &McpToolCtx, raw: &str) -> Result<GroupId, McpToolError> {
     Ok(owner.as_group())
 }
 
-fn parse_user_id(raw: &str) -> Result<UserId, McpToolError> {
+fn parse_owner_id(raw: &str) -> Result<OwnerId, McpToolError> {
     raw.parse::<uuid::Uuid>()
-        .map(UserId::new)
-        .map_err(|err| McpToolError::InvalidInput(format!("member is not a user uuid: {err}")))
+        .map(OwnerId::new)
+        .map_err(|err| McpToolError::InvalidInput(format!("member is not an owner uuid: {err}")))
 }
 
 /// Casing is not signal for enum-like string args anywhere on the tool
@@ -351,6 +356,10 @@ fn parse_relation(raw: &str) -> Result<Relation, McpToolError> {
             "relation must be one of: admin, editor, viewer, ingest".into(),
         )),
     }
+}
+
+fn default_relation() -> String {
+    "viewer".into()
 }
 
 fn format_relation(relation: Relation) -> &'static str {
@@ -369,15 +378,15 @@ mod tests {
     use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
     use crate::mcp::{McpAuthorContext, validate_action_args};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
 
     use super::*;
 
     #[derive(Default)]
     struct MockMembershipEngine {
-        added: Mutex<Vec<(GroupId, UserId, Relation)>>,
-        removed: Mutex<Vec<(GroupId, UserId)>>,
-        members: Mutex<Vec<(UserId, Relation)>>,
+        added: Mutex<Vec<(GroupId, OwnerId, Relation)>>,
+        removed: Mutex<Vec<(GroupId, OwnerId)>>,
+        members: Mutex<Vec<(OwnerId, Relation)>>,
     }
 
     impl MembershipEngine for MockMembershipEngine {
@@ -385,7 +394,7 @@ mod tests {
             &'a self,
             _authz: &'a AuthzContext,
             group: GroupId,
-            member: UserId,
+            member: OwnerId,
             relation: Relation,
         ) -> BoxFuture<'a, Result<(), ProtocolError>> {
             Box::pin(async move {
@@ -401,7 +410,7 @@ mod tests {
             &'a self,
             _authz: &'a AuthzContext,
             group: GroupId,
-            member: UserId,
+            member: OwnerId,
         ) -> BoxFuture<'a, Result<(), ProtocolError>> {
             Box::pin(async move {
                 self.removed
@@ -417,7 +426,7 @@ mod tests {
             _authz: &'a AuthzContext,
             _group: GroupId,
             limit: u32,
-            after: Option<(UserId, Relation)>,
+            after: Option<(OwnerId, Relation)>,
         ) -> BoxFuture<'a, Result<GroupMemberPage, ProtocolError>> {
             Box::pin(async move {
                 let all = self.members.lock().expect("members lock").clone();
@@ -489,7 +498,7 @@ mod tests {
     async fn non_group_group_is_invalid_input() {
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_with_principals(owner, vec![owner]);
-        let member = UserId::new(uuid::Uuid::now_v7());
+        let member = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let engine = MockMembershipEngine::default();
 
         let err = execute_membership(
@@ -526,6 +535,19 @@ mod tests {
         assert!(parse_relation("OWNER").is_err());
     }
 
+    #[test]
+    fn omitted_relation_defaults_to_viewer() {
+        let args: AddMemberArgs = serde_json::from_value(serde_json::json!({
+            "group": "00000000-0000-0000-0000-000000000001",
+            "member": "00000000-0000-0000-0000-000000000002"
+        }))
+        .expect("relation has a viewer default");
+        assert!(matches!(
+            parse_relation(&args.relation),
+            Ok(Relation::Viewer)
+        ));
+    }
+
     /// Pages walk the whole membership exactly once via the opaque
     /// cursor, and the cursor fails closed against a different group.
     #[tokio::test]
@@ -535,8 +557,13 @@ mod tests {
         let group_owner = OwnerId::from(group);
         let ctx = ctx_with_principals(owner, vec![group_owner]);
         let engine = MockMembershipEngine::default();
-        let all: Vec<(UserId, Relation)> = (0..3)
-            .map(|_| (UserId::new(uuid::Uuid::now_v7()), Relation::Viewer))
+        let all: Vec<(OwnerId, Relation)> = (0..3)
+            .map(|_| {
+                (
+                    OwnerId::from(UserId::new(uuid::Uuid::now_v7())),
+                    Relation::Viewer,
+                )
+            })
             .collect();
         *engine.members.lock().expect("members lock") = all.clone();
 

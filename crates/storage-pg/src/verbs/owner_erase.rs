@@ -378,7 +378,8 @@ async fn erase_precondition(
 
 async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, StorageError> {
     sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.group_memberships WHERE group_id = $1",
+        "SELECT (SELECT count(*) FROM proxima_core.group_memberships WHERE group_id = $1)
+              + (SELECT count(*) FROM proxima_core.group_edges WHERE parent_group_id = $1)",
     )
     .bind(group_id.into_inner())
     .fetch_one(&mut **tx)
@@ -574,6 +575,22 @@ async fn erase_selected(
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
 ) -> Result<ColdPurgePlan, StorageError> {
+    // Core membership state is outside the flavor surface contract. Remove
+    // the erased person's rows and the erased group's parent edge in this
+    // transaction; membership triggers maintain the projection.
+    if matches!(scope, SelectionScope::Owner) {
+        let owner_id = owner.into_inner();
+        sqlx::query("DELETE FROM proxima_core.group_memberships WHERE member_user_id = $1")
+            .bind(owner_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("DELETE FROM proxima_core.group_edges WHERE child_group_id = $1")
+            .bind(owner_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
     open_erase_bookkeeping(tx, surfaces, owner, scope).await?;
     invoke_host_lifecycle_erase(tx, surfaces, owner, scope, lifecycle).await?;
     let (origins_revoked, publications_revoked) =

@@ -74,7 +74,9 @@ impl McpToolError {
                 | crate::error::ErrorCode::Suppressed => McpToolErrorKind::InvalidRequest,
             },
             Self::Storage(storage) => match storage {
-                crate::StorageError::ConstraintViolation(_) => McpToolErrorKind::InvalidInput,
+                crate::StorageError::ConstraintViolation(_)
+                | crate::StorageError::MembershipIsolation => McpToolErrorKind::InvalidInput,
+                crate::StorageError::MembershipForbidden(_) => McpToolErrorKind::InvalidRequest,
                 crate::StorageError::NotFound | crate::StorageError::ScopeMissing { .. } => {
                     McpToolErrorKind::NotFound
                 }

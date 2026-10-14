@@ -1012,13 +1012,10 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: None,
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::Never {
-            why: "a membership is a relation between two owners, not a row about \
-                  one. Erasing a personal owner does not shrink the groups it \
-                  belonged to: a host that must remove a departed user calls \
-                  remove_group_member before erase, which is the same division of \
-                  labour retention and legal holds already take. Erase READS this \
-                  table — the abandonment precondition counts a group's remaining \
-                  members — and writes to it never",
+            why: "a membership is access topology, not owner content. Specialized \
+                  person erase removes that person's written relations and the \
+                  trigger-maintained projection; group abandonment reads this \
+                  table and subgroup edges before erasure",
         },
         export: ExportRule::Excluded {
             why: "a membership is the group's row as much as the member's; \
@@ -1031,8 +1028,68 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
-            why: "the erase never deletes a membership, so there is nothing to \
-                  count; `EraseRule::Never` already says why",
+            why: "membership rows are access topology, not cognitive content; \
+                  specialized owner erase accounts for its relation deletes",
+        },
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.group_edges",
+        key: KeyShape::Custom(&["child_group_id"]),
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "group topology is removed through membership commands, not generic owner erase",
+        },
+        export: ExportRule::Excluded {
+            why: "edge rows are access topology, not owner content",
+        },
+        forget: ForgetRule::Keep {
+            why: "group topology is independent of memory cooling",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "edge rows are not cognitive content",
+        },
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.group_role_projection",
+        key: KeyShape::Custom(&["member_user_id", "group_id"]),
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "trigger-maintained projection rows follow membership erasure",
+        },
+        export: ExportRule::Excluded {
+            why: "derived access projection is not owner content",
+        },
+        forget: ForgetRule::Keep {
+            why: "projection rows are not memories",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "membership triggers maintain projection rows",
+        },
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.group_lock_request",
+        key: KeyShape::Custom(&["request_id"]),
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "the lock gateway consumes each request in its transaction",
+        },
+        export: ExportRule::Excluded {
+            why: "lock requests are control-plane input, not owner data",
+        },
+        forget: ForgetRule::Keep {
+            why: "lock requests are not memories",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the gateway consumes requests before they become durable rows",
         },
         completeness: None,
     },

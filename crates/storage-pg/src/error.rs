@@ -28,6 +28,9 @@ pub(crate) fn internal(e: impl std::fmt::Display) -> StorageError {
 pub fn map_err(e: sqlx::Error) -> StorageError {
     use sqlx::Error;
     match &e {
+        Error::Database(db) if db.code().as_deref() == Some("25001") => {
+            StorageError::MembershipIsolation
+        }
         Error::Database(db) if db.is_unique_violation() => {
             StorageError::ConstraintViolation(db.message().to_string())
         }

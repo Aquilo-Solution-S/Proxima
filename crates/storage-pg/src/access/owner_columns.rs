@@ -3,11 +3,34 @@
 use proxima_core::flavor::TransferLeg;
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::scope::ScopeKind;
+use proxima_core::storage_ports::{MembershipEndpointAuthority, MembershipMemberAuthority};
 use proxima_core::{
-    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
+    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, Role, StorageError, UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.access_ceiling", rename_all = "lowercase")]
+pub(crate) enum PgAccessCeiling {
+    None,
+    Fact,
+    Abstraction,
+    Perspective,
+    Goal,
+}
+
+impl From<PgAccessCeiling> for proxima_core::AccessCeiling {
+    fn from(value: PgAccessCeiling) -> Self {
+        match value {
+            PgAccessCeiling::None => Self::None,
+            PgAccessCeiling::Fact => Self::Fact,
+            PgAccessCeiling::Abstraction => Self::Abstraction,
+            PgAccessCeiling::Perspective => Self::Perspective,
+            PgAccessCeiling::Goal => Self::Goal,
+        }
+    }
+}
 
 /// One cross-process boundary shared by every host-capable `UoW` and exclusive
 /// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
@@ -540,42 +563,41 @@ pub(crate) async fn registered_group_on_connection(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn resolve_membership<'e>(
-    executor: impl sqlx::PgExecutor<'e>,
+pub(crate) async fn resolve_membership(
+    conn: &mut PgConnection,
     owner: &OwnerId,
 ) -> Result<Vec<MembershipRow>, StorageError> {
-    let user = owner.as_user();
-
-    let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
-        "SELECT group_id, relation
-           FROM proxima_core.group_memberships
-          WHERE member_user_id = $1
-          ORDER BY group_id, relation",
-    )
-    .bind(user.into_inner())
-    .fetch_all(executor)
-    .await
-    .map_err(map_err)?;
-
-    Ok(rows
+    let resolved = resolve_subject_membership(conn, owner.as_user(), None).await?;
+    if resolved.subject_is_group {
+        return Err(StorageError::ConstraintViolation(
+            "membership lookup subject is registered as a group".into(),
+        ));
+    }
+    Ok(resolved
+        .memberships
         .into_iter()
-        .map(|(group, relation)| MembershipRow {
-            group: GroupId::new(group),
-            relation,
-        })
+        .map(|(group, role)| MembershipRow { group, role })
         .collect())
 }
 
 /// The subject kind and the memberships visible to one resolution probe.
-/// The kind is read in the same query as the memberships so a group-shaped
-/// subject is refused without a second round trip.
+/// The kind is read in the same query as the resolved projection so a
+/// group-shaped subject is refused without a second round trip.
 pub(crate) struct SubjectMemberships {
     pub(crate) subject_is_group: bool,
-    pub(crate) memberships: Vec<MembershipRow>,
+    pub(crate) memberships: Vec<(GroupId, Role)>,
 }
 
-/// Resolve a subject's registered kind and memberships in one query.
-/// `group` narrows the membership rows for the point probe used by
+type SubjectMembershipRow = (
+    bool,
+    Option<uuid::Uuid>,
+    Option<PgAccessCeiling>,
+    Option<PgAccessCeiling>,
+    Option<bool>,
+);
+
+/// Resolve a subject's registered kind and projected roles in one query.
+/// `group` narrows the projection rows for the point probe used by
 /// `group_role`; `None` enumerates every group for `roles_for_subject`.
 ///
 /// # Errors
@@ -586,36 +608,57 @@ pub(crate) async fn resolve_subject_membership(
     subject: UserId,
     group: Option<GroupId>,
 ) -> Result<SubjectMemberships, StorageError> {
-    let rows: Vec<(bool, Option<uuid::Uuid>, Option<Relation>)> = sqlx::query_as(
-        "WITH subject AS (
+    let query = if let Some(group) = group {
+        sqlx::query_as::<_, SubjectMembershipRow>(
+            "WITH subject AS (
              SELECT EXISTS (
                  SELECT 1 FROM proxima_core.owners
                   WHERE owner_id = $1 AND kind = 'group'
              ) AS subject_is_group
          )
-         SELECT subject.subject_is_group, memberships.group_id, memberships.relation
+         SELECT subject.subject_is_group, memberships.group_id,
+                memberships.read_ceiling, memberships.write_ceiling, memberships.manage
            FROM subject
-           LEFT JOIN proxima_core.group_memberships AS memberships
+           LEFT JOIN proxima_core.group_role_projection AS memberships
              ON memberships.member_user_id = $1
-            AND ($2::uuid IS NULL OR memberships.group_id = $2)
-          ORDER BY memberships.group_id, memberships.relation",
-    )
-    .bind(subject.into_inner())
-    .bind(group.map(GroupId::into_inner))
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(map_err)?;
+            AND memberships.group_id = $2",
+        )
+        .bind(subject.into_inner())
+        .bind(group.into_inner())
+    } else {
+        sqlx::query_as::<_, SubjectMembershipRow>(
+            "WITH subject AS (
+             SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.owners
+                  WHERE owner_id = $1 AND kind = 'group'
+             ) AS subject_is_group
+         )
+         SELECT subject.subject_is_group, memberships.group_id,
+                memberships.read_ceiling, memberships.write_ceiling, memberships.manage
+           FROM subject
+           LEFT JOIN proxima_core.group_role_projection AS memberships
+             ON memberships.member_user_id = $1
+          ORDER BY memberships.group_id, memberships.read_ceiling,
+                   memberships.write_ceiling, memberships.manage",
+        )
+        .bind(subject.into_inner())
+    };
+    let rows = query.fetch_all(&mut *conn).await.map_err(map_err)?;
 
-    let subject_is_group = rows.first().is_some_and(|(is_group, _, _)| *is_group);
-    let memberships = rows
-        .into_iter()
-        .filter_map(|(_, group, relation)| {
-            Some(MembershipRow {
-                group: GroupId::new(group?),
-                relation: relation?,
-            })
-        })
-        .collect();
+    let subject_is_group = rows.first().is_some_and(|(is_group, _, _, _, _)| *is_group);
+    let mut memberships = Vec::with_capacity(rows.len());
+    for (_, group, read, write, manage) in rows {
+        let Some(group) = group else { continue };
+        let (Some(read), Some(write), Some(manage)) = (read, write, manage) else {
+            continue;
+        };
+        let role = Role::new(read.into(), write.into(), manage).map_err(|error| {
+            StorageError::ConstraintViolation(format!(
+                "group role projection contains an invalid role: {error}"
+            ))
+        })?;
+        memberships.push((GroupId::new(group), role));
+    }
     Ok(SubjectMemberships {
         subject_is_group,
         memberships,
@@ -630,13 +673,39 @@ pub(crate) async fn lock_group_membership_tx(
     group_id: GroupId,
 ) -> Result<(), StorageError> {
     sqlx::query(
-        "SELECT pg_advisory_xact_lock(hashtextextended('proxima-group-membership:' || $1::text, 0))",
+        "INSERT INTO proxima_core.group_lock_request
+            (request_id, left_group_id)
+         VALUES ($1, $2)",
     )
+    .bind(Uuid::now_v7())
     .bind(group_id.into_inner())
     .execute(&mut *conn)
     .await
     .map_err(map_err)?;
     Ok(())
+}
+
+/// Acquire the tree lock before reading a member's owner kind. The trigger
+/// gateway computes the roots, orders two trees, and rechecks roots after the
+/// advisory locks; the row is consumed by its BEFORE trigger.
+pub(crate) async fn lock_group_membership_write_tx(
+    conn: &mut PgConnection,
+    parent: GroupId,
+    member: OwnerId,
+) -> Result<bool, StorageError> {
+    let row: (bool,) = sqlx::query_as(
+        "INSERT INTO proxima_core.group_lock_request
+            (request_id, left_group_id, right_group_id)
+         VALUES ($1, $2, $3)
+         RETURNING member_is_group",
+    )
+    .bind(Uuid::now_v7())
+    .bind(parent.into_inner())
+    .bind(member.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(row.0)
 }
 
 /// # Errors
@@ -721,15 +790,22 @@ pub(crate) async fn add_group_member(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     relation: Relation,
+    member_authority: MembershipMemberAuthority,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        let result =
-            add_group_member_on_connection(&mut tx, group_id, member_user_id, relation).await;
+        let result = add_group_member_on_connection_authorized(
+            &mut tx,
+            group_id,
+            member,
+            relation,
+            member_authority,
+        )
+        .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -752,23 +828,64 @@ pub(crate) async fn add_group_member(
 pub async fn add_group_member_on_connection(
     conn: &mut PgConnection,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     relation: Relation,
 ) -> Result<(), StorageError> {
-    lock_group_membership_tx(conn, group_id).await?;
-    insert_group_row(conn, group_id).await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.group_memberships
-            (group_id, member_user_id, relation)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+    add_group_member_on_connection_authorized(
+        conn,
+        group_id,
+        member,
+        relation,
+        MembershipMemberAuthority::ManageGranted,
     )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .bind(relation)
-    .execute(&mut *conn)
     .await
-    .map_err(map_err)?;
+}
+
+async fn add_group_member_on_connection_authorized(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member: OwnerId,
+    relation: Relation,
+    member_authority: MembershipMemberAuthority,
+) -> Result<(), StorageError> {
+    let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
+    insert_group_row(conn, group_id).await?;
+    if member_is_group {
+        if !matches!(member_authority, MembershipMemberAuthority::ManageGranted) {
+            return Err(StorageError::MembershipForbidden(
+                "attaching a group requires manage authority on the attached group".into(),
+            ));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO proxima_core.group_edges (child_group_id, parent_group_id, relation)
+             VALUES ($2, $1, $3)
+            ON CONFLICT (child_group_id) DO NOTHING",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .bind(relation)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        if inserted.rows_affected() == 0 {
+            return Err(StorageError::Conflict(
+                "group is already attached to a parent".into(),
+            ));
+        }
+    } else {
+        sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                (group_id, member_user_id, relation)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .bind(relation)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    }
     Ok(())
 }
 
@@ -779,12 +896,21 @@ pub(crate) async fn remove_group_member(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        let result = remove_group_member_on_connection(&mut tx, group_id, member_user_id).await;
+        let result = remove_group_member_on_connection_authorized(
+            &mut tx,
+            group_id,
+            member,
+            member_authority,
+            endpoint_authority,
+        )
+        .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -805,16 +931,56 @@ pub(crate) async fn remove_group_member(
 pub async fn remove_group_member_on_connection(
     conn: &mut PgConnection,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
 ) -> Result<(), StorageError> {
-    lock_group_membership_tx(conn, group_id).await?;
+    remove_group_member_on_connection_authorized(
+        conn,
+        group_id,
+        member,
+        MembershipMemberAuthority::ManageGranted,
+        MembershipEndpointAuthority::Parent,
+    )
+    .await
+}
+
+async fn remove_group_member_on_connection_authorized(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member: OwnerId,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
+) -> Result<(), StorageError> {
+    let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
+    if member_is_group
+        && matches!(endpoint_authority, MembershipEndpointAuthority::Member)
+        && !matches!(member_authority, MembershipMemberAuthority::ManageGranted)
+    {
+        return Err(StorageError::MembershipForbidden(
+            "detaching a group requires manage authority on the attached group".into(),
+        ));
+    }
+    if !member_is_group && matches!(endpoint_authority, MembershipEndpointAuthority::Member) {
+        return Err(StorageError::MembershipForbidden(
+            "detaching a person requires parent authority".into(),
+        ));
+    }
+    if member_is_group {
+        sqlx::query(
+            "DELETE FROM proxima_core.group_edges
+              WHERE parent_group_id = $1 AND child_group_id = $2",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        return Ok(());
+    }
     sqlx::query(
-        "DELETE FROM proxima_core.group_memberships
-          WHERE group_id = $1
-            AND member_user_id = $2",
+        "DELETE FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2",
     )
     .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
+    .bind(member.into_inner())
     .execute(&mut *conn)
     .await
     .map_err(map_err)?;
@@ -831,15 +997,23 @@ pub(crate) async fn remove_group_member_relation(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     relation: Relation,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        let result =
-            remove_group_member_relation_on_connection(&mut tx, group_id, member_user_id, relation)
-                .await;
+        let result = remove_group_member_relation_on_connection_authorized(
+            &mut tx,
+            group_id,
+            member,
+            relation,
+            member_authority,
+            endpoint_authority,
+        )
+        .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -860,22 +1034,65 @@ pub(crate) async fn remove_group_member_relation(
 pub async fn remove_group_member_relation_on_connection(
     conn: &mut PgConnection,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     relation: Relation,
 ) -> Result<(), StorageError> {
-    lock_group_membership_tx(conn, group_id).await?;
-    sqlx::query(
-        "DELETE FROM proxima_core.group_memberships
-          WHERE group_id = $1
-            AND member_user_id = $2
-            AND relation = $3",
+    remove_group_member_relation_on_connection_authorized(
+        conn,
+        group_id,
+        member,
+        relation,
+        MembershipMemberAuthority::ManageGranted,
+        MembershipEndpointAuthority::Parent,
     )
-    .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
-    .bind(relation)
-    .execute(&mut *conn)
     .await
-    .map_err(map_err)?;
+}
+
+async fn remove_group_member_relation_on_connection_authorized(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    member: OwnerId,
+    relation: Relation,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
+) -> Result<(), StorageError> {
+    let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
+    if member_is_group
+        && matches!(endpoint_authority, MembershipEndpointAuthority::Member)
+        && !matches!(member_authority, MembershipMemberAuthority::ManageGranted)
+    {
+        return Err(StorageError::MembershipForbidden(
+            "detaching a group requires manage authority on the attached group".into(),
+        ));
+    }
+    if !member_is_group && matches!(endpoint_authority, MembershipEndpointAuthority::Member) {
+        return Err(StorageError::MembershipForbidden(
+            "detaching a person requires parent authority".into(),
+        ));
+    }
+    if member_is_group {
+        sqlx::query(
+            "DELETE FROM proxima_core.group_edges
+              WHERE parent_group_id = $1 AND child_group_id = $2 AND relation = $3",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .bind(relation)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    } else {
+        sqlx::query(
+            "DELETE FROM proxima_core.group_memberships
+              WHERE group_id = $1 AND member_user_id = $2 AND relation = $3",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .bind(relation)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    }
     Ok(())
 }
 
@@ -894,7 +1111,7 @@ pub(crate) async fn replace_group_member_relation(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     from: Relation,
     to: Relation,
     _granted_by: uuid::Uuid,
@@ -902,14 +1119,8 @@ pub(crate) async fn replace_group_member_relation(
     with_bounded_retry(move || async move {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
-        let result = replace_group_member_relation_on_connection(
-            &mut tx,
-            group_id,
-            member_user_id,
-            from,
-            to,
-        )
-        .await;
+        let result =
+            replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to).await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await
@@ -932,11 +1143,31 @@ pub(crate) async fn replace_group_member_relation(
 pub async fn replace_group_member_relation_on_connection(
     conn: &mut PgConnection,
     group_id: GroupId,
-    member_user_id: UserId,
+    member: OwnerId,
     from: Relation,
     to: Relation,
 ) -> Result<(), StorageError> {
-    lock_group_membership_tx(conn, group_id).await?;
+    let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
+    if member_is_group {
+        let updated = sqlx::query(
+            "UPDATE proxima_core.group_edges
+                SET relation = $4
+              WHERE parent_group_id = $1 AND child_group_id = $2 AND relation = $3",
+        )
+        .bind(group_id.into_inner())
+        .bind(member.into_inner())
+        .bind(from)
+        .bind(to)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        if updated.rows_affected() == 0 {
+            return Err(StorageError::Conflict(
+                "member does not hold the relation being replaced".into(),
+            ));
+        }
+        return Ok(());
+    }
     let deleted = sqlx::query(
         "DELETE FROM proxima_core.group_memberships
           WHERE group_id = $1
@@ -944,7 +1175,7 @@ pub async fn replace_group_member_relation_on_connection(
             AND relation = $3",
     )
     .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
+    .bind(member.into_inner())
     .bind(from)
     .execute(&mut *conn)
     .await
@@ -961,7 +1192,7 @@ pub async fn replace_group_member_relation_on_connection(
          ON CONFLICT (group_id, member_user_id, relation) DO NOTHING",
     )
     .bind(group_id.into_inner())
-    .bind(member_user_id.into_inner())
+    .bind(member.into_inner())
     .bind(to)
     .execute(&mut *conn)
     .await
@@ -969,45 +1200,33 @@ pub async fn replace_group_member_relation_on_connection(
     Ok(())
 }
 
-/// True iff `member_user_id` currently holds exactly `relation` on `group_id`.
-/// A point-in-time single-role probe, distinct from
-/// [`resolve_membership`]'s full row enumeration.
-///
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn has_group_relation_on_connection(
+pub(crate) async fn list_group_members(
     conn: &mut PgConnection,
     group_id: GroupId,
-    member_user_id: UserId,
-    relation: Relation,
-) -> Result<bool, StorageError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.group_memberships WHERE group_id = $1 AND member_user_id = $2 AND relation = $3)").bind(group_id.into_inner()).bind(member_user_id.into_inner()).bind(relation).fetch_one(&mut *conn).await.map_err(map_err)
-}
-
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub(crate) async fn list_group_members<'e>(
-    executor: impl sqlx::PgExecutor<'e>,
-    group_id: GroupId,
-) -> Result<Vec<(UserId, Relation)>, StorageError> {
-    // Same total order as `list_group_members_page`. The table has no
-    // `created_at` (0001_v008 PK is `(group_id, member_user_id, relation)`).
-    let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
-        "SELECT member_user_id, relation
+) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
+    // People remain the membership rows as written; child groups are the
+    // forest edge rows. Both use the same stable owner-id/relation order.
+    let rows: Vec<(uuid::Uuid, bool, Relation)> = sqlx::query_as(
+        "SELECT member_user_id, false, relation
            FROM proxima_core.group_memberships
           WHERE group_id = $1
-          ORDER BY member_user_id, relation",
+         UNION ALL
+         SELECT child_group_id, true, relation
+           FROM proxima_core.group_edges
+          WHERE parent_group_id = $1
+          ORDER BY 1, 2, 3",
     )
     .bind(group_id.into_inner())
-    .fetch_all(executor)
+    .fetch_all(&mut *conn)
     .await
     .map_err(map_err)?;
 
     Ok(rows
         .into_iter()
-        .map(|(member, relation)| (UserId::new(member), relation))
+        .map(|(member, _is_group, relation)| (OwnerId::new(member), relation))
         .collect())
 }
 
@@ -1020,35 +1239,42 @@ pub(crate) async fn list_group_members<'e>(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn list_group_members_page<'e>(
-    executor: impl sqlx::PgExecutor<'e>,
+pub(crate) async fn list_group_members_page(
+    conn: &mut PgConnection,
     group_id: GroupId,
-    after: Option<(UserId, Relation)>,
+    after: Option<(OwnerId, Relation)>,
     limit: i64,
-) -> Result<Vec<(UserId, Relation)>, StorageError> {
+) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
     let after_member = after.map(|(member, _)| member.into_inner());
     let after_relation = after.map(|(_, relation)| relation);
-    let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
-        "SELECT member_user_id, relation
-           FROM proxima_core.group_memberships
-          WHERE group_id = $1
-            AND ($2::uuid IS NULL
-                 OR (member_user_id, relation)
+    let rows: Vec<(uuid::Uuid, bool, Relation)> = sqlx::query_as(
+        "SELECT member_id, is_group, relation
+           FROM (
+             SELECT member_user_id AS member_id, false AS is_group, relation
+               FROM proxima_core.group_memberships
+              WHERE group_id = $1
+             UNION ALL
+             SELECT child_group_id, true, relation
+               FROM proxima_core.group_edges
+              WHERE parent_group_id = $1
+           ) members
+          WHERE ($2::uuid IS NULL
+                 OR (member_id, relation)
                     > ($2::uuid, $3::proxima_core.membership_relation))
-          ORDER BY member_user_id, relation
+          ORDER BY member_id, is_group, relation
           LIMIT $4",
     )
     .bind(group_id.into_inner())
     .bind(after_member)
     .bind(after_relation)
     .bind(limit)
-    .fetch_all(executor)
+    .fetch_all(&mut *conn)
     .await
     .map_err(map_err)?;
 
     Ok(rows
         .into_iter()
-        .map(|(member, relation)| (UserId::new(member), relation))
+        .map(|(member, _is_group, relation)| (OwnerId::new(member), relation))
         .collect())
 }
 
