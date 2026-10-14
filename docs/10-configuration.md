@@ -312,6 +312,24 @@ visible. There is no bool probe: a membership bit does not authorize a write
 `Role::manages` or its ceilings. `PgOwnerAccessResolver` is these two functions
 inside a transaction it opens and rolls back.
 
+### Roles inside a host transaction
+
+Owner registry and membership writes inside a host transaction. The host
+facade exports `register_group`, `ensure_owner_row`, `bootstrap_group_admin`,
+`add_group_member`, `remove_group_member`, `remove_group_member_relation` and
+`replace_group_member_relation`; each takes `&mut PgConnection` and accepts the
+host's `&mut *tx`. `register_group`, `bootstrap_group_admin`, `add_group_member`,
+`remove_group_member`, `remove_group_member_relation` and
+`replace_group_member_relation` share the membership advisory lock;
+`ensure_owner_row` does not take that lock. They write the same registry and
+membership rows as their pool forms, but never begin, commit, roll back, set a
+scope or retry. No authorization runs:
+the host vouches for the write as it would for a row it inserts itself. The
+caller's transaction must be platform-scoped. The caller retries its whole
+transaction when needed. The pool forms retain their transaction and retry
+behavior by calling these connection forms, so their committed effects remain
+unchanged. There is no post-commit action in these forms.
+
 Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
 (or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the
 per-Group probe answers the fixed role for whichever Group it selects, member

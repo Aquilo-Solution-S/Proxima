@@ -17,6 +17,7 @@ id, a bare UUID.
 | `ForwarderPolicy::wrap(inner)` | `wrap(inner, groups)`, `groups: Arc<dyn GroupRegistry>`; the forwarder role applies only in a registered group |
 | Wire | Bare UUIDs everywhere an owner is named; `personal:` / `group:` are refused |
 | Hashes | Receipt, derived and interpretation ids hash the bare id: a replay across the upgrade does not deduplicate |
+| New host transaction forms | The owner-registry and membership forms in [10 §Roles inside a host transaction](../10-configuration.md#roles-inside-a-host-transaction) take `&mut PgConnection`; call them with `&mut *tx` inside a platform-scoped transaction. The host vouches for the write, so no authorization runs. Group writes share the membership lock; `ensure_owner_row` does not. They write registry and membership rows, never control or retry the caller's transaction, and have no post-commit action. |
 
 ## v0.0.28
 
