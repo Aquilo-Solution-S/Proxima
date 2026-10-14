@@ -1,5 +1,23 @@
 # Migrate the Flavor SDK
 
+## v0.0.31
+
+Pin all Proxima dependencies to the same `v0.0.31` tag. One additive core
+migration ([migration policy §v0.0.31](migrations.md#v0031)); no flavor migration.
+
+| Change | Host action |
+|---|---|
+| Membership member | `OwnerId` in add/remove/relation writes and listing cursors; `bootstrap_group_admin` keeps a `UserId` first admin |
+| Membership read/port types | `MembershipRow::relation` is replaced by folded `MembershipRow::role`; `OwnerMembershipAdminPort` writes take `MembershipWritePermit` with typed endpoint/member authority |
+| Group nesting | A group has at most one parent and one relation (default viewer); cycles/self edges refused; no depth limit |
+| Role resolution | Storage materializes `Role::meet` along ancestor links and `Role::join` across all relations/paths; roles climb only |
+| Projection | Database triggers maintain `group_role_projection` in the membership transaction, raw SQL included; hosts never write it |
+| Authorization | Engine attach requires manage on both groups; detach either; relation change parent. Host transaction forms continue to run no authorization/hooks |
+| Locks | One root-keyed advisory lock per affected tree, two roots in UUID order for attach; roots confirmed after locking and retried if moved |
+| Isolation | Membership writes require `READ COMMITTED`; `REPEATABLE READ` and `SERIALIZABLE` refuse with typed `StorageError::MembershipIsolation` |
+| Removed | `PgOwnerAccessResolver::has_role_for_owner`; use `roles_for_subject`/`group_role` and authorize from the resulting role |
+| Erasure | A subgroup prevents abandonment/erase; group erase removes its parent edge; person erase removes every projected role |
+
 ## v0.0.30
 
 Pin all Proxima Rust dependencies to the same `v0.0.30` tag. One additive core
