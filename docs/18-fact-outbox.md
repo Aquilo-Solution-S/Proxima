@@ -250,8 +250,7 @@ captured Fact `t`. Its delivery happens on `publication_delivery` lanes
 | `event_id` | the `CloudEvents` `id` (`F:<uuid>`), `UNIQUE` — also the intake's dedup key |
 | `envelope` | `bytea`, the verbatim `CloudEvent` |
 | `envelope_digest` | `bytea`, blake3 over those exact bytes; `CHECK (octet_length = 32)` |
-| `state` | SQL enum `publication_state`: `pending` while any lane is undelivered, `published` once none is (or at capture, when no consumer is registered). Never `claimed` since `0026` (`publication_outbox_no_claim_chk`): claims live on lanes |
-| `claim_token`, `claimed_by`, `lease_expires_at`, `attempts` | the pre-`0026` claim bookkeeping, unused and `NULL`/`0` since (dropping a column is not additive); the lane carries its own |
+| `state` | SQL enum `publication_record_state`: `pending` while any lane is undelivered, `published` once none is (or at capture, when no consumer is registered). `claimed` is not a record state; claims live on lanes |
 | `published_at` | when the last lane was delivered. Set exactly when `state = 'published'` |
 | `published_stream`, `published_seq` | the JetStream PubAck of the removed NATS publisher. Nothing writes them any more: a record published in process leaves both `NULL`, and one published before v0.0.27 keeps its receipt |
 | `captured_at` | insert time, `DEFAULT now()` |
@@ -281,7 +280,6 @@ conventional:
 | `publication_delivery_claim_chk` | a lane is `claimed` **iff** `claim_token`, `lease_expires_at` and `claimed_by` are all present |
 | `publication_delivery_published_chk` | a lane is `published` **iff** `published_at` is present |
 | `publication_outbox_published_chk` | a record is `published` **iff** `published_at` is present |
-| `publication_outbox_no_claim_chk` | a record is never `claimed` |
 
 `publication_outbox_capture_immutable` (a `BEFORE UPDATE` trigger) rejects any
 UPDATE that changes `t`, `event_id`, `event_type`, `envelope`,
@@ -483,7 +481,7 @@ and are re-exported by `proxima`, as are `SubjectPosition` and `ConsumerName`.
 | `delivered_count` | this consumer's lane `attempts`: how many times it has been claimed for this consumer, this claim included. `> 1` means an earlier claim did not end in the mark: its delivery failed or timed out, the process stopped before the mark, or shutdown or a quiesce handed the claim back before `accept` was called. It counts claims, not intake calls |
 | `raw` | the captured envelope bytes, verbatim. A signature check reads these |
 | `envelope` | `raw`, parsed: `CloudEventEnvelope` |
-| `position` | `subject` and `sequence`, parsed: `Some(SubjectPosition { subject, sequence })` (§Ordering). `None` for a record captured before v0.0.28. An unpaired or malformed pair is refused like any malformed envelope |
+| `position` | `subject` and `sequence`, parsed as the required `SubjectPosition` (§Ordering). A missing, unpaired or malformed pair is refused like any malformed envelope |
 
 **The contract.** `accept` MUST have made its outcome durable before it
 returns, because `mark_published` follows it: the outbox forgets the record
@@ -627,7 +625,11 @@ reordering alike. `ReceivedEvent::position` hands the pair over parsed. The
 positions are gap-free per series only for listenable writes: a series that
 admits no listenable Fact advances nothing.
 
-Records captured before v0.0.28 carry neither attribute.
+Records captured before v0.0.28 carry neither attribute. v0.0.31 refuses to
+upgrade while one still has an undelivered lane: drain it with a configured
+consumer, or call `PublicationConsumerPort::retire` for the owed consumer. A
+retire removes its lanes and settles records with no remaining undelivered
+lane. Delivered legacy records remain as captured and are not parsed again; only claimed lanes pass through `ReceivedEvent::from_record`.
 
 ## Forwarding to a broker
 

@@ -6,6 +6,8 @@ mod coarse_pin_lock;
 mod goal_text;
 #[path = "migrations/kind_rule.rs"]
 mod kind_rule;
+#[path = "migrations/outbox_v031.rs"]
+mod outbox_v031;
 #[path = "migrations/owner_id.rs"]
 mod owner_id;
 #[path = "migrations/owner_rls_table.rs"]

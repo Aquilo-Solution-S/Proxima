@@ -785,8 +785,6 @@ pub enum SubjectPositionError {
     Subject,
     #[error("`sequence` is not 20 decimal digits above zero")]
     Sequence,
-    #[error("`subject` and `sequence` must both be present or both absent")]
-    Unpaired,
 }
 
 /// A captured event, sealed against the `t` storage minted for the Fact.

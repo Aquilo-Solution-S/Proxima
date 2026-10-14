@@ -1,4 +1,63 @@
--- v0.0.31: group membership is a forest and access is materialized.
+-- v0.0.31: positioned outbox records and materialized nested group access.
+-- Forward migration: upgrades v0.0.30 in place, including removal of unused
+-- record claim columns (as 0027_v033_owner_id.sql removed retired columns).
+-- This is not a destructive baseline; captured envelopes remain immutable.
+-- Stop older hosts first. Drain pre-v0.0.28 lanes with a configured consumer,
+-- or retire their consumer through PublicationConsumerPort::retire (including
+-- an unconfigured `default` consumer). Delivered records are preserved.
+--
+-- First operation: refuse before any schema change if a legacy lane remains.
+DO $require_publication_position$
+DECLARE
+    previous_scope text := current_setting('app.proxima_scope', true);
+BEGIN
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.publication_delivery AS lane
+          JOIN proxima_core.publication_outbox AS record ON record.t = lane.t
+         WHERE lane.state <> 'published'
+           AND ((convert_from(record.envelope, 'UTF8')::jsonb ->> 'subject') IS NULL
+                OR (convert_from(record.envelope, 'UTF8')::jsonb ->> 'sequence') IS NULL)
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '23514',
+            MESSAGE = 'v0.0.31 requires pre-v0.0.28 outbox records to be settled: drain with a configured consumer, or retire the consumer (including default) through PublicationConsumerPort::retire; see docs/18-fact-outbox.md lanes';
+    END IF;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+END
+$require_publication_position$;
+
+DO $publication_record_state$
+BEGIN
+    IF to_regtype('proxima_core.publication_record_state') IS NULL THEN
+        CREATE TYPE proxima_core.publication_record_state AS ENUM ('pending', 'published');
+    END IF;
+END
+$publication_record_state$;
+
+-- Lane claims keep publication_state. The record's aggregate has no claimed
+-- variant; rebuild the state-dependent constraint/index for its narrower type.
+ALTER TABLE proxima_core.publication_outbox
+    DROP CONSTRAINT IF EXISTS publication_outbox_no_claim_chk,
+    DROP CONSTRAINT IF EXISTS publication_outbox_claim_chk,
+    DROP CONSTRAINT IF EXISTS publication_outbox_published_chk,
+    DROP COLUMN IF EXISTS claim_token,
+    DROP COLUMN IF EXISTS claimed_by,
+    DROP COLUMN IF EXISTS lease_expires_at,
+    DROP COLUMN IF EXISTS attempts,
+    ALTER COLUMN state DROP DEFAULT;
+DROP INDEX IF EXISTS proxima_core.publication_outbox_pending_idx;
+ALTER TABLE proxima_core.publication_outbox
+    ALTER COLUMN state TYPE proxima_core.publication_record_state
+        USING state::text::proxima_core.publication_record_state,
+    ALTER COLUMN state SET DEFAULT 'pending',
+    ADD CONSTRAINT publication_outbox_published_chk CHECK (
+        (state = 'published') = (published_at IS NOT NULL)
+    );
+CREATE INDEX publication_outbox_pending_idx
+    ON proxima_core.publication_outbox (t) WHERE state <> 'published';
+
+-- Group membership is a forest and access is materialized.
 -- Membership rows remain the input.  The two tables below are maintained only
 -- by the trigger functions in this file; hosts read the projection.
 

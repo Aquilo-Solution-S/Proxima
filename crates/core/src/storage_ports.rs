@@ -89,8 +89,8 @@ pub use proof::{
     MembershipMemberAuthority, MembershipWritePermit, OperatorMaintenanceProof, OwnerWritePermit,
 };
 pub use publication::{
-    AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
-    PublisherIdError, ReleaseOutcome,
+    AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublicationRecordState,
+    PublisherId, PublisherIdError, ReleaseOutcome,
 };
 pub use write_session::{
     SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,

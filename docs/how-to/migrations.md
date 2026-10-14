@@ -15,12 +15,25 @@ several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 
 ## v0.0.31
 
-Existing v0.0.30 databases upgrade in place. One additive core migration;
+Existing v0.0.30 databases upgrade in place. One forward core migration;
 released files stay byte-for-byte unchanged. No flavor migration.
+
+The v0.0.31 migration is the named forward cutover for the pre-v0.0.28
+outbox format. Before upgrading, drain old undelivered records with
+a configured consumer, or retire the owed consumer with
+`PublicationConsumerPort::retire`; retirement removes its lanes and settles
+records with no remaining undelivered lane. Stop older hosts before running the
+migration. It refuses before schema
+changes while an old record has an undelivered lane, including the seeded
+`default` consumer when no intake was ever configured. Delivered old records remain valid and do not need
+to be parsed again. The forward migration then drops the obsolete record-level
+claim columns and constraint in place, following the in-place column removal
+precedent in `0027_v033_owner_id.sql`; this is an upgrade of existing
+databases, not a replacement baseline.
 
 | Lane | Migration |
 |---|---|
-| Core | `0028_v034_nested_groups.sql`: `group_edges` keyed by child group; `group_role_projection` keyed by person/group; trigger-consumed `group_lock_request`; tree locks, kind/forest guards and projection-maintenance triggers |
+| Core | `0028_v034_nested_groups.sql`: legacy outbox guard, record-state enum and obsolete claim-column removal; `group_edges` keyed by child group; `group_role_projection` keyed by person/group; trigger-consumed `group_lock_request`; tree locks, kind/forest guards and projection-maintenance triggers |
 
 **Backfill.** Existing person membership rows stay as written. Their relation
 roles are joined into one projection row per person/group, including people
@@ -103,7 +116,10 @@ Both go through the 0024 per-table building blocks.
 **Series position (`_v032_`).** `publication_sequence` counts the listenable
 events a series has captured; every existing head starts at `0`, so the first
 event captured after the upgrade is `sequence` 1 ([18 §Ordering](../18-fact-outbox.md#ordering)).
-Records captured before carry no `subject`/`sequence`.
+Records captured before carry no `subject`/`sequence`; v0.0.31 refuses an
+upgrade while any such record is still owed to a consumer. After the upgrade,
+`ReceivedEvent::from_record` requires the pair and refuses a malformed or
+missing one.
 
 Re-running the file changes nothing: tables, columns and indexes are created
 only when missing, the seed and the backfill skip what exists, the check is
