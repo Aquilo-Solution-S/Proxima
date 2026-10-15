@@ -13,7 +13,9 @@ use std::time::Duration;
 use proxima_core::authz::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
 };
-use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
+};
 use proxima_core::{
     AccessCeiling, AccessKind, AuthPath, AuthzContext, Engine, ErrorCode, FlavorRegistry, GroupId,
     OwnerId, Relation, Role, StorageError, UserId,
@@ -126,12 +128,12 @@ impl Harness {
     }
 
     /// A member holding exactly `relations`.
-    async fn member_with(&self, relations: &[Relation]) -> UserId {
-        let member = UserId::new(Uuid::now_v7());
+    async fn member_with(&self, relations: &[Relation]) -> OwnerId {
+        let member = OwnerId::new(Uuid::now_v7());
         for relation in relations {
             self.pg
                 .add_group_member(
-                    &self.permit(),
+                    &MembershipWritePermit::new_for_tests(&self.permit(), None, None, None),
                     self.group,
                     member,
                     *relation,
@@ -145,7 +147,7 @@ impl Harness {
 
     /// The member's relations as another connection reads them, in the
     /// `membership_relation` enum order (Admin, Editor, Viewer, Ingest).
-    async fn relations(&self, member: UserId) -> Vec<Relation> {
+    async fn relations(&self, member: OwnerId) -> Vec<Relation> {
         sqlx::query_scalar(
             "SELECT relation FROM proxima_core.group_memberships
               WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation",
@@ -228,7 +230,7 @@ async fn remove_member_relation_removes_one_row_and_remove_member_still_removes_
         .remove_member_relation(
             &h.admin_authz,
             h.group,
-            UserId::new(Uuid::now_v7()),
+            UserId::new(Uuid::now_v7()).into(),
             Relation::Admin,
         )
         .await
@@ -289,7 +291,9 @@ async fn replace_member_relation_downgrades_and_keeps_unrelated_relations() {
     // The probe a host runs resolves the new state to the join of what is left.
     let mut conn = h.observer.acquire().await.expect("connection");
     assert_eq!(
-        group_role(&mut conn, member, h.group).await.expect("probe"),
+        group_role(&mut conn, member.as_user(), h.group)
+            .await
+            .expect("probe"),
         Some(Role::viewer().join(Role::ingest()))
     );
     drop(conn);
@@ -318,7 +322,7 @@ async fn replace_member_relation_refuses_a_member_without_from_and_changes_nothi
 
     for (member, expected) in [
         (holds_other, vec![Relation::Viewer]),
-        (holds_none, Vec::new()),
+        (OwnerId::from(holds_none), Vec::new()),
     ] {
         let err = h
             .engine
@@ -342,7 +346,7 @@ async fn replace_member_relation_refuses_a_member_without_from_and_changes_nothi
         // The storage port names it `Conflict`.
         let storage =
             h.pg.replace_group_member_relation(
-                &h.permit(),
+                &MembershipWritePermit::new_for_tests(&h.permit(), None, None, None),
                 h.group,
                 member,
                 Relation::Admin,
@@ -380,7 +384,7 @@ async fn replace_member_relation_refuses_the_same_relation_before_hooks_and_stor
     // Straight at the port the same call is the same transaction: a held
     // `from` is replaced by itself, an unheld one is a Conflict.
     h.pg.replace_group_member_relation(
-        &h.permit(),
+        &MembershipWritePermit::new_for_tests(&h.permit(), None, None, None),
         h.group,
         member,
         Relation::Editor,
@@ -392,7 +396,7 @@ async fn replace_member_relation_refuses_the_same_relation_before_hooks_and_stor
     assert_eq!(h.relations(member).await, vec![Relation::Editor]);
     let missing =
         h.pg.replace_group_member_relation(
-            &h.permit(),
+            &MembershipWritePermit::new_for_tests(&h.permit(), None, None, None),
             h.group,
             member,
             Relation::Viewer,
@@ -493,7 +497,7 @@ async fn a_permit_for_another_group_is_refused_by_both_port_methods() {
 
     let replace =
         h.pg.replace_group_member_relation(
-            &other,
+            &MembershipWritePermit::new_for_tests(&other, None, None, None),
             h.group,
             member,
             Relation::Admin,
@@ -503,9 +507,14 @@ async fn a_permit_for_another_group_is_refused_by_both_port_methods() {
         .await
         .expect_err("permit names another owner");
     let remove =
-        h.pg.remove_group_member_relation(&other, h.group, member, Relation::Admin)
-            .await
-            .expect_err("permit names another owner");
+        h.pg.remove_group_member_relation(
+            &MembershipWritePermit::new_for_tests(&other, None, None, None),
+            h.group,
+            member,
+            Relation::Admin,
+        )
+        .await
+        .expect_err("permit names another owner");
     assert!(matches!(replace, StorageError::ConstraintViolation(_)));
     assert!(matches!(remove, StorageError::ConstraintViolation(_)));
     assert_eq!(h.relations(member).await, vec![Relation::Admin]);
@@ -550,29 +559,48 @@ async fn a_failed_insert_rolls_the_delete_back() {
 
 /// While the replacement is between its delete and its commit, another
 /// connection still sees the old relation: no state with neither is
-/// observable. The insert of `to` is held open by a conflicting uncommitted
-/// row, which freezes the replacement exactly there.
+/// observable. A trigger barrier holds the insert of `to` after the delete.
 #[tokio::test]
 async fn no_reader_sees_the_member_without_a_role_mid_replacement() {
+    const BARRIER: i64 = 0x6e65_7374_5f72_6570;
     let h = Harness::new(None).await;
     let member = h.member_with(&[Relation::Admin]).await;
 
-    let mut blocker = h.observer.begin().await.expect("blocker");
-    sqlx::query(
-        "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
-         VALUES ($1, $2, 'viewer')",
+    // Freeze the replacement after its DELETE and before its INSERT. The
+    // membership trigger itself now acquires the tree lock before the write,
+    // so a conflicting uncommitted row would block too early on a transaction
+    // id and would not test the no-gap reader guarantee.
+    sqlx::raw_sql(
+        "CREATE OR REPLACE FUNCTION public.zz_pause_membership_viewer_insert()
+         RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.relation = 'viewer' THEN
+                 PERFORM pg_advisory_xact_lock(7954891260474582384::bigint);
+             END IF;
+             RETURN NEW;
+         END
+         $$;
+         DROP TRIGGER IF EXISTS zz_pause_membership_viewer_insert ON proxima_core.group_memberships;
+         CREATE TRIGGER zz_pause_membership_viewer_insert
+         BEFORE INSERT ON proxima_core.group_memberships
+         FOR EACH ROW EXECUTE FUNCTION public.zz_pause_membership_viewer_insert();",
     )
-    .bind(h.group.into_inner())
-    .bind(member.into_inner())
-    .execute(&mut *blocker)
+    .execute(h.pg.pool_for_tests())
     .await
-    .expect("uncommitted conflicting row");
+    .expect("install replacement barrier");
+
+    let mut blocker = h.observer.begin().await.expect("blocker");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(BARRIER)
+        .execute(&mut *blocker)
+        .await
+        .expect("take replacement barrier");
 
     let pg = h.pg.clone();
     let (group, permit) = (h.group, h.permit());
     let replacement = tokio::spawn(async move {
         pg.replace_group_member_relation(
-            &permit,
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
             group,
             member,
             Relation::Admin,
@@ -581,7 +609,7 @@ async fn no_reader_sees_the_member_without_a_role_mid_replacement() {
         )
         .await
     });
-    wait_until_blocked(&h.observer, "transactionid").await;
+    wait_until_blocked(&h.observer, "advisory").await;
 
     // Delete done, insert waiting: a reader sees exactly the old state.
     assert_eq!(h.relations(member).await, vec![Relation::Admin]);
@@ -605,7 +633,7 @@ async fn two_replacements_of_the_same_relation_serialize_one_wins() {
         let (group, permit) = (h.group, h.permit());
         async move {
             pg.replace_group_member_relation(
-                &permit,
+                &MembershipWritePermit::new_for_tests(&permit, None, None, None),
                 group,
                 member,
                 Relation::Admin,
@@ -639,8 +667,10 @@ async fn replacement_waits_on_the_groups_membership_lock() {
 
     let mut holder = h.observer.begin().await.expect("holder");
     sqlx::query(
-        "SELECT pg_advisory_xact_lock(hashtextextended('proxima-group-membership:' || $1::text, 0))",
+        "INSERT INTO proxima_core.group_lock_request (request_id, left_group_id)
+         VALUES ($1, $2)",
     )
+    .bind(Uuid::now_v7())
     .bind(h.group.into_inner())
     .execute(&mut *holder)
     .await
@@ -650,7 +680,7 @@ async fn replacement_waits_on_the_groups_membership_lock() {
     let (group, permit) = (h.group, h.permit());
     let replacement = tokio::spawn(async move {
         pg.replace_group_member_relation(
-            &permit,
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
             group,
             member,
             Relation::Admin,

@@ -467,7 +467,7 @@ impl EntityId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MembershipRow {
     pub group: GroupId,
-    pub relation: Relation,
+    pub role: Role,
 }
 
 #[cfg(test)]

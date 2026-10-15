@@ -458,9 +458,16 @@ async fn seed_group_membership(
         .authorize_owner_write(&authz, space_owner, proxima_core::AccessKind::Goal)
         .await
         .expect("seed group membership permit");
-    pg.add_group_member(&permit, group, user, relation, Uuid::now_v7())
-        .await
-        .expect("seed group membership");
+    let membership_permit = MembershipWritePermit::new_for_tests(&permit, None, None, None);
+    pg.add_group_member(
+        &membership_permit,
+        group,
+        user.into(),
+        relation,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("seed group membership");
 }
 
 async fn server_issued_group_space_selector(

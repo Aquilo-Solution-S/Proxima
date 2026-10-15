@@ -85,7 +85,8 @@ pub use memory::{
 };
 pub use owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 pub use proof::{
-    HostStateWriteOrigin, HostStateWritePermit, OperatorMaintenanceProof, OwnerWritePermit,
+    HostStateWriteOrigin, HostStateWritePermit, MembershipEndpointAuthority,
+    MembershipMemberAuthority, MembershipWritePermit, OperatorMaintenanceProof, OwnerWritePermit,
 };
 pub use publication::{
     AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,

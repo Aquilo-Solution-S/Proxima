@@ -445,7 +445,22 @@ async fn the_outbox_check_upgrade_keeps_every_record_the_old_check_accepted()
         .execute(pool)
         .await?;
 
-        super::apply_current_migrations(&pg).await?;
+        // This falsifier concerns 0025's published check. Later releases
+        // require pending legacy lanes to be settled before their upgrade.
+        let (_, platform_url) = split_role_urls(&db_name).await?;
+        let platform = sqlx::PgPool::connect(&platform_url).await?;
+        let mut staged = core_migrator();
+        staged.migrations = Cow::Owned(
+            staged
+                .iter()
+                .filter(|migration| migration.version <= 25)
+                .cloned()
+                .collect(),
+        );
+        let mut connection = platform.acquire().await?;
+        let mut migration = begin_migration_transaction(&mut connection).await?;
+        staged.run(migration.as_mut()).await?;
+        migration.commit().await?;
         super::apply_core_migrations(pool, 25..=25).await?;
 
         let rows: Vec<OutboxRow> = sqlx::query_as(

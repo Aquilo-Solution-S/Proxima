@@ -1,4 +1,5 @@
 use proxima_core::storage_ports::{
+    MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
     OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
     SourceCursorPort,
 };
@@ -8,6 +9,51 @@ use proxima_core::{
 };
 
 use super::validate_permit_owner;
+
+fn validate_membership_permit(
+    permit: &MembershipWritePermit<'_>,
+    group: GroupId,
+    member: OwnerId,
+) -> Result<(), StorageError> {
+    match permit.endpoint_authority() {
+        MembershipEndpointAuthority::Parent => {
+            validate_permit_owner(permit.owner(), &OwnerId::from(group))?;
+        }
+        MembershipEndpointAuthority::Member => {
+            if permit.member_authority() != MembershipMemberAuthority::CallerManagesMember
+                || permit.owner().owner() != &member
+            {
+                return Err(StorageError::MembershipForbidden(
+                    "membership permit does not authorize the attached owner".into(),
+                ));
+            }
+        }
+    }
+    if permit.parent() != OwnerId::from(group) {
+        return Err(StorageError::ConstraintViolation(
+            "membership permit parent does not match the requested group".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_parent_membership_permit(
+    permit: &MembershipWritePermit<'_>,
+    group: GroupId,
+) -> Result<(), StorageError> {
+    if permit.endpoint_authority() != MembershipEndpointAuthority::Parent {
+        return Err(StorageError::ConstraintViolation(
+            "this membership operation requires parent authority".into(),
+        ));
+    }
+    validate_permit_owner(permit.owner(), &OwnerId::from(group))?;
+    if permit.parent() != OwnerId::from(group) {
+        return Err(StorageError::ConstraintViolation(
+            "membership permit parent does not match the requested group".into(),
+        ));
+    }
+    Ok(())
+}
 use crate::{PgStorage, access, verbs};
 
 #[async_trait::async_trait]
@@ -81,19 +127,20 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn add_group_member(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member: OwnerId,
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerId::from(group_id))?;
+        validate_parent_membership_permit(permit, group_id)?;
         access::owner_columns::add_group_member(
             &self.pool,
-            permit.owner_scope(),
+            permit.owner().owner_scope(),
             group_id,
-            member_user_id,
+            member,
             relation,
+            permit.member_authority(),
             granted_by,
         )
         .await
@@ -101,53 +148,57 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn remove_group_member(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member: OwnerId,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerId::from(group_id))?;
+        validate_membership_permit(permit, group_id, member)?;
         access::owner_columns::remove_group_member(
             &self.pool,
-            permit.owner_scope(),
+            permit.owner().owner_scope(),
             group_id,
-            member_user_id,
+            member,
+            permit.member_authority(),
+            permit.endpoint_authority(),
         )
         .await
     }
 
     async fn remove_group_member_relation(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member: OwnerId,
         relation: Relation,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerId::from(group_id))?;
+        validate_membership_permit(permit, group_id, member)?;
         access::owner_columns::remove_group_member_relation(
             &self.pool,
-            permit.owner_scope(),
+            permit.owner().owner_scope(),
             group_id,
-            member_user_id,
+            member,
             relation,
+            permit.member_authority(),
+            permit.endpoint_authority(),
         )
         .await
     }
 
     async fn replace_group_member_relation(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member: OwnerId,
         from: Relation,
         to: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        validate_permit_owner(permit, &OwnerId::from(group_id))?;
+        validate_parent_membership_permit(permit, group_id)?;
         access::owner_columns::replace_group_member_relation(
             &self.pool,
-            permit.owner_scope(),
+            permit.owner().owner_scope(),
             group_id,
-            member_user_id,
+            member,
             from,
             to,
             granted_by,
@@ -159,7 +210,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
         group_id: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result = access::owner_columns::list_group_members(tx.as_mut(), group_id).await;
@@ -170,9 +221,9 @@ impl OwnerMembershipAdminPort for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
         group_id: GroupId,
-        after: Option<(UserId, Relation)>,
+        after: Option<(OwnerId, Relation)>,
         limit: i64,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         let mut tx =
             crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
         let result =

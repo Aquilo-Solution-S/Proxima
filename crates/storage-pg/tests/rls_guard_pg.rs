@@ -246,33 +246,12 @@ async fn apply_owner_rls_fixtures(pool: &PgPool) {
     let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
         .await
         .unwrap();
-    let core = proxima_storage_pg::core_migrator();
-    let lane = proxima_storage_pg::test_fixtures::OWNER_RLS_MIGRATION_VERSIONS;
-    // The base lane already ran 0025 and 0026, whose tables 0014's
-    // whole-schema census has never heard of (production runs 0014 first).
-    // Remove them, run the lane, then re-run what follows the lane: both are
-    // idempotent and install their tables' RLS through the 0024 installer.
-    sqlx::raw_sql(
-        "DROP TABLE proxima_core.goal_change_v1;
-         DROP TABLE proxima_core.publication_delivery;
-         DROP TABLE proxima_core.publication_consumer;",
-    )
-    .execute(transaction.as_mut())
-    .await
-    .unwrap();
-    for migration in core
+    let core_migrations = proxima_storage_pg::core_migrator();
+    // The fixture stages core through 0013, so replay the remaining core
+    // migrations exactly once in production order.
+    for migration in core_migrations
         .iter()
-        .filter(|migration| lane.contains(&migration.version))
-    {
-        sqlx::raw_sql(migration.sql.clone())
-            .execute(transaction.as_mut())
-            .await
-            .unwrap();
-    }
-    let after_lane = lane.iter().max().copied().unwrap_or_default();
-    for migration in core
-        .iter()
-        .filter(|migration| migration.version > after_lane)
+        .filter(|migration| migration.version >= 14)
     {
         sqlx::raw_sql(migration.sql.clone())
             .execute(transaction.as_mut())
@@ -295,19 +274,25 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     let database = unique_db_name("proxima_rls_full");
     create_db(&database).await.unwrap();
     let admin = PgPool::connect(&db_url(&database)).await.unwrap();
-    proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
-        .run(&admin)
-        .await
-        .unwrap();
-    let mut code = sqlx::migrate!("../../flavors/code/migrations");
-    code.migrations = Cow::Owned(
-        code.iter()
-            .filter(|migration| !migration.description.contains("owner rls"))
+    let mut core_migrations = proxima_storage_pg::core_migrator();
+    core_migrations.migrations = Cow::Owned(
+        core_migrations
+            .iter()
+            .filter(|migration| migration.version < 14)
             .cloned()
             .collect(),
     );
-    code.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
-    code.run(&admin).await.unwrap();
+    core_migrations.run(&admin).await.unwrap();
+    let mut flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
+    flavor_migrations.migrations = Cow::Owned(
+        flavor_migrations
+            .iter()
+            .filter(|migration| migration.version < 20_260_922_000_020)
+            .cloned()
+            .collect(),
+    );
+    flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
+    flavor_migrations.run(&admin).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
     let platform = format!("rls_platform_{suffix}");
     let runtime = format!("rls_runtime_full_{suffix}");
@@ -385,6 +370,18 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     );
     apply_owner_rls_fixtures(&platform_connection).await;
     platform_connection.close().await;
+    let flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
+    let mut code_transaction = admin.begin().await.unwrap();
+    for migration in flavor_migrations
+        .iter()
+        .filter(|migration| migration.version > 20_260_922_000_020)
+    {
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(&mut *code_transaction)
+            .await
+            .unwrap();
+    }
+    code_transaction.commit().await.unwrap();
     let platform_connection = runtime_pool(&database, &platform, &password).await;
     let runtime_connection = runtime_pool(&database, &runtime, &password).await;
     (

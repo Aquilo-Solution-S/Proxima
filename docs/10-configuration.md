@@ -296,44 +296,51 @@ when that authenticator is the environment one or the host passed its port to
 (`X-Proxima-Owner` / the session binding), the host still resolves the role
 ([14 §Owner-scoping](14-protocol-surface.md#owner-scoping--the-primary-axis)).
 
-Roles inside a host transaction. A host that holds its own transaction (a
-`PgPlatformScope::begin()` one, or an owner-scoped one) resolves roles on it
-with `roles_for_subject(&mut *tx, subject)` and `group_role(&mut *tx, subject,
-group)` (`proxima::host`, `proxima_storage_pg`), not with the resolver, which
-opens its own transaction, and not with raw `proxima_core.group_memberships`
-queries. They run the queries `PgOwnerAccessResolver` runs and fold them
-through `OwnerRoles::for_subject`: same answers, several relations in one group
-give their join. A subject registered as a group is refused with
-`AccessError::SubjectIsGroup` before deriving any role; an unregistered subject
-keeps its personal role. The registry kind is read in the membership query. They begin, commit and
-set nothing, and read what the connection's scope allows: every group on a
-platform-scoped transaction, the groups the membership read policy admits
-under an owner scope. The owner registry is read under the same policy, so an
-owner scope that does not admit the subject's own id hides the row that would
-refuse a group-registered subject: resolve on a platform-scoped transaction. A row inserted earlier in the same transaction is
-visible. There is no bool probe: a membership bit does not authorize a write
-(Lean `Causa.Authorization` `may_write`); ask for the role and use
-`Role::manages` or its ceilings. `PgOwnerAccessResolver` is these two functions
-inside a transaction it opens and rolls back.
-
 ### Roles inside a host transaction
 
-Owner registry and membership writes inside a host transaction. The host
-facade exports `register_group`, `bootstrap_group_admin`,
-`add_group_member`, `remove_group_member`, `remove_group_member_relation` and
-`replace_group_member_relation`; each takes `&mut PgConnection` and accepts the
-host's `&mut *tx`. `register_group`, `bootstrap_group_admin`, `add_group_member`,
-`remove_group_member`, `remove_group_member_relation` and
-`replace_group_member_relation` share the membership advisory lock.
-They write the same registry and membership rows as their pool forms, but never begin, commit, roll back, set a
-scope or retry. No authorization runs, the authorization hooks included:
-the host vouches for the write as it would for a row it inserts itself. The
-caller's transaction must be platform-scoped. The caller retries its whole
-transaction when needed. The pool forms retain their transaction and retry
-behavior by calling these connection forms, so their committed effects remain
-unchanged. There is no post-commit action in these forms.
-`AuthzOperation::Membership` authorization hooks run only on the Engine
-membership verbs.
+| API | Contract |
+|---|---|
+| `roles_for_subject(&mut *tx, subject)` | One query: subject registry kind plus `group_role_projection`; `OwnerRoles::for_subject` derives the personal role |
+| `group_role(&mut *tx, subject, group)` | One query, point probe on `(member_user_id, group_id)`; same subject-kind refusal |
+| Registered group subject | `AccessError::SubjectIsGroup`; resolve on a platform-scoped transaction so the registry row is visible |
+| Stored role | Parse ceilings/management through `Role::new` at the database boundary |
+| Scope | Read only projected groups admitted by the connection scope; no transaction control or scope mutation |
+
+`PgOwnerAccessResolver` runs these probes on its own transaction. The removed
+`has_role_for_owner` direct-membership boolean had no nesting semantics.
+Authorize from `Role::manages` or its ceilings.
+
+| Membership | Contract |
+|---|---|
+| Person | Any number of relations in any groups; written rows stay unchanged |
+| Group | At most one parent and one relation, default viewer; self/cycle refused, no depth limit |
+| Climb | `Role::meet` at each parent link, `Role::join` across every relation/path; no downward role propagation |
+| Projection | One row per reached person/group; database triggers maintain it within every membership transaction, raw SQL included |
+| Member authority | `MembershipWritePermit` carries `CallerManagesMember` or `CallerDoesNotManageMember`; the former is required when the member resolves to a group |
+| Engine attach | Manage both parent and attached group |
+| Engine detach | Manage either endpoint; person removal still requires parent manage |
+| Engine relation change | Parent manage |
+
+Host facade: `register_group`, `bootstrap_group_admin`, `add_group_member`,
+`remove_group_member`, `remove_group_member_relation`,
+`replace_group_member_relation`. Each takes `&mut PgConnection`; call with
+`&mut *tx` on the host's platform-scoped transaction. Members are bare
+`OwnerId`; only `bootstrap_group_admin` takes a `UserId` first admin. The write
+reads the member kind inside that transaction under the locks. A registered
+group becomes an edge; registering a person with existing memberships as a
+group, or inserting a group into person memberships, is refused.
+
+| Write boundary | Contract |
+|---|---|
+| Host forms | Host-vouched; no authorization or hooks. No begin/commit/rollback/scope change/retry or post-commit action |
+| Pool forms | Same implementation, inside their transaction and bounded retry |
+| Locks | One root-keyed advisory lock per affected tree; attach locks both roots in UUID order. Confirm roots after locking; retry if either moved |
+| Isolation | `READ COMMITTED` required; `REPEATABLE READ` and `SERIALIZABLE` refuse with `StorageError::MembershipIsolation` because their snapshot predates a waited lock |
+| Trigger authority | Platform-owned definer with trusted pinned `search_path` ending in `pg_temp`, saved/restored platform scope; reads the whole tree and restores caller scope; non-trigger helpers unavailable to runtime callers |
+| Erase | Subgroups count as members for abandonment; erase removes a group's parent edge or a person's projection |
+
+The host retries its whole transaction on a retryable error.
+`AuthzOperation::Membership` hooks run on Engine verbs only.
 
 Forwarder policy. `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`
 (or `.forwarder(ForwarderPolicy)`) wraps that port: for a listed subject the

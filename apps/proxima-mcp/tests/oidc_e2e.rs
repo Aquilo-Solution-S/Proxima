@@ -24,7 +24,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata, S3RuntimeConfig};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
-use proxima_core::storage_ports::OwnerMembershipAdminPort;
+use proxima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId,
     OwnerAccessPort, OwnerId, Relation, Role, ToolScope, UserId,
@@ -773,7 +773,13 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         .authorize_owner_write(&permit_authz, &group_owner, AccessKind::Goal)
         .await?;
     storage
-        .add_group_member(&permit, group_id, subject, Relation::Editor, Uuid::now_v7())
+        .add_group_member(
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
+            group_id,
+            subject.into(),
+            Relation::Editor,
+            Uuid::now_v7(),
+        )
         .await?;
 
     let addr = running.mcp_addr().ok_or("missing MCP listener address")?;

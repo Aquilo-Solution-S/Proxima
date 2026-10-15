@@ -449,7 +449,9 @@ pub use proxima_core::{
     fact_ingest::AuthorizedNodeLinks, owner_inverse::EraseAuthorization,
     owner_inverse::ExportAuthorization, owner_inverse::OwnerEraseContext,
     owner_inverse::OwnerExportContext, storage_ports::EmbeddingWriteProof,
-    storage_ports::OperatorWriteProof, storage_ports::OwnerWritePermit,
+    storage_ports::MembershipEndpointAuthority, storage_ports::MembershipMemberAuthority,
+    storage_ports::MembershipWritePermit, storage_ports::OperatorWriteProof,
+    storage_ports::OwnerWritePermit,
 };
 /// Rows, cursors and edges the read responses carry ([`QueryRequest`],
 /// [`QueryResponse`], [`MemoryLineageRequest`], [`ChangeHistoryResponse`],

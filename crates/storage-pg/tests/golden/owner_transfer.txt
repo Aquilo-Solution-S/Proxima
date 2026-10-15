@@ -101,7 +101,10 @@
 ## proxima_core.goal_head (1)
 {"handle":"<id063>","owner_id":"<id018>","schema_id":"core/task-goal-v1","t":"<id063>"}
 ## proxima_core.goal_replay_declaration (0)
+## proxima_core.group_edges (0)
+## proxima_core.group_lock_request (0)
 ## proxima_core.group_memberships (0)
+## proxima_core.group_role_projection (0)
 ## proxima_core.ingest_keys (2)
 {"ingest_key":"kept-1","owner_id":"<id018>","source_id":"src-b","t":"<id014>"}
 {"ingest_key":"bystander-1","owner_id":"<id036>","source_id":"src-a","t":"<id016>"}
@@ -145,9 +148,9 @@
 {"lexical_language":"english","memory_id":"<id012>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 ## proxima_core.publication_origin (0)
 ## proxima_core.publication_outbox (3)
-{"attempts":0,"captured_at":"<ts074>","claim_token":null,"claimed_by":null,"envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id004>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id004>"}
-{"attempts":0,"captured_at":"<ts074>","claim_token":null,"claimed_by":null,"envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}
-{"attempts":0,"captured_at":"<ts074>","claim_token":null,"claimed_by":null,"envelope":"\\x7b2270726f6265223a226d6f756e74227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id012>","event_type":"core/test-fact-v1","lease_expires_at":null,"owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id012>"}
+{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id004>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id004>"}
+{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}
+{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a226d6f756e74227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id012>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id012>"}
 ## proxima_core.sketch (12)
 {"kind":"fact","owner_id":"<id018>","t":"<id014>","text":"fact"}
 {"kind":"fact","owner_id":"<id036>","t":"<id016>","text":"fact"}

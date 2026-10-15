@@ -12,7 +12,7 @@ use super::memory::{
     CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
-use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
+use super::proof::{MembershipWritePermit, OperatorMaintenanceProof, OwnerWritePermit};
 use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
@@ -683,9 +683,9 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 
     async fn add_group_member(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
         _relation: Relation,
         _granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
@@ -696,9 +696,9 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 
     async fn remove_group_member(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -709,7 +709,7 @@ impl OwnerMembershipAdminPort for RejectingStorage {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         _group_id: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         Ok(Vec::new())
     }
 
@@ -717,9 +717,9 @@ impl OwnerMembershipAdminPort for RejectingStorage {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         _group_id: GroupId,
-        _after: Option<(UserId, Relation)>,
+        _after: Option<(OwnerId, Relation)>,
         _limit: i64,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         Ok(Vec::new())
     }
 }

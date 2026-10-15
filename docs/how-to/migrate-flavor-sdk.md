@@ -1,5 +1,26 @@
 # Migrate the Flavor SDK
 
+## v0.0.31
+
+Pin all Proxima dependencies to the same `v0.0.31` tag. One forward core
+migration ([migration policy §v0.0.31](migrations.md#v0031)); no flavor migration.
+
+| Change | Host action |
+|---|---|
+| Membership member | `OwnerId` in add/remove/relation writes and listing cursors; `bootstrap_group_admin` keeps a `UserId` first admin |
+| Membership read/port types | `MembershipRow::relation` is replaced by folded `MembershipRow::role`; `OwnerMembershipAdminPort` writes take `MembershipWritePermit` with typed endpoint/member authority |
+| Group nesting | A group has at most one parent and one relation (default viewer); cycles/self edges refused; no depth limit |
+| Fact outbox legacy records | Before upgrading, drain undelivered pre-v0.0.28 records with a configured consumer, or retire the consumer with `PublicationConsumerPort::retire` (including an unconfigured `default`); the v0.0.31 migration refuses an undelivered legacy lane, then drops the obsolete record-level claim columns in place |
+| `ReceivedEvent::position` | Now required as `SubjectPosition`; an envelope missing `subject` or `sequence` is refused at `ReceivedEvent::from_record`. Delivered pre-v0.0.28 records are not parsed again |
+| Record state | `publication_outbox.state` uses `publication_record_state` (`pending`/`published`) and cannot be `claimed`; claims remain a lane concern in `publication_delivery` |
+| Role resolution | Storage materializes `Role::meet` along ancestor links and `Role::join` across all relations/paths; roles climb only |
+| Projection | Database triggers maintain `group_role_projection` in the membership transaction, raw SQL included; hosts never write it |
+| Authorization | Engine attach requires manage on both groups; detach either; relation change parent. Host transaction forms continue to run no authorization/hooks |
+| Locks | One root-keyed advisory lock per affected tree, two roots in UUID order for attach; roots confirmed after locking and retried if moved |
+| Isolation | Membership writes require `READ COMMITTED`; `REPEATABLE READ` and `SERIALIZABLE` refuse with typed `StorageError::MembershipIsolation` |
+| Removed | `PgOwnerAccessResolver::has_role_for_owner`; use `roles_for_subject`/`group_role` and authorize from the resulting role |
+| Erasure | A subgroup prevents abandonment/erase; group erase removes its parent edge; person erase removes every projected role |
+
 ## v0.0.30
 
 Pin all Proxima Rust dependencies to the same `v0.0.30` tag. One additive core
@@ -32,7 +53,7 @@ compiles unchanged, and its single intake is the consumer `default`.
 |---|---|
 | `RuntimeConfig.outbox_intake: Option<Arc<dyn DurableIntake>>` | Replaced by `outbox_consumers: OutboxConsumers`. A struct literal uses `OutboxConsumers::default()` for none; the builders' `outbox_intake(..)` and the new `outbox_consumer(ConsumerName, ..)` fill it |
 | `PublicationOutboxPort::claim`, `mark_published`, `release` (a host's own drain, a test double) | Each takes `consumer: &ConsumerName` first. A drain that stands in for the old single drain passes `&ConsumerName::default()` |
-| `ReceivedEvent { .. }` built by hand | Add `position: Option<SubjectPosition>` (`None` for an envelope without `subject`/`sequence`) |
+| `ReceivedEvent { .. }` built by hand | v0.0.28 added optional `position`; v0.0.31 requires `SubjectPosition` and refuses envelopes without `subject`/`sequence` (see §v0.0.31) |
 | `SealedPublication::seal(plan, t)` | Takes a third argument, `SubjectPosition` |
 | `PublicationExtensions::with("sequence", ..)` | Now refused (`SubstrateAttributeName`): the substrate sets `sequence`. Rename the attribute |
 | Wire | Every captured event carries `subject` (its series, a bare UUID) and `sequence` (20-digit position, from 1) after `time` ([18 §Ordering](../18-fact-outbox.md#ordering)). An intake that rejects unknown attributes must accept them. Goal-change events carry `subject` = `data.series` and `sequence` = `data.revision` |

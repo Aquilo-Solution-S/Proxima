@@ -9,11 +9,12 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use serde::de::Error as _;
 
 use crate::MemoryId;
 use crate::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::owner::OwnerId;
-use crate::publication::{SubjectPosition, SubjectPositionError};
+use crate::publication::SubjectPosition;
 use crate::storage_ports::publication::ClaimedPublication;
 
 /// The `CloudEvents` 1.0 structured envelope, as parsed from the captured bytes.
@@ -37,14 +38,10 @@ pub struct CloudEventEnvelope {
     pub dataschema: Option<String>,
     #[serde(default)]
     pub time: Option<String>,
-    /// The series the event is about (docs/18 §Ordering). Absent on a record
-    /// captured before v0.0.28.
-    #[serde(default)]
+    /// The series the event is about (docs/18 §Ordering).
     pub subject: Option<String>,
     /// The event's position in [`Self::subject`], 20 decimal digits (the
-    /// `CloudEvents` sequence extension). Absent on a record captured before
-    /// v0.0.28.
-    #[serde(default)]
+    /// `CloudEvents` sequence extension).
     pub sequence: Option<String>,
     #[serde(default)]
     pub proximaowner: Option<String>,
@@ -64,6 +61,16 @@ pub struct CloudEventEnvelope {
 ///
 /// Built by the runtime from a claimed outbox record, with
 /// [`Self::from_record`]; a host reads it.
+///
+/// ```
+/// use proxima_core::publication::{SubjectPosition, intake::ReceivedEvent};
+/// fn position(event: &ReceivedEvent) -> SubjectPosition { event.position }
+/// ```
+///
+/// ```compile_fail
+/// use proxima_core::publication::intake::ReceivedEvent;
+/// fn clear_position(event: &mut ReceivedEvent) { event.position = None; }
+/// ```
 #[derive(Debug, Clone)]
 pub struct ReceivedEvent {
     /// The `CloudEvents` `id` (`F:<uuid>`) — the dedup key.
@@ -84,9 +91,9 @@ pub struct ReceivedEvent {
     /// The envelope's `subject` and `sequence`, typed: where this event
     /// stands among the events about the same series. Delivery does not
     /// follow it (docs/18 §Ordering): keep the last `sequence` applied per
-    /// `subject` and drop an event whose `sequence` is not greater. `None`
-    /// for a record captured before v0.0.28, which carries neither.
-    pub position: Option<SubjectPosition>,
+    /// `subject` and drop an event whose `sequence` is not greater. A missing
+    /// or unpaired pair is malformed and refused by [`Self::from_record`].
+    pub position: SubjectPosition,
 }
 
 /// How a [`ReceivedEvent::id`] is spelled: a Fact id in Proxima's canonical
@@ -227,13 +234,13 @@ impl ReceivedEvent {
     /// a case to deliver.
     pub fn from_record(record: &ClaimedPublication) -> Result<Self, serde_json::Error> {
         let envelope: CloudEventEnvelope = serde_json::from_slice(&record.envelope)?;
-        let position = match (&envelope.subject, &envelope.sequence) {
-            (None, None) => None,
-            (Some(subject), Some(sequence)) => Some(SubjectPosition::parse(subject, sequence)),
-            _ => Some(Err(SubjectPositionError::Unpaired)),
-        }
-        .transpose()
-        .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+        let (Some(subject), Some(sequence)) = (&envelope.subject, &envelope.sequence) else {
+            return Err(serde_json::Error::custom(
+                "publication envelope is missing its subject/sequence position",
+            ));
+        };
+        let position = SubjectPosition::parse(subject, sequence)
+            .map_err(<serde_json::Error as serde::de::Error>::custom)?;
         Ok(Self {
             id: record.event_id.clone(),
             owner: crate::OwnerId::new(record.owner_id),
@@ -256,6 +263,8 @@ mod tests {
             "id": id,
             "source": "urn:test",
             "type": "probe/listenable-v1",
+            "subject": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "sequence": "00000000000000000001",
             "data": null,
         }))
         .expect("envelope serializes")
@@ -295,7 +304,7 @@ mod tests {
             "the captured bytes are kept verbatim"
         );
         assert_eq!(event.envelope.event_type, "probe/listenable-v1");
-        assert_eq!(event.position, None, "a pre-v0.0.28 record has no position");
+        assert_eq!(event.position.sequence.get(), 1);
     }
 
     fn envelope_with(subject: Option<&str>, sequence: Option<&str>) -> Vec<u8> {
@@ -303,12 +312,14 @@ mod tests {
             serde_json::from_slice(&envelope_bytes("F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"))
                 .expect("json");
         let object = value.as_object_mut().expect("object");
-        if let Some(subject) = subject {
-            object.insert("subject".into(), subject.into());
-        }
-        if let Some(sequence) = sequence {
-            object.insert("sequence".into(), sequence.into());
-        }
+        match subject {
+            Some(subject) => object.insert("subject".into(), subject.into()),
+            None => object.remove("subject"),
+        };
+        match sequence {
+            Some(sequence) => object.insert("sequence".into(), sequence.into()),
+            None => object.remove("sequence"),
+        };
         serde_json::to_vec(&value).expect("serializes")
     }
 
@@ -320,7 +331,7 @@ mod tests {
             Some("00000000000000000003"),
         )))
         .expect("a sealed position parses");
-        let position = event.position.expect("present");
+        let position = event.position;
         assert_eq!(position.subject.to_string(), subject);
         assert_eq!(position.sequence.get(), 3);
         assert_eq!(
@@ -330,6 +341,7 @@ mod tests {
         );
 
         for (subject, sequence) in [
+            (None, None),
             (Some(subject), None),
             (None, Some("00000000000000000003")),
             (Some(subject), Some("3")),
@@ -358,7 +370,7 @@ mod tests {
             delivered_count: 1,
             raw,
             envelope,
-            position: None,
+            position: SubjectPosition::new(uuid::Uuid::nil(), std::num::NonZeroU64::MIN),
         }
     }
 

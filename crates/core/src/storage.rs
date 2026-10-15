@@ -30,6 +30,12 @@ pub enum StorageError {
     /// of times before surfacing this.
     #[error("retryable storage error: {0}")]
     Retryable(String),
+    /// Membership writes cannot run from a fixed-snapshot transaction: the
+    /// tree lock must be acquired before the snapshot that validates it.
+    #[error("membership write requires READ COMMITTED isolation")]
+    MembershipIsolation,
+    #[error("membership authorization refused: {0}")]
+    MembershipForbidden(String),
     /// A same `(owner, request_id)` idempotency key already exists with a
     /// different body. Carries the offending request id so the engine can
     /// surface a typed `IdempotencyConflict` without message parsing.

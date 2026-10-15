@@ -194,11 +194,12 @@ theorem visible_personal (u requester : User) :
 -- ============================================================
 
 /- Nesting needs NO new kernel primitive: a nested group RESOLVES to an ordinary
-   `Owner` (`User → Option Role`), and the gates are total over it. The
-   combinators below are how the host composes that resolution; the kernel never
-   sees the nesting tree (materializing it — e.g. a Leopard view — is the host's
-   expensive job). Group-as-member is not a kernel notion, and a recursive
-   `Group → Option Role` field would be non-strictly-positive anyway. -/
+   `Owner` (`User → Option Role`), and the gates are total over it. Storage
+   materializes `Group.mount` and `Group.union` for a tree of groups: each group
+   has at most one parent, roles climb through meet-capped mounts, and multiple
+   person relations or paths join. The kernel sees only the resolved `Owner`,
+   never the storage tree. Group-as-member is not a kernel notion, and a
+   recursive `Group → Option Role` field would be non-strictly-positive. -/
 
 /-- The empty group: no user has a role. -/
 def Group.empty : Group := fun _ => none

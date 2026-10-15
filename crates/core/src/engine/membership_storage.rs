@@ -712,7 +712,7 @@ impl OwnerAccessReadPort for MembershipStorage {
         if member == &self.member {
             Ok(vec![MembershipRow {
                 group: self.group,
-                relation: self.membership_relation,
+                role: self.membership_relation.role(),
             }])
         } else {
             Ok(Vec::new())
@@ -763,9 +763,9 @@ impl OwnerMembershipAdminPort for MembershipStorage {
 
     async fn add_group_member(
         &self,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: &crate::storage_ports::MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
         _relation: Relation,
         _granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
@@ -776,9 +776,9 @@ impl OwnerMembershipAdminPort for MembershipStorage {
 
     async fn remove_group_member(
         &self,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: &crate::storage_ports::MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
@@ -789,9 +789,9 @@ impl OwnerMembershipAdminPort for MembershipStorage {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         if group_id == self.group {
-            Ok(vec![(self.member.as_user(), self.membership_relation)])
+            Ok(vec![(self.member, self.membership_relation)])
         } else {
             Ok(Vec::new())
         }
@@ -801,9 +801,9 @@ impl OwnerMembershipAdminPort for MembershipStorage {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
-        _after: Option<(UserId, Relation)>,
+        _after: Option<(OwnerId, Relation)>,
         _limit: i64,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         self.list_group_members(_owner_scope, group_id).await
     }
 }

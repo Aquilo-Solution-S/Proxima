@@ -1,5 +1,5 @@
 use crate::storage::StorageError;
-use crate::storage_ports::OwnerWritePermit;
+use crate::storage_ports::{MembershipWritePermit, OwnerWritePermit};
 use crate::{EntityId, GroupId, MembershipRow, OwnerId, Relation, UserId};
 
 #[async_trait::async_trait]
@@ -91,18 +91,18 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
 
     async fn add_group_member(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member_id: OwnerId,
         relation: Relation,
         granted_by: uuid::Uuid,
     ) -> Result<(), StorageError>;
 
     async fn remove_group_member(
         &self,
-        permit: &OwnerWritePermit,
+        permit: &MembershipWritePermit<'_>,
         group_id: GroupId,
-        member_user_id: UserId,
+        member_id: OwnerId,
     ) -> Result<(), StorageError>;
 
     /// Remove the one `relation` row `member_user_id` holds in `group_id`;
@@ -113,9 +113,9 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
     /// existed still compiles and refuses the call.
     async fn remove_group_member_relation(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
         _relation: Relation,
     ) -> Result<(), StorageError> {
         Err(StorageError::Internal(
@@ -140,9 +140,9 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
     /// existed still compiles and refuses the call.
     async fn replace_group_member_relation(
         &self,
-        _permit: &OwnerWritePermit,
+        _permit: &MembershipWritePermit<'_>,
         _group_id: GroupId,
-        _member_user_id: UserId,
+        _member_id: OwnerId,
         _from: Relation,
         _to: Relation,
         _granted_by: uuid::Uuid,
@@ -157,7 +157,7 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError>;
 
     /// One page of group members in the keyset total order
     /// `(member_user_id, relation)`, starting strictly after `after` when
@@ -166,15 +166,17 @@ pub trait OwnerMembershipAdminPort: Send + Sync {
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         group_id: GroupId,
-        after: Option<(UserId, Relation)>,
+        after: Option<(OwnerId, Relation)>,
         limit: i64,
-    ) -> Result<Vec<(UserId, Relation)>, StorageError>;
+    ) -> Result<Vec<(OwnerId, Relation)>, StorageError>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::OwnerMembershipAdminPort;
-    use crate::storage_ports::OwnerWritePermit;
+    use crate::storage_ports::{
+        MembershipMemberAuthority, MembershipWritePermit, OwnerWritePermit,
+    };
     use crate::{AccessKind, GroupId, OwnerId, Relation, StorageError, UserId};
     use uuid::Uuid;
 
@@ -195,9 +197,9 @@ mod tests {
 
         async fn add_group_member(
             &self,
-            _permit: &OwnerWritePermit,
+            _permit: &MembershipWritePermit<'_>,
             _group_id: GroupId,
-            _member_user_id: UserId,
+            _member_id: OwnerId,
             _relation: Relation,
             _granted_by: Uuid,
         ) -> Result<(), StorageError> {
@@ -206,9 +208,9 @@ mod tests {
 
         async fn remove_group_member(
             &self,
-            _permit: &OwnerWritePermit,
+            _permit: &MembershipWritePermit<'_>,
             _group_id: GroupId,
-            _member_user_id: UserId,
+            _member_id: OwnerId,
         ) -> Result<(), StorageError> {
             Ok(())
         }
@@ -217,7 +219,7 @@ mod tests {
             &self,
             _owner_scope: Option<&crate::OwnerScope>,
             _group_id: GroupId,
-        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
             Ok(Vec::new())
         }
 
@@ -225,9 +227,9 @@ mod tests {
             &self,
             _owner_scope: Option<&crate::OwnerScope>,
             _group_id: GroupId,
-            _after: Option<(UserId, Relation)>,
+            _after: Option<(OwnerId, Relation)>,
             _limit: i64,
-        ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+        ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -235,17 +237,23 @@ mod tests {
     #[tokio::test]
     async fn a_port_without_the_relation_methods_refuses_them_by_name() {
         let group = GroupId::new(Uuid::now_v7());
-        let member = UserId::new(Uuid::now_v7());
+        let member = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(OwnerId::from(group), AccessKind::Goal);
+        let membership_permit = MembershipWritePermit::new(
+            &permit,
+            OwnerId::from(group),
+            MembershipMemberAuthority::CallerDoesNotManageMember,
+            crate::storage_ports::MembershipEndpointAuthority::Parent,
+        );
         let port = LegacyMembershipAdmin;
 
         let removed = port
-            .remove_group_member_relation(&permit, group, member, Relation::Viewer)
+            .remove_group_member_relation(&membership_permit, group, member, Relation::Viewer)
             .await
             .expect_err("the default must refuse");
         let replaced = port
             .replace_group_member_relation(
-                &permit,
+                &membership_permit,
                 group,
                 member,
                 Relation::Admin,

@@ -1,7 +1,7 @@
 //! `list_group_members` against the shipped table (no `created_at`).
 
-use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
-use proxima_core::{AccessKind, GroupId, OwnerId, Relation, UserId};
+use proxima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
+use proxima_core::{GroupId, OwnerId, Relation, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -24,14 +24,23 @@ async fn list_group_members_runs_against_v008_schema() {
         pg.bootstrap_group_admin(group, admin, admin.into_inner())
             .await?;
 
-        let permit = OwnerWritePermit::new_for_tests(OwnerId::from(group), AccessKind::Fact);
-        pg.add_group_member(&permit, group, editor, Relation::Editor, Uuid::now_v7())
-            .await?;
+        let permit = proxima_core::storage_ports::OwnerWritePermit::new_for_tests(
+            OwnerId::from(group),
+            proxima_core::AccessKind::Fact,
+        );
+        pg.add_group_member(
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
+            group,
+            OwnerId::from(editor),
+            Relation::Editor,
+            Uuid::now_v7(),
+        )
+        .await?;
 
         let members = pg.list_group_members(None, group).await?;
         assert_eq!(members.len(), 2, "admin + editor");
-        assert!(members.contains(&(admin, Relation::Admin)));
-        assert!(members.contains(&(editor, Relation::Editor)));
+        assert!(members.contains(&(OwnerId::from(admin), Relation::Admin)));
+        assert!(members.contains(&(OwnerId::from(editor), Relation::Editor)));
 
         let page = pg.list_group_members_page(None, group, None, 10).await?;
         assert_eq!(page, members, "full list matches first page");

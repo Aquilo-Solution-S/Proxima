@@ -18,7 +18,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
-use proxima_core::storage_ports::{OwnerMembershipAdminPort, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
+};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, OwnerAccessPort, OwnerId,
     Relation, Role, ToolScope, UserId,
@@ -500,7 +502,13 @@ async fn grant_member(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let permit = membership_permit(owner).await?;
     storage
-        .add_group_member(&permit, group, member, relation, Uuid::now_v7())
+        .add_group_member(
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
+            group,
+            member.into(),
+            relation,
+            Uuid::now_v7(),
+        )
         .await?;
     Ok(())
 }
@@ -512,7 +520,13 @@ async fn revoke_member(
     member: UserId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let permit = membership_permit(owner).await?;
-    storage.remove_group_member(&permit, group, member).await?;
+    storage
+        .remove_group_member(
+            &MembershipWritePermit::new_for_tests(&permit, None, None, None),
+            group,
+            member.into(),
+        )
+        .await?;
     Ok(())
 }
 

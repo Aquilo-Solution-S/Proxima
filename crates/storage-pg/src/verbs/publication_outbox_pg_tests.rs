@@ -272,8 +272,11 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
         String,
         i32,
     ) = sqlx::query_as(
-        "SELECT t, event_id, envelope, envelope_digest, state::text, attempts
-           FROM proxima_core.publication_outbox",
+        "SELECT record.t, record.event_id, record.envelope, record.envelope_digest,
+                record.state::text, lane.attempts
+           FROM proxima_core.publication_outbox record
+           JOIN proxima_core.publication_delivery lane
+             ON lane.t = record.t AND lane.consumer = 'default'",
     )
     .fetch_one(&pool)
     .await
@@ -1803,7 +1806,7 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
             outcome,
             proxima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
         ),
-        "expected a completed erase, got {outcome:?}"
+        "expected a completed erase"
     );
 
     let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT t FROM proxima_core.publication_outbox")
@@ -2358,7 +2361,7 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
     let claimed = claim_for(&pg, &ConsumerName::default()).await;
     let mut positions: Vec<SubjectPosition> = claimed
         .iter()
-        .filter_map(|record| {
+        .map(|record| {
             proxima_core::publication::intake::ReceivedEvent::from_record(record)
                 .expect("parses")
                 .position

@@ -24,6 +24,104 @@ pub struct OwnerWritePermit {
     _private: (),
 }
 
+/// Authorization evidence carried with a membership write.
+///
+/// The engine does not read the member's kind.  It records whether the
+/// caller also manages the member owner; storage applies that evidence only
+/// when the member id resolves to a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipMemberAuthority {
+    CallerDoesNotManageMember,
+    CallerManagesMember,
+}
+
+/// Endpoint whose manage authority admitted a membership removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipEndpointAuthority {
+    Parent,
+    Member,
+}
+
+/// The parent-owner write permit plus the member-side authority needed when
+/// the member id is a group.  Storage receives this as one capability so a
+/// backend cannot accidentally omit the second authorization input.
+#[derive(Debug)]
+pub struct MembershipWritePermit<'a> {
+    owner: &'a OwnerWritePermit,
+    parent: OwnerId,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
+}
+
+impl<'a> MembershipWritePermit<'a> {
+    /// Test-fixture constructor for storage-port doubles and PG tests.
+    /// Production code uses the engine-only constructor below.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn new_for_tests(
+        owner: &'a OwnerWritePermit,
+        parent: Option<OwnerId>,
+        member_authority: Option<MembershipMemberAuthority>,
+        endpoint_authority: Option<MembershipEndpointAuthority>,
+    ) -> Self {
+        Self {
+            owner,
+            parent: match parent {
+                Some(parent) => parent,
+                None => owner.owner,
+            },
+            member_authority: match member_authority {
+                Some(authority) => authority,
+                None => MembershipMemberAuthority::CallerDoesNotManageMember,
+            },
+            endpoint_authority: match endpoint_authority {
+                Some(authority) => authority,
+                None => MembershipEndpointAuthority::Parent,
+            },
+        }
+    }
+
+    /// The production constructor is private to the engine.
+    ///
+    /// ```compile_fail
+    /// use proxima_core::storage_ports::MembershipWritePermit;
+    /// let _ = MembershipWritePermit::new(todo!(), todo!(), todo!(), todo!());
+    /// ```
+    pub(crate) const fn new(
+        owner: &'a OwnerWritePermit,
+        parent: OwnerId,
+        member_authority: MembershipMemberAuthority,
+        endpoint_authority: MembershipEndpointAuthority,
+    ) -> Self {
+        Self {
+            owner,
+            parent,
+            member_authority,
+            endpoint_authority,
+        }
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &OwnerWritePermit {
+        self.owner
+    }
+
+    #[must_use]
+    pub const fn parent(&self) -> OwnerId {
+        self.parent
+    }
+
+    #[must_use]
+    pub const fn member_authority(&self) -> MembershipMemberAuthority {
+        self.member_authority
+    }
+
+    #[must_use]
+    pub const fn endpoint_authority(&self) -> MembershipEndpointAuthority {
+        self.endpoint_authority
+    }
+}
+
 /// Provenance stamped on a host-state request after its existing admission path.
 /// It describes the caller or maintenance path and grants no authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

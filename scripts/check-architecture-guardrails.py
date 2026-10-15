@@ -501,9 +501,20 @@ def require_owner_write_permit(
             findings.append(Finding(path, 1, rule, f"expected write surface `{name}` missing"))
             continue
         line_no, signature = found
-        if OWNER_WRITE_PERMIT not in signature:
+        # Membership evidence contains the sealed owner-write capability plus
+        # endpoint authority; other writes still require OwnerWritePermit.
+        required = (
+            "MembershipWritePermit"
+            if rel_path == "crates/core/src/storage_ports/access.rs"
+            and name in {
+                "add_group_member", "remove_group_member",
+                "remove_group_member_relation", "replace_group_member_relation",
+            }
+            else OWNER_WRITE_PERMIT
+        )
+        if required not in signature:
             first = signature.splitlines()[0]
-            findings.append(Finding(path, line_no, rule, f"{name} lacks &OwnerWritePermit: {first}"))
+            findings.append(Finding(path, line_no, rule, f"{name} lacks &{required}: {first}"))
 
 
 def rust_function_signatures(text: str, names: set[str]):

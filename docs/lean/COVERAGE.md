@@ -73,9 +73,9 @@ that distinguishes a carrier from a decoy.
 | AUTH-4 | Per-memory ACL / owner-space grants absent — access is role-graded group membership | structural: no `AccessGrant`/`MemoryAction`; `Group := User → Option Role`; realign 2026-06-28; no-op under 2026-07-06 User token change |
 | AUTH-EDGE | Pin write admission = source write + target read | def `pin_write_admitted`; THEOREMs `pin_write_admitted_source_write`, `pin_write_admitted_target_read`, `cross_owner_target_admitted` |
 | AUTH-EDGE-READ | Pin read is source-local; target projection is separately gated | defs `pin_source_read_admitted`, `pin_target_readable`; render `pin_render_hot` / `pin_render_cold` / `pin_render_unavailable` |
-| NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`, nesting is host composition (Level 2, 2026-06-28) |
-| NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling) |
-| NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous |
+| NEST-1 | Group nesting needs no new primitive — a nested group resolves to an ordinary `Owner` | def `Role.meet`/`Role.join` (role lattice) + `Group.mount`/`Group.union`; the kernel sees only the resolved `Owner`; storage materializes mounts and unions for a forest (each group has at most one parent) |
+| NEST-2 | Capped mounting cannot escalate write authority | THEOREM `mount_cannot_escalate` — if the cap may not write kind `k`, no member of the mounted group gains write `k` (meet caps the write ceiling); storage folds every ancestor link with this meet |
+| NEST-3 | Union grants at least each side's access | THEOREM `union_grants_each` — read via either group ⇒ read via the union (join never lowers a member's capability); write case analogous; storage joins all person relations and paths into one projected role |
 
 ## 02 — Memory (ME)
 

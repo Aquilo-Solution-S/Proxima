@@ -490,7 +490,7 @@ mod tests {
         let group = owner.as_group();
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let err = engine
-            .add_member(&ctx.authz, group, fake_user(), Relation::Editor)
+            .add_member(&ctx.authz, group, fake_user().into(), Relation::Editor)
             .await
             .expect_err("viewer role must not be able to manage group membership");
 

@@ -178,7 +178,7 @@ async fn connection_membership_write_keeps_user_registry_constraint() {
     let error = proxima::add_group_member(
         &mut tx,
         group,
-        UserId::new(Uuid::now_v7()),
+        UserId::new(Uuid::now_v7()).into(),
         Relation::Viewer,
     )
     .await
@@ -226,7 +226,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
     proxima::register_group(&mut tx, group)
         .await
         .expect("register group");
-    proxima::add_group_member(&mut tx, group, member, Relation::Viewer)
+    proxima::add_group_member(&mut tx, group, member.into(), Relation::Viewer)
         .await
         .expect("add viewer");
     assert_eq!(
@@ -240,7 +240,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
     proxima::replace_group_member_relation(
         &mut tx,
         group,
-        member,
+        member.into(),
         Relation::Viewer,
         Relation::Editor,
     )
@@ -252,7 +252,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
             .expect("editor probe"),
         Some(proxima::Role::editor())
     );
-    proxima::remove_group_member_relation(&mut tx, group, member, Relation::Editor)
+    proxima::remove_group_member_relation(&mut tx, group, member.into(), Relation::Editor)
         .await
         .expect("remove relation");
     assert_eq!(
@@ -261,7 +261,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
             .expect("removed probe"),
         None
     );
-    proxima::add_group_member(&mut tx, group, member, Relation::Admin)
+    proxima::add_group_member(&mut tx, group, member.into(), Relation::Admin)
         .await
         .expect("add admin");
     assert_eq!(
@@ -270,7 +270,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
             .expect("admin probe"),
         Some(proxima::Role::admin())
     );
-    proxima::remove_group_member(&mut tx, group, member)
+    proxima::remove_group_member(&mut tx, group, member.into())
         .await
         .expect("remove member");
     tx.rollback().await.expect("rollback relation mutations");
@@ -281,7 +281,7 @@ async fn connection_relation_writes_share_the_host_transaction() {
             .expect("restored viewer probe"),
         Some(proxima::Role::viewer())
     );
-    proxima::remove_group_member(&mut verify, group, member)
+    proxima::remove_group_member(&mut verify, group, member.into())
         .await
         .expect("remove member for commit");
     verify.commit().await.expect("commit removal");

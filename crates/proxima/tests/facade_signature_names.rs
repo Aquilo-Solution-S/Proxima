@@ -123,7 +123,7 @@ facade_names! {
     // Needed by signatures that take or return an authorization witness, permit or audit context;
     // naming one mints nothing.
     witnesses {
-        host_only: [AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, EmbeddingWriteProof, EraseAuthorization, ExportAuthorization, OperatorMaintenanceProof, OperatorWriteProof, OwnerEraseContext, OwnerExportContext, OwnerWritePermit, WritePermit],
+        host_only: [AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, EmbeddingWriteProof, EraseAuthorization, ExportAuthorization, MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit, OperatorMaintenanceProof, OperatorWriteProof, OwnerEraseContext, OwnerExportContext, OwnerWritePermit, WritePermit],
         both_tiers: [AuthorizedFactWithCitation, AuthorizedFactWithCitationRef],
     }
 

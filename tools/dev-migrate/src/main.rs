@@ -867,33 +867,10 @@ mod tests {
                 PgTuning::from_env()?,
             )
             .await?;
-            proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls()
-                .run(pg.pool_for_tests())
-                .await?;
-            // 0022 rewrites 0014's pin check, so the fixture lane stages it
-            // with the owner-RLS files. Apply its routine unrecorded: every
-            // schema marker then holds and the epoch is what refuses.
-            let coarse_pin_lock = proxima_storage_pg::core_migrator()
-                .iter()
-                .find(|migration| migration.version == 22)
-                .ok_or("0022 is embedded")?
-                .sql
-                .clone();
-            sqlx::raw_sql(coarse_pin_lock)
-                .execute(pg.pool_for_tests())
-                .await?;
-            // The schema markers also probe 0024's per-table installer, which
-            // the fixture lane stages after 0023. Apply it unrecorded the same
-            // way and remove it again before the migrations below record it:
-            // it creates a type and functions that `CREATE OR REPLACE` cannot
-            // re-create.
-            let table_installer = proxima_storage_pg::core_migrator()
-                .iter()
-                .find(|migration| migration.version == 24)
-                .ok_or("0024 is embedded")?
-                .sql
-                .clone();
-            sqlx::raw_sql(table_installer)
+            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            // Remove only the epoch witness from the lookup path. The schema
+            // markers still hold; restoring it requires no older DDL replay.
+            sqlx::query("ALTER TABLE proxima_core.owner_rls_epoch RENAME TO owner_rls_epoch_saved")
                 .execute(pg.pool_for_tests())
                 .await?;
 
@@ -907,7 +884,7 @@ mod tests {
             let before = ledger().await?;
             let refusal = stamp_squashed_lane(&pg)
                 .await
-                .expect_err("pre-owner-RLS schema must not be stampable")
+                .expect_err("a missing owner-RLS epoch must not be stampable")
                 .to_string();
             assert!(
                 refusal.contains("owner-RLS activation epoch is absent"),
@@ -919,20 +896,9 @@ mod tests {
                 "refusal must leave the ledger unchanged"
             );
 
-            sqlx::raw_sql(
-                "DROP TYPE proxima_core.owner_rls_class CASCADE;
-                 DROP FUNCTION proxima_core.owner_rls_find_parent_fk(text, text),
-                               proxima_core.owner_rls_parent_fk(text, text, text),
-                               proxima_core.owner_rls_census_table(text, text),
-                               proxima_core.assert_owner_rls_census(text)",
-            )
-            .execute(pg.pool_for_tests())
-            .await?;
-            proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(
-                pg.pool_for_tests(),
-            )
-            .await?;
-            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            sqlx::query("ALTER TABLE proxima_core.owner_rls_epoch_saved RENAME TO owner_rls_epoch")
+                .execute(pg.pool_for_tests())
+                .await?;
             stamp_squashed_lane(&pg).await?;
 
             let admin = sqlx::PgPool::connect(&db_url(&db_name)).await?;

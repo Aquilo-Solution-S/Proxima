@@ -3,15 +3,14 @@ pub mod scope_surfaces;
 
 use async_trait::async_trait;
 use proxima_core::{
-    AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Relation, Role, StorageError,
-    UserId,
+    AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, StorageError, UserId,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 /// Stable Postgres-backed [`OwnerAccessPort`] adapter for embedding hosts.
 ///
-/// Wraps `proxima_core.group_memberships` so hosts resolve `(iss, sub) ->
+/// Wraps the resolved membership projection so hosts resolve `(iss, sub) ->
 /// OwnerRoles` through this exported adapter instead of hand-rolling the
 /// raw membership SQL.
 #[derive(Clone)]
@@ -227,7 +226,7 @@ async fn resolve_subject_roles(
         resolved
             .memberships
             .into_iter()
-            .map(|row| (OwnerId::from(row.group), row.relation.role())),
+            .map(|(group, role)| (OwnerId::from(group), role)),
     )
 }
 
@@ -279,46 +278,4 @@ pub async fn group_role(
 
 fn resolution_error(err: &StorageError) -> AccessError {
     AccessError::Resolution(err.to_string())
-}
-
-impl PgOwnerAccessResolver {
-    /// Point-in-time probe: does `subject` currently hold exactly `role` on
-    /// `owner`? Distinct from [`OwnerAccessPort::resolve_roles_for_subject`]'s
-    /// full enumeration — a single indexed `EXISTS` query for callers that
-    /// only need one relation check (e.g. gating a manage-only action).
-    ///
-    /// Only registered group owners carry row-backed relations in
-    /// `proxima_core.group_memberships`; Personal access is
-    /// derived by the kernel rules, never by a membership row, so probing
-    /// either always returns `Ok(false)` — fail closed rather than mint a
-    /// relation that was never granted.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Internal` on sqlx failure.
-    pub async fn has_role_for_owner(
-        &self,
-        subject: UserId,
-        owner: OwnerId,
-        role: Relation,
-    ) -> Result<bool, StorageError> {
-        let group = owner.as_group();
-        let platform_scope = self.platform_scope_lazy().await?;
-        if let Some(platform) = platform_scope.as_ref() {
-            let mut tx = platform.begin().await?;
-            let result =
-                owner_columns::has_group_relation_on_connection(&mut tx, group, subject, role)
-                    .await;
-            tx.rollback().await.ok();
-            result
-        } else {
-            let mut tx =
-                crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?;
-            let result =
-                owner_columns::has_group_relation_on_connection(&mut tx, group, subject, role)
-                    .await;
-            tx.rollback().await.ok();
-            result
-        }
-    }
 }
