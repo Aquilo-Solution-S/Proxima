@@ -95,7 +95,7 @@ async fn remote_memory_output(
     ctx: &McpToolCtx,
     origin: &crate::storage_ports::other_stores::QualifiedHandle,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let memory = super::other_stores::read_origin(ctx, origin).await?;
+    let (_, memory) = super::other_stores::read_origin(ctx, origin).await?;
     let handle = origin.to_string();
     Ok(GetMemoryOutput {
         handle: handle.clone(),

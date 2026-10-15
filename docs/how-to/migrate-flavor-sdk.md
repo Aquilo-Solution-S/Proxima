@@ -13,7 +13,7 @@ migration ([migration policy §v0.0.33](migrations.md#v0033)); no flavor migrati
 | Resource listings | `resources/list`, the REST catalog and `OpenAPI` list a resource only to a caller whose owner role may read it, as tools already were |
 | `CoreMcpTools::list_core_tools_for_scope` | A dispatcher's `args_schema` and `effect` cover only the actions the scope admits |
 | HTTP outbox sink | Optional: `PROXIMA_OUTBOX_HTTP_URL` (+ `PROXIMA_OUTBOX_HTTP_TOKEN_FILE`, `PROXIMA_OUTBOX_HTTP_CA_FILE`) registers the built-in consumer `http` ([18 §Built-in HTTP sink](../18-fact-outbox.md#built-in-http-sink)). A host that registers its own consumer named `http` and sets the URL fails boot |
-| Other stores | Optional: `RuntimeBuilder::other_stores(Arc<dyn OtherStores>)` lets `core_search_memories`, `core_derive`, `core_interpret` and `proxima://memory/{id}` reach other stores by `<store>:<handle>` ([15 §Other stores](../15-deployment.md#other-stores)). A host without the port behaves as before. `McpTool::CALLER_RENDERED_FIELDS` (default empty) is new |
+| Other stores | Optional: `RuntimeBuilder::other_stores(Arc<dyn OtherStores>)` lets `core_search_memories`, `core_derive`, `core_interpret` and `proxima://memory/{id}` reach other stores by `<store>:<handle>` ([15 §Other stores](../15-deployment.md#other-stores)). A host without the port behaves as before. `McpTool::CALLER_RENDERED_FIELDS` (default empty) is new. A host that authors `DerivedMemory::external_origins` passes `ReadOrigin`s, which only `OtherStoresService::read_origin` makes, so every recorded remote origin was read as the caller |
 
 ## v0.0.32
 

@@ -3150,6 +3150,15 @@ pub async fn erase_memory(
     .await
     .map_err(map_err)?;
     delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
+    // Its other-store origins (0029). Keyed on `t` with no foreign key and
+    // declared by no surface, so no generated leg reaches them; they go with
+    // the memory they describe, as in owner erase. Before the memory row:
+    // their owner policy finds the owner through it.
+    sqlx::query("DELETE FROM proxima_core.memory_external_origin WHERE t = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.into_inner())

@@ -35,6 +35,11 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_millis(4_500);
 /// The longest receiver body kept as a rejection reason, in characters.
 const MAX_REASON_CHARS: usize = 512;
 
+/// The most of a rejection body ever read: [`MAX_REASON_CHARS`] characters
+/// of UTF-8. The rest is never read, so a receiver's body size never
+/// becomes this process's allocation.
+const MAX_REASON_BYTES: usize = MAX_REASON_CHARS * 4;
+
 pub(crate) const CONTENT_TYPE: &str = "application/cloudevents+json";
 pub(crate) const DELIVERY_COUNT_HEADER: &str = "Proxima-Delivery-Count";
 
@@ -205,12 +210,26 @@ impl DurableIntake for HttpIntake {
         })?;
         let status = response.status();
         let body = if matches!(status.as_u16(), 400 | 422) {
-            response.text().await.unwrap_or_default()
+            reason_body(response).await
         } else {
             String::new()
         };
         classify(status, &body)
     }
+}
+
+/// The first [`MAX_REASON_BYTES`] of a rejection body, read chunk by chunk
+/// and decoded lossily. A body that fails mid-read keeps what arrived.
+async fn reason_body(mut response: reqwest::Response) -> String {
+    let mut bytes = Vec::new();
+    while bytes.len() < MAX_REASON_BYTES {
+        match response.chunk().await {
+            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    bytes.truncate(MAX_REASON_BYTES);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]

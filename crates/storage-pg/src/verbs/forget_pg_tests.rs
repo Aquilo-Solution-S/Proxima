@@ -1136,6 +1136,66 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
     result.expect("hot erase-before-append linearization failed");
 }
 
+/// A hard erase takes a memory's other-store origins (0029) with it: no
+/// foreign key and no declared surface reaches them, so the erase names
+/// them, and none outlives the memory it described.
+#[tokio::test]
+async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_before_owner_rls_migrations().await?;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let erased_t = pg
+            .ingest_fact_atomic(&permit, &draft(None), None)
+            .await?
+            .memory_id
+            .into_inner();
+        let kept_t = pg
+            .ingest_fact_atomic(&permit, &draft(None), None)
+            .await?
+            .memory_id
+            .into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
+             VALUES ($1, 'wiki', 'page-1'), ($1, 'crm', 'c-1'), ($2, 'wiki', 'page-2')",
+        )
+        .bind(erased_t)
+        .bind(kept_t)
+        .execute(pool)
+        .await?;
+
+        let mut tx = pool.begin().await?;
+        let (erased, _) = erase_memory_series(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            &[erased_t],
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased, 1);
+
+        let remaining: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT t, handle FROM proxima_core.memory_external_origin ORDER BY handle",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(remaining, vec![(kept_t, "page-2".to_string())]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hard erase of other-store origins failed");
+}
+
 #[tokio::test]
 async fn series_erase_linearizes_with_fully_cooled_headless_series() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

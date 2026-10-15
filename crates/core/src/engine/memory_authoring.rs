@@ -162,6 +162,32 @@ fn infer_derivation_phase(
     }
 }
 
+/// The handles of `external` once each sits on the layer of the local
+/// `origins`, as [`infer_derivation_phase`] requires of the local ones. With
+/// no local origin (an interpretation) they are subjects, which have no
+/// layer rule.
+fn external_on_layer(
+    origins: &[EdgeEndpoint],
+    external: &[crate::storage_ports::other_stores::ReadOrigin],
+) -> Result<Vec<crate::storage_ports::other_stores::QualifiedHandle>, ProtocolError> {
+    if let Some(layer) = origins.first().map(|origin| origin.kind)
+        && let Some(off) = external.iter().find(|origin| origin.kind() != layer)
+    {
+        return Err(ProtocolError::invalid_argument(
+            "origins",
+            format!(
+                "{} is a {:?} and the local origins are {layer:?}s; origins must be all Facts or all Abstractions",
+                off.handle(),
+                off.kind()
+            ),
+        ));
+    }
+    Ok(external
+        .iter()
+        .map(|origin| origin.handle().clone())
+        .collect())
+}
+
 fn validate_typed_invocation(
     memory: &DerivedMemory,
     output: MemoryId,
@@ -295,7 +321,7 @@ pub struct DerivedMemory {
     pub(crate) extra_refs: Vec<MemoryId>,
     pub(crate) lexical_language: Option<String>,
     pub(crate) embedding_mode: EmbeddingMode,
-    pub(crate) external_origins: Vec<crate::storage_ports::other_stores::QualifiedHandle>,
+    pub(crate) external_origins: Vec<crate::storage_ports::other_stores::ReadOrigin>,
 }
 
 impl DerivedMemory {
@@ -403,12 +429,16 @@ impl DerivedMemory {
             external_origins: Vec::new(),
         }
     }
-    /// Add origins that live in other stores. The caller has read each one
-    /// through the other-stores port; duplicates are removed.
+    /// Add memories of other stores, each read through the other-stores
+    /// port as the caller ([`OtherStoresService::read_origin`]); duplicates
+    /// are removed. Beside local origins they are origins on the same layer;
+    /// on an [interpretation](Self::interpretation) they are its subjects.
+    ///
+    /// [`OtherStoresService::read_origin`]: crate::storage_ports::other_stores::OtherStoresService::read_origin
     #[must_use]
     pub fn external_origins(
         mut self,
-        origins: impl IntoIterator<Item = crate::storage_ports::other_stores::QualifiedHandle>,
+        origins: impl IntoIterator<Item = crate::storage_ports::other_stores::ReadOrigin>,
     ) -> Self {
         for origin in origins {
             if !self.external_origins.contains(&origin) {
@@ -691,6 +721,7 @@ impl Engine {
             .resolve_memory_targets(authority, &memory.origins, session_kinds)
             .await?;
         let operator_kind = infer_derivation_phase(kind, &origins)?;
+        let external_origins = external_on_layer(&origins, &memory.external_origins)?;
         // A new version's t is allocated by storage. The layer check needs only
         // the output kind; neither a handle nor the prior t is its source row.
         let source = EdgeEndpoint::memory(kind, MemoryId::new(uuid::Uuid::now_v7()));
@@ -734,7 +765,7 @@ impl Engine {
             queued_spaces,
             origins,
             references,
-            external_origins: memory.external_origins,
+            external_origins,
         })
     }
 
@@ -1216,6 +1247,37 @@ mod tests {
             supersedes: None,
             lexical_language: None,
         }
+    }
+
+    /// A memory of another store joins local origins only on their layer,
+    /// whoever builds the request; an interpretation's other-store subjects
+    /// have no layer rule.
+    #[test]
+    fn other_store_origins_share_the_local_layer() {
+        use crate::storage_ports::other_stores::{QualifiedHandle, ReadOrigin};
+        let remote = |raw: &str, kind| {
+            ReadOrigin::for_tests(QualifiedHandle::parse(raw).expect("qualified"), kind)
+        };
+        let facts = [EdgeEndpoint::memory(
+            EntityKind::Fact,
+            MemoryId::new(uuid::Uuid::now_v7()),
+        )];
+
+        let same = external_on_layer(&facts, &[remote("wiki:f-1", EntityKind::Fact)])
+            .expect("a Fact beside Facts");
+        assert_eq!(
+            same,
+            vec![QualifiedHandle::parse("wiki:f-1").expect("qualified")]
+        );
+
+        let err = external_on_layer(&facts, &[remote("wiki:a-1", EntityKind::Abstraction)])
+            .expect_err("an Abstraction beside Facts");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("wiki:a-1"), "{err:?}");
+
+        let subjects = external_on_layer(&[], &[remote("wiki:p-1", EntityKind::Perspective)])
+            .expect("an interpretation's subject");
+        assert_eq!(subjects.len(), 1);
     }
 
     /// An F→A derive that names its inputs carries a well-formed

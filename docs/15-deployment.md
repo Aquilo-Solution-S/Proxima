@@ -568,7 +568,7 @@ default); publish `OtherStoresService::new(port).with_timeout(..)` through
   plus every store `stores(caller)` returns, each with its description;
   with no port wired the schema is unchanged. Omitted, a search covers this
   store and every readable store in parallel; a `schema_id` only one store
-  declares searches that store only. Lists merge by reciprocal rank (k=60)
+  declares (this one counts) searches that store only. Lists merge by reciprocal rank (k=60)
   and the merged page is cut to `limit`; each hit names its `store`, and
   stores that did not answer in time are listed in `unanswered`. Other
   stores answer on the first page only, and later pages page the local
