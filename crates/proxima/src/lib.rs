@@ -143,6 +143,7 @@ pub mod host;
 mod in_process_outbox;
 mod mcp_edge;
 mod migrations;
+mod outbox_http;
 #[cfg(test)]
 mod outbox_test_fixture;
 mod owner_access;

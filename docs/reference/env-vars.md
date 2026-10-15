@@ -81,6 +81,9 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
+| `PROXIMA_OUTBOX_HTTP_URL` | Fact outbox | unset (no sink) | draining to an HTTP receiver | registers the built-in sink as consumer `http`; `https://`, or `http://` without a token file; malformed ⇒ boot error ([18](../18-fact-outbox.md#built-in-http-sink)) |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Fact outbox | unset | authenticating to the receiver | re-read on every delivery, sent as `Authorization: Bearer`; unreadable at delivery ⇒ retry, no request |
+| `PROXIMA_OUTBOX_HTTP_CA_FILE` | Fact outbox | unset (built-in roots) | a private receiver CA | PEM bundle; when set, the only trust root; unreadable ⇒ boot error |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the outbox publisher runs (an outbox consumer is configured); minimum `60` and a smaller value is a boot error; never touches a record some consumer has not received |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | requires the configured static key pair |

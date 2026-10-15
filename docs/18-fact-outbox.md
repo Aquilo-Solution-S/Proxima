@@ -631,6 +631,37 @@ consumer, or call `PublicationConsumerPort::retire` for the owed consumer. A
 retire removes its lanes and settles records with no remaining undelivered
 lane. Delivered legacy records remain as captured and are not parsed again; only claimed lanes pass through `ReceivedEvent::from_record`.
 
+## Built-in HTTP sink
+
+One intake ships in the box, for a deployment that cannot embed Proxima in a
+host of its own (the stock `proxima-mcp` binary): set
+`PROXIMA_OUTBOX_HTTP_URL` and the runtime registers a consumer named **`http`**
+whose `accept` makes one HTTP request per event. Unset, nothing is registered.
+
+| Variable | Meaning |
+|---|---|
+| `PROXIMA_OUTBOX_HTTP_URL` | Receiver URL. `https://`, or `http://` only without a token file. A malformed URL fails boot |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Optional. Read **on every delivery** (never cached, never logged) and sent as `Authorization: Bearer <token>`, so a rotated token takes effect without a restart. Missing, unreadable or empty at delivery time ⇒ `IntakeError` and no request |
+| `PROXIMA_OUTBOX_HTTP_CA_FILE` | Optional PEM bundle. When set it is the **only** trust root (built-in roots are not consulted). Unreadable or not PEM ⇒ boot fails |
+
+Each delivery is `POST <url>` with `Content-Type: application/cloudevents+json`,
+the body `ReceivedEvent::raw` byte for byte (CloudEvents structured mode; a
+receiver verifying a signature sees the sealed bytes), and
+`Proxima-Delivery-Count: <delivered_count>`. Deduplicate on the envelope `id`.
+The request times out at 4.5 s, inside the runtime's 5 s `accept` bound.
+Redirects are not followed.
+
+| Receiver answers | Outcome |
+|---|---|
+| any `2xx` | `Accepted`: the receiver made the event durable |
+| `400`, `422` | `Rejected` with `HTTP <code>: <body, truncated>`; the lane settles and the event is not sent again |
+| `401`, `403`, `408`, `429`, `5xx`, a timeout, a connection or TLS failure | `IntakeError`: the record is released and retried on the runtime's backoff |
+| any other status (`3xx`, other `4xx`) | `IntakeError` as well: retrying is the safe default for a status this table does not name |
+
+One event per request; no batching, no broker client. A host that registers its
+own consumer named `http` *and* sets `PROXIMA_OUTBOX_HTTP_URL` fails boot
+rather than one silently replacing the other.
+
 ## Forwarding to a broker
 
 Proxima ships no broker client. A host that needs NATS, Kafka or anything else
@@ -684,8 +715,8 @@ No destructive schema rollback, no hosted reroute.
 Exactly-once delivery. Delivery in commit order, and a global order across
 subjects (§Ordering). Host orchestration,
 Goal matching, claims or retries of application work. Typed invocation
-dispatch and automatic invocation-context propagation. A queue HTTP service or
-a generic broker-plugin framework. An audit of who wrote what
+dispatch and automatic invocation-context propagation. A broker client or a
+broker-plugin framework. An audit of who wrote what
 (§Who wrote what).
 
 ## Kernel Carrier
