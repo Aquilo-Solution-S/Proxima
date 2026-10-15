@@ -64,7 +64,7 @@ Supported Rust tiers:
 | Flavor SDK (bundle) | `proxima::flavor_bundle! { bundle = …, name = …, …, migrations = …, app = { … } }`, `NamedMigrator::flavor`, `flavor_ledger_table` | one declaration: `proxima_flavor!` registration, PG sidecars, own ledger `public._sqlx_migrations_<id>`, `FlavorBundle` (+ `FlavorApp`) — [09 §FlavorBundle](../09-developing-flavors.md#flavorbundle) |
 | Flavor SDK (after a side effect) | `use proxima::flavor::ingest_fact_detached;` | `ingest_fact_detached(&ctx, write, deadline)`: the Fact recording an upstream write survives client disconnect; `Engine::ingest_fact_detached` for hosts |
 | Flavor tests | `proxima = { features = ["testkit"] }` → `proxima::testkit::{SplitRoleDb, split_role_urls_for, scoped_authz, assert_trigger_migrations}` + `proxima-pg-testkit` | [09 §Tests](../09-developing-flavors.md#tests) |
-| Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
+| Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, validate_endpoint_url_for_hosts, EndpointUrlPolicy, PlaintextHosts};` | enforce HTTPS with the shared, exact plaintext exception: loopback plus the hosts the operator names in `PROXIMA_PLAINTEXT_HOSTS` (`PlaintextHosts::from_lookup`; empty by default); never reproduce it with string prefixes. A library host sets `S3RuntimeConfig::plaintext_hosts` / `OpenAiCompatConfig::with_plaintext_hosts` (`proxima::host::PlaintextHosts`) |
 
 Reachability rule: a type that appears in a public signature of the facade is
 reachable through the facade, in the tier of the signature that exposes it. A
