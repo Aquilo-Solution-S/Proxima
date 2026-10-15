@@ -58,8 +58,8 @@ use proxima_storage_pg::PgPlatformScope;
 pub struct CitedBlobStore {
     pool: sqlx::PgPool,
     config: S3RuntimeConfig,
-    /// Lazily-built S3 client, memoized so the full credential chain is
-    /// resolved once per store rather than on every request.
+    /// S3 client built from the configured static key pair and target,
+    /// memoized once per store.
     client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
     /// Set once by normal Proxima boot and shared by every store clone.
     /// A witness minted by an unrelated disposable Engine cannot authorize
@@ -132,11 +132,11 @@ impl CitedBlobStore {
     }
 
     /// The memoized S3 client, built on first use from the runtime config.
-    ///
-    /// # Errors
-    /// Returns `BlobError` when the AWS client cannot be constructed.
     pub(super) async fn client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
-        self.client.get_or_try_init(|| self.config.client()).await
+        Ok(self
+            .client
+            .get_or_init(|| async { self.config.client() })
+            .await)
     }
 
     pub(super) fn bucket(&self) -> &str {
@@ -151,6 +151,15 @@ mod tests {
     use super::guards::validate_prepare;
     use super::testkit::{lazy_test_pool, prepare_req, store_config};
     use super::*;
+
+    #[tokio::test]
+    async fn store_debug_redacts_secret_before_and_after_client_initialization() {
+        let secret = "test-secret-key";
+        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None)).unwrap();
+        assert!(!format!("{store:?}").contains(secret));
+        store.client().await.unwrap();
+        assert!(!format!("{store:?}").contains(secret));
+    }
 
     #[tokio::test]
     async fn store_rejects_plaintext_non_loopback_endpoint() {

@@ -1,5 +1,13 @@
 # Migrate the Flavor SDK
 
+## v0.0.32
+
+Pin all Proxima dependencies to the same `v0.0.32` tag. No migration.
+
+| Change | Host action |
+|---|---|
+| S3 credentials | **Breaking:** set `PROXIMA_S3_ACCESS_KEY_ID` and `PROXIMA_S3_SECRET_ACCESS_KEY` when enabling the S3 lane. The client uses only this static pair; a host that relied on ambient environment credentials, shared config or credentials files, a profile, web identity, a container or instance role, session token, or refresh provider must configure both variables. |
+
 ## v0.0.31
 
 Pin all Proxima dependencies to the same `v0.0.31` tag. One forward core

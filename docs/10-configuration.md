@@ -26,7 +26,7 @@ host injects for vector retrieval.
 | REST surface | binary-wide | `rest` cargo feature + `PROXIMA_REST_ENABLED`; same listener, same layers |
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
-| Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
+| Large artefact S3 storage | binary-wide | process env; configured static key pair only |
 | Fact outbox publisher | binary-wide | `outbox_intake(..)` / `outbox_consumer(name, ..)` on the builder, no env and no cargo feature; capture itself is not configurable (see [18](18-fact-outbox.md)) |
 | source credentials | per source instance | source-owned, not engine-owned |
 
@@ -114,6 +114,8 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an outbox consumer is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a record some consumer has not received, whatever its age. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
+| `PROXIMA_S3_ACCESS_KEY_ID` | Required static access key id when the bucket is set. |
+| `PROXIMA_S3_SECRET_ACCESS_KEY` | Required static secret access key when the bucket is set; redacted in debug output. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | S3 path-style addressing flag. |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | Presigned upload URL TTL. |
@@ -846,14 +848,19 @@ configuration. Resolved by `S3RuntimeConfig` from env:
 |---|---:|---|
 | `PROXIMA_S3_BUCKET` | yes (enables S3) | - |
 | `PROXIMA_S3_REGION` | with bucket | - |
+| `PROXIMA_S3_ACCESS_KEY_ID` | with bucket | - |
+| `PROXIMA_S3_SECRET_ACCESS_KEY` | with bucket | - |
 | `PROXIMA_S3_ENDPOINT_URL` | no | AWS region endpoint |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | no | `false` |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | no | `900` |
 | `PROXIMA_S3_READ_TTL_SECONDS` | no | `300` |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | no | `104857600` |
 
-Credentials use the standard AWS SDK provider chain. Missing S3 config
-does not fail boot; database-only operations remain available. The facade uses
+The client uses only the configured static key pair. It does not read the
+ambient AWS environment, shared credentials or config files, profiles, web
+identity, container or instance roles, session tokens, or refresh providers.
+Missing S3 bucket configuration does not fail boot; database-only operations
+remain available. The facade uses
 the same S3 store for cited objects and cold Memory payloads. Without it,
 cited-blob commands, forget, and hydration requiring cold bytes fail typed at
 call time. A refused forget preserves the hot row and its payload; an erase

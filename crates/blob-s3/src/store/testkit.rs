@@ -10,7 +10,7 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use super::dto::CitedBlobUploadPrepareTs;
-use crate::config::S3RuntimeConfig;
+use crate::config::{S3KeyPair, S3RuntimeConfig};
 
 pub(super) fn prepare_req(byte_len: u64) -> CitedBlobUploadPrepareTs {
     CitedBlobUploadPrepareTs {
@@ -28,6 +28,7 @@ pub(super) fn store_config(
     S3RuntimeConfig {
         bucket: "test-bucket".into(),
         region: "eu-central-1".into(),
+        key_pair: S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
         endpoint_url: endpoint_url.map(ToOwned::to_owned),
         force_path_style: false,
         upload_ttl_seconds: 900,

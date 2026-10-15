@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{
     BucketVersioningStatus, Delete, ObjectIdentifier, VersioningConfiguration,
@@ -65,7 +64,7 @@ where
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
     };
-    let client = s3_client(&config).await;
+    let client = config.client();
     let database = unique_db_name(&format!("proxima_reconcile_{label}"));
     create_core_db(&database).await?;
     eprintln!(
@@ -355,19 +354,6 @@ async fn delete_keys(store: &CitedBlobStore, keys: &[String]) -> TestResult<()> 
         result??;
     }
     Ok(())
-}
-
-async fn s3_client(config: &S3RuntimeConfig) -> Client {
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(Region::new(config.region.clone()));
-    if let Some(endpoint) = &config.endpoint_url {
-        loader = loader.endpoint_url(endpoint);
-    }
-    Client::from_conf(
-        aws_sdk_s3::config::Builder::from(&loader.load().await)
-            .force_path_style(true)
-            .build(),
-    )
 }
 
 async fn empty_and_delete_bucket(client: &Client, bucket: &str) -> TestResult<()> {

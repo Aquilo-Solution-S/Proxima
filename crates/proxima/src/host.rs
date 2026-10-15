@@ -40,7 +40,7 @@ pub use crate::runtime_config::{
 /// it reads process environment a library has no business requiring.
 ///
 /// `BlobError` comes with them because `from_env` returns it.
-pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
+pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3KeyPair, S3RuntimeConfig};
 /// The Postgres schemas a frozen registry stores into, sorted. Boot derives
 /// its runtime-grant plan, owner-RLS census and platform scope from this
 /// function, so a host that freezes a registry without booting runs the same

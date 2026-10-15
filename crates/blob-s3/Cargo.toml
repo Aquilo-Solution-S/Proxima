@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 proxima-core = { path = "../core" }
 proxima-storage-pg = { path = "../storage-pg" }
@@ -27,6 +26,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "sync"] }
 
 [dev-dependencies]
+aws-smithy-runtime-api = "1.12.3"
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }

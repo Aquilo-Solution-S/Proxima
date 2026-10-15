@@ -988,6 +988,7 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
     let config = proxima::S3RuntimeConfig {
         bucket: "some-bucket".to_owned(),
         region: "us-east-1".to_owned(),
+        key_pair: proxima::S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
         endpoint_url: Some("http://localhost:9000".to_owned()),
         force_path_style: true,
         upload_ttl_seconds: 900,

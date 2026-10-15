@@ -2,8 +2,6 @@ use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
 use proxima::UploadCompleted;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
@@ -826,18 +824,9 @@ async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
 }
 
 /// Observe all versions and delete markers of this exact key using the same
-/// SDK credential chain as the store. This fixture writes one object version.
+/// configured client as the store. This fixture writes one object version.
 async fn object_versions(config: &S3RuntimeConfig, key: &str) -> TestResult<usize> {
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(Region::new(config.region.clone()));
-    if let Some(endpoint) = &config.endpoint_url {
-        loader = loader.endpoint_url(endpoint);
-    }
-    let client = Client::from_conf(
-        aws_sdk_s3::config::Builder::from(&loader.load().await)
-            .force_path_style(true)
-            .build(),
-    );
+    let client = config.client();
     let page = client
         .list_object_versions()
         .bucket(&config.bucket)

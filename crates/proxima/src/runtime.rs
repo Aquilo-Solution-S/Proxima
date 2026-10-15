@@ -1276,6 +1276,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use proxima_blob_s3::S3KeyPair;
     use proxima_core::{
         AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
         FlavorRegistryError, OwnerId,
@@ -1337,6 +1338,7 @@ mod tests {
             S3RuntimeConfig {
                 bucket: "test-bucket".to_string(),
                 region: "eu-central-1".to_string(),
+                key_pair: S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
                 endpoint_url: None,
                 force_path_style: false,
                 upload_ttl_seconds: 900,

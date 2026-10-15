@@ -83,8 +83,10 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the outbox publisher runs (an outbox consumer is configured); minimum `60` and a smaller value is a boot error; never touches a record some consumer has not received |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
-| `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
+| `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | requires the configured static key pair |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
+| `PROXIMA_S3_ACCESS_KEY_ID` | cited blobs | unset | S3 bucket configured | static access key id |
+| `PROXIMA_S3_SECRET_ACCESS_KEY` | cited blobs | unset | S3 bucket configured | static secret access key; never logged |
 | `PROXIMA_S3_ENDPOINT_URL` | cited blobs | AWS region endpoint | S3-compatible endpoint | optional |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | cited blobs | `false` | path-style S3 endpoint | optional |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | cited blobs | `900` | non-default upload TTL | presigned upload URL TTL |
