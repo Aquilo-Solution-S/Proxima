@@ -166,6 +166,8 @@ pub use proxima_core::{
 /// depending only on `proxima` cannot write a typed signature or match
 /// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
 pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
+/// The `plaintext_hosts` field of [`S3RuntimeConfig`] holds one.
+pub use proxima_core::{PlaintextHosts, PlaintextHostsError};
 /// Typed dispatch for the host's one [`PgHostStateParticipant`]:
 /// [`PgCommandDispatcher`] routes each command type to its
 /// [`HostStateHandler`], which only receives an [`AgreedCommand`] (owners

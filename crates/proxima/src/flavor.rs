@@ -117,10 +117,11 @@ pub use proxima_core::{
     FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, GoalId,
     GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
     MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId, OwnerId,
-    PayloadKeyBuilder, PerspectivePayload, PromptVersion, RequestHeaders, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolId,
-    ToolServices, TrustedModelIdError, UserId, is_loopback_endpoint, is_loopback_host,
-    proxima_flavor, proxima_schema_id, validate_endpoint_url,
+    PayloadKeyBuilder, PerspectivePayload, PlaintextHosts, PlaintextHostsError, PromptVersion,
+    RequestHeaders, SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool,
+    ToolCaller, ToolCtx, ToolError, ToolId, ToolServices, TrustedModelIdError, UserId,
+    is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
+    validate_endpoint_url, validate_endpoint_url_for_hosts,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]
 /// (Host API). `Engine` itself stays off this module (`docs/14`).
