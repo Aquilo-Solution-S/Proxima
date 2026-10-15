@@ -221,14 +221,16 @@ impl DurableIntake for HttpIntake {
 /// The first [`MAX_REASON_BYTES`] of a rejection body, read chunk by chunk
 /// and decoded lossily. A body that fails mid-read keeps what arrived.
 async fn reason_body(mut response: reqwest::Response) -> String {
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(MAX_REASON_BYTES);
     while bytes.len() < MAX_REASON_BYTES {
         match response.chunk().await {
-            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            Ok(Some(chunk)) => {
+                let wanted = MAX_REASON_BYTES - bytes.len();
+                bytes.extend_from_slice(&chunk[..chunk.len().min(wanted)]);
+            }
             Ok(None) | Err(_) => break,
         }
     }
-    bytes.truncate(MAX_REASON_BYTES);
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
