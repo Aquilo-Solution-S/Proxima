@@ -530,3 +530,109 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
     .await;
     result.expect("absent-port test failed");
 }
+
+#[tokio::test]
+async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the_port() {
+    let split_db = clone_split_core_db("proxima_other_stores_interpret")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let fake = Arc::new(
+            FakeStores::default()
+                .with(
+                    "wiki",
+                    "page-1",
+                    Entry::Readable(fact("page-1", "the remote subject")),
+                )
+                .with("wiki", "secret", Entry::Denied),
+        );
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .other_stores(fake.clone())
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let local = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({"title":"local subject","body":"local subject body","tags":[]}),
+        )
+        .await?;
+        let local_handle = local["handle"].as_str().expect("handle").to_string();
+
+        let before = row_counts(&platform_url).await;
+        for subjects in [
+            serde_json::json!([local_handle, "wiki:secret"]),
+            serde_json::json!(["wiki:page-1"]),
+        ] {
+            call_test_model_tool(
+                &tools,
+                authz.clone(),
+                owner,
+                "core_interpret",
+                serde_json::json!({
+                    "claim": "must not land",
+                    "confidence": 70,
+                    "subjects": subjects,
+                    "model_id": "test-model"
+                }),
+            )
+            .await
+            .expect_err("unreadable or remote-only subjects refuse");
+            assert_eq!(row_counts(&platform_url).await, before, "zero rows written");
+        }
+
+        let interpreted = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_interpret",
+            serde_json::json!({
+                "claim": "both say the same thing",
+                "confidence": 80,
+                "subjects": [local_handle, "wiki:page-1"],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let perspective = interpreted["handle"].as_str().expect("handle").to_string();
+        assert!(perspective.starts_with("P:"), "{interpreted}");
+        assert_eq!(row_counts(&platform_url).await.1, before.1 + 1);
+
+        let lineage_uri = format!("proxima://memory/{perspective}/lineage");
+        let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
+        let remote = node(&lineage, "wiki:page-1").expect("remote subject node");
+        assert_eq!(remote["store"], "wiki");
+        assert!(remote.get("status").is_none(), "{remote}");
+
+        fake.erase("wiki", "page-1");
+        let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
+        assert_eq!(
+            node(&lineage, "wiki:page-1").expect("remote node")["status"],
+            "erased"
+        );
+        read_test_model_resource(
+            &tools,
+            authz,
+            owner,
+            &format!("proxima://memory/{perspective}"),
+        )
+        .await?;
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("cross-store interpret test failed");
+}

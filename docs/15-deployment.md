@@ -557,18 +557,27 @@ default); publish `OtherStoresService::new(port).with_timeout(..)` through
   `[a-z][a-z0-9_-]{1,63}` and never `local`, so they cannot collide with the
   local `F:`/`A:`/`P:` handles.
 - `core_search_memories` takes an optional `stores` list (`local` for this
-  store). Omitted, it searches this store and every readable store in
-  parallel; a `schema_id` only one store declares searches that store only.
-  Lists merge by reciprocal rank (k=60), each hit names its `store`, and
+  store). In `tools/list` it is rendered per caller as an enum of `local`
+  plus every store `stores(caller)` returns, each with its description;
+  with no port wired the schema is unchanged. Omitted, a search covers this
+  store and every readable store in parallel; a `schema_id` only one store
+  declares searches that store only. Lists merge by reciprocal rank (k=60)
+  and the merged page is cut to `limit`; each hit names its `store`, and
   stores that did not answer in time are listed in `unanswered`. Other
-  stores answer on the first page only; later pages page the local store.
+  stores answer on the first page only, and later pages page the local
+  store. A local hit the merge pushes past `limit` is not repeated on the
+  next page; page with `stores: ["local"]` to see every local hit.
 - `core_derive` accepts `<store>:<handle>` sources next to at least one
-  local source. Each is read as the caller first; an unreadable, erased or
-  unreachable one refuses the whole call before any write. Remote origins
-  are recorded in `proxima_core.memory_external_origin` (migration 0029),
-  with no constraint on the remote side; the local origin trigger is
-  unchanged.
-- The lineage walk reads remote origins through the port and renders an
+  local source, and `core_interpret` accepts `<store>:<handle>` subjects
+  the same way. Each one is read as the caller first; an unreadable, erased
+  or unreachable one refuses the whole call before any write. Remote
+  origins and subjects are recorded in `proxima_core.memory_external_origin`
+  (migration 0029), with no constraint on the remote side; the local origin
+  trigger is unchanged. Remote subjects are folded into an interpretation's
+  id, so the same claim about different remote memories is a different
+  memory.
+- The lineage walk reads remote origins (and an interpretation's remote
+  subjects) through the port and renders an
   erased one with `status: "erased"`, an unreachable one (or no port) with
   `status: "unavailable"`; it never fails on them.
 - `proxima://memory/<store>:<handle>` reads through the port.

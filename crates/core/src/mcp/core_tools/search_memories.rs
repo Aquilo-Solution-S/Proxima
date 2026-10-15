@@ -194,10 +194,11 @@ pub struct SearchMemoriesArgs {
         description = "Opaque pagination cursor from a previous response's next_cursor. Returns the page after it. Query, mode, filters, order, spaces, and score knobs must stay unchanged; limit, include_body, and include_neighbor_edges may vary."
     )]
     pub cursor: Option<String>,
+    /// Stores to search. Left out of the static schema: a deployment with
+    /// an other-stores port renders it per caller
+    /// ([`caller_input_schema`]); without one only `local` is accepted.
     #[serde(default)]
-    #[schemars(
-        description = "Stores to search: `local` for this one, or other stores this deployment reads. Omit for all of them; a schema_id only one store declares then searches that store. Other stores answer on the first page only."
-    )]
+    #[schemars(skip)]
     pub stores: Option<Vec<String>>,
 }
 
@@ -268,6 +269,8 @@ impl McpTool for SearchMemoriesTool {
     const NAME: &'static str = protocol_tool::CORE_SEARCH_MEMORIES;
     const DESCRIPTION: &'static str = "Search memories by text, with kind/schema/tag/time/space filters. Latest versions only unless supersession=all; pages of at most 50. Hybrid score uses weighted RRF (k=60) over fixed candidate windows, comparable within its result list.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
+    // `stores` is rendered per caller (see `caller_input_schema`).
+    const CALLER_RENDERED_FIELDS: &'static [&'static str] = &["stores"];
     type Args = SearchMemoriesArgs;
     type Output = SearchMemoriesOutput;
 
@@ -328,16 +331,75 @@ impl McpTool for SearchMemoriesTool {
                     &remote,
                 )
                 .await;
-                merge_store_hits(&mut output, answered, unanswered);
+                merge_store_hits(&mut output, answered, unanswered, remote.limit);
             }
             Ok(output)
         })
     }
 }
 
+/// `core_search_memories`'s `inputSchema` for one caller: with an
+/// other-stores port wired, `stores` is added as an enum of `local` plus
+/// every store `stores(caller)` names, each name described. Without a port
+/// (or when the port does not answer in time) the static schema is
+/// returned unchanged.
+pub async fn caller_input_schema(ctx: &McpToolCtx, schema: serde_json::Value) -> serde_json::Value {
+    let Some(service) = super::other_stores::service(ctx) else {
+        return schema;
+    };
+    let Some(readable) = tokio::time::timeout(
+        service.timeout(),
+        service.port().stores(super::other_stores::caller(ctx)),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok) else {
+        return schema;
+    };
+    with_stores_property(schema, &readable)
+}
+
+fn with_stores_property(
+    mut schema: serde_json::Value,
+    readable: &[crate::storage_ports::other_stores::StoreInfo],
+) -> serde_json::Value {
+    use crate::storage_ports::other_stores::LOCAL_STORE;
+    use std::fmt::Write as _;
+    let mut names = vec![serde_json::Value::from(LOCAL_STORE)];
+    let mut described = vec![
+        serde_json::json!({"const": LOCAL_STORE, "description": "This deployment's own memories."}),
+    ];
+    let mut prose = format!("- `{LOCAL_STORE}`: this deployment's own memories.");
+    for info in readable {
+        names.push(serde_json::Value::from(info.name.as_str()));
+        described.push(
+            serde_json::json!({"const": info.name.as_str(), "description": info.description}),
+        );
+        let _ = write!(prose, "\n- `{}`: {}", info.name, info.description);
+    }
+    let property = serde_json::json!({
+        "type": "array",
+        "uniqueItems": true,
+        "minItems": 1,
+        "items": {"type": "string", "enum": names, "oneOf": described},
+        "description": format!(
+            "Stores to search; omit for all of them. A schema_id only one store declares searches that store only. Other stores answer on the first page only.\n{prose}"
+        ),
+    });
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        properties.insert("stores".into(), property);
+    }
+    schema
+}
+
 /// Fuse this store's page with every other store's hits by reciprocal
-/// rank (k=60). The local page keeps its own cursor: other stores answer
-/// on the first page only, so their hits are added, never paginated.
+/// rank (k=60) and keep the best `limit`. Other stores answer on the first
+/// page only. The local page keeps its own cursor, so a local hit the
+/// merge pushes past `limit` is not repeated on the next page; a caller
+/// that needs every local hit pages with `stores: ["local"]`.
 fn merge_store_hits(
     output: &mut SearchMemoriesOutput,
     answered: Vec<(
@@ -345,6 +407,7 @@ fn merge_store_hits(
         Vec<crate::storage_ports::other_stores::RemoteHit>,
     )>,
     unanswered: Vec<String>,
+    limit: u32,
 ) {
     let local = std::mem::take(&mut output.memories);
     let mut lists = vec![
@@ -365,6 +428,7 @@ fn merge_store_hits(
     }
     output.memories = crate::storage_ports::other_stores::rrf_merge(lists)
         .into_iter()
+        .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .map(|(mut hit, score)| {
             hit.score = score;
             hit
