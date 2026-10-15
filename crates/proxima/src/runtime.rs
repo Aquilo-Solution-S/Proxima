@@ -1350,6 +1350,7 @@ mod tests {
                 region: "eu-central-1".to_string(),
                 key_pair: S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
                 endpoint_url: None,
+                plaintext_hosts: proxima_core::PlaintextHosts::none(),
                 force_path_style: false,
                 upload_ttl_seconds: 900,
                 read_ttl_seconds: 300,

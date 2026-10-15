@@ -983,6 +983,10 @@ fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
     policy: EmbeddingRuntimePolicy,
 ) -> Result<Option<OpenAiCompatEmbeddingClient>, CliError> {
+    // Parsed first so a wildcard or range in the setting fails boot whether
+    // or not embeddings are configured.
+    let plaintext_hosts = proxima_core::PlaintextHosts::from_lookup(&lookup)
+        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
     let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY);
     let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL);
     let model = embedding_model_from_env(&lookup);
@@ -1035,7 +1039,8 @@ fn embedding_client_from_env(
         model,
         caps,
         proxima_llm_openai_compat::OpenAiCompatConfig::new(base_url, api_key)
-            .with_timeout(policy.request_timeout()),
+            .with_timeout(policy.request_timeout())
+            .with_plaintext_hosts(plaintext_hosts),
     )
     .map(Some)
     .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
@@ -1974,6 +1979,46 @@ mod tests {
         )
         .expect_err("remote plaintext must not build");
         assert!(err.to_string().contains("https"), "{err}");
+    }
+
+    /// `PROXIMA_PLAINTEXT_HOSTS` widens plaintext to exactly the named hosts:
+    /// the sidecar is accepted, any other name stays refused, and a wildcard
+    /// or range stops boot whether or not embeddings are configured.
+    #[test]
+    fn plaintext_hosts_admit_only_the_named_embedding_host() {
+        let env = |base: Option<&'static str>, hosts: Option<&'static str>| {
+            move |key: &str| match key {
+                PROXIMA_EMBED_BASE_URL => base.map(str::to_string),
+                PROXIMA_EMBED_MODEL => base.map(|_| "local-embed".to_string()),
+                "PROXIMA_PLAINTEXT_HOSTS" => hosts.map(str::to_string),
+                _ => None,
+            }
+        };
+        let build = |base, hosts| {
+            embedding_client_from_env(env(base, hosts), EmbeddingRuntimePolicy::default())
+        };
+
+        let client = build(Some("http://gateway:9090/v1"), Some("gateway"))
+            .expect("named host builds")
+            .expect("embedding client is configured");
+        drop(client);
+        for (base, hosts) in [
+            ("http://gateway:9090/v1", None),
+            ("http://other:9090/v1", Some("gateway")),
+        ] {
+            let err = build(Some(base), hosts).expect_err("unnamed host refused");
+            assert!(err.to_string().contains("https"), "{base} {hosts:?}: {err}");
+        }
+        for hosts in ["*", "*.internal", "10.0.0.0/8", "10.0.0.1"] {
+            let err = build(None, Some(hosts)).expect_err("bad setting fails boot");
+            assert!(err.to_string().contains("PROXIMA_PLAINTEXT_HOSTS"), "{err}");
+        }
+        assert!(
+            build(None, Some("gateway"))
+                .expect("no embeddings")
+                .is_none()
+        );
+        assert!(build(None, None).expect("unset").is_none());
     }
 
     #[test]
