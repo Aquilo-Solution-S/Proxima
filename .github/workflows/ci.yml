@@ -259,6 +259,11 @@ jobs:
             -c 'ALTER SYSTEM SET full_page_writes = off' \
             -c 'SELECT pg_reload_conf()'
       - name: create cited-blob bucket
+        # The AWS CLI reads only its own variable names; this step alone
+        # gets the configured pair under them.
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.PROXIMA_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.PROXIMA_S3_SECRET_ACCESS_KEY }}
         run: |
           # Any HTTP response means it is up. Not `curl -f`: an S3 root
           # request is unauthenticated, so a healthy server answers 403.
