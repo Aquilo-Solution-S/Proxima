@@ -73,10 +73,10 @@ impl CitedBlobStore {
     ///
     /// # Errors
     /// Returns [`BlobError::Config`] when the configured endpoint violates the
-    /// HTTPS-or-loopback transport policy.
+    /// HTTPS-or-loopback-or-named-host transport policy.
     pub fn new(pool: sqlx::PgPool, mut config: S3RuntimeConfig) -> Result<Self, BlobError> {
         if let Some(endpoint_url) = &config.endpoint_url {
-            validate_endpoint_url(endpoint_url)?;
+            validate_endpoint_url(endpoint_url, &config.plaintext_hosts)?;
         }
         // Checked at the consuming boundary too, not only in `from_env`: a
         // host may build this struct directly, and an out-of-range TTL must
@@ -170,6 +170,24 @@ mod tests {
         .expect_err("plaintext remote S3 endpoint rejected");
 
         assert!(matches!(error, BlobError::Config(_)));
+        assert!(error.to_string().contains("must use https"));
+    }
+
+    #[tokio::test]
+    async fn store_accepts_a_plaintext_endpoint_only_on_a_named_host() {
+        let named = |hosts: &str| {
+            let mut config = store_config(Some("http://gateway:9090"), Some(1_024));
+            config.plaintext_hosts = proxima_core::PlaintextHosts::parse(hosts).unwrap();
+            CitedBlobStore::new(lazy_test_pool(), config)
+        };
+        named("gateway").expect("named host accepted");
+        let error = named("other").expect_err("unnamed host refused");
+        assert!(error.to_string().contains("must use https"));
+        let error = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(Some("http://gateway:9090"), Some(1_024)),
+        )
+        .expect_err("nothing named: refused");
         assert!(error.to_string().contains("must use https"));
     }
 
