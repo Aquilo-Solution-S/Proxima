@@ -1,4 +1,4 @@
--- v0.0.35: origins that live in other stores (issue #462).
+-- v0.0.33: origins that live in other stores (issue #462).
 --
 -- A derived memory may be made from memories of another store reached
 -- through the host's OtherStores port. Those origins are not proxima_core

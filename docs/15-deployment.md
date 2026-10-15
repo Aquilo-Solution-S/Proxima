@@ -160,7 +160,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. Set `code` for a code-search deployment (below). |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. An entry that is not a scope key, or names nothing this build registers, fails startup naming it. |
-| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. Owner erase is not exposed as an MCP action. |
+| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. An entry naming a read for every audience fails boot: a profile never narrows one. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
@@ -377,25 +377,16 @@ tool selection, lower blast radius) and fail-closed — `core_transfer` and
 itself a security boundary: every tool call remains gated by per-actor authz and
 role checks.
 
-`PROXIMA_TOOL_PROFILE=code` serves code search without memory: it advertises
-`proxima-code_search_chunks`, `proxima-code_open_file_revision`,
-`proxima-code_search_commits` and `proxima-code_list_repos`, and no memory write.
-A write outside the profile is refused, so agents on it cannot write memory
-whatever they are prompted. Like every palette, it does not narrow reads (see
-below): the owner's memories stay searchable and readable. Repository administration is opt-in:
-`PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot,proxima-code_get_ingest_run`.
+`PROXIMA_TOOL_PROFILE=code` serves code search without memory writes: its
+palette holds `proxima-code_search_chunks`, `proxima-code_open_file_revision`,
+`proxima-code_search_commits` and `proxima-code_list_repos`. A write outside the
+profile is refused, so agents on it cannot write memory whatever they are
+prompted. Like every profile it narrows writes and owner-audience keys, never a
+read for every audience ([12 §Scope keys](12-tool-manifest.md#scope-keys)): the
+owner's memories stay searchable and readable, and so does
+`proxima-code_get_ingest_run`. Repository administration is opt-in:
+`PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot`.
 A build without the code flavor refuses the profile at startup.
-
-**A palette narrows writes, never reads.** Since v0.0.33 the scope gate admits
-a key when the palette holds it **or** its declaration is read-only: a
-read-only flat tool (`core_search_memories`, …), a read-only dispatcher action
-(`core_fact:citation_of_fact`, …, judged per action, never by the tool's join)
-and every core `proxima://` resource. An undeclared tool counts as a write.
-Listings (`tools/list`, `resources/list`, the REST catalog, `OpenAPI`) apply the
-same predicate, so what is listed is what is admitted. Owner authorization is
-unchanged and still runs after the scope gate: a palette never lets a caller
-read another owner's memory. Excluding a read key with `tool_palette_excluding`
-no longer hides that read; `ToolScope::intersect` now only narrows writes.
 
 **Per-user tool scope is a host concern, not a substrate feature.** The env
 profile is one deployment-wide ceiling. A host that composes Proxima as a library
@@ -406,7 +397,8 @@ attaches it with
 `AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the shared edge
 intersects it with the env ceiling (`ToolScope::intersect` only narrows, never
 widens), so a per-user scope can restrict but never exceed the deployment
-ceiling. Proxima ships the mechanism; which subject gets which scope is the
+ceiling. Like every palette it narrows writes and owner-audience keys, not a
+read for every audience ([12 §Scope keys](12-tool-manifest.md#scope-keys)). Proxima ships the mechanism; which subject gets which scope is the
 host's policy.
 
 MCP clients send `X-Proxima-Owner` on `initialize`, or rely on the host's

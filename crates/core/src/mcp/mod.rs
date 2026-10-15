@@ -38,7 +38,8 @@ pub use handles::{
 };
 pub use manifest::{
     CoreActionMeta, McpToolAnnotations, Replay, ToolEffect, all_core_actions, all_core_resources,
-    canonical_scope_keys, canonical_scope_keys_excluding, core_action_meta,
+    canonical_open_read_keys, canonical_scope_keys, canonical_scope_keys_excluding,
+    core_action_meta,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolPresentation};
@@ -48,8 +49,8 @@ pub use schema::{
     schema_bound_mismatches,
 };
 pub use tool::{
-    McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool, McpToolAudience, McpToolDescriptor,
-    McpToolOrigin, McpUnknownFieldPolicy,
+    KeyDeclaration, McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool, McpToolAudience,
+    McpToolDescriptor, McpToolOrigin, McpUnknownFieldPolicy,
 };
 pub(crate) use tool::{prepare_flat_tool_args, resolve_argv_action, validate_action_args};
 pub use types::{

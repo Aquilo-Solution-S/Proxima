@@ -2,11 +2,18 @@
 
 ## v0.0.33
 
-Pin all Proxima dependencies to the same `v0.0.33` tag. No migration.
+Pin all Proxima dependencies to the same `v0.0.33` tag. One forward core
+migration ([migration policy §v0.0.33](migrations.md#v0033)); no flavor migration.
 
 | Change | Host action |
 |---|---|
-| Palettes admit reads | **Behaviour change:** a `ToolScope::Palette` no longer narrows reads. Every key declared `ToolEffect::ReadOnly` (flat tool, dispatcher action) and every core `proxima://` resource is admitted and listed under any palette; owner authorization still applies. A host that relied on a palette (or on `tool_palette_excluding`) to *hide* a read must stop doing so; declare a flavor tool's effect correctly — an undeclared effect is a write and stays gated. |
+| Palettes admit reads | **Behaviour change:** a `ToolScope::Palette` narrows writes and owner-audience keys, never a read for every audience ([12 §Scope keys](../12-tool-manifest.md#scope-keys)). A key declared `ToolEffect::ReadOnly` with `McpToolAudience::Shared` — flat tool, dispatcher action, host tool, core `proxima://` resource — is admitted and listed under any palette; owner authorization still applies. A host that relied on a palette (or on `tool_palette_excluding`) to *hide* such a read must stop doing so; declare a flavor tool's effect and audience correctly — an undeclared effect is a write, and an `Owner` read stays gated |
+| `ToolScope::admits` | Takes a `KeyDeclaration` (effect + audience): `McpToolDescriptor::declaration(action)`, `ResourceContract::declaration()`, `KeyDeclaration::shared(effect)` for a host tool. `admits_action` judges a dispatcher leaf. `McpToolDescriptor::{open_read_keys, effect_over}` and `canonical_open_read_keys` are new |
+| `PROXIMA_TOOL_DENY` | **Breaking:** an entry naming a read for every audience (`core_search_memories`, `core_upload:read_url`, `resource:memory`, …) fails boot: it never disabled anything. Remove it |
+| Resource listings | `resources/list`, the REST catalog and `OpenAPI` list a resource only to a caller whose owner role may read it, as tools already were |
+| `CoreMcpTools::list_core_tools_for_scope` | A dispatcher's `args_schema` and `effect` cover only the actions the scope admits |
+| HTTP outbox sink | Optional: `PROXIMA_OUTBOX_HTTP_URL` (+ `PROXIMA_OUTBOX_HTTP_TOKEN_FILE`, `PROXIMA_OUTBOX_HTTP_CA_FILE`) registers the built-in consumer `http` ([18 §Built-in HTTP sink](../18-fact-outbox.md#built-in-http-sink)). A host that registers its own consumer named `http` and sets the URL fails boot |
+| Other stores | Optional: `RuntimeBuilder::other_stores(Arc<dyn OtherStores>)` lets `core_search_memories`, `core_derive`, `core_interpret` and `proxima://memory/{id}` reach other stores by `<store>:<handle>` ([15 §Other stores](../15-deployment.md#other-stores)). A host without the port behaves as before. `McpTool::CALLER_RENDERED_FIELDS` (default empty) is new |
 
 ## v0.0.32
 

@@ -26,7 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::McpAuthContext;
 use crate::handler::{
     Caller, action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
-    resource_scope_allows, tool_allowed_for_auth,
+    resource_allowed_for_auth, tool_allowed_for_auth,
 };
 
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
@@ -118,9 +118,8 @@ pub(crate) fn document_for_caller(
         .iter()
         .filter(|descriptor| auth.is_none() || tool_allowed_for_auth(caller, descriptor))
         .collect();
-    let scope = auth.map(|context| context.authz.tool_scope());
     let resources: Vec<&ResourceContract> = all_core_resources()
-        .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource))
+        .filter(|resource| auth.is_none() || resource_allowed_for_auth(auth, resource))
         .collect();
     document_with(&tools, &resources, public_url, caller)
 }

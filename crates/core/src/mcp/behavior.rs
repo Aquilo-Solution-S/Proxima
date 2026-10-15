@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 use crate::AccessKind;
 
 use super::{
-    McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
+    KeyDeclaration, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
 };
 use crate::{ActionName, ScopeKey, ToolScope};
 
@@ -251,169 +251,120 @@ impl ScopeGateBehavior {
         // `flavor_tool:action` would deny the tool outright, and an unknown
         // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
-        let specs = descriptor.map_or(&[] as &[McpActionArgSpec], |d| d.action_arg_specs);
-        let argv_specs =
-            descriptor.map_or(&[] as &[super::McpArgvActionSpec], |d| d.argv_action_specs);
-        if !specs.is_empty() {
-            // A registered tool's name is a `ToolName`: `try_freeze` checked.
-            let Ok(ScopeKey::Tool(tool_name)) = &key else {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
-            };
-            // A declared read-only action is admitted under every palette
-            // (`ToolScope::admits`), judged per action, never by the
-            // tool-level join.
-            let read = args
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|action| descriptor.map(|d| d.action_is_read_only(action)))
-                .unwrap_or(false);
-            if !read && !scope.allows_group_advertisement(tool_name) {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
+        // Every branch ends with the declaration of exactly the key it judged
+        // — a dispatcher's action, a flat tool's, a host tool's, a core
+        // resource's — and the owner-role gate reads that same value.
+        let declared = match descriptor {
+            Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
+                // A registered tool's name is a `ToolName`: `try_freeze` checked.
+                let Ok(ScopeKey::Tool(tool_name)) = &key else {
+                    return Err(McpToolError::NotAuthorized(tool.to_string()));
+                };
+                let requested = args.get("action").and_then(serde_json::Value::as_str);
+                let declared = descriptor.declaration(requested);
+                // An open read passes whatever the palette holds; anything
+                // else needs the dispatcher in the palette at all.
+                if !declared.is_open_read() && !scope.allows_group_advertisement(tool_name) {
+                    return Err(McpToolError::NotAuthorized(tool.to_string()));
+                }
+                let Some(action) = requested else {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "tool {tool} requires string action"
+                    )));
+                };
+                // A declared action is an `ActionName` (also checked at
+                // freeze), so text that is none is no declared action.
+                let known = ActionName::parse(action).ok().filter(|name| {
+                    descriptor
+                        .action_arg_specs
+                        .iter()
+                        .any(|spec| spec.action == name.as_str())
+                });
+                let Some(action) = known else {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "unknown action {action:?} for tool {tool}"
+                    )));
+                };
+                if !scope.admits_action(tool_name, &action, declared) {
+                    return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+                }
+                declared
             }
-            let Some(action) = args.get("action").and_then(serde_json::Value::as_str) else {
-                return Err(McpToolError::InvalidInput(format!(
-                    "tool {tool} requires string action"
-                )));
-            };
-            // A declared action is an `ActionName` (also checked at freeze),
-            // so text that is none is no declared action.
-            let declared = ActionName::parse(action)
-                .ok()
-                .filter(|name| specs.iter().any(|spec| spec.action == name.as_str()));
-            let Some(action) = declared else {
-                return Err(McpToolError::InvalidInput(format!(
-                    "unknown action {action:?} for tool {tool}"
-                )));
-            };
-            if !read && !scope.allows_action(tool_name, &action) {
-                return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+            Some(descriptor) if !descriptor.argv_action_specs.is_empty() => {
+                let Ok(ScopeKey::Tool(tool_name)) = &key else {
+                    return Err(McpToolError::NotAuthorized(tool.to_string()));
+                };
+                // The same resolution the terminal dispatch runs, once, so
+                // the gate and the call share one vocabulary: argv matching
+                // no declared prefix is undeclared here and refused below
+                // rather than sailing past into the tool.
+                let resolved = super::resolve_argv_action(tool, descriptor.argv_action_specs, args);
+                let declared = descriptor.declaration(resolved.as_ref().ok().copied());
+                if !declared.is_open_read() && !scope.allows_group_advertisement(tool_name) {
+                    return Err(McpToolError::NotAuthorized(tool.to_string()));
+                }
+                let action = resolved?;
+                let Ok(action_name) = ActionName::parse(action) else {
+                    return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+                };
+                if !scope.admits_action(tool_name, &action_name, declared) {
+                    return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
+                }
+                declared
             }
-        } else if !argv_specs.is_empty() {
-            let Ok(ScopeKey::Tool(tool_name)) = &key else {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
-            };
-            // The same per-action read admission as the `action` vocabulary,
-            // resolved through the descriptor's own longest-prefix match.
-            let read = descriptor
-                .and_then(|d| {
-                    d.argv_action(args)
-                        .map(|action| d.action_is_read_only(action))
-                })
-                .unwrap_or(false);
-            if !read && !scope.allows_group_advertisement(tool_name) {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            _ => {
+                let declared = Self::flat_declaration(tool, key.as_ref().ok(), descriptor, ctx);
+                let allowed = match &key {
+                    Ok(key) => scope.admits(key, declared),
+                    Err(_) => matches!(scope, ToolScope::All),
+                };
+                if !allowed {
+                    return Err(McpToolError::NotAuthorized(tool.to_string()));
+                }
+                declared
             }
-            // The same resolution the terminal dispatch runs, so the gate
-            // and the call share one vocabulary: the derived key is what
-            // `allows_action` judges, and argv matching no declared prefix
-            // is refused here rather than sailing past into the tool.
-            let action = super::resolve_argv_action(tool, argv_specs, args)?;
-            let Ok(action_name) = ActionName::parse(action) else {
-                return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
-            };
-            if !read && !scope.allows_action(tool_name, &action_name) {
-                return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
-            }
-        } else {
-            let allowed = match &key {
-                Ok(key) => scope.admits(key, Self::flat_effect(tool, key, descriptor, ctx)),
-                Err(_) => matches!(scope, ToolScope::All),
-            };
-            if !allowed {
-                return Err(McpToolError::NotAuthorized(tool.to_string()));
-            }
-        }
-        Self::enforce_owner_role(tool, key.ok().as_ref(), args, descriptor, ctx)?;
-        Ok(())
+        };
+        Self::enforce_owner_role(tool, declared, ctx)
     }
 
-    /// The declared effect of a flat key: a core resource's contract, a
-    /// registered flat tool's declaration, or the host tool's. `None` for a
-    /// name nothing declares — which [`ToolScope::admits`] treats as a write.
-    fn flat_effect(
-        tool: &str,
-        key: &ScopeKey,
-        descriptor: Option<&McpToolDescriptor>,
-        ctx: &McpToolCtx,
-    ) -> Option<ToolEffect> {
-        match key {
-            ScopeKey::Resource(resource) => crate::flavor::FLAVOR_0
-                .resource_by_scope_key(resource)
-                .filter(|resource| resource.read_only)
-                .map(|_| ToolEffect::ReadOnly),
-            ScopeKey::Tool(_) | ScopeKey::Action { .. } => match descriptor {
-                Some(descriptor) => descriptor.effect(),
-                None => ctx
-                    .services
-                    .get::<McpHostToolCall>()
-                    .filter(|host| host.name == tool)
-                    .map(|host| host.effect),
-            },
-        }
-    }
-
-    fn enforce_owner_role(
+    /// What a flat key declares: a core resource's contract, a registered
+    /// flat tool's declaration, or the host tool's (shared, as the host
+    /// lists it per caller). [Undeclared](KeyDeclaration::UNDECLARED) for a
+    /// name nothing declares — an unknown `resource:` key is not waved
+    /// through as a read on the strength of its prefix.
+    fn flat_declaration(
         tool: &str,
         key: Option<&ScopeKey>,
-        args: &serde_json::Value,
         descriptor: Option<&McpToolDescriptor>,
         ctx: &McpToolCtx,
+    ) -> KeyDeclaration {
+        match (key, descriptor) {
+            (Some(ScopeKey::Resource(resource)), _) => crate::flavor::FLAVOR_0
+                .resource_by_scope_key(resource)
+                .map_or(KeyDeclaration::UNDECLARED, |resource| {
+                    resource.declaration()
+                }),
+            (_, Some(descriptor)) => descriptor.declaration(None),
+            (_, None) => ctx
+                .services
+                .get::<McpHostToolCall>()
+                .filter(|host| host.name == tool)
+                .map_or(KeyDeclaration::UNDECLARED, |host| {
+                    KeyDeclaration::shared(Some(host.effect))
+                }),
+        }
+    }
+
+    /// The owner-role gate: a declared read needs read access to the bound
+    /// owner, anything else write access. Silence is a write: a tool that has
+    /// not said what it does may well write, and guessing "read" would hand a
+    /// viewer a mutation.
+    fn enforce_owner_role(
+        tool: &str,
+        declared: KeyDeclaration,
+        ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
-        // Resource reads are reads. `read_resource` funnels through this same
-        // gate with the resource's scope key in `tool`, and nothing in the
-        // tool manifest is keyed by a `resource:` name — so the lookups below
-        // all miss and the `unwrap_or(false)` default would ask for *write*
-        // access, denying a read-only role every `proxima://` resource
-        // `resources/list` advertises to it.
-        //
-        // The answer comes from the declaration, not from the shape of the
-        // string: an unknown `resource:`-prefixed key is not waved through
-        // as a read on the strength of its prefix.
-        let read_only = if let Some(resource) = key
-            .and_then(|key| match key {
-                ScopeKey::Resource(resource) => Some(resource),
-                ScopeKey::Tool(_) | ScopeKey::Action { .. } => None,
-            })
-            .and_then(|resource| crate::flavor::FLAVOR_0.resource_by_scope_key(resource))
-        {
-            resource.read_only
-        } else if let Some(descriptor) =
-            descriptor.filter(|value| !value.action_arg_specs.is_empty())
-        {
-            // The action spec is the per-action behaviour authority for
-            // substrate and flavor dispatchers alike. It deliberately does
-            // not inherit the parent tool's declaration: silence is a write,
-            // not permission to turn a later mutation into a viewer-callable
-            // action.
-            let action = args
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .expect("dispatcher action was validated before owner-role enforcement");
-            descriptor.action_is_read_only(action)
-        } else if let Some(descriptor) =
-            descriptor.filter(|value| !value.argv_action_specs.is_empty())
-        {
-            // Same per-action authority for the argv vocabulary, resolved
-            // through the same longest-prefix match `enforce_scope` just
-            // ran. Argv the vocabulary does not emit — already refused
-            // above, so unreachable through the chain — is a write.
-            descriptor
-                .argv_action(args)
-                .is_some_and(|action| descriptor.action_is_read_only(action))
-        } else if let Some(host) = descriptor
-            .is_none()
-            .then(|| ctx.services.get::<McpHostToolCall>())
-            .flatten()
-            .filter(|host| host.name == tool)
-        {
-            // A host tool is flat; its declaration is the host's.
-            host.effect.is_read_only()
-        } else {
-            // A flat tool's own declaration. A name the registry does not
-            // hold has none, and is a write.
-            descriptor.is_some_and(McpToolDescriptor::is_read_only)
-        };
-        let allowed = if read_only {
+        let allowed = if declared.is_read() {
             ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
         } else {
             ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
@@ -649,23 +600,45 @@ mod tests {
     }
 
     /// #462: a dispatcher is judged per action, never by its tool-level
-    /// join. `core_membership:list_members` reads, the other leaves write.
+    /// join. `core_upload:read_url` reads, `core_upload:prepare` writes.
     #[test]
     fn a_mixed_dispatcher_admits_only_its_read_action_outside_the_palette() {
         let ctx = test_ctx(ToolScope::Palette(Vec::new()));
         ScopeGateBehavior::enforce_scope(
-            protocol_tool::CORE_MEMBERSHIP,
-            &serde_json::json!({ "action": "list_members" }),
+            protocol_tool::CORE_UPLOAD,
+            &serde_json::json!({ "action": "read_url" }),
             &ctx,
         )
         .expect("the read-only action is admitted");
         let err = ScopeGateBehavior::enforce_scope(
-            protocol_tool::CORE_MEMBERSHIP,
-            &serde_json::json!({ "action": "add_member" }),
+            protocol_tool::CORE_UPLOAD,
+            &serde_json::json!({ "action": "prepare" }),
             &ctx,
         )
         .expect_err("the additive action is refused");
         assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
+    }
+
+    /// #462: a read for the owner alone stays with the palette.
+    /// `core_membership` is `McpToolAudience::Owner`, so its read
+    /// `list_members` passes only a palette that holds it — the partition a
+    /// host's non-owner surface relies on.
+    #[test]
+    fn an_owner_audience_read_needs_the_palette() {
+        let args = serde_json::json!({ "action": "list_members" });
+        let err = ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_MEMBERSHIP,
+            &args,
+            &test_ctx(ToolScope::Palette(Vec::new())),
+        )
+        .expect_err("an owner-audience read outside the palette is refused");
+        assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_MEMBERSHIP,
+            &args,
+            &test_ctx(palette(&["core_membership:list_members"])),
+        )
+        .expect("the palette holds it");
     }
 
     /// #462: undeclared is a write. A name nothing declares takes no read
@@ -1002,9 +975,7 @@ mod owner_role_tests {
     use super::ScopeGateBehavior;
     use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, ToolEffect};
-    use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerId, ScopeKey, UserId,
-    };
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerId, UserId};
     use futures::future::BoxFuture;
     use std::sync::Arc;
 
@@ -1078,7 +1049,7 @@ mod owner_role_tests {
     }
 
     /// A read-only role can call a flavor tool that declares itself read-only.
-    /// `enforce_owner_role` reads the descriptor's effect; a missing
+    /// The owner-role gate reads the key's declared effect; a missing
     /// declaration is treated as WRITE.
     #[test]
     fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
@@ -1087,25 +1058,11 @@ mod owner_role_tests {
         let args = serde_json::json!({"query": "anything"});
 
         assert!(
-            ScopeGateBehavior::enforce_owner_role(
-                "core_search_memories",
-                ScopeKey::parse("core_search_memories").ok().as_ref(),
-                &args,
-                ctx.registry.mcp_tool("core_search_memories"),
-                &ctx,
-            )
-            .is_ok(),
+            ScopeGateBehavior::enforce_scope("core_search_memories", &args, &ctx,).is_ok(),
             "core's read tool is annotated read-only, so a viewer passes"
         );
         assert!(
-            ScopeGateBehavior::enforce_owner_role(
-                DeclaredReadTool::NAME,
-                ScopeKey::parse(DeclaredReadTool::NAME).ok().as_ref(),
-                &args,
-                ctx.registry.mcp_tool(DeclaredReadTool::NAME),
-                &ctx,
-            )
-            .is_ok(),
+            ScopeGateBehavior::enforce_scope(DeclaredReadTool::NAME, &args, &ctx,).is_ok(),
             "a flavor read tool that declares read_only must not be billed as a write"
         );
     }
@@ -1149,14 +1106,7 @@ mod owner_role_tests {
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});
         assert!(
-            ScopeGateBehavior::enforce_owner_role(
-                SilentTool::NAME,
-                ScopeKey::parse(SilentTool::NAME).ok().as_ref(),
-                &args,
-                ctx.registry.mcp_tool(SilentTool::NAME),
-                &ctx,
-            )
-            .is_err(),
+            ScopeGateBehavior::enforce_scope(SilentTool::NAME, &args, &ctx,).is_err(),
             "silence must not be read as a promise to only read"
         );
     }

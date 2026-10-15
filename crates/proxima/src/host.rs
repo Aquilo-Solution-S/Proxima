@@ -330,26 +330,21 @@ pub fn build_openapi_document(
     proxima_mcp_server::rest::openapi::document_from_registry(registry, public_url, None)
 }
 
-/// Derive an agent-safe MCP tool palette from the frozen registry, excluding
-/// every id in `exclude`. Action-scoped tools expand to `tool:action`
-/// granularity (Proxima's scope gate authorizes them at that granularity),
-/// so excluding a tool's name also excludes every one of its actions in one
-/// step — nothing is emitted for an excluded `tool.name` at all, so a newly
-/// added action on an already-excluded tool can never silently bypass the
-/// exclusion list.
+/// Derive an MCP tool palette from the frozen registry, excluding every id
+/// in `exclude`. Action-scoped tools expand to `tool:action` granularity
+/// (Proxima's scope gate authorizes them at that granularity), so excluding a
+/// tool's name also excludes every one of its actions in one step — nothing
+/// is emitted for an excluded `tool.name` at all, so an action added later to
+/// an excluded tool never enters the palette.
 ///
 /// The palette also carries every core resource scope key, for hosts that
 /// intersect it with another palette by key.
 ///
-/// A palette narrows **writes** only. The scope gate admits every key whose
-/// declaration is [`ToolEffect::ReadOnly`](proxima_core::ToolEffect) — a
-/// read-only flat tool, a read-only dispatcher action, every core
-/// `proxima://` resource — whatever the palette holds
-/// ([`ToolScope::admits`]). Excluding such a key here therefore no longer
-/// hides it: excluding `protocol_resource::MEMORY` or `core_search_memories`
-/// removes the key from the palette but the read stays admitted. Excluding a
-/// write (or an undeclared tool, which counts as a write) still refuses it.
-/// Owner authorization still runs after the scope gate.
+/// A palette narrows writes and the owner's own keys, never a read for every
+/// audience ([`ToolScope::admits`]; 12 §Scope keys): excluding such a read —
+/// `core_search_memories`, `protocol_resource::MEMORY` — removes its key, and
+/// the scope gate still admits the read. Owner authorization still runs
+/// after the scope gate.
 #[must_use]
 pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str]) -> ToolScope {
     ToolScope::Palette(proxima_core::canonical_scope_keys_excluding(
@@ -753,11 +748,11 @@ mod tests {
         let scope = tool_palette_excluding(&registry, &[protocol_resource::MEMORY]);
 
         assert!(!scope.allows(&key(protocol_resource::MEMORY)));
+        let memory = proxima_core::all_core_resources()
+            .find(|resource| resource.scope_key == protocol_resource::MEMORY)
+            .expect("the memory resource");
         assert!(
-            scope.admits(
-                &key(protocol_resource::MEMORY),
-                Some(proxima_core::ToolEffect::ReadOnly)
-            ),
+            scope.admits(&key(protocol_resource::MEMORY), memory.declaration()),
             "a read-only resource is admitted whatever the palette holds"
         );
         assert!(

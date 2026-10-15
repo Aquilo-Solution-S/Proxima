@@ -650,12 +650,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let document: serde_json::Value = response.json().await?;
     assert_eq!(document["openapi"], "3.2.0");
     assert_eq!(document["info"]["version"], proxima_core::RELEASE_VERSION);
-    let rest_tool_paths: BTreeSet<String> = document["paths"]
-        .as_object()
-        .expect("OpenAPI paths")
+    let paths = document["paths"].as_object().expect("OpenAPI paths");
+    let rest_tool_paths: BTreeSet<String> = paths
         .keys()
-        // One path per tool; a dispatcher's per-action subpaths are the
-        // read leaves the palette admits (#462) and are not compared here.
         .filter(|path| {
             path.strip_prefix("/v1/tools/")
                 .is_some_and(|rest| !rest.contains('/'))
@@ -667,6 +664,46 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .map(|tool| format!("/v1/tools/{tool}"))
         .collect();
     assert_eq!(rest_tool_paths, expected_paths);
+    // A dispatcher's per-action routes: the palette holds no action leaf, so
+    // each is a read every palette admits (#462), of a tool MCP lists, whose
+    // MCP schema offers that action.
+    let mcp_schemas: std::collections::BTreeMap<&str, String> = catalog["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| {
+            (
+                tool["name"].as_str().expect("tool name"),
+                tool["inputSchema"].to_string(),
+            )
+        })
+        .collect();
+    let mut action_routes = 0;
+    for (path, item) in paths {
+        let Some((tool, action)) = path
+            .strip_prefix("/v1/tools/")
+            .and_then(|rest| rest.split_once('/'))
+        else {
+            continue;
+        };
+        action_routes += 1;
+        let schema = mcp_schemas
+            .get(tool)
+            .unwrap_or_else(|| panic!("{path}: {tool} is not listed over MCP"));
+        assert!(
+            schema.contains(&format!("\"{action}\"")),
+            "{path}: MCP does not offer {action}: {schema}"
+        );
+        assert_eq!(
+            item.pointer("/post/x-proxima-read-only"),
+            Some(&json!(true)),
+            "{path} is a read"
+        );
+    }
+    assert!(
+        action_routes > 0,
+        "a mixed dispatcher is listed for its reads"
+    );
 
     let list_repos_url = format!("{base}/v1/tools/proxima-code_list_repos");
     let foreign_rest = client

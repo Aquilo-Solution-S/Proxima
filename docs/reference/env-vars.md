@@ -51,9 +51,9 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_MCP_SSE_RETRY_SECS` | MCP HTTP | `3` | client reconnect tuning | SSE priming-event retry hint in seconds; `0` sends none |
 | `PROXIMA_MCP_SESSIONS` | MCP HTTP | `true` | stateless serving | keeps a server-side MCP session per client that opens with `initialize`; per-request (`_meta`-versioned) calls are always stateless |
 | `PROXIMA_MCP_JSON_RESPONSE` | MCP HTTP | `false` | sessions off | answers simple calls as `application/json` rather than SSE |
-| `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface, or narrowing to code search | `full` is opt-in and adds `core_membership`/`core_transfer`; `code` is the code flavor's search and read tools only, no memory tools |
+| `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface, or narrowing to code search | `full` is opt-in and adds `core_membership`/`core_transfer`; `code` is the code flavor's search and read tools, no memory writes; every profile admits reads for every audience |
 | `PROXIMA_TOOL_ALLOW` | MCP tool surface | unset | profile extension | comma-separated canonical scope keys unioned into profile |
-| `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow |
+| `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow; a read for every audience is refused at boot |
 | `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | required with `PROXIMA_EMBED_MODEL` to enable embeddings; loopback needs no key |
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
 | `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield `PROXIMA_EMBED_DIM`-wide vectors |

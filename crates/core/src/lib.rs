@@ -69,14 +69,15 @@ pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    CoreActionMeta, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn, McpHostToolCall,
-    McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor, McpToolError,
-    McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy, MemoryHandleClass, Next,
+    CoreActionMeta, KeyDeclaration, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn,
+    McpHostToolCall, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor,
+    McpToolError, McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy, MemoryHandleClass, Next,
     OperatorLabelConflict, PrefixedUuidClass, PrefixedUuidError, Replay, RequestBehavior,
     ScopeGateBehavior, TerminalDispatch, ToolContent, ToolDescriptorView, ToolEffect, ToolReply,
-    ToolSource, UNKNOWN_OPERATOR_LABEL, all_core_actions, all_core_resources, canonical_scope_keys,
-    canonical_scope_keys_excluding, core_action_meta, format_prefixed_uuid, operator_label,
-    parse_prefixed_uuid, provider_safe_tool_name, resolve_operator_label, tool_name_matches,
+    ToolSource, UNKNOWN_OPERATOR_LABEL, all_core_actions, all_core_resources,
+    canonical_open_read_keys, canonical_scope_keys, canonical_scope_keys_excluding,
+    core_action_meta, format_prefixed_uuid, operator_label, parse_prefixed_uuid,
+    provider_safe_tool_name, resolve_operator_label, tool_name_matches,
 };
 pub use memory::*;
 pub use models::*;

@@ -12,12 +12,15 @@ pub enum McpToolOrigin {
 
 /// Who a tool or action is for.
 ///
-/// Descriptor data, not a gate: Proxima stays audience-agnostic, and
-/// `ToolScope` semantics do not change. Hosts that compute separate tool
-/// surfaces per audience partition on this declaration instead of
-/// hardcoding tool names. An enum rather than a flag so the declaration
-/// site names its meaning, and a future audience is a new variant instead
-/// of a second bool that has to be read together with the first.
+/// Hosts that compute separate tool surfaces per audience partition on this
+/// declaration instead of hardcoding tool names: a non-owner palette leaves
+/// the owner's keys out. The scope gate reads it for one thing only: a
+/// palette admits every read *for every audience* whatever it holds, and an
+/// owner-audience read stays with the palette
+/// ([`KeyDeclaration::is_open_read`]), so that partition keeps holding for
+/// reads. An enum rather than a flag so the declaration site names its
+/// meaning, and a future audience is a new variant instead of a second bool
+/// that has to be read together with the first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum McpToolAudience {
     /// Eligible for every surface a host computes. The default: saying
@@ -27,6 +30,45 @@ pub enum McpToolAudience {
     /// Belongs to the owner alone; a host computing a surface for any
     /// non-owner audience leaves this key out.
     Owner,
+}
+
+/// What one scope key declares: what it does and who it is for. The scope
+/// gate, the owner-role gate and every listing judge a key by this one
+/// value ([`ToolScope::admits`], [`McpToolDescriptor::declaration`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyDeclaration {
+    /// `None` for a name nothing declares, which every gate reads as a write.
+    pub effect: Option<crate::mcp::ToolEffect>,
+    pub audience: McpToolAudience,
+}
+
+impl KeyDeclaration {
+    /// A name nothing declares: a write.
+    pub const UNDECLARED: Self = Self::shared(None);
+
+    /// A declaration for every audience: a core resource's, a host tool's.
+    #[must_use]
+    pub const fn shared(effect: Option<crate::mcp::ToolEffect>) -> Self {
+        Self {
+            effect,
+            audience: McpToolAudience::Shared,
+        }
+    }
+
+    /// Whether the owner-role gate asks for read access. Silence is a write.
+    #[must_use]
+    pub fn is_read(self) -> bool {
+        self.effect
+            .is_some_and(crate::mcp::ToolEffect::is_read_only)
+    }
+
+    /// Whether every palette admits this key: a read for every audience. An
+    /// owner-audience read stays with the palette, so a host's non-owner
+    /// surface keeps it out.
+    #[must_use]
+    pub fn is_open_read(self) -> bool {
+        self.is_read() && self.audience == McpToolAudience::Shared
+    }
 }
 
 /// What a *flat* tool does with a top-level argument key its schema does not
@@ -167,12 +209,65 @@ impl McpToolDescriptor {
     ///   gate reads.
     #[must_use]
     pub fn action_effect(&self, action: &str) -> Option<crate::mcp::ToolEffect> {
+        self.declaration(Some(action)).effect
+    }
+
+    /// What one key of this tool declares: its effect as
+    /// [`Self::action_effect`] reads it, and its audience — the tool's when
+    /// the tool is [`McpToolAudience::Owner`], else the action's.
+    ///
+    /// - flat tool: the tool's own declaration, whatever `action` says.
+    /// - dispatcher: the declaration of `action`; `None`, or an action the
+    ///   vocabulary does not emit, is [undeclared](KeyDeclaration::UNDECLARED)
+    ///   for the tool's audience.
+    #[must_use]
+    pub fn declaration(&self, action: Option<&str>) -> KeyDeclaration {
+        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
+            return KeyDeclaration {
+                effect: self.effect,
+                audience: self.audience,
+            };
+        }
+        let declared = action.and_then(|action| {
+            self.action_arg_specs
+                .iter()
+                .map(|spec| (spec.action, spec.effect, spec.audience))
+                .chain(
+                    self.argv_action_specs
+                        .iter()
+                        .map(|spec| (spec.action, spec.effect, spec.audience)),
+                )
+                .find(|(declared, _, _)| *declared == action)
+        });
+        match declared {
+            Some((_, effect, audience)) => KeyDeclaration {
+                effect: Some(effect),
+                audience: match self.audience {
+                    McpToolAudience::Owner => McpToolAudience::Owner,
+                    McpToolAudience::Shared => audience,
+                },
+            },
+            None => KeyDeclaration {
+                effect: None,
+                audience: self.audience,
+            },
+        }
+    }
+
+    /// The [`ToolEffect::join`](crate::mcp::ToolEffect::join) over the
+    /// actions `permitted` admits: what this tool does for a caller who may
+    /// run only those. A flat tool's own declaration; `None` when no action
+    /// is permitted.
+    #[must_use]
+    pub fn effect_over(&self, permitted: impl Fn(&str) -> bool) -> Option<crate::mcp::ToolEffect> {
         if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
             return self.effect;
         }
-        self.actions()
-            .find(|(declared, _)| *declared == action)
-            .map(|(_, effect)| effect)
+        crate::mcp::ToolEffect::strongest(
+            self.actions()
+                .filter(|(action, _)| permitted(action))
+                .map(|(_, effect)| effect),
+        )
     }
 
     /// Whether the owner-role gate should treat one action as a read.
@@ -267,6 +362,27 @@ impl McpToolDescriptor {
             .collect()
     }
 
+    /// The subset of [`Self::palette_keys`] every palette admits: its
+    /// [open reads](KeyDeclaration::is_open_read), judged per action.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::palette_keys`].
+    #[must_use]
+    pub fn open_read_keys(&self) -> Vec<ScopeKey> {
+        self.palette_keys()
+            .into_iter()
+            .filter(|key| {
+                match key {
+                    ScopeKey::Tool(_) => self.declaration(None),
+                    ScopeKey::Action { action, .. } => self.declaration(Some(action.as_str())),
+                    ScopeKey::Resource(_) => KeyDeclaration::UNDECLARED,
+                }
+                .is_open_read()
+            })
+            .collect()
+    }
+
     /// [`Self::palette_keys`] with the audience each key is for, or the first
     /// name that is no scope key. The check `try_freeze` runs over every
     /// tool; `palette_keys` is this, trusting it ran.
@@ -311,8 +427,10 @@ impl McpToolDescriptor {
             .into_iter()
     }
 
-    /// Whether `scope` lets a listing show this tool: a flat tool by its own
-    /// key, a dispatcher by its bare name or any one leaf
+    /// Whether `scope` lets a listing show this tool: one of its keys is an
+    /// [open read](KeyDeclaration::is_open_read), which every palette admits
+    /// (per action, never the tool-level join); or the palette holds a flat
+    /// tool's own key, or a dispatcher's bare name or any one leaf
     /// ([`ToolScope::allows_tool_advertisement`]). A name that is no key is
     /// in no palette.
     #[must_use]
@@ -320,25 +438,23 @@ impl McpToolDescriptor {
         match scope {
             ToolScope::All => true,
             ToolScope::Palette(_) => {
-                // A read is admitted under every palette
-                // ([`ToolScope::admits`]): a flat read-only tool, or a
-                // dispatcher with one read-only action, is shown whatever the
-                // palette holds. Per action, never the tool-level join.
-                if self.read_admitted() {
-                    return true;
-                }
-                ToolName::parse(self.name).is_ok_and(|tool| {
-                    scope.allows_tool_advertisement(
-                        &tool,
-                        !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty(),
-                    )
-                })
+                let dispatches =
+                    !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty();
+                let open_read = if dispatches {
+                    self.actions()
+                        .any(|(action, _)| self.declaration(Some(action)).is_open_read())
+                } else {
+                    self.declaration(None).is_open_read()
+                };
+                open_read
+                    || ToolName::parse(self.name)
+                        .is_ok_and(|tool| scope.allows_tool_advertisement(&tool, dispatches))
             }
         }
     }
 
     /// Whether `scope` lets a listing show one `action` of this dispatcher:
-    /// the action is declared read-only ([`ToolScope::admits`]), or the
+    /// the action is an [open read](KeyDeclaration::is_open_read), or the
     /// palette advertises it ([`ToolScope::advertises_action`]). An action
     /// name that is no key is in no palette.
     #[must_use]
@@ -346,22 +462,11 @@ impl McpToolDescriptor {
         match scope {
             ToolScope::All => true,
             ToolScope::Palette(_) => {
-                self.action_is_read_only(action)
+                self.declaration(Some(action)).is_open_read()
                     || ToolName::parse(self.name)
                         .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
                         .is_ok_and(|(tool, action)| scope.advertises_action(&tool, &action))
             }
-        }
-    }
-
-    /// Whether any key of this tool is admitted under every palette as a
-    /// read: a flat tool declared read-only, or a dispatcher with at least
-    /// one read-only action. Undeclared is a write.
-    fn read_admitted(&self) -> bool {
-        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
-            self.is_read_only()
-        } else {
-            self.actions().any(|(_, effect)| effect.is_read_only())
         }
     }
 }

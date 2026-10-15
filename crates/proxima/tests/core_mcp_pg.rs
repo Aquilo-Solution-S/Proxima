@@ -876,8 +876,23 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
 
         let palette = tools.list_core_tools_for_scope(&palette_of(&["core_search_memories"]));
+        // #462: a mixed dispatcher is listed for its read alone, and offers
+        // only that read: its schema names no write, its effect is a read.
+        let upload = palette
+            .iter()
+            .find(|tool| tool.name == "core_upload")
+            .expect("core_upload is listed for its read action");
+        assert_eq!(upload.effect, Some(ToolEffect::ReadOnly));
+        let upload_schema = upload.args_schema.to_string();
+        assert!(upload_schema.contains("read_url"), "{upload_schema}");
+        assert!(!upload_schema.contains("\"prepare\""), "{upload_schema}");
         let palette_names: HashSet<_> = palette.into_iter().map(|tool| tool.name).collect();
         assert!(palette_names.contains("core_search_memories"));
+        assert!(!palette_names.contains("core_remember"));
+        assert!(
+            !palette_names.contains("core_membership"),
+            "an owner-audience read stays with the palette"
+        );
         assert!(!palette_names.contains(retired_personality.as_str()));
 
         let admin_authz = host_authz(&owner, ToolScope::All);
@@ -1095,14 +1110,22 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
 
         let flavor_only = || host_authz(&owner, palette_of(&["flavor_command"]));
 
-        call_test_model_tool(
+        let found = call_test_model_tool(
             &tools,
             flavor_only(),
             owner,
             "core_search_memories",
-            serde_json::json!({ "query": "palette" }),
+            serde_json::json!({ "query": "palette", "mode": "lexical", "limit": 10 }),
         )
         .await?;
+        let found: Vec<&str> = found["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .filter_map(|hit| hit["memory"].as_str())
+            .collect();
+        assert!(found.contains(&mine.as_str()), "{found:?}");
+        assert!(!found.contains(&theirs.as_str()), "{found:?}");
 
         let read = read_test_model_resource(
             &tools,
@@ -1133,8 +1156,9 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
             &format!("proxima://memory/{theirs}"),
         )
         .await;
+        // Refused by owner authorization, which hides it, not by the palette.
         assert!(
-            foreign.is_err(),
+            matches!(&foreign, Err(err) if err.kind() == CoreMcpErrorKind::NotFound),
             "owner authorization still refuses another owner's memory: {foreign:?}"
         );
 
