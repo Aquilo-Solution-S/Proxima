@@ -678,6 +678,11 @@ pub trait McpTool: Send + Sync + 'static {
     /// the blanket impl below. Dispatchers validate per action and never
     /// read it.
     const UNKNOWN_FIELD_POLICY: McpUnknownFieldPolicy = McpUnknownFieldPolicy::Refuse;
+    /// Top-level argument keys a *flat* tool accepts beyond its static
+    /// schema, because the schema renders them per caller (and leaves them
+    /// out where nothing can be rendered). The unknown-field guard admits
+    /// them; every other undeclared key is still refused.
+    const CALLER_RENDERED_FIELDS: &'static [&'static str] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// See [`crate::Tool::Output`] — the manifest derives an output schema

@@ -558,6 +558,48 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 | erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Events already delivered to the host's intake or broker are outside that reach — match the host's retention to its obligation |
 | delivered-record retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` reclaims database storage from records that are already published. Off by default; floor 60 s; it can never remove a `pending` or `claimed` record whatever its age |
 
+## Other stores
+
+A host can let callers read memory stores beside this one without copying
+them here (issue #462). Implement
+`proxima_core::storage_ports::other_stores::OtherStores` (`stores`, `search`,
+`read`, each as the caller) and wire it with `RuntimeBuilder::other_stores`
+(or `Proxima::app().other_stores`). Each store call is bounded (2 s by
+default); publish `OtherStoresService::new(port).with_timeout(..)` through
+`services` for another bound.
+
+- A remote memory is `<store>:<handle>`. Store names are
+  `[a-z][a-z0-9_-]{1,63}` and never `local`, so they cannot collide with the
+  local `F:`/`A:`/`P:` handles.
+- `core_search_memories` takes an optional `stores` list (`local` for this
+  store). In `tools/list` it is rendered per caller as an enum of `local`
+  plus every store `stores(caller)` returns, each with its description;
+  with no port wired the schema is unchanged. Omitted, a search covers this
+  store and every readable store in parallel; a `schema_id` only one store
+  declares searches that store only. Lists merge by reciprocal rank (k=60)
+  and the merged page is cut to `limit`; each hit names its `store`, and
+  stores that did not answer in time are listed in `unanswered`. Other
+  stores answer on the first page only, and later pages page the local
+  store. A local hit the merge pushes past `limit` is not repeated on the
+  next page; page with `stores: ["local"]` to see every local hit.
+- `core_derive` accepts `<store>:<handle>` sources next to at least one
+  local source, and `core_interpret` accepts `<store>:<handle>` subjects
+  the same way. Each one is read as the caller first; an unreadable, erased
+  or unreachable one refuses the whole call before any write. Remote
+  origins and subjects are recorded in `proxima_core.memory_external_origin`
+  (migration 0029), with no constraint on the remote side; the local origin
+  trigger is unchanged. Remote subjects are folded into an interpretation's
+  id, so the same claim about different remote memories is a different
+  memory.
+- The lineage walk reads remote origins (and an interpretation's remote
+  subjects) through the port and renders an
+  erased one with `status: "erased"`, an unreachable one (or no port) with
+  `status: "unavailable"`; it never fails on them.
+- `proxima://memory/<store>:<handle>` reads through the port.
+
+Without a port nothing changes: `stores` accepts only `local` and
+qualified handles are refused.
+
 ## Owner-RLS rollout
 
 v0.0.15 ships enforcement and paging indexes in the active core/Code migration

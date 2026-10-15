@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use proxima_core::storage_ports::other_stores::QualifiedHandle;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse,
@@ -79,6 +80,7 @@ pub(crate) async fn walk_memory_lineage_on_connection(
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
+            external_origins: Vec::new(),
         });
     }
     let owner_ids: Vec<Uuid> = read_owners
@@ -122,6 +124,7 @@ async fn assemble_lineage_page_on_connection(
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
+            external_origins: Vec::new(),
         });
     }
     let keys: Vec<(Uuid, String)> = rows
@@ -149,6 +152,29 @@ async fn assemble_lineage_page_on_connection(
         .iter()
         .filter_map(|h| project_lineage_edge(h, &visible))
         .collect();
+    // Other-store origins of the page's visible nodes. Rows are bound by
+    // the memory's owner RLS; the owner filter repeats it for the
+    // fixture lane without policies.
+    let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
+    let external_rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT e.t, e.store, e.handle
+           FROM proxima_core.memory_external_origin e
+           JOIN proxima_core.memory m ON m.t = e.t
+          WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
+          ORDER BY e.t, e.store, e.handle",
+    )
+    .bind(&visible_ids)
+    .bind(owner_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?;
+    let external_origins = external_rows
+        .into_iter()
+        .filter_map(|(t, store, handle)| {
+            let origin = QualifiedHandle::parse(&format!("{store}:{handle}"))?;
+            Some((MemoryId::new(t), origin))
+        })
+        .collect();
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
         MemoryLineageCursor {
@@ -162,6 +188,7 @@ async fn assemble_lineage_page_on_connection(
         edges,
         truncated,
         next_cursor,
+        external_origins,
     })
 }
 

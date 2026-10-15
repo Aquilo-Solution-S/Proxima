@@ -318,6 +318,13 @@ pub struct MemoryLineageResponse {
     /// and the page carries at least one edge to resume after. The wire
     /// layer derives its `has_more` from this field, not `truncated`.
     pub next_cursor: Option<MemoryLineageCursor>,
+    /// Other-store origins of this page's nodes, `(node, origin)`, read
+    /// from storage only; the wire layer resolves each through the
+    /// other-stores port.
+    pub external_origins: Vec<(
+        MemoryId,
+        crate::storage_ports::other_stores::QualifiedHandle,
+    )>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

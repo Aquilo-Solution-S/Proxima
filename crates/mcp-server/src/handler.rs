@@ -361,6 +361,25 @@ impl ServerHandler for DynamicHandler {
         async move {
             let ctx = listing?;
             let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
+            // `core_search_memories` names the caller's readable stores when
+            // an other-stores port is wired; the port is asked once here
+            // because the projection below is synchronous.
+            let search_schema = match ctx.as_ref() {
+                Some(ctx) => Some(
+                    caller_search_input_schema(
+                        ctx,
+                        self.server
+                            .registry()
+                            .list_mcp_tools()
+                            .iter()
+                            .find(|d| d.name == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES)
+                            .map(|d| project_dispatcher_actions_for_auth(caller, d))
+                            .unwrap_or_default(),
+                    )
+                    .await,
+                ),
+                None => None,
+            };
             let mut tools: Vec<Tool> = self
                 .server
                 .registry()
@@ -368,7 +387,15 @@ impl ServerHandler for DynamicHandler {
                 .iter()
                 .filter(|descriptor| tool_allowed_for_auth(caller, descriptor))
                 .map(|descriptor| {
-                    let schema = project_dispatcher_actions_for_auth(caller, descriptor);
+                    let schema = match &search_schema {
+                        Some(schema)
+                            if descriptor.name
+                                == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES =>
+                        {
+                            schema.clone()
+                        }
+                        _ => project_dispatcher_actions_for_auth(caller, descriptor),
+                    };
                     let tool = Tool::new(
                         Cow::Owned(provider_safe_tool_name(descriptor.name)),
                         Cow::Borrowed(descriptor.description),
@@ -779,6 +806,13 @@ pub(crate) fn project_dispatcher_actions_for_auth(
     descriptor.input_schema(|action| {
         caller.auth.is_none() || action_allowed_for_auth(caller, descriptor, action)
     })
+}
+
+async fn caller_search_input_schema(
+    ctx: &McpToolCtx,
+    schema: serde_json::Value,
+) -> serde_json::Value {
+    proxima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema).await
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {

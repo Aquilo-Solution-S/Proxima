@@ -46,6 +46,9 @@ pub async fn get_memory(
     ctx: McpToolCtx,
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
+    if let Some(origin) = super::other_stores::qualified(&ctx, &args.memory) {
+        return remote_memory_output(&ctx, &origin).await;
+    }
     let memory_id = ctx.resolve_memory(&args.memory)?;
     // Space key `core_memory_spaces` advertises (`SpaceDefault::Current`).
     let output_space = super::memory_spaces::resolve_space_owner(
@@ -83,6 +86,31 @@ pub async fn get_memory(
         None
     };
     project_memory_snapshot(&ctx, snapshot, output_space, neighbor_edges)
+}
+
+/// `<store>:<handle>` read through the other-stores port, as the caller.
+/// The space is the store's name; a remote memory has no local payload,
+/// version or neighbor edges.
+async fn remote_memory_output(
+    ctx: &McpToolCtx,
+    origin: &crate::storage_ports::other_stores::QualifiedHandle,
+) -> Result<GetMemoryOutput, McpToolError> {
+    let memory = super::other_stores::read_origin(ctx, origin).await?;
+    let handle = origin.to_string();
+    Ok(GetMemoryOutput {
+        handle: handle.clone(),
+        memory: handle,
+        space: origin.store.to_string(),
+        kind: memory.kind.as_str().to_string(),
+        schema_id: memory.schema_id,
+        schema_version: 1,
+        text: Some(memory.body.clone()),
+        payload: serde_json::Value::Null,
+        title: memory.title,
+        body: Some(memory.body),
+        tags: memory.tags,
+        neighbor_edges: None,
+    })
 }
 
 /// Project a storage snapshot into the wire output shape shared by

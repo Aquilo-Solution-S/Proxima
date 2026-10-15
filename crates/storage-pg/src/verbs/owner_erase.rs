@@ -568,6 +568,20 @@ async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> 
     .rows_affected())
 }
 
+/// `proxima_core.memory_external_origin` (0029) is keyed on a memory `t`
+/// with no foreign key, by design: nothing points at the remote side. Its
+/// rows go with the memories they describe.
+async fn delete_selected_external_origins(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
+    Ok(sqlx::query(
+        "DELETE FROM proxima_core.memory_external_origin e
+          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.t)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected())
+}
+
 async fn erase_selected(
     tx: &mut Tx<'_>,
     owner: OwnerId,
@@ -617,6 +631,7 @@ async fn erase_selected(
 
     let sketches = delete_selected_sketches(tx).await?;
     record_count(tx, "sketches", sketches).await?;
+    delete_selected_external_origins(tx).await?;
 
     let embedding_jobs = delete_embeddings(tx, "proxima_core.embedding_jobs").await?;
     record_count(tx, "embedding_jobs", embedding_jobs).await?;

@@ -107,9 +107,23 @@ impl McpTool for InterpretTool {
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
 
+            // Other-store subjects split off first (only with a port wired)
+            // and are read as the caller before anything is written.
+            let (local_subjects, external) =
+                super::super::other_stores::partition_sources(&ctx, &args.subjects);
+            if !external.is_empty() {
+                if local_subjects.is_empty() {
+                    return Err(McpToolError::InvalidInput(
+                        "subjects must include at least one memory of this store; memories of other stores only join local ones".into(),
+                    ));
+                }
+                for subject in &external {
+                    super::super::other_stores::read_origin(&ctx, subject).await?;
+                }
+            }
             let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) =
                 super::util::dedup_resolved(
-                    &args.subjects,
+                    &local_subjects,
                     MAX_SUBJECTS,
                     "subjects",
                     "an interpretation must be about at least one memory",
@@ -126,6 +140,8 @@ impl McpTool for InterpretTool {
                 args.confidence,
                 &subject_memory_ids,
             ));
+            let memory_id =
+                MemoryId::new(fold_external_subjects(memory_id.into_inner(), &external));
             reject_self_subject(memory_id, &subject_memory_ids)?;
 
             let payload = InterpretationV1 {
@@ -148,7 +164,8 @@ impl McpTool for InterpretTool {
                         claim,
                         payload,
                     )
-                    .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT),
+                    .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
+                    .external_origins(external),
                 )
                 .await?;
 
@@ -202,6 +219,26 @@ pub(crate) fn resolve_subject(
 /// Deterministic id folded from owner, model, claim, confidence and
 /// subjects: re-asserting the same interpretation is one memory, not a
 /// growing pile of identical judgments.
+/// Fold other-store subjects into an interpretation's id, so the same
+/// claim about different remote memories is a different memory. With none
+/// the id is the one [`interpretation_memory_id`] always minted.
+pub(crate) fn fold_external_subjects(
+    id: uuid::Uuid,
+    external: &[crate::storage_ports::other_stores::QualifiedHandle],
+) -> uuid::Uuid {
+    if external.is_empty() {
+        return id;
+    }
+    let mut handles: Vec<String> = external.iter().map(ToString::to_string).collect();
+    handles.sort_unstable();
+    let mut buf = id.as_bytes().to_vec();
+    for handle in handles {
+        buf.push(0);
+        buf.extend_from_slice(handle.as_bytes());
+    }
+    uuid::Uuid::new_v5(&INTERPRET_NAMESPACE, &buf)
+}
+
 pub(crate) fn interpretation_memory_id(
     owner: &crate::OwnerId,
     model_id: &str,

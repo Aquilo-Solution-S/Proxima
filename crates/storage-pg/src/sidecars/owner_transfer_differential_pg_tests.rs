@@ -684,10 +684,12 @@ pub async fn dump_database(
         // 0026 added the outbox consumer registry and per-consumer delivery
         // lanes after the pinned baseline. Neither carries an owner column; a
         // transfer moves the record they hang off, which the outbox section
-        // compares, and `publication_outbox_pg_tests` pins the lanes.
+        // compares, and `publication_outbox_pg_tests` pins the lanes. 0029's
+        // other-store origins are keyed on a memory `t` with no owner
+        // column, so they follow the memory a transfer moves.
         if matches!(
             table.as_str(),
-            "publication_consumer" | "publication_delivery"
+            "publication_consumer" | "publication_delivery" | "memory_external_origin"
         ) {
             continue;
         }

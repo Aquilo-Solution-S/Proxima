@@ -511,6 +511,24 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Read memory stores beside this one through `port` (issue #462):
+    /// `core_search_memories` fans out to them, `core_derive` accepts
+    /// `<store>:<handle>` sources, and `proxima://memory/<store>:<handle>`
+    /// reads through it. Each store gets the default 2 s bound; publish an
+    /// [`OtherStoresService`] with `with_timeout` through [`Self::services`]
+    /// for another. Without a port every surface behaves as before.
+    ///
+    /// [`OtherStoresService`]: proxima_core::storage_ports::other_stores::OtherStoresService
+    #[must_use]
+    pub fn other_stores(
+        self,
+        port: Arc<dyn proxima_core::storage_ports::other_stores::OtherStores>,
+    ) -> Self {
+        self.services(FlavorServices::with(
+            proxima_core::storage_ports::other_stores::OtherStoresService::new(port),
+        ))
+    }
+
     /// Serve anonymous `GET /healthz` (process up) and `GET /readyz`
     /// (database reachable, not shutting down) on the MCP listener, outside
     /// the Host guard and bearer auth so an orchestrator probe needs
