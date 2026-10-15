@@ -24,6 +24,7 @@ pub(super) fn memory_row_from_db(
         origins: r.origins.into_iter().map(MemoryId::new).collect(),
         refs: r.refs.into_iter().map(MemoryId::new).collect(),
         goal_refs: r.goal_refs.into_iter().map(GoalId::new).collect(),
+        occurred_at: r.occurred_at,
         payload,
     })
 }
@@ -92,6 +93,7 @@ pub(super) struct MemoryRowDb {
     pub(super) origins: Vec<uuid::Uuid>,
     pub(super) refs: Vec<uuid::Uuid>,
     pub(super) goal_refs: Vec<uuid::Uuid>,
+    occurred_at: Option<time::OffsetDateTime>,
 }
 
 /// Cursor high-water over the requester's READ set — never a client-supplied

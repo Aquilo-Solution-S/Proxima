@@ -134,7 +134,7 @@ pub use proxima_core::storage_ports::{
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
-    CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
+    CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,

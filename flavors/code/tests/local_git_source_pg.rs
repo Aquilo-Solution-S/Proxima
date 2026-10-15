@@ -579,8 +579,8 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
         )
         .bind(fact_handle)
         .bind(fact_t)

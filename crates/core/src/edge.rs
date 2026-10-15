@@ -254,20 +254,11 @@ impl PinNode {
     }
 }
 
-/// `created_at` of a pin is the source row's uuidv7 timestamp.
+/// `created_at` of a pin is the source row's uuidv7 timestamp
+/// ([`MemoryId::created_at`]).
 #[must_use]
 pub fn pin_created_at(source: MemoryId) -> time::OffsetDateTime {
-    source
-        .into_inner()
-        .get_timestamp()
-        .and_then(|ts| {
-            let (secs, nanos) = ts.to_unix();
-            time::OffsetDateTime::from_unix_timestamp(i64::try_from(secs).ok()?)
-                .ok()?
-                .replace_nanosecond(nanos)
-                .ok()
-        })
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+    source.created_at()
 }
 
 /// Query-window edges: both endpoints must be in `nodes`. Other pins

@@ -156,6 +156,44 @@ pub struct RemoteMemory {
     pub tags: Vec<String>,
 }
 
+/// A memory of another store that this caller read through the port: what
+/// a derived memory may name in another store
+/// (`DerivedMemory::external_origins`). Only
+/// [`OtherStoresService::read_origin`] makes one, so every such name was
+/// readable by its caller when the write was prepared, and its layer is
+/// the one the store reported.
+///
+/// ```compile_fail
+/// use proxima_core::storage_ports::other_stores::{QualifiedHandle, ReadOrigin};
+/// fn forge(handle: QualifiedHandle) -> ReadOrigin {
+///     ReadOrigin { handle, kind: proxima_core::verbs::query::EntityKind::Fact }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOrigin {
+    handle: QualifiedHandle,
+    kind: EntityKind,
+}
+
+impl ReadOrigin {
+    #[must_use]
+    pub const fn handle(&self) -> &QualifiedHandle {
+        &self.handle
+    }
+
+    /// The layer the store reported for it.
+    #[must_use]
+    pub const fn kind(&self) -> EntityKind {
+        self.kind
+    }
+
+    /// A read this crate's unit tests stand in for, without a port.
+    #[cfg(test)]
+    pub(crate) const fn for_tests(handle: QualifiedHandle, kind: EntityKind) -> Self {
+        Self { handle, kind }
+    }
+}
+
 /// The outcome of reading one remote handle.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteRead {
@@ -261,6 +299,30 @@ impl OtherStoresService {
         .await
         .unwrap_or_else(|_| Err(OtherStoresError::Unavailable("timed out".into())))
     }
+
+    /// [`Self::read_bounded`], and for a memory the caller may read, the
+    /// [`ReadOrigin`] that lets a derived memory name it. `None` for a handle
+    /// the store does not know, will not show this caller, or erased.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_bounded`].
+    pub async fn read_origin(
+        &self,
+        caller: StoreCaller<'_>,
+        handle: &QualifiedHandle,
+    ) -> Result<Option<(ReadOrigin, RemoteMemory)>, OtherStoresError> {
+        Ok(match self.read_bounded(caller, handle).await? {
+            RemoteRead::Found(memory) => Some((
+                ReadOrigin {
+                    handle: handle.clone(),
+                    kind: memory.kind,
+                },
+                memory,
+            )),
+            RemoteRead::NotFound | RemoteRead::Erased => None,
+        })
+    }
 }
 
 /// Which stores one search goes to.
@@ -274,7 +336,8 @@ pub struct StoreRoute {
 ///
 /// - `requested` names stores explicitly (`local` for this one); each must
 ///   be one the caller may read.
-/// - Otherwise a `schema_id` declared by exactly one store routes there only.
+/// - Otherwise a `schema_id` declared by exactly one store — this one
+///   counting as a store, by `local_declares` — routes there only.
 /// - Otherwise this store and every readable store.
 ///
 /// # Errors
@@ -284,6 +347,7 @@ pub struct StoreRoute {
 pub fn route_stores(
     requested: Option<&[String]>,
     schema_id: Option<&str>,
+    local_declares: impl Fn(&str) -> bool,
     readable: &[StoreInfo],
 ) -> Result<StoreRoute, String> {
     if let Some(requested) = requested {
@@ -313,11 +377,24 @@ pub fn route_stores(
         let mut declaring = readable
             .iter()
             .filter(|info| info.schema_ids.iter().any(|id| id == schema_id));
-        if let (Some(only), None) = (declaring.next(), declaring.next()) {
-            return Ok(StoreRoute {
-                local: false,
-                remotes: vec![only.name.clone()],
-            });
+        match (
+            local_declares(schema_id),
+            declaring.next(),
+            declaring.next(),
+        ) {
+            (true, None, _) => {
+                return Ok(StoreRoute {
+                    local: true,
+                    remotes: Vec::new(),
+                });
+            }
+            (false, Some(only), None) => {
+                return Ok(StoreRoute {
+                    local: false,
+                    remotes: vec![only.name.clone()],
+                });
+            }
+            _ => {}
         }
     }
     Ok(StoreRoute {
@@ -396,7 +473,9 @@ mod tests {
             info("wiki", &["wiki/page"]),
             info("crm", &["crm/contact", "shared"]),
         ];
-        let only = route_stores(None, Some("wiki/page"), &stores).expect("route");
+        // This store declares `core/note` and `shared`.
+        let local = |id: &str| matches!(id, "core/note" | "shared");
+        let only = route_stores(None, Some("wiki/page"), local, &stores).expect("route");
         assert_eq!(
             only,
             StoreRoute {
@@ -405,18 +484,33 @@ mod tests {
             }
         );
 
+        let local_only = route_stores(None, Some("core/note"), local, &stores).expect("route");
+        assert_eq!(
+            local_only,
+            StoreRoute {
+                local: true,
+                remotes: Vec::new()
+            }
+        );
+
+        // Declared here and by one other store: two stores, so all of them.
+        let both = route_stores(None, Some("shared"), local, &stores).expect("route");
+        assert!(both.local);
+        assert_eq!(both.remotes.len(), 2);
+
         let shared = [info("wiki", &["shared"]), info("crm", &["shared"])];
-        let all = route_stores(None, Some("shared"), &shared).expect("route");
+        let all = route_stores(None, Some("shared"), |_| false, &shared).expect("route");
         assert!(all.local);
         assert_eq!(all.remotes.len(), 2);
 
-        let undeclared = route_stores(None, Some("core/note"), &stores).expect("route");
+        let undeclared = route_stores(None, Some("nobody/has"), local, &stores).expect("route");
         assert!(undeclared.local);
         assert_eq!(undeclared.remotes.len(), 2);
 
         let explicit = route_stores(
             Some(&["local".into(), "crm".into()]),
             Some("wiki/page"),
+            local,
             &stores,
         )
         .expect("route");
@@ -428,8 +522,8 @@ mod tests {
             }
         );
 
-        assert!(route_stores(Some(&["nope".into()]), None, &stores).is_err());
-        assert!(route_stores(Some(&[]), None, &stores).is_err());
+        assert!(route_stores(Some(&["nope".into()]), None, local, &stores).is_err());
+        assert!(route_stores(Some(&[]), None, local, &stores).is_err());
     }
 
     #[test]

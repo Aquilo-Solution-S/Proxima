@@ -30,6 +30,15 @@ pub struct GetMemoryOutput {
     pub kind: String,
     pub schema_id: String,
     pub schema_version: u32,
+    /// When the observation occurred (a backdated import's `observed_at`,
+    /// else the write time), in the RFC 3339 form `core_search_memories`
+    /// gives `created_at`. Present on every Fact of this store.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub text: Option<String>,
     pub payload: serde_json::Value,
     pub title: Option<String>,
@@ -95,7 +104,7 @@ async fn remote_memory_output(
     ctx: &McpToolCtx,
     origin: &crate::storage_ports::other_stores::QualifiedHandle,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let memory = super::other_stores::read_origin(ctx, origin).await?;
+    let (_, memory) = super::other_stores::read_origin(ctx, origin).await?;
     let handle = origin.to_string();
     Ok(GetMemoryOutput {
         handle: handle.clone(),
@@ -104,6 +113,7 @@ async fn remote_memory_output(
         kind: memory.kind.as_str().to_string(),
         schema_id: memory.schema_id,
         schema_version: 1,
+        occurred_at: None,
         text: Some(memory.body.clone()),
         payload: serde_json::Value::Null,
         title: memory.title,
@@ -143,6 +153,7 @@ pub(super) fn project_memory_snapshot(
         kind: snapshot.kind.as_str().to_string(),
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),
+        occurred_at: snapshot.occurred_at,
         text: snapshot.text,
         payload,
         title,

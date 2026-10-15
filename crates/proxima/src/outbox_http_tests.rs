@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls;
 
-use super::{CONTENT_TYPE, DELIVERY_COUNT_HEADER, HttpIntake, classify};
+use super::{CONTENT_TYPE, DELIVERY_COUNT_HEADER, HttpIntake, MAX_REASON_CHARS, classify};
 
 /// An intake that is never called: a registration-only fixture.
 #[derive(Debug)]
@@ -42,11 +42,13 @@ impl Seen {
     }
 }
 
-/// What the receiver answers: a status, or no answer at all.
+/// What the receiver answers: a status, no answer at all, or a 422 whose
+/// body never ends.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Reply {
     Status(u16),
     Hang,
+    EndlessRejection,
 }
 
 /// A CA and the PEM of its certificate.
@@ -133,6 +135,14 @@ impl Receiver {
                             .unwrap_or(Reply::Status(200));
                         match reply {
                             Reply::Hang => std::future::pending::<()>().await,
+                            Reply::EndlessRejection => {
+                                let head = "HTTP/1.1 422 X\r\ntransfer-encoding: chunked\r\n\r\n";
+                                if tls.write_all(head.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                                let chunk = format!("{:x}\r\n{}\r\n", 4096, "x".repeat(4096));
+                                while tls.write_all(chunk.as_bytes()).await.is_ok() {}
+                            }
                             Reply::Status(code) => {
                                 let body = if code == 422 { "schema refused" } else { "" };
                                 let response = format!(
@@ -387,4 +397,23 @@ async fn unauthorized_throttled_and_silent_receivers_are_retried() {
         sink.accept(&event(1)).await.expect_err(what);
     }
     assert_eq!(receiver.seen().len(), 3);
+}
+
+/// A rejection whose body never ends still settles as rejected: the sink
+/// reads at most `MAX_REASON_BYTES` of it, so neither the body's size nor
+/// its length in time reaches this process.
+#[tokio::test]
+async fn an_endless_rejection_body_is_read_only_to_the_reason_bound() {
+    let ca = Ca::new();
+    let receiver = Receiver::start(&ca, &[Reply::EndlessRejection]).await;
+    let files = Files::new(&ca);
+    files.rotate();
+    let sink = intake(&receiver, &files);
+
+    let Intake::Rejected { reason } = sink.accept(&event(1)).await.expect("a decision") else {
+        panic!("422 rejects");
+    };
+    let detail = reason.strip_prefix("HTTP 422: ").expect("status first");
+    assert_eq!(detail.chars().count(), MAX_REASON_CHARS);
+    assert!(detail.chars().all(|c| c == 'x'), "{detail}");
 }

@@ -201,6 +201,7 @@ pub async fn ingest_write_act(
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -238,13 +239,16 @@ pub(crate) async fn ingest_write_act_at(
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t), &[]).await
+    ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t), &[])
+        .await
+        .map(|(outcome, _)| outcome)
 }
 
 /// Test-fixtures only: it writes `draft.text` as given and carries nothing.
@@ -518,6 +522,7 @@ pub(crate) async fn persist_goal_change_fact(
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -525,7 +530,7 @@ pub(crate) async fn persist_goal_change_fact(
         kind: "fact".into(),
     };
     let tables = sidecars.tables_for_payloads(std::slice::from_ref(&payload))?;
-    let outcome = ingest_unpinned_fact_at(
+    let (outcome, occurred_at) = ingest_unpinned_fact_at(
         tx,
         &prepared.owner,
         &draft,
@@ -548,6 +553,7 @@ pub(crate) async fn persist_goal_change_fact(
         tx,
         prepared.owner_id,
         outcome.memory_id.into_inner(),
+        occurred_at,
         &plan,
         position,
     )

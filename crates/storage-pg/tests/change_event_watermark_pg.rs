@@ -64,11 +64,7 @@ impl Fixture {
         authz: &AuthzContext,
         payload: P,
     ) -> TestResult<FactIngestOutcome> {
-        let mut draft = FactWriteCommand::from_payload(
-            "test/event-watermark",
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let mut draft = FactWriteCommand::from_payload("test/event-watermark", &payload);
         draft.lexical_language =
             Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
         let sidecars = [SidecarPayload::fact(payload)];

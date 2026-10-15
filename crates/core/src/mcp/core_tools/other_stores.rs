@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::mcp::{McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::storage_ports::other_stores::{
-    LOCAL_STORE, OtherStoresService, QualifiedHandle, RemoteHit, RemoteMemory, RemoteRead,
+    LOCAL_STORE, OtherStoresService, QualifiedHandle, ReadOrigin, RemoteHit, RemoteMemory,
     RemoteSearch, StoreCaller, StoreInfo, StoreName, StoreRoute, route_stores,
 };
 
@@ -32,17 +32,18 @@ fn not_found(raw: &str) -> McpToolError {
     McpToolError::NotFound(format!("memory {raw} not found"))
 }
 
-/// Read one remote memory as the caller. Unknown, unreadable, erased, and
-/// unreachable all refuse with the not-found a local handle gets.
+/// Read one remote memory as the caller, with the [`ReadOrigin`] a write
+/// names it by. Unknown, unreadable, erased, and unreachable all refuse with
+/// the not-found a local handle gets.
 pub(crate) async fn read_origin(
     ctx: &McpToolCtx,
     origin: &QualifiedHandle,
-) -> Result<RemoteMemory, McpToolError> {
+) -> Result<(ReadOrigin, RemoteMemory), McpToolError> {
     let raw = origin.to_string();
     let service = service(ctx).ok_or_else(|| not_found(&raw))?;
-    match service.read_bounded(caller(ctx), origin).await {
-        Ok(RemoteRead::Found(memory)) => Ok(memory),
-        Ok(RemoteRead::NotFound | RemoteRead::Erased) | Err(_) => Err(not_found(&raw)),
+    match service.read_origin(caller(ctx), origin).await {
+        Ok(Some(read)) => Ok(read),
+        Ok(None) | Err(_) => Err(not_found(&raw)),
     }
 }
 
@@ -59,25 +60,27 @@ pub(crate) async fn admit_external_origins(
     ctx: &McpToolCtx,
     local_layer: Option<MemoryHandleClass>,
     remote: &[QualifiedHandle],
-) -> Result<(), McpToolError> {
+) -> Result<Vec<ReadOrigin>, McpToolError> {
     if remote.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let Some(layer) = local_layer else {
         return Err(McpToolError::InvalidInput(
             "source_handles must include at least one memory of this store; memories of other stores only join local ones".into(),
         ));
     };
+    let mut admitted = Vec::with_capacity(remote.len());
     for origin in remote {
-        let memory = read_origin(ctx, origin).await?;
+        let (read, memory) = read_origin(ctx, origin).await?;
         let class = super::get_memory::memory_class(memory.kind)?;
         if class != layer {
             return Err(McpToolError::InvalidInput(
                 "source_handles must have one memory layer per operator invocation".into(),
             ));
         }
+        admitted.push(read);
     }
-    Ok(())
+    Ok(admitted)
 }
 
 /// Partition `handles` into local handles (in order) and deduplicated
@@ -144,8 +147,17 @@ pub(crate) async fn route_search(
             .ok()
             .and_then(Result::ok)
             .unwrap_or_default();
-    let route =
-        route_stores(requested, schema_id, &readable).map_err(McpToolError::InvalidInput)?;
+    let local_declares = |schema_id: &str| {
+        ctx.engine().is_some_and(|engine| {
+            engine
+                .registry()
+                .schemas()
+                .iter()
+                .any(|info| info.schema_id.as_str() == schema_id)
+        })
+    };
+    let route = route_stores(requested, schema_id, local_declares, &readable)
+        .map_err(McpToolError::InvalidInput)?;
     Ok(SearchStores {
         route,
         service: Some(service),

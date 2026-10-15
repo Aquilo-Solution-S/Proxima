@@ -63,6 +63,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: origins
             .into_iter()
@@ -210,8 +211,8 @@ async fn export_carries_cooled_locators_and_sketches() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
         )
         .bind(witnessed_handle)
         .bind(witnessed_t)

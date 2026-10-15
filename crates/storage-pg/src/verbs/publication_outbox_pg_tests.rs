@@ -106,7 +106,6 @@ fn plan_for(
 /// A Fact write command for one probe. `ingest_key` makes the receipt
 /// replayable, which is what test (c) needs.
 fn fact_command(schema_id: &str, ingest_key: Option<&str>) -> FactWriteCommand {
-    let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: SchemaId::new(schema_id.to_owned()),
         schema_version: SchemaVersion::new(1),
@@ -118,9 +117,8 @@ fn fact_command(schema_id: &str, ingest_key: Option<&str>) -> FactWriteCommand {
         lexical_language: None,
         receipt: ingest_key.map(|_| FactReceiptDraft {
             source_id: SourceId::new("probe/source"),
-            observed_at: now,
-            occurred_at: now,
         }),
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -332,7 +330,9 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
         serde_json::to_value(&payload).expect("json")
     );
 
-    // `time` is the v7 timestamp of `t`, not the capture's wall clock.
+    // `time` is when the Fact occurred. Its writer gave no time, so that is
+    // the v7 timestamp of `t` (not the capture's wall clock), and it is the
+    // `occurred_at` the Fact reads back with.
     let (secs, nanos) = t.get_timestamp().expect("a v7 id").to_unix();
     let expected = time::OffsetDateTime::from_unix_timestamp_nanos(
         i128::from(secs) * 1_000_000_000 + i128::from(nanos),
@@ -343,8 +343,65 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     .format(&time::format_description::well_known::Rfc3339)
     .expect("formats");
     assert_eq!(parsed["time"], expected);
+    let stored: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT occurred_at FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("the Fact row");
+    assert_eq!(
+        stored
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("formats"),
+        expected
+    );
 
     assert_eq!(digest, blake3::hash(&envelope).as_bytes().to_vec());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// A backdated Fact publishes when it occurred: the envelope's `time` is the
+/// stored `occurred_at`, not the write time `t` carries.
+#[tokio::test]
+async fn a_backdated_fact_publishes_when_it_occurred() {
+    let (pg, db) = fresh_pg("pub_capture_occurred").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let occurred_at = time::OffsetDateTime::parse(
+        "2023-11-05T08:09:10.123456Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .expect("a valid RFC 3339 time");
+
+    let payload = probe("the quay was sound");
+    let command = fact_command(ListenableProbeV1::SCHEMA_ID, None).occurred_at(occurred_at);
+    let authorized = witness(&owner, command).with_publication_for_tests(plan_for(
+        owner,
+        &payload,
+        PublicationLimits::default(),
+    ));
+    let outcome = pg
+        .ingest_fact_with_typed_sidecar(&authorized, &[])
+        .await
+        .expect("a backdated listenable write commits");
+    let t = outcome.memory_id.into_inner();
+
+    let (envelope, stored): (Vec<u8>, time::OffsetDateTime) = sqlx::query_as(
+        "SELECT record.envelope, memory.occurred_at
+           FROM proxima_core.publication_outbox record
+           JOIN proxima_core.memory memory ON memory.t = record.t
+          WHERE record.t = $1",
+    )
+    .bind(t)
+    .fetch_one(&pool)
+    .await
+    .expect("the record and its Fact");
+    assert_eq!(stored, occurred_at);
+    let parsed: serde_json::Value = serde_json::from_slice(&envelope).expect("valid JSON");
+    assert_eq!(parsed["time"], "2023-11-05T08:09:10.123456Z");
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -2002,8 +2059,9 @@ async fn a_lease_under_the_floor_is_refused() {
     let _ = drop_db(&db).await;
 }
 
-/// The seal is deterministic: the same draft, `t` and position produce the
-/// same bytes, so a captured record can be re-derived and checked.
+/// The seal is deterministic: the same draft, `t`, occurrence time and
+/// position produce the same bytes, so a captured record can be re-derived
+/// and checked.
 #[test]
 fn sealing_is_a_function_of_the_draft_and_the_t() {
     let owner = owner_fixture();
@@ -2013,8 +2071,9 @@ fn sealing_is_a_function_of_the_draft_and_the_t() {
     let limits = PublicationLimits::default();
     let plan = PublicationPlan::new(draft, limits);
     let position = SubjectPosition::new(Uuid::now_v7(), std::num::NonZeroU64::MIN);
-    let first = SealedPublication::seal(&plan, t, position).expect("seals");
-    let second = SealedPublication::seal(&plan, t, position).expect("seals");
+    let occurred_at = MemoryId::new(t).created_at();
+    let first = SealedPublication::seal(&plan, t, occurred_at, position).expect("seals");
+    let second = SealedPublication::seal(&plan, t, occurred_at, position).expect("seals");
     assert_eq!(first, second);
     assert_eq!(first.digest, *blake3::hash(&first.bytes).as_bytes());
 }

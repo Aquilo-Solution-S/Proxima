@@ -254,11 +254,7 @@ impl Engine {
         // No lexical language is stamped: a filename is not prose, and
         // guessing a text-search configuration from one would be a guess
         // about the document, which nobody has read yet.
-        let draft = FactWriteCommand::from_payload(
-            UPLOAD_SOURCE_ID,
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let draft = FactWriteCommand::from_payload(UPLOAD_SOURCE_ID, &payload);
 
         // Inline, carrying the artefact's full typed payload. Storage
         // upserts the cited object on `(owner, schema, content_hash)` —

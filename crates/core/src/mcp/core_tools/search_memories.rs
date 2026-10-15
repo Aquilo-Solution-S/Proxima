@@ -242,6 +242,15 @@ pub struct SearchMemoryOutput {
     #[serde(with = "time::serde::rfc3339")]
     #[schemars(with = "String")]
     pub created_at: time::OffsetDateTime,
+    /// When the observation occurred (a backdated import's `observed_at`,
+    /// else the write time). Present on every Fact of this store; ordering
+    /// still follows `created_at`.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub snippet: String,
     /// Mode score. Hybrid uses weighted reciprocal ranks (k=60), comparable
     /// within this result list; lexical and semantic retain their raw scores.
@@ -449,6 +458,8 @@ fn remote_hit_output(
         kind: hit.kind.as_str().to_string(),
         schema_id: hit.schema_id,
         created_at: hit.created_at,
+        // Another store's hit reports no occurrence time.
+        occurred_at: None,
         snippet: hit.snippet,
         score: 0.0,
         lexical_score: 0.0,
@@ -1202,6 +1213,7 @@ fn search_memory_output(
         kind: row.kind.as_str().to_string(),
         schema_id: row.schema_id.as_str().to_string(),
         created_at: row.created_at,
+        occurred_at: row.occurred_at,
         snippet: row.snippet,
         score: row.score,
         lexical_score: row.lexical_score,

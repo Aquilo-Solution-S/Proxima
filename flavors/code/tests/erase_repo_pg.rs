@@ -68,8 +68,8 @@ async fn insert_repo_commit_with_test_request(
     // row that names a sidecar table it has no row in is refused at COMMIT.
     let mut stamped = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables)
-         VALUES ($1, $2, 'fact', $3, $4, $5)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(memory_id)
@@ -471,8 +471,8 @@ async fn insert_next_version_in_tx(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, sidecar_tables)
-         VALUES ($1, $2, 'fact', $3, $4, $5)",
+            (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(t)
@@ -542,8 +542,8 @@ async fn insert_series_in_tx(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, sidecar_tables)
-         VALUES ($1, $2, 'fact', $3, $4, $5)",
+            (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(t)

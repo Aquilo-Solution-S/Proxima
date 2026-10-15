@@ -586,6 +586,7 @@ where
         return Ok(outcome);
     }
 
+    let occurred_at = prepared.occurred_at();
     let mut write = draft.clone();
     if write.blob_id.is_none() {
         write.blob_id =
@@ -632,6 +633,7 @@ where
                 tx,
                 owner.into_inner(),
                 outcome.memory_id.into_inner(),
+                occurred_at,
                 plan,
                 position,
             )

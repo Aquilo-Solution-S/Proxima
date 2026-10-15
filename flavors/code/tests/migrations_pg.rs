@@ -226,8 +226,8 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
         )
         .bind(fact_handle)
         .bind(fact_t)

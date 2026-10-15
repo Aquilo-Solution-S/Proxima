@@ -194,8 +194,7 @@ Every event carries:
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
 | `schema_id` | Which registered schema this event conforms to (component 03). |
 | `schema_version` | Version of that schema. |
-| `observed_at` | When the agent observed the event. Defaults to ingest time. Ordering is `t` (uuidv7). |
-| `occurred_at` | When the underlying Reality change happened (may differ — a webhook arrives after the commit). |
+| `occurred_at` | When the observed change happened — earlier than the write when a webhook arrives after the commit or an import backdates. The writer sets it (`FactWriteCommand::occurred_at`; the `observed_at` argument of `core_remember` and `core_record_utterance`); without it, the write time. Stored on every Fact and returned on every read. At most five minutes in the future, on every write path. Ordering, supersession and recency stay on `t` (uuidv7). |
 | `payload` | Typed, source-specific data conforming to `schema_id @ schema_version`. This includes source-specific fields like `source_uri` (e.g., `forgejo://AQS/aquilo/commit/<sha>`, `telegram://chat/<id>/<msg>`) and `source_locus` (e.g., line number, message index, file path, query offset). |
 
 Receipt-id determinism is what makes receipt-backed ingest idempotent.

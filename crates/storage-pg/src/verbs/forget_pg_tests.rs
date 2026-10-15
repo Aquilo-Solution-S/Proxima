@@ -458,6 +458,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -664,6 +665,62 @@ async fn forget_hydrate_and_erase() {
 /// An erase announce is a ChangeHistory event, and a reader pages events by
 /// series handle. Binding `t` into the handle column made every erase event
 /// name a series that does not exist.
+/// A backdated Fact keeps when it occurred through a forget and a hydrate:
+/// the cold record carries `occurred_at` and the restored row reads it back.
+#[tokio::test]
+async fn a_backdated_fact_keeps_when_it_occurred_through_forget_and_hydrate() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_before_owner_rls_migrations().await?;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let occurred_at = time::OffsetDateTime::parse(
+            "2022-01-02T03:04:05.678901Z",
+            &time::format_description::well_known::Rfc3339,
+        )?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(None).occurred_at(occurred_at), None)
+            .await?;
+        let t = written.memory_id.into_inner();
+        let stored = || async {
+            sqlx::query_scalar::<_, Option<time::OffsetDateTime>>(
+                "SELECT occurred_at FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(t)
+            .fetch_one(pool)
+            .await
+        };
+        assert_eq!(stored().await?, Some(occurred_at));
+
+        let cold = MemoryColdStore::default();
+        cool_one(pool, &owner, &cold, t, &cold_object_key(t)).await?;
+        let mut tx = pool.begin().await?;
+        hydrate_one_in_tx(
+            &mut tx,
+            &core_pg_sidecars(),
+            &surfaces(),
+            &cold,
+            t,
+            owner.into_inner(),
+            hydrate_embeddings(),
+        )
+        .await?
+        .expect("the record restores");
+        tx.commit().await?;
+        assert_eq!(stored().await?, Some(occurred_at));
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forget/hydrate occurrence round trip failed");
+}
+
 #[tokio::test]
 async fn erase_announce_carries_the_series_handle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1134,6 +1191,66 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("hot erase-before-append linearization failed");
+}
+
+/// A hard erase takes a memory's other-store origins (0029) with it: no
+/// foreign key and no declared surface reaches them, so the erase names
+/// them, and none outlives the memory it described.
+#[tokio::test]
+async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_before_owner_rls_migrations().await?;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let erased_t = pg
+            .ingest_fact_atomic(&permit, &draft(None), None)
+            .await?
+            .memory_id
+            .into_inner();
+        let kept_t = pg
+            .ingest_fact_atomic(&permit, &draft(None), None)
+            .await?
+            .memory_id
+            .into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
+             VALUES ($1, 'wiki', 'page-1'), ($1, 'crm', 'c-1'), ($2, 'wiki', 'page-2')",
+        )
+        .bind(erased_t)
+        .bind(kept_t)
+        .execute(pool)
+        .await?;
+
+        let mut tx = pool.begin().await?;
+        let (erased, _) = erase_memory_series(
+            &mut tx,
+            &core_pg_sidecars(),
+            &erase_context(surfaces()),
+            &owner,
+            &[erased_t],
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased, 1);
+
+        let remaining: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT t, handle FROM proxima_core.memory_external_origin ORDER BY handle",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(remaining, vec![(kept_t, "page-2".to_string())]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("hard erase of other-store origins failed");
 }
 
 #[tokio::test]
@@ -3543,9 +3660,9 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
-                 blob_id, content_id, origins, refs, sidecar_tables)
+                 blob_id, content_id, origins, refs, sidecar_tables, occurred_at)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', NULL, NULL,
-                     NULL, NULL, '{}', '{}', '{}')",
+                     NULL, NULL, '{}', '{}', '{}', uuid_extract_timestamp($2))",
         )
         .bind(holder.handle)
         .bind(target_t)

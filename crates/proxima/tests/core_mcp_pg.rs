@@ -1056,6 +1056,192 @@ async fn facade_reads_core_resources_with_resource_scope() {
     result.expect("core MCP resource facade integration test failed");
 }
 
+/// #466: a Fact keeps when it occurred. The `observed_at` given to
+/// `core_remember` reads back as `occurred_at` from `proxima://memory/{id}`,
+/// from a search hit and on the query verb's `MemoryRow`; a Fact written
+/// without one reads back its own write time; an Abstraction carries none;
+/// and a time beyond the future bound is refused as invalid input.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one remembered corpus read back through every read surface
+async fn a_remembered_observation_reads_back_when_it_occurred() {
+    let split_db = clone_split_core_db("proxima_core_occurred_at")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+        let rfc3339 = &time::format_description::well_known::Rfc3339;
+        let parse = |value: &serde_json::Value| {
+            time::OffsetDateTime::parse(value.as_str().expect("an RFC 3339 string"), rfc3339)
+                .expect("a valid RFC 3339 time")
+        };
+        let observed = time::OffsetDateTime::parse("2021-06-01T10:20:30.456789Z", rfc3339)?;
+
+        let backdated = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Quay survey",
+                "body": "occurrence needle seen last summer",
+                "tags": ["occurrence"],
+                "observed_at": "2021-06-01T12:20:30.456789+02:00"
+            }),
+        )
+        .await?;
+        let backdated = backdated["handle"].as_str().expect("handle").to_owned();
+        let current = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Quay survey again",
+                "body": "occurrence needle seen today",
+                "tags": ["occurrence"]
+            }),
+        )
+        .await?;
+        let current = current["handle"].as_str().expect("handle").to_owned();
+        let memory_id = |read: &serde_json::Value| {
+            let memory = read["memory"].as_str().expect("a prefixed memory id");
+            let (_, t) = memory.split_once(':').expect("a prefixed memory id");
+            MemoryId::new(t.parse::<Uuid>().expect("a memory id"))
+        };
+
+        // proxima://memory/{id}
+        let read = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner,
+            &format!("proxima://memory/{backdated}"),
+        )
+        .await?;
+        let backdated_id = memory_id(&read);
+        assert_eq!(parse(&read["occurred_at"]), observed);
+        let read = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner,
+            &format!("proxima://memory/{current}"),
+        )
+        .await?;
+        let current_id = memory_id(&read);
+        assert_eq!(
+            parse(&read["occurred_at"]),
+            current_id.created_at(),
+            "a Fact written without a time occurred at its write time"
+        );
+
+        // core_search_memories
+        let found = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_search_memories",
+            serde_json::json!({ "query": "occurrence needle", "kind": "Fact", "limit": 5 }),
+        )
+        .await?;
+        let hit = found["memories"]
+            .as_array()
+            .expect("memories array")
+            .iter()
+            .find(|hit| hit["memory_id"] == backdated_id.into_inner().to_string())
+            .unwrap_or_else(|| panic!("the backdated Fact is found: {found}"));
+        assert_eq!(parse(&hit["occurred_at"]), observed);
+
+        // An Abstraction is a conclusion, not an observation.
+        let derived = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_derive",
+            serde_json::json!({
+                "kind": "Abstraction",
+                "title": "Quay pattern",
+                "body": "the quay keeps being surveyed",
+                "tags": [],
+                "source_handles": [backdated, current],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let derived = derived["handle"].as_str().expect("handle").to_owned();
+        let read = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner,
+            &format!("proxima://memory/{derived}"),
+        )
+        .await?;
+        let derived_id = memory_id(&read);
+        assert!(read.get("occurred_at").is_none(), "{read}");
+
+        // The query verb's `MemoryRow`.
+        let rows = built
+            .host()
+            .engine()
+            .query(
+                &verified(AuthzContext::for_subject(
+                    owner.as_user(),
+                    AuthPath::HostBearer,
+                )),
+                &proxima_core::verbs::query::QueryRequest::readable(),
+            )
+            .await?
+            .memories;
+        let occurred: std::collections::HashMap<_, _> =
+            rows.iter().map(|row| (row.id, row.occurred_at)).collect();
+        assert_eq!(
+            occurred,
+            std::collections::HashMap::from([
+                (backdated_id, Some(observed)),
+                (current_id, Some(current_id.created_at())),
+                (derived_id, None),
+            ])
+        );
+
+        // One bound: beyond five minutes ahead is invalid input.
+        let future =
+            (time::OffsetDateTime::now_utc() + time::Duration::minutes(10)).format(rfc3339)?;
+        let refused = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "From the future",
+                "body": "not yet observed",
+                "tags": [],
+                "observed_at": future
+            }),
+        )
+        .await
+        .expect_err("an occurrence beyond the future bound is refused");
+        assert_eq!(refused.kind(), CoreMcpErrorKind::InvalidInput);
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    result.expect("core occurrence read-back integration test failed");
+}
+
 /// #462: a palette that holds only flavor commands still reads the owner's
 /// memories (search and `proxima://memory/{id}`), still refuses a write, and
 /// owner authorization still refuses another owner's memory.

@@ -119,14 +119,14 @@
 {"actor_oid":"oid","actor_upn":"source@example.test","error":null,"io_byte_len":11,"io_content_hash":"\\x2929292929292929292929292929292929292929292929292929292929292929","io_truncated":false,"latency_ms":7,"ok":true,"owner_id":"<id018>","t":"<id010>","tool_name":"core_remember"}
 {"actor_oid":"oid","actor_upn":"bystander@example.test","error":null,"io_byte_len":11,"io_content_hash":"\\x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","io_truncated":false,"latency_ms":7,"ok":true,"owner_id":"<id036>","t":"<id016>","tool_name":"core_remember"}
 ## proxima_core.memory (8)
-{"blob_id":null,"content_id":"<id058>","goal_refs":[],"handle":"<id033>","ingest_key":"kept-1","kind":"fact","origins":[],"owner_id":"<id018>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id014>"}
-{"blob_id":"<id046>","content_id":null,"goal_refs":[],"handle":"<id035>","ingest_key":"bystander-1","kind":"fact","origins":[],"owner_id":"<id036>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id016>"}
-{"blob_id":"<id048>","content_id":"<id059>","goal_refs":[],"handle":"<id017>","ingest_key":"in-place-3","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>"}
-{"blob_id":"<id048>","content_id":"<id059>","goal_refs":[],"handle":"<id017>","ingest_key":"in-place-2","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id002>"}
-{"blob_id":"<id047>","content_id":null,"goal_refs":[],"handle":"<id023>","ingest_key":"dedupe-3","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id008>"}
-{"blob_id":"<id047>","content_id":null,"goal_refs":[],"handle":"<id023>","ingest_key":"dedupe-2","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id006>"}
-{"blob_id":"<id049>","content_id":null,"goal_refs":[],"handle":"<id028>","ingest_key":"mount-3","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id012>"}
-{"blob_id":"<id049>","content_id":null,"goal_refs":[],"handle":"<id028>","ingest_key":"mount-2","kind":"fact","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id010>"}
+{"blob_id":null,"content_id":"<id058>","goal_refs":[],"handle":"<id033>","ingest_key":"kept-1","kind":"fact","occurred_at":"<ts074>","origins":[],"owner_id":"<id018>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id014>"}
+{"blob_id":"<id046>","content_id":null,"goal_refs":[],"handle":"<id035>","ingest_key":"bystander-1","kind":"fact","occurred_at":"<ts075>","origins":[],"owner_id":"<id036>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id016>"}
+{"blob_id":"<id048>","content_id":"<id059>","goal_refs":[],"handle":"<id017>","ingest_key":"in-place-3","kind":"fact","occurred_at":"<ts076>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>"}
+{"blob_id":"<id048>","content_id":"<id059>","goal_refs":[],"handle":"<id017>","ingest_key":"in-place-2","kind":"fact","occurred_at":"<ts077>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id002>"}
+{"blob_id":"<id047>","content_id":null,"goal_refs":[],"handle":"<id023>","ingest_key":"dedupe-3","kind":"fact","occurred_at":"<ts078>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id008>"}
+{"blob_id":"<id047>","content_id":null,"goal_refs":[],"handle":"<id023>","ingest_key":"dedupe-2","kind":"fact","occurred_at":"<ts079>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id006>"}
+{"blob_id":"<id049>","content_id":null,"goal_refs":[],"handle":"<id028>","ingest_key":"mount-3","kind":"fact","occurred_at":"<ts080>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id012>"}
+{"blob_id":"<id049>","content_id":null,"goal_refs":[],"handle":"<id028>","ingest_key":"mount-2","kind":"fact","occurred_at":"<ts081>","origins":[],"owner_id":"<id039>","refs":[],"schema_id":"core/agent-note-v1","sidecar_tables":["proxima_core.agent_note_v1","proxima_core.mcp_call_logged_v1"],"source_id":"src-a","t":"<id010>"}
 ## proxima_core.memory_head (5)
 {"handle":"<id033>","kind":"fact","owner_id":"<id018>","schema_id":"core/agent-note-v1","t":"<id014>"}
 {"handle":"<id035>","kind":"fact","owner_id":"<id036>","schema_id":"core/agent-note-v1","t":"<id016>"}
@@ -148,9 +148,9 @@
 {"lexical_language":"english","memory_id":"<id012>","owner_id":"<id039>","schema_id":"core/agent-note-v1","tag":["survey"]}
 ## proxima_core.publication_origin (0)
 ## proxima_core.publication_outbox (3)
-{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id004>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id004>"}
-{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}
-{"captured_at":"<ts074>","envelope":"\\x7b2270726f6265223a226d6f756e74227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id012>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id012>"}
+{"captured_at":"<ts082>","envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id004>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id004>"}
+{"captured_at":"<ts082>","envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}
+{"captured_at":"<ts082>","envelope":"\\x7b2270726f6265223a226d6f756e74227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id012>","event_type":"core/test-fact-v1","owner_id":"<id018>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id012>"}
 ## proxima_core.sketch (12)
 {"kind":"fact","owner_id":"<id018>","t":"<id014>","text":"fact"}
 {"kind":"fact","owner_id":"<id036>","t":"<id016>","text":"fact"}
@@ -165,9 +165,9 @@
 {"kind":"fact","owner_id":"<id039>","t":"<id010>","text":"fact"}
 {"kind":"fact","owner_id":"<id039>","t":"<id030>","text":"fact"}
 ## proxima_core.source_cursors (3)
-{"cursor":"\\x3333333333333333","owner_id":"<id018>","source":"src-a","updated_at":"<ts075>"}
-{"cursor":"\\x3333333333333333","owner_id":"<id018>","source":"src-b","updated_at":"<ts075>"}
-{"cursor":"\\x3333333333333333","owner_id":"<id036>","source":"src-a","updated_at":"<ts075>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id018>","source":"src-a","updated_at":"<ts083>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id018>","source":"src-b","updated_at":"<ts083>"}
+{"cursor":"\\x3333333333333333","owner_id":"<id036>","source":"src-a","updated_at":"<ts083>"}
 ## proxima_core.task_goal_v1 (0)
 ## proxima_core.utterance_v1 (0)
 ## proxima_core.wake_config (1)

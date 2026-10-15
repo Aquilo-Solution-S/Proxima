@@ -60,6 +60,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
                 .to_owned(),
         ),
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),

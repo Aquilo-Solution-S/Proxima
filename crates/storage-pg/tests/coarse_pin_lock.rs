@@ -39,6 +39,7 @@ fn fact_draft() -> FactWriteCommand {
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -69,8 +70,8 @@ async fn insert_facts(
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id)
-         SELECT $1, 'fact', $2, 'core/test-fact-v1' FROM generate_series(1, $3)",
+        "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id, occurred_at)
+         SELECT $1, 'fact', $2, 'core/test-fact-v1', now() FROM generate_series(1, $3)",
     )
     .bind(handle)
     .bind(owner_id)
@@ -108,8 +109,8 @@ async fn insert_derived(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
     )
     .bind(handle)
     .bind(t)

@@ -35,7 +35,7 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
             *offset += 1;
         }
     }
-    assert_eq!(bytes[0], 8, "the test requires the v8 cold format");
+    assert_eq!(bytes[0], 9, "the test requires the v9 cold format");
     let mut offset = 1 + 16 + 16;
     skip_str(bytes, &mut offset);
     offset += 16;
@@ -46,6 +46,8 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
         let count = u16_at(bytes, &mut offset);
         offset += count * 16;
     }
+    // v9: when a Fact occurred, a presence byte and eight bytes of micros.
+    offset += if bytes[offset] == 1 { 9 } else { 1 };
     skip_str(bytes, &mut offset);
     let sidecar_count = u16_at(bytes, &mut offset);
     for _ in 0..sidecar_count {

@@ -106,7 +106,6 @@ mod pg_tests {
     }
 
     fn fact_draft(label: &str) -> FactWriteCommand {
-        let now = time::OffsetDateTime::now_utc();
         FactWriteCommand {
             schema_id: SchemaId::new("proxima-test/fact-embedding-v1".into()),
             schema_version: SchemaVersion::new(1),
@@ -118,9 +117,8 @@ mod pg_tests {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("proxima-test/fact-embedding"),
-                observed_at: now,
-                occurred_at: now,
             }),
+            occurred_at: None,
             citation: None,
             additional_references: Vec::new(),
             refs: Vec::new(),

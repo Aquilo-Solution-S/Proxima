@@ -806,8 +806,16 @@ pub struct SealedPublication {
 }
 
 impl SealedPublication {
-    /// Seal `plan.draft` against the `t` the admission minted and the
-    /// `position` storage assigned it, under `plan.limits`.
+    /// Seal `plan.draft` against the `t` the admission minted, the
+    /// occurrence time it stored and the `position` storage assigned it,
+    /// under `plan.limits`.
+    ///
+    /// The envelope's `time` is `occurred_at`: `CloudEvents` `time` is when
+    /// the occurrence happened, and that is the Fact's `memory.occurred_at`.
+    /// A Fact written without one occurred at its write time, the `UUIDv7`
+    /// timestamp of `t` (millisecond precision); storage hands over the
+    /// value it bound into the row, so the published time and the read one
+    /// are the same value.
     ///
     /// The limits arrive WITH the draft rather than beside it so that no
     /// caller can seal against a different ceiling than the engine
@@ -815,18 +823,28 @@ impl SealedPublication {
     ///
     /// # Errors
     ///
-    /// - [`PublicationError::ExportFailed`] when `t` carries no `UUIDv7`
-    ///   timestamp or the envelope cannot be serialized.
+    /// - [`PublicationError::ExportFailed`] when `occurred_at` has no
+    ///   RFC 3339 form or the envelope cannot be serialized.
     /// - [`PublicationError::PayloadTooLarge`] when the sealed bytes exceed
     ///   `plan.limits.max_payload_bytes`.
     pub fn seal(
         plan: &PublicationPlan,
         t: Uuid,
+        occurred_at: time::OffsetDateTime,
         position: SubjectPosition,
     ) -> Result<Self, PublicationError> {
         let PublicationPlan { draft, limits } = plan;
         let event_id = format_prefixed_uuid(t, PrefixedUuidClass::Fact);
-        let time = uuid_v7_rfc3339_millis(t)?;
+        let time = occurred_at
+            .checked_to_offset(time::UtcOffset::UTC)
+            .ok_or_else(|| "outside the UTC range".to_owned())
+            .and_then(|utc| {
+                utc.format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|err| err.to_string())
+            })
+            .map_err(|err| {
+                PublicationError::ExportFailed(format!("memory id {t} occurred_at: {err}"))
+            })?;
         let owner = draft.owner.to_string();
         let subject = position.subject_attribute();
         let sequence = position.sequence_attribute();
@@ -866,30 +884,6 @@ impl SealedPublication {
     }
 }
 
-/// The recording time of a Fact, read out of its own identity.
-///
-/// `memory` carries no `recorded_at` column — the time IS the `UUIDv7`
-/// timestamp inside `t` — so the event's `time` is derived from the id
-/// rather than stamped a second time. Millisecond precision, which is all a
-/// v7 timestamp carries.
-fn uuid_v7_rfc3339_millis(t: Uuid) -> Result<String, PublicationError> {
-    let timestamp = t.get_timestamp().ok_or_else(|| {
-        PublicationError::ExportFailed(format!("memory id {t} carries no UUIDv7 timestamp"))
-    })?;
-    let (seconds, nanos) = timestamp.to_unix();
-    let millis = i128::from(seconds)
-        .checked_mul(1_000)
-        .and_then(|s| s.checked_add(i128::from(nanos / 1_000_000)))
-        .ok_or_else(|| {
-            PublicationError::ExportFailed(format!("memory id {t} timestamp overflow"))
-        })?;
-    let moment = time::OffsetDateTime::from_unix_timestamp_nanos(millis * 1_000_000)
-        .map_err(|err| PublicationError::ExportFailed(format!("memory id {t} timestamp: {err}")))?;
-    moment
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|err| PublicationError::ExportFailed(format!("memory id {t} timestamp: {err}")))
-}
-
 /// Why a listenable Fact write was refused.
 ///
 /// Every variant fails the WHOLE write. Capture is not best-effort: a
@@ -918,7 +912,7 @@ pub enum PublicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SchemaId, SchemaVersion, UserId};
+    use crate::{MemoryId, SchemaId, SchemaVersion, UserId};
 
     fn draft() -> PublicationDraft {
         PublicationDraft::new(
@@ -1020,13 +1014,14 @@ mod tests {
     }
 
     #[test]
-    fn the_envelope_key_order_is_fixed_and_the_time_comes_from_the_v7_id() {
+    fn the_envelope_key_order_is_fixed_and_the_time_is_the_write_time_by_default() {
         let t = Uuid::parse_str("01930000-0000-7000-8000-000000000001").expect("v7 id");
         let mut draft = draft();
         draft.extensions = extensions();
         let sealed = SealedPublication::seal(
             &PublicationPlan::new(draft, PublicationLimits::default()),
             t,
+            MemoryId::new(t).created_at(),
             position(),
         )
         .expect("seal");
@@ -1078,14 +1073,38 @@ mod tests {
     }
 
     #[test]
+    fn the_envelope_time_is_when_the_fact_occurred() {
+        let t = Uuid::now_v7();
+        let occurred_at = time::OffsetDateTime::parse(
+            "2023-03-22T10:15:00.123456+02:00",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("rfc3339");
+        let sealed = SealedPublication::seal(
+            &PublicationPlan::new(draft(), PublicationLimits::default()),
+            t,
+            occurred_at,
+            position(),
+        )
+        .expect("seal");
+        let text = String::from_utf8(sealed.bytes).expect("utf8");
+        assert!(
+            text.contains("\"time\":\"2023-03-22T08:15:00.123456Z\""),
+            "{text} should carry the occurrence time in UTC"
+        );
+    }
+
+    #[test]
     fn an_oversized_export_is_refused_rather_than_truncated() {
         let limits = PublicationLimits {
             max_payload_bytes: 16,
             ..PublicationLimits::default()
         };
+        let t = Uuid::now_v7();
         let err = SealedPublication::seal(
             &PublicationPlan::new(draft(), limits),
-            Uuid::now_v7(),
+            t,
+            MemoryId::new(t).created_at(),
             position(),
         )
         .expect_err("too big");
@@ -1124,6 +1143,7 @@ mod tests {
             SealedPublication::seal(
                 &PublicationPlan::new(draft, PublicationLimits::default()),
                 t,
+                MemoryId::new(t).created_at(),
                 position(),
             )
             .expect("seal")

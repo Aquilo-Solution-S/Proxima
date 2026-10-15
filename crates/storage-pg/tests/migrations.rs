@@ -2,6 +2,8 @@
 
 #[path = "migrations/coarse_pin_lock.rs"]
 mod coarse_pin_lock;
+#[path = "migrations/fact_occurred_at.rs"]
+mod fact_occurred_at;
 #[path = "migrations/goal_text.rs"]
 mod goal_text;
 #[path = "migrations/kind_rule.rs"]
@@ -594,8 +596,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, goal_refs)
-             VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[])",
+                 (handle, t, kind, owner_id, schema_id, goal_refs, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[], uuid_extract_timestamp($2))",
         )
         .bind(fact_handle)
         .bind(fact_t)
@@ -619,8 +621,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'test/source-v1')",
+                 (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'test/source-v1', uuid_extract_timestamp($2))",
         )
         .bind(source_handle)
         .bind(source_t)
@@ -755,8 +757,8 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+                 (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
         )
         .bind(handle)
         .bind(t)
@@ -861,8 +863,8 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
         )
         .bind(handle)
         .bind(t)
@@ -935,8 +937,8 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
         )
         .bind(replacement_handle)
         .bind(t)
@@ -1042,8 +1044,8 @@ async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1')",
+                 (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
         )
         .bind(handle)
         .bind(t)
@@ -1132,8 +1134,8 @@ async fn memory_is_append_only_and_head_t_only() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($2))",
         )
         .bind(handle)
         .bind(t)
@@ -2223,9 +2225,9 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                 (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
              VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1',
-                     ARRAY['proxima_core.not_a_declared_surface'])",
+                     ARRAY['proxima_core.not_a_declared_surface'], uuid_extract_timestamp($1))",
         )
         .bind(handle)
         .bind(owner_id)
@@ -2660,8 +2662,8 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             };
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
             )
             .bind(handle)
             .bind(owner_id)
@@ -3017,8 +3019,8 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
             )
             .bind(t)
             .bind(owner_id)
@@ -3290,8 +3292,8 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
             };
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3)",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
             )
             .bind(handle)
             .bind(owner_id)
@@ -3446,7 +3448,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29,
+                23, 24, 25, 26, 27, 28, 29, 30,
             ],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
@@ -3654,13 +3656,17 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
         insert_legacy_outbox_row(&pool, orphan, current_group).await?;
         insert_legacy_outbox_row(&pool, witnessed, original_personal).await?;
 
-        // The runtime borrowed below reads each vector's width (0015) when it
-        // cools a Fact; stage only that column. 0012 never reads it.
+        // The runtime borrowed below reads each vector's width (0015) and the
+        // Fact's occurrence time (0030) when it cools a Fact; stage only those
+        // columns. 0012 reads neither.
         sqlx::query(
             "ALTER TABLE proxima_core.embeddings ADD COLUMN dim smallint NOT NULL DEFAULT 1024",
         )
         .execute(&pool)
         .await?;
+        sqlx::query("ALTER TABLE proxima_core.memory ADD COLUMN occurred_at timestamptz")
+            .execute(&pool)
+            .await?;
 
         // Establish the transfer through the runtime path: origin is the
         // outbox's original owner even though the retained hot/cold Fact is

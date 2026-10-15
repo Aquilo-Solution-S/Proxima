@@ -54,8 +54,8 @@ impl<P: FactPayload> std::fmt::Debug for FactWrite<'_, P> {
 }
 
 impl<'a, P: FactPayload> FactWrite<'a, P> {
-    /// Typed sidecar Fact from `source_id`. Observe now unless the
-    /// caller overrides.
+    /// Typed sidecar Fact from `source_id`. It occurred when it is written
+    /// unless [`Self::observed_at`] says otherwise.
     ///
     /// The lexical language starts as
     /// [`crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`]:
@@ -81,7 +81,9 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
         }
     }
 
-    /// Observation time stamped on the receipt.
+    /// When the observation occurred: stored as the Fact's `occurred_at`,
+    /// which the engine bounds to at most [`crate::OCCURRED_AT_FUTURE_BOUND`]
+    /// in the future.
     #[must_use]
     pub const fn observed_at(mut self, observed_at: time::OffsetDateTime) -> Self {
         self.observed_at = Some(observed_at);
@@ -913,16 +915,16 @@ impl<'a> UnitOfWork<'a> {
             .engine
             .authorize_write(self.authz()?, &spec.owner, AccessKind::Fact)
             .await?;
-        let observed_at = spec
-            .observed_at
-            .unwrap_or_else(time::OffsetDateTime::now_utc);
         let references = self
             .engine
             .resolve_memory_targets(self.authz()?, &spec.refs, &self.written_kinds)
             .await?;
-        let mut draft = FactWriteCommand::from_payload(spec.source_id, spec.payload, observed_at)
-            .with_additional_references(references)
-            .with_handle(spec.handle.map(crate::SeriesHandle::into_inner));
+        let mut draft = FactWriteCommand {
+            occurred_at: spec.observed_at,
+            ..FactWriteCommand::from_payload(spec.source_id, spec.payload)
+        }
+        .with_additional_references(references)
+        .with_handle(spec.handle.map(crate::SeriesHandle::into_inner));
         if let Some(citation) = spec.citation {
             draft = draft.with_citation(citation);
         }

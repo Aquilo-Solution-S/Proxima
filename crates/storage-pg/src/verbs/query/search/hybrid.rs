@@ -90,6 +90,7 @@ mod tests {
                 kind: EntityKind::Fact,
                 schema_id: SchemaId::new("core/agent-note-v1".into()),
                 created_at: time::OffsetDateTime::UNIX_EPOCH,
+                occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
                 snippet: String::new(),
                 score: 0.0,
                 lexical_score: lexical.unwrap_or_default(),

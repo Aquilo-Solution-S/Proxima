@@ -111,15 +111,18 @@ impl McpTool for InterpretTool {
             // and are read as the caller before anything is written.
             let (local_subjects, external) =
                 super::super::other_stores::partition_sources(&ctx, &args.subjects);
-            if !external.is_empty() {
-                if local_subjects.is_empty() {
-                    return Err(McpToolError::InvalidInput(
-                        "subjects must include at least one memory of this store; memories of other stores only join local ones".into(),
-                    ));
-                }
-                for subject in &external {
-                    super::super::other_stores::read_origin(&ctx, subject).await?;
-                }
+            if !external.is_empty() && local_subjects.is_empty() {
+                return Err(McpToolError::InvalidInput(
+                    "subjects must include at least one memory of this store; memories of other stores only join local ones".into(),
+                ));
+            }
+            let mut read_subjects = Vec::with_capacity(external.len());
+            for subject in &external {
+                read_subjects.push(
+                    super::super::other_stores::read_origin(&ctx, subject)
+                        .await?
+                        .0,
+                );
             }
             let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) =
                 super::util::dedup_resolved(
@@ -165,7 +168,7 @@ impl McpTool for InterpretTool {
                         payload,
                     )
                     .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
-                    .external_origins(external),
+                    .external_origins(read_subjects),
                 )
                 .await?;
 

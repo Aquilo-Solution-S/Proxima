@@ -13,6 +13,15 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.34
+
+Existing v0.0.33 databases upgrade in place. One forward core migration;
+released files stay byte-for-byte unchanged. No flavor migration.
+
+| Lane | Migration |
+|---|---|
+| Core | `0030_v036_fact_occurred_at.sql`: `memory.occurred_at` — when a Fact occurred ([01 §Properties of an Event](../01-event-source.md#properties-of-an-event)); existing Facts are backfilled with their write time, a `CHECK` keeps it on every Fact and off every Abstraction and Perspective, and the append-only guard freezes it |
+
 ## v0.0.33
 
 Existing v0.0.32 databases upgrade in place. One forward core migration;

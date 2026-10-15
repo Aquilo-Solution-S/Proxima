@@ -31,22 +31,13 @@ pub async fn load_memory_by_id_on_connection(
     memory_id: MemoryId,
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let raw: Option<(String, String, uuid::Uuid, Vec<String>)> = sqlx::query_as(
-        "SELECT m.kind::text, m.schema_id, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+    let raw: Option<StoredMemoryRow> = sqlx::query_as(
+        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
-    let Some((kind_text, schema_id, owner_id, sidecar_tables)) = raw else {
+    let Some(row) = raw.and_then(StoredMemoryRow::into_hydration) else {
         return Ok(None);
     };
-    let Some(kind) = parse_memory_kind(&kind_text) else {
-        return Ok(None);
-    };
-    let rows = [MemoryHydrationRow {
-        memory_id: memory_id.into_inner(),
-        kind,
-        schema_id,
-        owner: OwnerId::new(owner_id),
-        sidecar_tables,
-    }];
+    let rows = [row];
     let mut snapshots =
         snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await?;
     Ok(snapshots.pop())
@@ -92,20 +83,12 @@ pub async fn load_memories_by_ids_on_connection(
         .map(proxima_core::OwnerId::into_inner)
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
-    let raw: Vec<(uuid::Uuid, String, String, uuid::Uuid, Vec<String>)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id, m.owner_id, m.sidecar_tables FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+    let raw: Vec<StoredMemoryRow> = sqlx::query_as(
+        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
-        .filter_map(|(t, kind, schema_id, owner_id, sidecar_tables)| {
-            Some(MemoryHydrationRow {
-                memory_id: t,
-                kind: parse_memory_kind(&kind)?,
-                schema_id,
-                owner: OwnerId::new(owner_id),
-                sidecar_tables,
-            })
-        })
+        .filter_map(StoredMemoryRow::into_hydration)
         .collect::<Vec<_>>();
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
 }
@@ -228,6 +211,33 @@ fn parse_memory_kind(kind: &str) -> Option<EntityKind> {
     }
 }
 
+/// One `memory` row as the by-id loaders select it, before its kind is
+/// parsed.
+#[derive(sqlx::FromRow)]
+struct StoredMemoryRow {
+    t: uuid::Uuid,
+    kind: String,
+    schema_id: String,
+    owner_id: uuid::Uuid,
+    sidecar_tables: Vec<String>,
+    occurred_at: Option<time::OffsetDateTime>,
+}
+
+impl StoredMemoryRow {
+    /// The row to hydrate, or `None` for a kind the memory reads do not
+    /// serve.
+    fn into_hydration(self) -> Option<MemoryHydrationRow> {
+        Some(MemoryHydrationRow {
+            memory_id: self.t,
+            kind: parse_memory_kind(&self.kind)?,
+            schema_id: self.schema_id,
+            owner: OwnerId::new(self.owner_id),
+            sidecar_tables: self.sidecar_tables,
+            occurred_at: self.occurred_at,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct MemoryHydrationRow {
     memory_id: uuid::Uuid,
@@ -235,6 +245,7 @@ struct MemoryHydrationRow {
     schema_id: String,
     owner: OwnerId,
     sidecar_tables: Vec<String>,
+    occurred_at: Option<time::OffsetDateTime>,
 }
 
 async fn snapshots_from_rows_on_connection(
@@ -265,6 +276,7 @@ async fn snapshots_from_rows_on_connection(
             schema_id: spec.schema_id.clone(),
             schema_version: spec.schema_version,
             owner: row.owner,
+            occurred_at: row.occurred_at,
             text: payload.as_ref().and_then(SidecarPayload::graph_body),
             payload,
         });
@@ -358,6 +370,7 @@ mod tests {
                 schema_id: UploadV1::SCHEMA_ID.to_owned(),
                 owner,
                 sidecar_tables: Vec::new(),
+                occurred_at: None,
             },
             MemoryHydrationRow {
                 memory_id: uuid::Uuid::now_v7(),
@@ -365,6 +378,7 @@ mod tests {
                 schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),
                 owner,
                 sidecar_tables: vec!["proxima_core.write_act_v1".to_owned()],
+                occurred_at: None,
             },
         ];
         let schemas = [fact_spec::<UploadV1>(), fact_spec::<AgentNoteV1>()];

@@ -891,8 +891,8 @@ async fn insert_memory_row(
     let sidecars: Vec<String> = sidecars.iter().map(|table| (*table).to_owned()).collect();
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8)",
+             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
     )
     .bind(handle)
     .bind(t)

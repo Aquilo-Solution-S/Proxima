@@ -99,16 +99,26 @@ pub(crate) async fn next_series_position(
 /// own [`PublicationConfig`]. This backend holds no limits of its own: a
 /// second copy could only ever disagree with the configured one.
 ///
+/// `occurred_at` is the value the admission bound into `memory.occurred_at`
+/// (`PreparedMemoryAdmission::occurred_at`), so the envelope's `time` and a
+/// read of the Fact agree. Only a new Fact admission captures, and every new
+/// Fact resolves one; `None` is a caller fault.
+///
 /// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
 pub(crate) async fn capture_publication_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
     t: Uuid,
+    occurred_at: Option<time::OffsetDateTime>,
     plan: &PublicationPlan,
     position: SubjectPosition,
 ) -> Result<(), StorageError> {
+    let occurred_at = occurred_at.ok_or_else(|| {
+        internal("publication capture requires the occurrence time of a new Fact admission")
+    })?;
     refuse_when_full(tx, &plan.limits).await?;
-    let sealed = SealedPublication::seal(plan, t, position).map_err(StorageError::from)?;
+    let sealed =
+        SealedPublication::seal(plan, t, occurred_at, position).map_err(StorageError::from)?;
     let schema_version = i32::try_from(sealed.schema_version.into_inner()).map_err(|_| {
         StorageError::ConstraintViolation("schema version does not fit an integer column".into())
     })?;

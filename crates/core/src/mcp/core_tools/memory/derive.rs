@@ -235,7 +235,7 @@ impl McpTool for DeriveTool {
                 "source_handles must be nonempty for operator derivation",
                 |handle| resolve_source_memory(&ctx, handle),
             )?;
-            super::super::other_stores::admit_external_origins(
+            let external = super::super::other_stores::admit_external_origins(
                 &ctx,
                 sources.first().map(|(_id, class)| *class),
                 &external,
