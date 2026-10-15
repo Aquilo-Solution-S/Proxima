@@ -579,11 +579,14 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
 async fn visible_true_never_lists_outside_the_palette_or_role() {
     let router = app(host_with(OpinionlessBehavior));
 
+    // Reads are listed under every palette (#462); a write the palette
+    // does not hold stays unlisted.
     let palette = auth(palette_of(&[protocol_tool::CORE_SEARCH_MEMORIES]));
     let ids = catalog_ids(&get(&router, "/v1/tools", &palette).await);
-    assert_eq!(
-        ids,
-        BTreeSet::from([protocol_tool::CORE_SEARCH_MEMORIES.to_string()])
+    assert!(ids.contains(protocol_tool::CORE_SEARCH_MEMORIES), "{ids:?}");
+    assert!(
+        !ids.contains(protocol_tool::CORE_REMEMBER),
+        "a write outside the palette is never listed: {ids:?}"
     );
 
     let viewer = viewer_auth(ToolScope::All);
@@ -805,17 +808,22 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
         assert_eq!(actual, expected, "surface drift for {scope:?}");
     }
 
-    // The fail-closed end of the range: an empty palette advertises nothing
-    // on either surface, rather than REST falling open to the full registry.
+    // The narrow end of the range: an empty palette advertises reads only
+    // (#462) on either surface, rather than REST falling open to the full
+    // registry's writes.
     let empty = auth(ToolScope::Palette(Vec::new()));
     assert!(
         host.read_resource("proxima://tools", author(), Some(empty.clone()))
             .await
-            .is_err(),
-        "an empty palette denies the MCP catalog"
+            .is_ok(),
+        "the MCP catalog is a read, admitted under an empty palette"
     );
     let answer = get(&router, "/v1/tools", &empty).await;
-    assert_eq!(answer.json()["tools"].as_array().map(Vec::len), Some(0));
+    let listed = catalog_ids(&answer);
+    assert!(
+        !listed.is_empty() && !listed.contains(protocol_tool::CORE_REMEMBER),
+        "an empty palette lists reads and no write: {listed:?}"
+    );
 }
 
 /// The narrowing reaches per-action too: a palette holding one leaf of a
@@ -845,7 +853,8 @@ async fn a_palette_narrows_the_advertised_dispatcher_actions() {
 #[tokio::test]
 async fn a_bogus_leaf_never_advertises_a_flat_tool() {
     let router = app(host());
-    let flat = protocol_tool::CORE_SEARCH_MEMORIES;
+    // A write: a read would be admitted under every palette (#462).
+    let flat = protocol_tool::CORE_REMEMBER;
     let ctx = auth(palette_of(&[&format!("{flat}:bogus")]));
 
     let list = get(&router, "/v1/tools", &ctx).await;
@@ -1724,8 +1733,8 @@ async fn the_resource_catalog_is_scope_filtered_and_maps_onto_rest_paths() {
     .await;
     assert_eq!(
         empty.json()["resources"].as_array().map(Vec::len),
-        Some(0),
-        "an empty palette advertises no resources"
+        Some(resources.len()),
+        "core resources are reads, advertised under every palette (#462)"
     );
 }
 

@@ -506,6 +506,17 @@ mod tests {
         .with_output_schema(serde_json::json!({"type": "object"}))
     }
 
+    /// A host tool declared as a write: the palette still gates it (#462).
+    fn write_host_tool(name: &str) -> crate::McpHostTool {
+        crate::McpHostTool::new(
+            name,
+            "Host fixture",
+            serde_json::json!({"type": "object"}),
+            proxima_core::ToolEffect::Additive(proxima_core::mcp::Replay::NonIdempotent),
+        )
+        .with_output_schema(serde_json::json!({"type": "object"}))
+    }
+
     /// The same tool with no output schema, so it may answer content.
     fn content_tool(name: &str) -> crate::McpHostTool {
         crate::McpHostTool::new(
@@ -733,7 +744,7 @@ mod tests {
     async fn refusals_and_host_errors_stay_json_rpc_errors() {
         let owner = personal_owner();
         let mut host_fixture = HostFixture::new(
-            vec![host_tool("host_erring")],
+            vec![write_host_tool("host_erring")],
             proxima_core::ToolReply::Structured(serde_json::json!({})),
         );
         host_fixture.reply = None;
@@ -966,7 +977,7 @@ mod tests {
             handled: Arc::default(),
         })
         .with_host_tools(Arc::new(HostFixture::new(
-            vec![host_tool("host_shown"), host_tool("host_other")],
+            vec![host_tool("host_shown"), write_host_tool("host_other")],
             proxima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let mut auth = auth_for(personal_owner());
@@ -976,9 +987,19 @@ mod tests {
                 .to_vec(),
         ));
         let message = first_message(mcp_service_for(host), authed_rpc("tools/list", auth)).await;
-        let mut names = listed_names(&message);
-        names.sort();
-        assert_eq!(names, ["host_shown", "proxima-stub_ping"], "{message}");
+        let names = listed_names(&message);
+        assert!(names.iter().any(|name| name == "host_shown"), "{message}");
+        assert!(
+            names.iter().any(|name| name == "proxima-stub_ping"),
+            "{message}"
+        );
+        // A write outside the palette stays unlisted; reads are listed under
+        // every palette (#462), so only writes are checked here.
+        assert!(!names.iter().any(|name| name == "host_other"), "{message}");
+        assert!(
+            !names.iter().any(|name| name == "core_remember"),
+            "{message}"
+        );
     }
 
     /// The `instructions` of an `initialize` or `server/discover` answer.
@@ -1028,12 +1049,15 @@ mod tests {
     #[tokio::test]
     async fn host_instructions_reach_initialize_and_discover() {
         let owner = personal_owner();
-        let nothing_advertised = {
-            let mut auth = auth_for(owner);
-            auth.authz = auth
-                .authz
-                .with_tool_scope(proxima_core::ToolScope::Palette(Vec::new()));
-            auth
+        // Reads are advertised under every palette (#462), so "nothing of
+        // Proxima's" is a caller the owner role gives no access at all.
+        let nothing_advertised = crate::McpAuthContext {
+            owner,
+            authz: proxima_core::AuthzContext::for_subject(
+                proxima_core::UserId::new(uuid::Uuid::now_v7()),
+                proxima_core::AuthPath::HostBearer,
+            )
+            .with_tool_scope(proxima_core::ToolScope::Palette(Vec::new())),
         };
 
         // The text Proxima alone serves this caller.

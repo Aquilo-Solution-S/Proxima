@@ -826,7 +826,12 @@ pub(crate) fn resource_scope_allows(
     resource: &proxima_core::flavor::ResourceContract,
 ) -> bool {
     match scope {
-        Some(scope) => scope.allows(&ScopeKey::Resource(resource.key())),
+        // The same predicate the call gate applies: a read-only resource is
+        // admitted under every palette, so listing matches admission.
+        Some(scope) => scope.admits(
+            &ScopeKey::Resource(resource.key()),
+            resource.read_only.then_some(ToolEffect::ReadOnly),
+        ),
         None => UNAUTHENTICATED_SCOPE_ALLOWS,
     }
 }
@@ -1159,9 +1164,9 @@ pub fn strip_call_context_args(args: &mut serde_json::Value) {
 /// Whether `scope` holds the key of a host tool, which is flat: its name as a
 /// [`ToolName`]. A served name is one (the host tool list checked it), so a
 /// name that is not is held by no palette.
-fn host_tool_in_scope(scope: &ToolScope, name: &str) -> bool {
+fn host_tool_in_scope(scope: &ToolScope, name: &str, effect: ToolEffect) -> bool {
     match ToolName::parse(name) {
-        Ok(name) => scope.allows(&ScopeKey::Tool(name)),
+        Ok(name) => scope.admits(&ScopeKey::Tool(name), Some(effect)),
         Err(_) => matches!(scope, ToolScope::All),
     }
 }
@@ -1171,7 +1176,7 @@ fn host_tool_in_scope(scope: &ToolScope, name: &str) -> bool {
 /// listing, every request behavior's `visible`.
 fn host_tool_allowed_for_auth(caller: Caller<'_>, tool: &McpHostTool) -> bool {
     let in_scope = caller.auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
-        host_tool_in_scope(ctx.authz.tool_scope(), &tool.name)
+        host_tool_in_scope(ctx.authz.tool_scope(), &tool.name, tool.effect)
     });
     in_scope
         && owner_role_allows(caller.auth, tool.effect.is_read_only())
@@ -1375,6 +1380,45 @@ mod tests {
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
+
+    /// #462: listing uses the call gate's predicate. Under an empty palette
+    /// an undeclared flat tool is not listed, a read-only one is, and a
+    /// mixed dispatcher shows its read action only.
+    #[test]
+    fn listing_under_an_empty_palette_shows_reads_only() {
+        let auth = full_auth(ToolScope::Palette(Vec::new()));
+        let caller = Caller::new(Some(&auth));
+
+        assert!(!tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor("stub_undeclared", None)
+        ));
+        assert!(!tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor(
+                "stub_write",
+                Some(ToolEffect::Additive(Replay::NonIdempotent))
+            )
+        ));
+        assert!(tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor("stub_read", Some(ToolEffect::ReadOnly))
+        ));
+
+        let mut mixed = flavor_descriptor("stub_mixed", None);
+        mixed.action_arg_specs = MIXED_ACTIONS;
+        assert!(tool_allowed_for_auth(caller, &mixed));
+        assert!(action_allowed_for_auth(caller, &mixed, "look"));
+        assert!(!action_allowed_for_auth(caller, &mixed, "touch"));
+
+        for resource in all_core_resources() {
+            assert!(
+                resource_scope_allows(Some(auth.authz.tool_scope()), resource),
+                "{} is a read and is listed",
+                resource.scope_key
+            );
+        }
+    }
 
     fn full_auth(scope: ToolScope) -> McpAuthContext {
         let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));

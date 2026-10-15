@@ -338,10 +338,18 @@ pub fn build_openapi_document(
 /// added action on an already-excluded tool can never silently bypass the
 /// exclusion list.
 ///
-/// The palette also carries every core resource scope key. `read_resource`
-/// runs through the same flat scope gate as a tool call, so a palette built
-/// from tools alone denies every `proxima://` read outright rather than
-/// merely leaving it unadvertised. Exclude a resource by its exact scope key.
+/// The palette also carries every core resource scope key, for hosts that
+/// intersect it with another palette by key.
+///
+/// A palette narrows **writes** only. The scope gate admits every key whose
+/// declaration is [`ToolEffect::ReadOnly`](proxima_core::ToolEffect) — a
+/// read-only flat tool, a read-only dispatcher action, every core
+/// `proxima://` resource — whatever the palette holds
+/// ([`ToolScope::admits`]). Excluding such a key here therefore no longer
+/// hides it: excluding `protocol_resource::MEMORY` or `core_search_memories`
+/// removes the key from the palette but the read stays admitted. Excluding a
+/// write (or an undeclared tool, which counts as a write) still refuses it.
+/// Owner authorization still runs after the scope gate.
 #[must_use]
 pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str]) -> ToolScope {
     ToolScope::Palette(proxima_core::canonical_scope_keys_excluding(
@@ -735,13 +743,23 @@ mod tests {
         }
     }
 
+    /// Excluding a resource drops its key from the palette, but a core
+    /// resource is a read, and the scope gate admits reads under every
+    /// palette: the exclusion no longer narrows it.
     #[test]
-    fn a_resource_can_be_excluded_by_its_scope_key() {
+    fn excluding_a_resource_drops_its_key_but_not_the_read() {
         let registry = registry();
 
         let scope = tool_palette_excluding(&registry, &[protocol_resource::MEMORY]);
 
         assert!(!scope.allows(&key(protocol_resource::MEMORY)));
+        assert!(
+            scope.admits(
+                &key(protocol_resource::MEMORY),
+                Some(proxima_core::ToolEffect::ReadOnly)
+            ),
+            "a read-only resource is admitted whatever the palette holds"
+        );
         assert!(
             scope.allows(&key(protocol_resource::SCHEMAS)),
             "excluding one resource must not remove the others"

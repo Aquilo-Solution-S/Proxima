@@ -376,11 +376,23 @@ role checks.
 
 `PROXIMA_TOOL_PROFILE=code` serves code search without memory: it advertises
 `proxima-code_search_chunks`, `proxima-code_open_file_revision`,
-`proxima-code_search_commits` and `proxima-code_list_repos`, and no memory tool or
-memory resource. A call outside the profile is refused, so agents on it cannot
-write memory whatever they are prompted. Repository administration is opt-in:
+`proxima-code_search_commits` and `proxima-code_list_repos`, and no memory write.
+A write outside the profile is refused, so agents on it cannot write memory
+whatever they are prompted. Like every palette, it does not narrow reads (see
+below): the owner's memories stay searchable and readable. Repository administration is opt-in:
 `PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot,proxima-code_get_ingest_run`.
 A build without the code flavor refuses the profile at startup.
+
+**A palette narrows writes, never reads.** Since v0.0.33 the scope gate admits
+a key when the palette holds it **or** its declaration is read-only: a
+read-only flat tool (`core_search_memories`, …), a read-only dispatcher action
+(`core_fact:citation_of_fact`, …, judged per action, never by the tool's join)
+and every core `proxima://` resource. An undeclared tool counts as a write.
+Listings (`tools/list`, `resources/list`, the REST catalog, `OpenAPI`) apply the
+same predicate, so what is listed is what is admitted. Owner authorization is
+unchanged and still runs after the scope gate: a palette never lets a caller
+read another owner's memory. Excluding a read key with `tool_palette_excluding`
+no longer hides that read; `ToolScope::intersect` now only narrows writes.
 
 **Per-user tool scope is a host concern, not a substrate feature.** The env
 profile is one deployment-wide ceiling. A host that composes Proxima as a library

@@ -259,7 +259,15 @@ impl ScopeGateBehavior {
             let Ok(ScopeKey::Tool(tool_name)) = &key else {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             };
-            if !scope.allows_group_advertisement(tool_name) {
+            // A declared read-only action is admitted under every palette
+            // (`ToolScope::admits`), judged per action, never by the
+            // tool-level join.
+            let read = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|action| descriptor.map(|d| d.action_is_read_only(action)))
+                .unwrap_or(false);
+            if !read && !scope.allows_group_advertisement(tool_name) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
             let Some(action) = args.get("action").and_then(serde_json::Value::as_str) else {
@@ -277,14 +285,22 @@ impl ScopeGateBehavior {
                     "unknown action {action:?} for tool {tool}"
                 )));
             };
-            if !scope.allows_action(tool_name, &action) {
+            if !read && !scope.allows_action(tool_name, &action) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
         } else if !argv_specs.is_empty() {
             let Ok(ScopeKey::Tool(tool_name)) = &key else {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             };
-            if !scope.allows_group_advertisement(tool_name) {
+            // The same per-action read admission as the `action` vocabulary,
+            // resolved through the descriptor's own longest-prefix match.
+            let read = descriptor
+                .and_then(|d| {
+                    d.argv_action(args)
+                        .map(|action| d.action_is_read_only(action))
+                })
+                .unwrap_or(false);
+            if !read && !scope.allows_group_advertisement(tool_name) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
             // The same resolution the terminal dispatch runs, so the gate
@@ -295,12 +311,12 @@ impl ScopeGateBehavior {
             let Ok(action_name) = ActionName::parse(action) else {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             };
-            if !scope.allows_action(tool_name, &action_name) {
+            if !read && !scope.allows_action(tool_name, &action_name) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
         } else {
             let allowed = match &key {
-                Ok(key) => scope.allows(key),
+                Ok(key) => scope.admits(key, Self::flat_effect(tool, key, descriptor, ctx)),
                 Err(_) => matches!(scope, ToolScope::All),
             };
             if !allowed {
@@ -309,6 +325,31 @@ impl ScopeGateBehavior {
         }
         Self::enforce_owner_role(tool, key.ok().as_ref(), args, descriptor, ctx)?;
         Ok(())
+    }
+
+    /// The declared effect of a flat key: a core resource's contract, a
+    /// registered flat tool's declaration, or the host tool's. `None` for a
+    /// name nothing declares — which [`ToolScope::admits`] treats as a write.
+    fn flat_effect(
+        tool: &str,
+        key: &ScopeKey,
+        descriptor: Option<&McpToolDescriptor>,
+        ctx: &McpToolCtx,
+    ) -> Option<ToolEffect> {
+        match key {
+            ScopeKey::Resource(resource) => crate::flavor::FLAVOR_0
+                .resource_by_scope_key(resource)
+                .filter(|resource| resource.read_only)
+                .map(|_| ToolEffect::ReadOnly),
+            ScopeKey::Tool(_) | ScopeKey::Action { .. } => match descriptor {
+                Some(descriptor) => descriptor.effect(),
+                None => ctx
+                    .services
+                    .get::<McpHostToolCall>()
+                    .filter(|host| host.name == tool)
+                    .map(|host| host.effect),
+            },
+        }
     }
 
     fn enforce_owner_role(
@@ -473,6 +514,8 @@ mod tests {
         );
     }
 
+    /// A write outside the palette is refused before the terminal runs.
+    /// (A read would be admitted: a palette narrows writes only, #462.)
     #[tokio::test]
     async fn scope_gate_denies_out_of_palette_before_terminal() {
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
@@ -486,15 +529,15 @@ mod tests {
 
         let err = Next::new(&behaviors, terminal)
             .run(ToolCall {
-                name: protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
-                args: serde_json::json!({ "query": "x" }),
+                name: protocol_tool::CORE_REMEMBER.to_string(),
+                args: serde_json::json!({ "title": "t", "body": "b" }),
                 ctx: test_ctx(ToolScope::Palette(Vec::new())),
             })
             .await
             .expect_err("scope denial");
 
         assert!(
-            matches!(err, McpToolError::NotAuthorized(ref tool) if tool == protocol_tool::CORE_SEARCH_MEMORIES)
+            matches!(err, McpToolError::NotAuthorized(ref tool) if tool == protocol_tool::CORE_REMEMBER)
         );
         assert_eq!(err.kind(), super::super::McpToolErrorKind::InvalidRequest);
     }
@@ -575,6 +618,67 @@ mod tests {
             matches!(err, McpToolError::NotAuthorized(ref denied) if denied == "core_goal:set"),
             "got {err:?}"
         );
+    }
+
+    /// #462: a palette narrows writes only. A read-only flat tool and a core
+    /// resource pass the gate under an empty palette; a write does not.
+    #[test]
+    fn an_empty_palette_admits_reads_and_refuses_writes() {
+        let ctx = test_ctx(ToolScope::Palette(Vec::new()));
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            &serde_json::json!({ "query": "x" }),
+            &ctx,
+        )
+        .expect("a read-only flat tool is admitted under every palette");
+        ScopeGateBehavior::enforce_scope(
+            crate::protocol::resource::MEMORY,
+            &serde_json::json!({}),
+            &ctx,
+        )
+        .expect("a core resource is admitted under every palette");
+        let err = ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_REMEMBER,
+            &serde_json::json!({ "title": "t", "body": "b" }),
+            &ctx,
+        )
+        .expect_err("a write outside the palette is refused");
+        assert!(
+            matches!(err, McpToolError::NotAuthorized(ref t) if t == protocol_tool::CORE_REMEMBER)
+        );
+    }
+
+    /// #462: a dispatcher is judged per action, never by its tool-level
+    /// join. `core_membership:list_members` reads, the other leaves write.
+    #[test]
+    fn a_mixed_dispatcher_admits_only_its_read_action_outside_the_palette() {
+        let ctx = test_ctx(ToolScope::Palette(Vec::new()));
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_MEMBERSHIP,
+            &serde_json::json!({ "action": "list_members" }),
+            &ctx,
+        )
+        .expect("the read-only action is admitted");
+        let err = ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_MEMBERSHIP,
+            &serde_json::json!({ "action": "add_member" }),
+            &ctx,
+        )
+        .expect_err("the additive action is refused");
+        assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
+    }
+
+    /// #462: undeclared is a write. A name nothing declares takes no read
+    /// path and stays refused by a palette that does not hold it.
+    #[test]
+    fn an_undeclared_name_outside_the_palette_is_refused() {
+        let err = ScopeGateBehavior::enforce_scope(
+            "undeclared_tool",
+            &serde_json::json!({}),
+            &test_ctx(ToolScope::Palette(Vec::new())),
+        )
+        .expect_err("silence is a write");
+        assert!(matches!(err, McpToolError::NotAuthorized(ref t) if t == "undeclared_tool"));
     }
 
     #[test]

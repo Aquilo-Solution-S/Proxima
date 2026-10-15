@@ -569,7 +569,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     )?;
 
     let allowed_tools = BTreeSet::from([
-        "core_search_memories".to_string(),
+        "core_remember".to_string(),
         "proxima-code_list_repos".to_string(),
     ]);
     let running = Proxima::<ProximaMcpApp>::app()
@@ -618,7 +618,11 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name").to_string())
         .collect();
-    assert_eq!(mcp_tools, allowed_tools);
+    // The palette's own entries, plus every read (admitted under every
+    // palette, #462), and no write the palette does not hold.
+    assert!(mcp_tools.is_superset(&allowed_tools), "{mcp_tools:?}");
+    assert!(mcp_tools.contains("core_search_memories"), "{mcp_tools:?}");
+    assert!(!mcp_tools.contains("core_forget"), "{mcp_tools:?}");
 
     let no_auth = client
         .get(&openapi_url)
@@ -650,10 +654,15 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .as_object()
         .expect("OpenAPI paths")
         .keys()
-        .filter(|path| path.starts_with("/v1/tools/"))
+        // One path per tool; a dispatcher's per-action subpaths are the
+        // read leaves the palette admits (#462) and are not compared here.
+        .filter(|path| {
+            path.strip_prefix("/v1/tools/")
+                .is_some_and(|rest| !rest.contains('/'))
+        })
         .cloned()
         .collect();
-    let expected_paths: BTreeSet<String> = allowed_tools
+    let expected_paths: BTreeSet<String> = mcp_tools
         .iter()
         .map(|tool| format!("/v1/tools/{tool}"))
         .collect();

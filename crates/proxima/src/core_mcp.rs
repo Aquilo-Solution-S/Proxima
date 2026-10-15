@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
-    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolName, ToolScope,
-    provider_safe_tool_name, resolve_operator_label, tool_name_matches,
+    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolScope, provider_safe_tool_name,
+    resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{
     DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError, ToolListNotifier,
@@ -150,11 +150,9 @@ impl CoreMcpTools {
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| {
-                // A registered name is a `ToolName`: freeze checked.
-                ToolName::parse(descriptor.name)
-                    .is_ok_and(|tool| scope.allows_group_advertisement(&tool))
-            })
+            // The listing predicate the MCP surface uses: palette membership
+            // or a declared read (`ToolScope::admits`).
+            .filter(|descriptor| descriptor.advertised_by(scope))
             .map(tool_info_from_descriptor)
             .collect()
     }

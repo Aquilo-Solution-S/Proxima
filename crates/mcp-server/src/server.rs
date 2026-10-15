@@ -1248,18 +1248,19 @@ mod tests {
         );
         assert_eq!(*seen.lock().expect("lock"), ["host_echo"]);
 
-        // The palette gates a host tool by its name.
+        // The palette gates a host write by its name; a read is admitted
+        // under every palette (#462).
         let narrowed = McpAuthContext {
             owner,
             authz: auth.authz.clone().with_tool_scope(ToolScope::Palette(vec![
-                ScopeKey::parse("host_write").expect("a scope key"),
+                ScopeKey::parse("host_echo").expect("a scope key"),
             ])),
         };
         assert!(matches!(
             server
-                .call_tool("host_echo", serde_json::json!({}), author(), Some(narrowed))
+                .call_tool("host_write", serde_json::json!({}), author(), Some(narrowed))
                 .await,
-            Err(ToolInvocationError::NotAuthorized(name)) if name == "host_echo"
+            Err(ToolInvocationError::NotAuthorized(name)) if name == "host_write"
         ));
 
         // A viewer reads through a read-only host tool and cannot write.
@@ -1604,13 +1605,12 @@ mod tests {
         }
     }
 
-    /// `read_resource` now traverses the same `RequestBehavior`
-    /// onion (`ScopeGateBehavior`) as `call_tool`, instead of a hand-rolled
-    /// scope check outside the chain. An out-of-palette caller must still
-    /// be denied, and denial must still surface as `NotAuthorized` keyed by
-    /// the resource's scope key — matching the pre-refactor error shape.
+    /// `read_resource` traverses the same `RequestBehavior` onion
+    /// (`ScopeGateBehavior`) as `call_tool`. A palette narrows writes only:
+    /// a core resource is a declared read, so an empty palette still reads
+    /// `proxima://schemas` for the owner (#462).
     #[tokio::test]
-    async fn read_resource_denies_out_of_palette_scope() {
+    async fn read_resource_admitted_under_empty_palette() {
         let server = make_server();
         let owner = fake_owner();
         let author = McpAuthorContext {
@@ -1624,18 +1624,15 @@ mod tests {
             .with_tool_scope(ToolScope::Palette(Vec::new()));
         let auth = McpAuthContext { owner, authz };
 
-        let err = server
+        let result = server
             .read_resource("proxima://schemas", author, Some(auth))
-            .await
-            .expect_err("empty palette must deny resource reads");
+            .await;
 
         assert!(
-            matches!(
-                err,
-                ToolInvocationError::NotAuthorized(ref key) if key == protocol_resource::SCHEMAS
-            ),
-            "unexpected error: {err:?}"
+            !matches!(result, Err(ToolInvocationError::NotAuthorized(_))),
+            "an empty palette must not deny a resource read: {result:?}"
         );
+        result.expect("the owner reads proxima://schemas under an empty palette");
     }
 
     #[tokio::test]

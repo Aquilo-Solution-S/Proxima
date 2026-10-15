@@ -82,6 +82,21 @@ pub enum ToolScope {
 }
 
 impl ToolScope {
+    /// The one admission predicate a palette applies to a call or a
+    /// listing entry: the palette holds `key`, **or** what `key` names is
+    /// declared [`ToolEffect::ReadOnly`](crate::ToolEffect::ReadOnly).
+    ///
+    /// A palette narrows what a caller may *change*; it never narrows what
+    /// it may read. `effect` is the declaration of exactly the key judged —
+    /// a dispatcher leaf's own action effect, a flat tool's, a core
+    /// resource's — never a tool-level join. `None` (undeclared) takes no
+    /// read path: silence is a write. Owner authorization is a separate gate
+    /// that still runs after this one.
+    #[must_use]
+    pub fn admits(&self, key: &ScopeKey, effect: Option<crate::ToolEffect>) -> bool {
+        effect.is_some_and(crate::ToolEffect::is_read_only) || self.allows(key)
+    }
+
     /// Exact membership: whether the palette holds `key`. A bare dispatcher
     /// name does not hold its leaves, and a leaf does not hold its tool.
     #[must_use]
@@ -1709,6 +1724,20 @@ mod tests {
 
         assert!(scope.allows(&key(protocol_resource::MEMORY)));
         assert!(!scope.allows(&key(protocol_action::CORE_GOAL_SET)));
+    }
+
+    /// #462: `admits` is membership or a declared read; undeclared and
+    /// writes need membership.
+    #[test]
+    fn admits_reads_under_every_palette_and_writes_only_by_membership() {
+        use crate::{Replay, ToolEffect};
+        let empty = ToolScope::Palette(Vec::new());
+        let key = ScopeKey::Tool(tool(protocol_tool::CORE_REMEMBER));
+        assert!(empty.admits(&key, Some(ToolEffect::ReadOnly)));
+        assert!(!empty.admits(&key, None));
+        assert!(!empty.admits(&key, Some(ToolEffect::Additive(Replay::Idempotent))));
+        let holding = ToolScope::Palette(vec![key.clone()]);
+        assert!(holding.admits(&key, None));
     }
 
     #[test]

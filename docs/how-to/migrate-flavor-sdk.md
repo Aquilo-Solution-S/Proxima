@@ -1,5 +1,13 @@
 # Migrate the Flavor SDK
 
+## v0.0.33
+
+Pin all Proxima dependencies to the same `v0.0.33` tag. No migration.
+
+| Change | Host action |
+|---|---|
+| Palettes admit reads | **Behaviour change:** a `ToolScope::Palette` no longer narrows reads. Every key declared `ToolEffect::ReadOnly` (flat tool, dispatcher action) and every core `proxima://` resource is admitted and listed under any palette; owner authorization still applies. A host that relied on a palette (or on `tool_palette_excluding`) to *hide* a read must stop doing so; declare a flavor tool's effect correctly — an undeclared effect is a write and stays gated. |
+
 ## v0.0.32
 
 Pin all Proxima dependencies to the same `v0.0.32` tag. No migration.

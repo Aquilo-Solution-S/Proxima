@@ -1019,16 +1019,16 @@ async fn facade_reads_core_resources_with_resource_scope() {
                 .is_empty()
         );
 
-        let denied = read_test_model_resource(
+        // A palette narrows writes only (#462): a palette without
+        // `resource:memory` still reads the owner's memory.
+        let admitted = read_test_model_resource(
             &tools,
             host_authz(&owner, palette_of(&["resource:schemas"])),
             owner,
             &format!("proxima://memory/{memory}"),
         )
-        .await;
-        assert!(
-            matches!(denied, Err(CoreMcpError::NotAuthorized(scope)) if scope == "resource:memory")
-        );
+        .await?;
+        assert_eq!(admitted["memory"], memory);
 
         built.shutdown().await;
         Ok(())
@@ -1036,6 +1036,111 @@ async fn facade_reads_core_resources_with_resource_scope() {
     .await;
 
     result.expect("core MCP resource facade integration test failed");
+}
+
+/// #462: a palette that holds only flavor commands still reads the owner's
+/// memories (search and `proxima://memory/{id}`), still refuses a write, and
+/// owner authorization still refuses another owner's memory.
+#[tokio::test]
+async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
+    let split_db = clone_split_core_db("proxima_core_palette_reads")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let other = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(runtime_url.clone())
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+
+        let remember = |label: &'static str| {
+            serde_json::json!({
+                "title": format!("Palette read {label}"),
+                "body": "A palette narrows writes, never reads.",
+                "tags": ["palette"],
+                "idempotency_key": format!("palette-read-{label}")
+            })
+        };
+        let mine = call_test_model_tool(
+            &tools,
+            host_authz(&owner, ToolScope::All),
+            owner,
+            "core_remember",
+            remember("mine"),
+        )
+        .await?;
+        let mine = mine["handle"].as_str().expect("handle").to_owned();
+        let theirs = call_test_model_tool(
+            &tools,
+            host_authz(&other, ToolScope::All),
+            other,
+            "core_remember",
+            remember("theirs"),
+        )
+        .await?;
+        let theirs = theirs["handle"].as_str().expect("handle").to_owned();
+
+        let flavor_only = || host_authz(&owner, palette_of(&["flavor_command"]));
+
+        call_test_model_tool(
+            &tools,
+            flavor_only(),
+            owner,
+            "core_search_memories",
+            serde_json::json!({ "query": "palette" }),
+        )
+        .await?;
+
+        let read = read_test_model_resource(
+            &tools,
+            flavor_only(),
+            owner,
+            &format!("proxima://memory/{mine}"),
+        )
+        .await?;
+        assert_eq!(read["memory"], mine.as_str());
+
+        let write = call_test_model_tool(
+            &tools,
+            flavor_only(),
+            owner,
+            "core_remember",
+            remember("refused"),
+        )
+        .await;
+        assert!(
+            matches!(write, Err(CoreMcpError::NotAuthorized(ref name)) if name == "core_remember"),
+            "a write outside the palette is refused: {write:?}"
+        );
+
+        let foreign = read_test_model_resource(
+            &tools,
+            flavor_only(),
+            owner,
+            &format!("proxima://memory/{theirs}"),
+        )
+        .await;
+        assert!(
+            foreign.is_err(),
+            "owner authorization still refuses another owner's memory: {foreign:?}"
+        );
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    result.expect("palette read integration test failed");
 }
 
 #[tokio::test]

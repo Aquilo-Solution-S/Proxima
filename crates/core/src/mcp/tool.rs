@@ -319,25 +319,49 @@ impl McpToolDescriptor {
     pub fn advertised_by(&self, scope: &ToolScope) -> bool {
         match scope {
             ToolScope::All => true,
-            ToolScope::Palette(_) => ToolName::parse(self.name).is_ok_and(|tool| {
-                scope.allows_tool_advertisement(
-                    &tool,
-                    !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty(),
-                )
-            }),
+            ToolScope::Palette(_) => {
+                // A read is admitted under every palette
+                // ([`ToolScope::admits`]): a flat read-only tool, or a
+                // dispatcher with one read-only action, is shown whatever the
+                // palette holds. Per action, never the tool-level join.
+                if self.read_admitted() {
+                    return true;
+                }
+                ToolName::parse(self.name).is_ok_and(|tool| {
+                    scope.allows_tool_advertisement(
+                        &tool,
+                        !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty(),
+                    )
+                })
+            }
         }
     }
 
-    /// Whether `scope` lets a listing show one `action` of this dispatcher
-    /// ([`ToolScope::advertises_action`]). An action name that is no key is
-    /// in no palette.
+    /// Whether `scope` lets a listing show one `action` of this dispatcher:
+    /// the action is declared read-only ([`ToolScope::admits`]), or the
+    /// palette advertises it ([`ToolScope::advertises_action`]). An action
+    /// name that is no key is in no palette.
     #[must_use]
     pub fn action_advertised_by(&self, scope: &ToolScope, action: &str) -> bool {
         match scope {
             ToolScope::All => true,
-            ToolScope::Palette(_) => ToolName::parse(self.name)
-                .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
-                .is_ok_and(|(tool, action)| scope.advertises_action(&tool, &action)),
+            ToolScope::Palette(_) => {
+                self.action_is_read_only(action)
+                    || ToolName::parse(self.name)
+                        .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
+                        .is_ok_and(|(tool, action)| scope.advertises_action(&tool, &action))
+            }
+        }
+    }
+
+    /// Whether any key of this tool is admitted under every palette as a
+    /// read: a flat tool declared read-only, or a dispatcher with at least
+    /// one read-only action. Undeclared is a write.
+    fn read_admitted(&self) -> bool {
+        if self.action_arg_specs.is_empty() && self.argv_action_specs.is_empty() {
+            self.is_read_only()
+        } else {
+            self.actions().any(|(_, effect)| effect.is_read_only())
         }
     }
 }
