@@ -21,6 +21,7 @@ pub mod membership;
 pub mod memory;
 pub mod memory_counts;
 pub mod memory_spaces;
+pub(crate) mod other_stores;
 pub mod transfer;
 pub mod upload;
 pub mod walk_memory_lineage;

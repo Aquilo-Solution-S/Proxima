@@ -1069,6 +1069,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("lexical_languages", Rows::NoKind),
     ("mcp_call_logged_v1", Rows::FactSidecar),
     ("memory", Rows::Kind),
+    ("memory_external_origin", Rows::Memory("t")),
     ("memory_head", Rows::Kind),
     ("owner_rls_epoch", Rows::NoKind),
     ("owners", Rows::NoKind),
@@ -1185,6 +1186,15 @@ async fn assert_fact_scope_sql(
         .execute(&mut *cool)
         .await?;
     cool.commit().await?;
+    // An other-store origin of the Abstraction (0029): the row reads and
+    // writes at its memory's kind.
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
+         VALUES ($1, 'wiki', 'page-1')",
+    )
+    .bind(abstraction)
+    .execute(admin)
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id, status, dim)
          VALUES ($1, 'test-embed', $2, 'failed_permanent', 1024)",

@@ -30,6 +30,7 @@ fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
         body_max_chars: None,
         spaces: Vec::new(),
         cursor: None,
+        stores: None,
     }
 }
 

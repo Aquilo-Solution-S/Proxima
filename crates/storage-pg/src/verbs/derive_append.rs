@@ -367,6 +367,59 @@ pub(crate) async fn assert_derived_index_rows(
     Ok(origins.len().saturating_add(references.len()))
 }
 
+/// Record the other-store origins of a fresh derived row, or check a
+/// replay declares the ones its first write recorded. No constraint looks
+/// at the remote side: the rows are `(t, store, handle)` and nothing more.
+///
+/// # Errors
+///
+/// `Conflict` when a replay's stored external origins differ from the
+/// declaration. Storage errors from Postgres.
+pub(crate) async fn record_external_origins(
+    tx: &mut Transaction<'_, Postgres>,
+    outcome: &DerivedOutcome,
+    external: &[proxima_core::storage_ports::other_stores::QualifiedHandle],
+) -> Result<usize, StorageError> {
+    let t = outcome.memory_id.into_inner();
+    let declared: BTreeSet<(String, String)> = external
+        .iter()
+        .map(|origin| (origin.store.as_str().to_string(), origin.handle.clone()))
+        .collect();
+    if outcome.idempotent_replay {
+        let stored: BTreeSet<(String, String)> = sqlx::query_as(
+            "SELECT store, handle FROM proxima_core.memory_external_origin WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err)?
+        .into_iter()
+        .collect();
+        if stored != declared {
+            return Err(StorageError::Conflict(
+                "derived replay changed declared external origins".into(),
+            ));
+        }
+        return Ok(declared.len());
+    }
+    if declared.is_empty() {
+        return Ok(0);
+    }
+    let (stores, handles): (Vec<String>, Vec<String>) = declared.iter().cloned().unzip();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
+         SELECT $1, s, h FROM unnest($2::text[], $3::text[]) AS x(s, h)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(t)
+    .bind(&stores)
+    .bind(&handles)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(declared.len())
+}
+
 enum PinColumn {
     Origins,
     Refs,

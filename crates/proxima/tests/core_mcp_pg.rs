@@ -27,6 +27,9 @@ mod embedding_routing;
 #[path = "core_mcp_pg/hybrid_search.rs"]
 mod hybrid_search;
 
+#[path = "core_mcp_pg/other_stores.rs"]
+mod other_stores;
+
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};

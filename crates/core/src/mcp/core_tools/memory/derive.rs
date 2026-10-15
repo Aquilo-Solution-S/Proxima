@@ -221,13 +221,26 @@ impl McpTool for DeriveTool {
             // The declared sources, resolved to memories in request order
             // with repeats dropped: a handle named twice is one input, and
             // no input at all is not a derivation.
+            // Other-store origins split off first (only with a port wired)
+            // and are read as the caller before anything is written.
+            let (local_handles, external) =
+                super::super::other_stores::partition_sources(&ctx, &args.source_handles);
+            if !external.is_empty() && local_handles.is_empty() {
+                super::super::other_stores::admit_external_origins(&ctx, None, &external).await?;
+            }
             let sources = dedup_resolved(
-                &args.source_handles,
+                &local_handles,
                 MAX_SOURCE_HANDLES,
                 "source_handles",
                 "source_handles must be nonempty for operator derivation",
                 |handle| resolve_source_memory(&ctx, handle),
             )?;
+            super::super::other_stores::admit_external_origins(
+                &ctx,
+                sources.first().map(|(_id, class)| *class),
+                &external,
+            )
+            .await?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{}\n{}", authored.title, authored.body),
@@ -269,7 +282,8 @@ impl McpTool for DeriveTool {
                     identity,
                 )?,
             }
-            .lexical_language(lexical_language);
+            .lexical_language(lexical_language)
+            .external_origins(external);
             let outcome = engine
                 .derive_memory(&ctx.authz, memory)
                 .await

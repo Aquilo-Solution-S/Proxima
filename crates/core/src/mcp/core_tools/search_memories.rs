@@ -194,6 +194,11 @@ pub struct SearchMemoriesArgs {
         description = "Opaque pagination cursor from a previous response's next_cursor. Returns the page after it. Query, mode, filters, order, spaces, and score knobs must stay unchanged; limit, include_body, and include_neighbor_edges may vary."
     )]
     pub cursor: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Stores to search: `local` for this one, or other stores this deployment reads. Omit for all of them; a schema_id only one store declares then searches that store. Other stores answer on the first page only."
+    )]
+    pub stores: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -210,6 +215,11 @@ pub struct SearchMemoriesOutput {
     pub neighbor_edges: Vec<NeighborEdge>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
+    /// Present only when other stores were searched: the ones that did not
+    /// answer within the time bound (or failed). Their hits are missing
+    /// from this page; the rest is returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unanswered: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -247,6 +257,11 @@ pub struct SearchMemoryOutput {
     /// Present only when a body was hydrated (`include_body=true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_truncated: Option<bool>,
+    /// Present only when other stores were searched: the store this hit
+    /// came from (`local` for this one). A hit of another store carries
+    /// the nil `memory_id`; its `memory` is the `<store>:<handle>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
 }
 
 impl McpTool for SearchMemoriesTool {
@@ -272,79 +287,195 @@ impl McpTool for SearchMemoriesTool {
             // the same query whichever spelling the caller sent.
             fold_tag_filter(&mut args.tags);
 
-            let mode = SearchMode::from(args.mode);
-            let since = parse_rfc3339(args.since.as_deref(), "since")?;
-            let until = parse_rfc3339(args.until.as_deref(), "until")?;
-            let spaces = resolve_search_spaces(&ctx, &args.spaces)?;
-            let lanes = plan_owner_lanes(&ctx, mode, query, spaces).await?;
-            let mut degraded_to_lexical = lanes
-                .iter()
-                .any(|lane| matches!(lane.arm, LaneArm::Degraded));
-            let ranking = ranking_for(&lanes);
-            // The fingerprint binds a cursor to everything that shapes the
-            // result set, so page N+1 provably continues the same query —
-            // including each Owner's scoring lane, so a page that would be
-            // ranked differently (a route moved, a provider went down)
-            // rejects the cursor instead of skipping or repeating rows.
-            let fingerprint = query_fingerprint(query, &args, since, until, &lanes);
-            let after = args
-                .cursor
-                .as_deref()
-                .map(|raw| decode_cursor(raw, &fingerprint))
-                .transpose()?;
-            let merge = MergeKind::of(ranking, args.order);
-            let positions = cursor_positions(after.as_ref(), merge, &lanes)?;
-            let prepared = PreparedSearch {
-                query: query.to_string(),
-                since,
-                until,
-                body_max_chars: effective_body_max_chars(args.body_max_chars),
-                limit: args.limit.min(50),
+            let stores = super::other_stores::route_search(
+                &ctx,
+                args.stores.as_deref(),
+                args.schema_id.as_deref(),
+            )
+            .await?;
+            let mut output = if stores.route.local {
+                search_local(&ctx, &args, query).await?
+            } else if args.cursor.is_some() {
+                return Err(McpToolError::InvalidInput(
+                    "cursor: a search of other stores only has no next page".into(),
+                ));
+            } else {
+                SearchMemoriesOutput {
+                    mode: format!("{:?}", SearchMode::from(args.mode)).to_lowercase(),
+                    degraded_to_lexical: false,
+                    ranking: SearchRanking::Rank,
+                    memories: Vec::new(),
+                    neighbor_edges: Vec::new(),
+                    next_cursor: None,
+                    has_more: false,
+                    unanswered: None,
+                }
             };
-            let mut lists = Vec::with_capacity(lanes.len());
-            let mut all_neighbor_edges = Vec::new();
-            let mut any_space_has_more = false;
-            for (lane, position) in lanes.into_iter().zip(positions) {
-                let result =
-                    search_one_space(&ctx, &args, &prepared, &lane, position.after).await?;
-                degraded_to_lexical |= result.degraded_to_lexical;
-                any_space_has_more |= result.has_more;
-                all_neighbor_edges.extend(result.neighbor_edges);
-                lists.push(RankedList {
-                    owner: lane.space.owner,
-                    position,
-                    rows: result.memories,
-                });
+            if let Some(service) = stores.service.as_deref()
+                && !stores.route.remotes.is_empty()
+                && args.cursor.is_none()
+            {
+                let remote = crate::storage_ports::other_stores::RemoteSearch {
+                    query: query.to_string(),
+                    limit: args.limit.min(50),
+                    kind: args.kind.map(EntityKind::from),
+                    schema_id: args.schema_id.clone(),
+                };
+                let (answered, unanswered) = super::other_stores::search_remotes(
+                    &ctx,
+                    service,
+                    &stores.route.remotes,
+                    &remote,
+                )
+                .await;
+                merge_store_hits(&mut output, answered, unanswered);
             }
-            let (memories, has_more, next_cursor) = match merge {
-                MergeKind::Keyset => paginate_merged_outputs(
-                    lists.into_iter().flat_map(|list| list.rows).collect(),
-                    args.order,
-                    prepared.limit as usize,
-                    any_space_has_more,
-                    after.as_ref().and_then(PageCursor::keyset),
-                    &fingerprint,
-                ),
-                MergeKind::Rank => paginate_rank_fused(
-                    lists,
-                    prepared.limit as usize,
-                    any_space_has_more,
-                    &fingerprint,
-                ),
-            };
-            retain_surviving_neighbor_edges(&memories, &mut all_neighbor_edges);
-
-            Ok(SearchMemoriesOutput {
-                mode: format!("{mode:?}").to_lowercase(),
-                degraded_to_lexical,
-                ranking,
-                memories,
-                neighbor_edges: all_neighbor_edges,
-                next_cursor,
-                has_more,
-            })
+            Ok(output)
         })
     }
+}
+
+/// Fuse this store's page with every other store's hits by reciprocal
+/// rank (k=60). The local page keeps its own cursor: other stores answer
+/// on the first page only, so their hits are added, never paginated.
+fn merge_store_hits(
+    output: &mut SearchMemoriesOutput,
+    answered: Vec<(
+        crate::storage_ports::other_stores::StoreName,
+        Vec<crate::storage_ports::other_stores::RemoteHit>,
+    )>,
+    unanswered: Vec<String>,
+) {
+    let local = std::mem::take(&mut output.memories);
+    let mut lists = vec![
+        local
+            .into_iter()
+            .map(|mut hit| {
+                hit.store = Some(crate::storage_ports::other_stores::LOCAL_STORE.to_string());
+                hit
+            })
+            .collect::<Vec<_>>(),
+    ];
+    for (store, hits) in answered {
+        lists.push(
+            hits.into_iter()
+                .map(|hit| remote_hit_output(&store, hit))
+                .collect(),
+        );
+    }
+    output.memories = crate::storage_ports::other_stores::rrf_merge(lists)
+        .into_iter()
+        .map(|(mut hit, score)| {
+            hit.score = score;
+            hit
+        })
+        .collect();
+    output.ranking = SearchRanking::Rank;
+    output.unanswered = Some(unanswered);
+}
+
+fn remote_hit_output(
+    store: &crate::storage_ports::other_stores::StoreName,
+    hit: crate::storage_ports::other_stores::RemoteHit,
+) -> SearchMemoryOutput {
+    SearchMemoryOutput {
+        memory_id: uuid::Uuid::nil(),
+        memory: format!("{store}:{}", hit.handle),
+        space: store.to_string(),
+        kind: hit.kind.as_str().to_string(),
+        schema_id: hit.schema_id,
+        created_at: hit.created_at,
+        snippet: hit.snippet,
+        score: 0.0,
+        lexical_score: 0.0,
+        similarity_score: 0.0,
+        tags: hit.tags,
+        body: None,
+        body_truncated: None,
+        store: Some(store.to_string()),
+    }
+}
+
+/// This store's page of one search: every Owner lane, merged.
+async fn search_local(
+    ctx: &McpToolCtx,
+    args: &SearchMemoriesArgs,
+    query: &str,
+) -> Result<SearchMemoriesOutput, McpToolError> {
+    let mode = SearchMode::from(args.mode);
+    let since = parse_rfc3339(args.since.as_deref(), "since")?;
+    let until = parse_rfc3339(args.until.as_deref(), "until")?;
+    let spaces = resolve_search_spaces(ctx, &args.spaces)?;
+    let lanes = plan_owner_lanes(ctx, mode, query, spaces).await?;
+    let mut degraded_to_lexical = lanes
+        .iter()
+        .any(|lane| matches!(lane.arm, LaneArm::Degraded));
+    let ranking = ranking_for(&lanes);
+    // The fingerprint binds a cursor to everything that shapes the
+    // result set, so page N+1 provably continues the same query —
+    // including each Owner's scoring lane, so a page that would be
+    // ranked differently (a route moved, a provider went down)
+    // rejects the cursor instead of skipping or repeating rows.
+    let fingerprint = bind_stores(
+        query_fingerprint(query, args, since, until, &lanes),
+        args.stores.as_deref(),
+    );
+    let after = args
+        .cursor
+        .as_deref()
+        .map(|raw| decode_cursor(raw, &fingerprint))
+        .transpose()?;
+    let merge = MergeKind::of(ranking, args.order);
+    let positions = cursor_positions(after.as_ref(), merge, &lanes)?;
+    let prepared = PreparedSearch {
+        query: query.to_string(),
+        since,
+        until,
+        body_max_chars: effective_body_max_chars(args.body_max_chars),
+        limit: args.limit.min(50),
+    };
+    let mut lists = Vec::with_capacity(lanes.len());
+    let mut all_neighbor_edges = Vec::new();
+    let mut any_space_has_more = false;
+    for (lane, position) in lanes.into_iter().zip(positions) {
+        let result = search_one_space(ctx, args, &prepared, &lane, position.after).await?;
+        degraded_to_lexical |= result.degraded_to_lexical;
+        any_space_has_more |= result.has_more;
+        all_neighbor_edges.extend(result.neighbor_edges);
+        lists.push(RankedList {
+            owner: lane.space.owner,
+            position,
+            rows: result.memories,
+        });
+    }
+    let (memories, has_more, next_cursor) = match merge {
+        MergeKind::Keyset => paginate_merged_outputs(
+            lists.into_iter().flat_map(|list| list.rows).collect(),
+            args.order,
+            prepared.limit as usize,
+            any_space_has_more,
+            after.as_ref().and_then(PageCursor::keyset),
+            &fingerprint,
+        ),
+        MergeKind::Rank => paginate_rank_fused(
+            lists,
+            prepared.limit as usize,
+            any_space_has_more,
+            &fingerprint,
+        ),
+    };
+    retain_surviving_neighbor_edges(&memories, &mut all_neighbor_edges);
+
+    Ok(SearchMemoriesOutput {
+        mode: format!("{mode:?}").to_lowercase(),
+        degraded_to_lexical,
+        ranking,
+        memories,
+        neighbor_edges: all_neighbor_edges,
+        next_cursor,
+        has_more,
+        unanswered: None,
+    })
 }
 
 struct PreparedSearch {
@@ -910,6 +1041,23 @@ fn query_fingerprint(
     crate::mcp::cursor::fingerprint(&canon)
 }
 
+/// An explicit `stores` choice is part of the query: a cursor minted for
+/// one set of stores does not continue another. Omitted, the fingerprint is
+/// the one every earlier release minted.
+fn bind_stores(fingerprint: String, stores: Option<&[String]>) -> String {
+    match stores {
+        None => fingerprint,
+        Some(stores) => {
+            let mut stores = stores.to_vec();
+            stores.sort_unstable();
+            stores.dedup();
+            let canon = serde_json::to_string(&(fingerprint, stores))
+                .expect("fingerprint canon serializes");
+            crate::mcp::cursor::fingerprint(&canon)
+        }
+    }
+}
+
 /// Cut `body` to at most `max_chars` characters, returning the (possibly
 /// shortened) text and whether anything was dropped. The truncated string
 /// is a char-boundary prefix, so comparing byte lengths is an O(1) exact
@@ -997,6 +1145,7 @@ fn search_memory_output(
         tags,
         body,
         body_truncated,
+        store: None,
     })
 }
 

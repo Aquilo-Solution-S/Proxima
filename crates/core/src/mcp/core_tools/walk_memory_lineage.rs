@@ -80,6 +80,15 @@ pub struct LineageNodeOutput {
     pub schema_id: String,
     pub snippet: String,
     pub distance: u8,
+    /// Set only on a node of another store: its store name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+    /// Set only on an other-store node that could not be read: `erased`
+    /// (the store erased it) or `unavailable` (no port, the store did not
+    /// answer, or the caller may no longer read it). The walk never fails
+    /// on such a node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 /// One hop of the walk. Lineage traverses `origin` and nothing else, so
@@ -177,11 +186,13 @@ pub async fn walk_memory_lineage(
                 schema_id: node.schema_id.as_str().to_string(),
                 snippet: node.snippet,
                 distance: node.distance,
+                store: None,
+                status: None,
             })
         })
         .collect::<Result<Vec<_>, McpToolError>>()?;
 
-    let edges = response
+    let mut edges: Vec<LineageEdgeOutput> = response
         .edges
         .into_iter()
         .map(|hop| LineageEdgeOutput {
@@ -191,6 +202,11 @@ pub async fn walk_memory_lineage(
             distance: hop.distance,
         })
         .collect();
+
+    let mut nodes = nodes;
+    if matches!(direction, MemoryLineageDirection::Ancestors) {
+        append_external_origins(&ctx, &mut nodes, &mut edges, response.external_origins).await;
+    }
 
     let next_cursor = response
         .next_cursor
@@ -208,6 +224,78 @@ pub async fn walk_memory_lineage(
         has_more,
         next_cursor,
     })
+}
+
+/// Other-store origins of the page's nodes, each read through the port as
+/// the caller. A node of another store is one hop beyond the node it is an
+/// origin of; erased or unreadable origins render with a `status` instead
+/// of failing the walk.
+async fn append_external_origins(
+    ctx: &McpToolCtx,
+    nodes: &mut Vec<LineageNodeOutput>,
+    edges: &mut Vec<LineageEdgeOutput>,
+    external: Vec<(
+        MemoryId,
+        crate::storage_ports::other_stores::QualifiedHandle,
+    )>,
+) {
+    use crate::storage_ports::other_stores::RemoteRead;
+    const SNIPPET_CHARS: usize = 200;
+    let service = super::other_stores::service(ctx);
+    for (memory_id, origin) in external {
+        let Some(source) = nodes
+            .iter()
+            .find(|node| {
+                node.store.is_none() && ctx.resolve_memory(&node.memory).ok() == Some(memory_id)
+            })
+            .map(|node| (node.memory.clone(), node.distance))
+        else {
+            continue;
+        };
+        let distance = source.1.saturating_add(1);
+        let read = match &service {
+            Some(service) => service
+                .read_bounded(super::other_stores::caller(ctx), &origin)
+                .await
+                .ok(),
+            None => None,
+        };
+        let handle = origin.to_string();
+        let (kind, schema_id, snippet, status) = match read {
+            Some(RemoteRead::Found(memory)) => (
+                memory.kind.as_str().to_string(),
+                memory.schema_id,
+                memory.body.chars().take(SNIPPET_CHARS).collect(),
+                None,
+            ),
+            Some(RemoteRead::Erased) => {
+                (String::new(), String::new(), String::new(), Some("erased"))
+            }
+            Some(RemoteRead::NotFound) | None => (
+                String::new(),
+                String::new(),
+                String::new(),
+                Some("unavailable"),
+            ),
+        };
+        if !nodes.iter().any(|node| node.memory == handle) {
+            nodes.push(LineageNodeOutput {
+                memory: handle.clone(),
+                kind,
+                schema_id,
+                snippet,
+                distance,
+                store: Some(origin.store.to_string()),
+                status: status.map(ToString::to_string),
+            });
+        }
+        edges.push(LineageEdgeOutput {
+            source: source.0,
+            target: handle,
+            kind: crate::EdgeKind::Origin.as_str().to_string(),
+            distance,
+        });
+    }
 }
 
 fn format_lineage_target(

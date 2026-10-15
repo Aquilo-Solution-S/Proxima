@@ -690,6 +690,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     // here already witnesses.
     "publication_consumer",
     "publication_delivery",
+    // Added after the baseline by 0029: other-store origins of a derived
+    // memory, keyed on its `t` and deleted with it by a named erase leg.
+    // `other_stores` tests in core_mcp_pg pin the rows.
+    "memory_external_origin",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;
