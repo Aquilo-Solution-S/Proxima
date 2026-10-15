@@ -419,7 +419,7 @@ Current RPCs outside the five graph verbs:
 
 | Family | RPCs | Contract |
 |---|---|---|
-| deployment profiles | environment-derived `ToolScope` | narrows advertised/callable MCP tools and resources; never grants graph authority |
+| deployment profiles | environment-derived `ToolScope` | narrows advertised/callable writes and owner-audience keys, never a read for every audience ([12 §Scope keys](12-tool-manifest.md#scope-keys)); never grants graph authority |
 
 Goal wake configuration is part of `GoalWrite`/Goal storage, not a separate
 runtime config entity. Self is queried from authorized active Goal heads and

@@ -19,6 +19,7 @@ mod host_state;
 mod host_state_lifecycle;
 mod mcp;
 mod memory;
+pub mod other_stores;
 mod owner_inverse;
 mod proof;
 pub mod publication;

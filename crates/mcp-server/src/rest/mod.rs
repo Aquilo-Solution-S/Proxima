@@ -33,7 +33,7 @@ use proxima_core::mcp::{
 
 use crate::handler::{
     Caller, action_allowed_for_auth, advertised_resource_scope_keys, advertised_tool_ids,
-    annotations_for_auth, project_dispatcher_actions_for_auth, resource_scope_allows,
+    annotations_for_auth, project_dispatcher_actions_for_auth, resource_allowed_for_auth,
     tool_allowed_for_auth,
 };
 use crate::rest::context::{RestAuth, author_from_headers, reject_reserved_arguments};
@@ -149,9 +149,8 @@ fn listing_ctx(
 
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
 async fn list_resources(RestAuth(auth): RestAuth) -> Response {
-    let scope = Some(auth.authz.tool_scope());
     let resources: Vec<serde_json::Value> = all_core_resources()
-        .filter(|resource| resource_scope_allows(scope, resource))
+        .filter(|resource| resource_allowed_for_auth(Some(&auth), resource))
         .map(resource_json)
         .collect();
     json_ok(&serde_json::json!({ "resources": resources }))
@@ -181,7 +180,7 @@ async fn how_to(
         state.host.registry(),
         Caller::listing(Some(&auth), Some(&ctx)),
     );
-    let advertised_resources = advertised_resource_scope_keys(Some(auth.authz.tool_scope()));
+    let advertised_resources = advertised_resource_scope_keys(Some(&auth));
     let body = selfdoc::how_to_markdown(&advertised_tools, &advertised_resources);
     let mut response = body.into_response();
     set_headers(&mut response, "text/markdown; charset=utf-8");

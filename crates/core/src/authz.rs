@@ -82,6 +82,35 @@ pub enum ToolScope {
 }
 
 impl ToolScope {
+    /// The admission predicate a palette applies to a flat key, in a call or
+    /// a listing: `declared` is an
+    /// [open read](crate::mcp::KeyDeclaration::is_open_read), **or** the
+    /// palette holds `key`.
+    ///
+    /// A palette narrows what a caller may *change*, and the owner's own
+    /// keys; it never narrows a read for every audience. `declared` is the
+    /// declaration of exactly the key judged — a flat tool's, a host tool's,
+    /// a core resource's — never a tool-level join. Undeclared takes no read
+    /// path: silence is a write. Owner authorization is a separate gate that
+    /// still runs after this one.
+    #[must_use]
+    pub fn admits(&self, key: &ScopeKey, declared: crate::mcp::KeyDeclaration) -> bool {
+        declared.is_open_read() || self.allows(key)
+    }
+
+    /// [`Self::admits`] for one `action` of dispatcher `tool`: `declared` is
+    /// the action's own declaration, and membership is the leaf
+    /// ([`Self::allows_action`]).
+    #[must_use]
+    pub fn admits_action(
+        &self,
+        tool: &ToolName,
+        action: &ActionName,
+        declared: crate::mcp::KeyDeclaration,
+    ) -> bool {
+        declared.is_open_read() || self.allows_action(tool, action)
+    }
+
     /// Exact membership: whether the palette holds `key`. A bare dispatcher
     /// name does not hold its leaves, and a leaf does not hold its tool.
     #[must_use]
@@ -1709,6 +1738,30 @@ mod tests {
 
         assert!(scope.allows(&key(protocol_resource::MEMORY)));
         assert!(!scope.allows(&key(protocol_action::CORE_GOAL_SET)));
+    }
+
+    /// #462: `admits` is membership or a read for every audience;
+    /// undeclared, writes and the owner's own reads need membership.
+    #[test]
+    fn admits_shared_reads_under_every_palette_and_the_rest_only_by_membership() {
+        use crate::mcp::KeyDeclaration;
+        use crate::{McpToolAudience, Replay, ToolEffect};
+        let empty = ToolScope::Palette(Vec::new());
+        let key = ScopeKey::Tool(tool(protocol_tool::CORE_REMEMBER));
+        let owner_read = KeyDeclaration {
+            effect: Some(ToolEffect::ReadOnly),
+            audience: McpToolAudience::Owner,
+        };
+        assert!(empty.admits(&key, KeyDeclaration::shared(Some(ToolEffect::ReadOnly))));
+        assert!(!empty.admits(&key, KeyDeclaration::UNDECLARED));
+        assert!(!empty.admits(
+            &key,
+            KeyDeclaration::shared(Some(ToolEffect::Additive(Replay::Idempotent)))
+        ));
+        assert!(!empty.admits(&key, owner_read));
+        let holding = ToolScope::Palette(vec![key.clone()]);
+        assert!(holding.admits(&key, KeyDeclaration::UNDECLARED));
+        assert!(holding.admits(&key, owner_read));
     }
 
     #[test]

@@ -203,6 +203,7 @@ impl MemoryReadPort for MembershipStorage {
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
+            external_origins: Vec::new(),
         })
     }
 

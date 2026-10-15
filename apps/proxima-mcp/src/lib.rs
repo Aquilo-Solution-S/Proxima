@@ -117,10 +117,11 @@ fn memory_keep_set() -> Vec<&'static str> {
     ids
 }
 
-/// Tool scope keys advertised by the `code` profile: the code flavor's reads
-/// and nothing else — no memory tool, no memory resource, no repository
-/// administration. A code-search deployment built on it cannot author memory
-/// whatever an agent is told; `PROXIMA_TOOL_ALLOW` adds administration back.
+/// Tool scope keys the `code` profile's palette holds: the code flavor's
+/// reads — no memory write, no repository administration. A code-search
+/// deployment built on it cannot author memory whatever an agent is told;
+/// `PROXIMA_TOOL_ALLOW` adds administration back. Like every palette it
+/// admits every read for every audience besides (12 §Scope keys).
 #[cfg(feature = "code")]
 fn code_keep_set() -> [&'static str; 4] {
     use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
@@ -628,8 +629,8 @@ fn build_app(
     config: McpConfig,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
-    let registered_ids = registered_tool_ids()?;
-    let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
+    let registered = registered_tool_ids()?;
+    let tool_scope = tool_scope_from_env(&lookup, &registered)?;
     let platform_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
     let owner_access: Arc<dyn OwnerAccessPort> = if let Some(platform_url) = platform_url.as_deref()
     {
@@ -781,25 +782,39 @@ enum ToolProfile {
 /// That is what lets `PROXIMA_TOOL_ALLOW` name one of its leaves and
 /// `PROXIMA_TOOL_PROFILE=full` grant it leaf by leaf, exactly as it does for
 /// a substrate dispatcher.
-fn registered_tool_ids() -> Result<Vec<ScopeKey>, CliError> {
+fn registered_tool_ids() -> Result<RegisteredKeys, CliError> {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as FlavorBundle>::register(&mut registry)
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
     let frozen = registry
         .try_freeze()
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
-    Ok(proxima_core::canonical_scope_keys(&frozen))
+    Ok(RegisteredKeys {
+        all: proxima_core::canonical_scope_keys(&frozen),
+        open_reads: proxima_core::canonical_open_read_keys(&frozen),
+    })
+}
+
+/// What this build registers, as the env profile is resolved against it.
+#[derive(Debug, Default)]
+struct RegisteredKeys {
+    /// Every canonical key: what `PROXIMA_TOOL_ALLOW` and `PROXIMA_TOOL_DENY`
+    /// may name.
+    all: Vec<ScopeKey>,
+    /// The keys no palette narrows (reads for every audience): a
+    /// `PROXIMA_TOOL_DENY` entry naming one is refused.
+    open_reads: Vec<ScopeKey>,
 }
 
 fn tool_scope_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
-    registered_ids: &[ScopeKey],
+    registered: &RegisteredKeys,
 ) -> Result<ToolScope, CliError> {
     resolve_tool_scope(
         lookup_non_empty(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
         lookup_non_empty(lookup, PROXIMA_TOOL_ALLOW).as_deref(),
         lookup_non_empty(lookup, PROXIMA_TOOL_DENY).as_deref(),
-        registered_ids,
+        registered,
     )
 }
 
@@ -807,7 +822,7 @@ fn resolve_tool_scope(
     profile_name: Option<&str>,
     allow_raw: Option<&str>,
     deny_raw: Option<&str>,
-    registered_ids: &[ScopeKey],
+    registered: &RegisteredKeys,
 ) -> Result<ToolScope, CliError> {
     // Fail closed. With no PROXIMA_TOOL_PROFILE set, default to `memory` —
     // which excludes core_transfer (owner transfer of a memory series)
@@ -817,10 +832,12 @@ fn resolve_tool_scope(
         Some(name) => parse_tool_profile(name)?,
         None => ToolProfile::Memory,
     };
+    let registered_ids = registered.all.as_slice();
     let allow = parse_tool_id_csv(allow_raw, PROXIMA_TOOL_ALLOW)?;
     let deny = parse_tool_id_csv(deny_raw, PROXIMA_TOOL_DENY)?;
     reject_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW)?;
     reject_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY)?;
+    reject_open_read_denials(&deny, &registered.open_reads)?;
 
     if profile == ToolProfile::Full && allow.is_empty() && deny.is_empty() {
         tracing::warn!(
@@ -918,6 +935,21 @@ fn reject_unknown_tool_ids(
         }
     }
     Ok(())
+}
+
+/// Fail closed on a `PROXIMA_TOOL_DENY` entry that names a read for every
+/// audience. Every palette admits such a read (12 §Scope keys), so removing
+/// it narrows nothing: accepted, the entry would be the operator believing a
+/// read is disabled when it never was.
+fn reject_open_read_denials(deny: &[ScopeKey], open_reads: &[ScopeKey]) -> Result<(), CliError> {
+    match deny.iter().find(|id| open_reads.contains(id)) {
+        Some(id) => Err(CliError::Runtime(ProximaError::Config(format!(
+            "{PROXIMA_TOOL_DENY} contains {:?}, a read: a tool profile narrows writes, never \
+             reads, so denying it would disable nothing",
+            id.to_string()
+        )))),
+        None => Ok(()),
+    }
 }
 
 /// The OIDC bundle for this process, from the shared facade contract.
@@ -1138,6 +1170,57 @@ mod tests {
         ids.map(key).to_vec()
     }
 
+    /// The registry `registered_tool_ids` reads: this build's.
+    fn frozen_registry() -> proxima_core::FlavorRegistryFrozen {
+        let mut registry = FlavorRegistry::new();
+        <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
+        registry.try_freeze().expect("freeze")
+    }
+
+    /// Every registered key the scope gate admits under `scope`, each judged
+    /// by its own declaration as a call of it is.
+    fn admitted(
+        frozen: &proxima_core::FlavorRegistryFrozen,
+        scope: &ToolScope,
+    ) -> BTreeSet<String> {
+        proxima_core::canonical_scope_keys(frozen)
+            .into_iter()
+            .filter(|key| match key {
+                ScopeKey::Tool(tool) => scope.admits(
+                    key,
+                    frozen
+                        .mcp_tool(tool.as_str())
+                        .expect("registered")
+                        .declaration(None),
+                ),
+                ScopeKey::Action { tool, action, .. } => scope.admits_action(
+                    tool,
+                    action,
+                    frozen
+                        .mcp_tool(tool.as_str())
+                        .expect("registered")
+                        .declaration(Some(action.as_str())),
+                ),
+                ScopeKey::Resource(resource) => scope.admits(
+                    key,
+                    all_core_resources()
+                        .find(|contract| contract.key() == *resource)
+                        .expect("a core resource")
+                        .declaration(),
+                ),
+            })
+            .map(|key| key.to_string())
+            .collect()
+    }
+
+    /// Hand-built registered keys, none of them a read no palette narrows.
+    fn registered(all: Vec<ScopeKey>) -> RegisteredKeys {
+        RegisteredKeys {
+            all,
+            open_reads: Vec::new(),
+        }
+    }
+
     fn config() -> McpConfig {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
@@ -1172,7 +1255,9 @@ mod tests {
         let mut registry = FlavorRegistry::new();
         <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
         let frozen = registry.try_freeze().expect("freeze");
-        let ids = registered_tool_ids().expect("ids derive from the same registry");
+        let ids = registered_tool_ids()
+            .expect("ids derive from the same registry")
+            .all;
 
         for id in &ids {
             match id {
@@ -1380,7 +1465,7 @@ mod tests {
 
     #[test]
     fn tool_profile_resolver_builds_deployment_scope() {
-        let registered_ids = keys([
+        let registered_ids = registered(keys([
             protocol_resource::MEMORY,
             protocol_resource::SCHEMAS,
             protocol_tool::CORE_SEARCH_MEMORIES,
@@ -1397,7 +1482,7 @@ mod tests {
             protocol_action::CORE_GOAL_SET,
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
-        ]);
+        ]));
 
         // No PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
         let default_scope =
@@ -1452,69 +1537,98 @@ mod tests {
 
     #[test]
     fn unknown_tool_profile_fails_closed() {
-        let err =
-            resolve_tool_scope(Some("unknown"), None, None, &[]).expect_err("unknown profile");
+        let err = resolve_tool_scope(Some("unknown"), None, None, &RegisteredKeys::default())
+            .expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
     }
 
-    /// Against everything this build registers, the `code` profile grants the
-    /// code flavor's four reads and no other tool, action leaf or resource;
-    /// `PROXIMA_TOOL_ALLOW` adds repository administration back (#358).
+    /// Against everything this build registers, the `code` profile admits
+    /// the reads every palette admits — the code flavor's four among them —
+    /// and no write; `PROXIMA_TOOL_ALLOW` adds repository administration back
+    /// (#358). Judged by the gate's own predicate, not by palette membership.
     #[cfg(feature = "code")]
     #[test]
-    fn code_profile_grants_code_reads_only() {
+    fn code_profile_admits_reads_and_no_write() {
+        let frozen = frozen_registry();
         let registered = registered_tool_ids().expect("registered ids");
-        let granted = |scope: &ToolScope| -> BTreeSet<String> {
-            registered
-                .iter()
-                .filter(|id| scope.allows(id))
-                .map(ToString::to_string)
-                .collect()
-        };
+        let open_reads: BTreeSet<String> = registered
+            .open_reads
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        for code_read in [
+            "proxima-code_list_repos",
+            "proxima-code_open_file_revision",
+            "proxima-code_search_chunks",
+            "proxima-code_search_commits",
+        ] {
+            assert!(open_reads.contains(code_read), "{code_read} is a read");
+        }
 
         let code = resolve_tool_scope(Some(protocol_profile::CODE), None, None, &registered)
             .expect("code profile");
-        assert_eq!(
-            granted(&code),
-            BTreeSet::from([
-                "proxima-code_list_repos".to_string(),
-                "proxima-code_open_file_revision".to_string(),
-                "proxima-code_search_chunks".to_string(),
-                "proxima-code_search_commits".to_string(),
-            ])
-        );
-        assert!(!code.allows_group_advertisement(&tool(protocol_tool::CORE_GOAL)));
+        assert_eq!(admitted(&frozen, &code), open_reads);
 
         let administered = resolve_tool_scope(
             Some(protocol_profile::CODE),
             Some("proxima-code_register_repo,proxima-code_start_ingest_head_snapshot"),
-            Some("proxima-code_search_commits"),
+            None,
             &registered,
         )
         .expect("code profile with administration");
-        assert_eq!(
-            granted(&administered),
-            BTreeSet::from([
-                "proxima-code_list_repos".to_string(),
-                "proxima-code_open_file_revision".to_string(),
-                "proxima-code_register_repo".to_string(),
-                "proxima-code_search_chunks".to_string(),
-                "proxima-code_start_ingest_head_snapshot".to_string(),
-            ])
-        );
+        let mut expected = open_reads;
+        expected.extend([
+            "proxima-code_register_repo".to_string(),
+            "proxima-code_start_ingest_head_snapshot".to_string(),
+        ]);
+        assert_eq!(admitted(&frozen, &administered), expected);
+    }
+
+    /// A deny entry naming a read for every audience would narrow nothing,
+    /// so it fails startup instead of being accepted. The owner's own read
+    /// `core_membership:list_members` stays with the palette and is
+    /// deniable.
+    #[test]
+    fn a_denied_read_fails_closed() {
+        let registered = registered_tool_ids().expect("registered ids");
+        for read in [
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            "core_upload:read_url",
+            protocol_resource::MEMORY,
+        ] {
+            let err = resolve_tool_scope(None, None, Some(read), &registered)
+                .expect_err("a denied read is refused");
+            let message = err.to_string();
+            assert!(
+                message.contains(PROXIMA_TOOL_DENY) && message.contains(read),
+                "{message}"
+            );
+        }
+        resolve_tool_scope(
+            None,
+            None,
+            Some(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS),
+            &registered,
+        )
+        .expect("an owner-audience read is deniable");
     }
 
     #[cfg(not(feature = "code"))]
     #[test]
     fn code_profile_needs_the_code_flavor() {
-        let err = resolve_tool_scope(Some(protocol_profile::CODE), None, None, &[])
-            .expect_err("a build without the code flavor has no code profile");
+        let err = resolve_tool_scope(
+            Some(protocol_profile::CODE),
+            None,
+            None,
+            &RegisteredKeys::default(),
+        )
+        .expect_err("a build without the code flavor has no code profile");
         assert!(err.to_string().contains("needs the code flavor"), "{err}");
     }
 
     #[test]
     fn unknown_deny_entry_typo_fails_closed() {
-        let registered_ids = keys([protocol_tool::CORE_SEARCH_MEMORIES]);
+        let registered_ids = registered(keys([protocol_tool::CORE_SEARCH_MEMORIES]));
         let err = resolve_tool_scope(None, None, Some("core_memroy"), &registered_ids)
             .expect_err("typo'd deny entry must be rejected, not silently ignored");
         assert!(
@@ -1526,7 +1640,7 @@ mod tests {
 
     #[test]
     fn unknown_allow_entry_typo_fails_closed() {
-        let registered_ids = keys([protocol_tool::CORE_SEARCH_MEMORIES]);
+        let registered_ids = registered(keys([protocol_tool::CORE_SEARCH_MEMORIES]));
         let err = resolve_tool_scope(
             Some(protocol_profile::MEMORY),
             Some("core_memroy"),
@@ -1546,10 +1660,10 @@ mod tests {
     /// does. Neighbouring valid entries do not rescue it.
     #[test]
     fn an_entry_that_is_not_a_scope_key_fails_startup_naming_it() {
-        let registered_ids = keys([
+        let registered_ids = registered(keys([
             protocol_tool::CORE_SEARCH_MEMORIES,
             protocol_action::CORE_GOAL_SET,
-        ]);
+        ]));
         for bad in [
             "a:b:c",
             "core_goal:",
@@ -1599,10 +1713,10 @@ mod tests {
 
     #[test]
     fn known_deny_entry_still_narrows_scope() {
-        let registered_ids = keys([
+        let registered_ids = registered(keys([
             protocol_tool::CORE_SEARCH_MEMORIES,
             protocol_tool::CORE_MEMORY_SPACES,
-        ]);
+        ]));
         let scope = resolve_tool_scope(
             None,
             None,
@@ -1614,28 +1728,35 @@ mod tests {
         assert!(!scope.allows(&key(protocol_tool::CORE_MEMORY_SPACES)));
     }
 
+    /// A grouped deny narrows what the gate admits and what a listing shows,
+    /// judged by the runtime predicates. `core_membership` is the owner's
+    /// own tool, so even its read `list_members` stays with the palette.
     #[test]
     fn grouped_action_deny_narrows_scope_and_advertisement() {
-        let registered_ids = keys([
-            protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
-            protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
-            protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
-            protocol_action::CORE_TRANSFER_TO_OWNER,
-        ]);
+        let frozen = frozen_registry();
         let scope = resolve_tool_scope(
-            None,
+            Some(protocol_profile::FULL),
             None,
             Some("core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_transfer:transfer_to_owner"),
-            &registered_ids,
+            &registered_tool_ids().expect("registered ids"),
         )
         .expect("known grouped deny entries are accepted");
 
-        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER)));
-        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER)));
-        assert!(!scope.allows(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS)));
-        assert!(!scope.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
-        assert!(!scope.allows_group_advertisement(&tool(protocol_tool::CORE_MEMBERSHIP)));
-        assert!(!scope.allows_group_advertisement(&tool(protocol_tool::CORE_TRANSFER)));
+        let admitted = admitted(&frozen, &scope);
+        for tool in [protocol_tool::CORE_MEMBERSHIP, protocol_tool::CORE_TRANSFER] {
+            let descriptor = frozen.mcp_tool(tool).expect("registered");
+            assert!(!descriptor.advertised_by(&scope), "{tool} is not listed");
+            for (action, _) in descriptor.actions() {
+                assert!(
+                    !descriptor.action_advertised_by(&scope, action),
+                    "{tool}:{action} is not listed"
+                );
+                assert!(
+                    !admitted.contains(&format!("{tool}:{action}")),
+                    "{tool}:{action} is not admitted"
+                );
+            }
+        }
     }
 
     #[test]

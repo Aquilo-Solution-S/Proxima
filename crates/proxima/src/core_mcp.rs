@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
-    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolName, ToolScope,
-    provider_safe_tool_name, resolve_operator_label, tool_name_matches,
+    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolScope, provider_safe_tool_name,
+    resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{
     DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError, ToolListNotifier,
@@ -143,19 +143,26 @@ impl CoreMcpTools {
             .collect::<Vec<_>>()
     }
 
-    /// List registered MCP tools visible under `scope`.
+    /// List registered MCP tools visible under `scope`, each as `scope` sees
+    /// it: a dispatcher's `args_schema` and `effect` cover only the actions
+    /// `scope` admits, so a tool listed for its reads does not offer its
+    /// writes. The palette predicate the MCP surface uses
+    /// ([`McpToolDescriptor::advertised_by`]); no owner role is applied.
     #[must_use]
     pub fn list_core_tools_for_scope(&self, scope: &ToolScope) -> Vec<CoreToolInfo> {
         self.host
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| {
-                // A registered name is a `ToolName`: freeze checked.
-                ToolName::parse(descriptor.name)
-                    .is_ok_and(|tool| scope.allows_group_advertisement(&tool))
+            .filter(|descriptor| descriptor.advertised_by(scope))
+            .map(|descriptor| {
+                let admitted = |action: &str| descriptor.action_advertised_by(scope, action);
+                CoreToolInfo {
+                    args_schema: descriptor.input_schema(admitted),
+                    effect: descriptor.effect_over(admitted),
+                    ..tool_info_from_descriptor(descriptor)
+                }
             })
-            .map(tool_info_from_descriptor)
             .collect()
     }
 

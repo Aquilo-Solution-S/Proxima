@@ -366,6 +366,14 @@ impl WriteSession for PgWriteSession {
             req.references,
         )
         .await?;
+        let edge_count = edge_count.saturating_add(
+            verbs::derive_append::record_external_origins(
+                &mut self.tx,
+                &outcome,
+                req.external_origins,
+            )
+            .await?,
+        );
         Ok(AuthorDerivedOutcome {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,

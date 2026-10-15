@@ -31,6 +31,7 @@ pub(super) struct PreparedDerived {
     pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
+    pub(super) external_origins: Vec<crate::storage_ports::other_stores::QualifiedHandle>,
 }
 
 #[cfg(test)]
@@ -99,6 +100,7 @@ impl RawDerivedTestRequest<'_> {
             extra_refs: self.extra_refs.to_vec(),
             lexical_language: self.lexical_language.map(str::to_owned),
             embedding_mode: EmbeddingMode::Inline,
+            external_origins: Vec::new(),
         })
     }
 }
@@ -120,6 +122,7 @@ impl PreparedDerived {
             queued_spaces: &self.queued_spaces,
             origins: &self.origins,
             references: &self.references,
+            external_origins: &self.external_origins,
         }
     }
 }
@@ -292,6 +295,7 @@ pub struct DerivedMemory {
     pub(crate) extra_refs: Vec<MemoryId>,
     pub(crate) lexical_language: Option<String>,
     pub(crate) embedding_mode: EmbeddingMode,
+    pub(crate) external_origins: Vec<crate::storage_ports::other_stores::QualifiedHandle>,
 }
 
 impl DerivedMemory {
@@ -346,6 +350,7 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             embedding_mode: EmbeddingMode::Inline,
+            external_origins: Vec::new(),
         })
     }
     /// Create a Perspective derived from Abstractions.
@@ -372,6 +377,7 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             embedding_mode: EmbeddingMode::Inline,
+            external_origins: Vec::new(),
         })
     }
     /// Create an origin-free Perspective grounded through its payload references.
@@ -394,7 +400,22 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             embedding_mode: EmbeddingMode::Inline,
+            external_origins: Vec::new(),
         }
+    }
+    /// Add origins that live in other stores. The caller has read each one
+    /// through the other-stores port; duplicates are removed.
+    #[must_use]
+    pub fn external_origins(
+        mut self,
+        origins: impl IntoIterator<Item = crate::storage_ports::other_stores::QualifiedHandle>,
+    ) -> Self {
+        for origin in origins {
+            if !self.external_origins.contains(&origin) {
+                self.external_origins.push(origin);
+            }
+        }
+        self
     }
     /// Add memory reference pins, distinct from derivation origins. Duplicates are removed.
     #[must_use]
@@ -713,6 +734,7 @@ impl Engine {
             queued_spaces,
             origins,
             references,
+            external_origins: memory.external_origins,
         })
     }
 
@@ -921,6 +943,7 @@ impl Engine {
             queued_spaces: &queued_spaces,
             origins: req.derived_from,
             references,
+            external_origins: &[],
         };
         self.storage()
             .memory_authoring

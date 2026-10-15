@@ -82,6 +82,9 @@ pub struct RuntimeBuilder {
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
     outbox_consumers: OutboxConsumers,
+    /// The built-in HTTP sink `PROXIMA_OUTBOX_HTTP_URL` configures; added
+    /// as the consumer `http` at [`Self::resolve`].
+    outbox_http: Option<Arc<crate::outbox_http::HttpIntake>>,
     host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
     /// A second participant was registered; [`Self::resolve`] refuses.
     duplicate_host_state_participant: bool,
@@ -137,6 +140,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
+            .field("outbox_http", &self.outbox_http)
             .field(
                 "has_host_state_participant",
                 &self.host_state_participant.is_some(),
@@ -200,6 +204,7 @@ impl RuntimeBuilder {
             publication: self.publication.or(base.publication),
             published_retention: self.published_retention.or(base.published_retention),
             outbox_consumers: base.outbox_consumers.overlaid_by(self.outbox_consumers),
+            outbox_http: self.outbox_http.or(base.outbox_http),
             duplicate_host_state_participant: self.duplicate_host_state_participant
                 || base.duplicate_host_state_participant
                 || (self.host_state_participant.is_some() && base.host_state_participant.is_some()),
@@ -506,6 +511,24 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Read memory stores beside this one through `port` (issue #462):
+    /// `core_search_memories` fans out to them, `core_derive` accepts
+    /// `<store>:<handle>` sources, and `proxima://memory/<store>:<handle>`
+    /// reads through it. Each store gets the default 2 s bound; publish an
+    /// [`OtherStoresService`] with `with_timeout` through [`Self::services`]
+    /// for another. Without a port every surface behaves as before.
+    ///
+    /// [`OtherStoresService`]: proxima_core::storage_ports::other_stores::OtherStoresService
+    #[must_use]
+    pub fn other_stores(
+        self,
+        port: Arc<dyn proxima_core::storage_ports::other_stores::OtherStores>,
+    ) -> Self {
+        self.services(FlavorServices::with(
+            proxima_core::storage_ports::other_stores::OtherStoresService::new(port),
+        ))
+    }
+
     /// Serve anonymous `GET /healthz` (process up) and `GET /readyz`
     /// (database reachable, not shutting down) on the MCP listener, outside
     /// the Host guard and bearer auth so an orchestrator probe needs
@@ -730,6 +753,9 @@ impl RuntimeBuilder {
         if self.published_retention.is_none() {
             self.published_retention = crate::config::published_retention_from_lookup(&lookup)?;
         }
+        if self.outbox_http.is_none() {
+            self.outbox_http = crate::outbox_http::HttpIntake::from_lookup(&lookup)?.map(Arc::new);
+        }
         Ok(self)
     }
 
@@ -874,6 +900,25 @@ impl RuntimeBuilder {
         })
     }
 
+    /// The built-in HTTP sink joins as the consumer `http`. A host that also
+    /// registered `http` itself is told so rather than one of the two
+    /// silently winning.
+    fn register_outbox_http(&mut self) -> Result<(), ProximaError> {
+        let Some(http) = self.outbox_http.take() else {
+            return Ok(());
+        };
+        let name = crate::outbox_http::consumer_name();
+        if self.outbox_consumers.0.contains_key(&name) {
+            return Err(ProximaError::Config(format!(
+                "{} is set and the host also registered an outbox consumer named \
+                 `http`; rename the host consumer or unset the variable",
+                crate::outbox_http::ENV_URL
+            )));
+        }
+        self.outbox_consumers.0.insert(name, http);
+        Ok(())
+    }
+
     /// Resolve the builder into pure config plus host-provided runtime parts.
     ///
     /// # Errors
@@ -891,6 +936,7 @@ impl RuntimeBuilder {
             .take()
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
         self.check_platform_authenticator()?;
+        self.register_outbox_http()?;
         let ServedPath {
             late_owner_access,
             request_headers,
@@ -1558,6 +1604,77 @@ mod tests {
             layered.to_string().contains("already registered"),
             "{layered}"
         );
+    }
+
+    /// The built-in HTTP sink (#462): registered as `http` only when its URL
+    /// is set; a bad URL fails boot; a host consumer named `http` clashes.
+    #[test]
+    fn the_http_outbox_sink_registers_only_when_its_url_is_set() {
+        let base = || {
+            RuntimeBuilder::default()
+                .database_url("postgres://localhost/proxima")
+                .tool_scope(ToolScope::All)
+        };
+        let names = |config: &RuntimeConfig| {
+            config
+                .outbox_consumers
+                .names()
+                .map(|name| name.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let (unset, _) = base()
+            .apply_lookup(lookup(&[]))
+            .expect("no outbox env parses")
+            .resolve()
+            .expect("resolves");
+        assert!(names(&unset).is_empty(), "URL unset: no consumer");
+
+        let (set, _) = base()
+            .apply_lookup(lookup(&[(
+                "PROXIMA_OUTBOX_HTTP_URL",
+                "https://receiver.example/events",
+            )]))
+            .expect("a URL parses")
+            .resolve()
+            .expect("resolves");
+        assert_eq!(names(&set), ["http"]);
+
+        for bad in ["not a url", "ftp://receiver.example/", "https://"] {
+            base()
+                .apply_lookup(lookup(&[("PROXIMA_OUTBOX_HTTP_URL", bad)]))
+                .expect_err(bad);
+        }
+        let clear_text_token = base()
+            .apply_lookup(lookup(&[
+                ("PROXIMA_OUTBOX_HTTP_URL", "http://receiver.example/"),
+                ("PROXIMA_OUTBOX_HTTP_TOKEN_FILE", "/nonexistent"),
+            ]))
+            .expect_err("a token is never sent over http://");
+        assert!(
+            clear_text_token.to_string().contains("https"),
+            "{clear_text_token}"
+        );
+        base()
+            .apply_lookup(lookup(&[
+                ("PROXIMA_OUTBOX_HTTP_URL", "https://receiver.example/"),
+                ("PROXIMA_OUTBOX_HTTP_CA_FILE", "/nonexistent/ca.pem"),
+            ]))
+            .expect_err("an unreadable CA fails boot");
+
+        let clash = base()
+            .outbox_consumer(
+                crate::outbox_http::consumer_name(),
+                Arc::new(crate::outbox_http::tests::Never),
+            )
+            .apply_lookup(lookup(&[(
+                "PROXIMA_OUTBOX_HTTP_URL",
+                "https://receiver.example/events",
+            )]))
+            .expect("parses")
+            .resolve()
+            .expect_err("a host consumer named http clashes");
+        assert!(clash.to_string().contains("`http`"), "{clash}");
     }
 
     /// MCP's start rule at resolve: a bind address is the whole switch.

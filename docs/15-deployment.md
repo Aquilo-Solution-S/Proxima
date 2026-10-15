@@ -160,7 +160,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. Set `code` for a code-search deployment (below). |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. An entry that is not a scope key, or names nothing this build registers, fails startup naming it. |
-| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. Owner erase is not exposed as an MCP action. |
+| `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. An entry naming a read for every audience fails boot: a profile never narrows one. Owner erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
@@ -178,6 +178,9 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_PUBLICATION_SOURCE` | when listenable | `urn:proxima:acme-prod` | Producer identity URI in every captured CloudEvent. Required once a listenable Fact type is registered; boot fails otherwise. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | no | `100000` | Unpublished-record ceiling; at the ceiling listenable writes fail `CapacityExhausted`. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | no | `524288` | Largest captured export; over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_OUTBOX_HTTP_URL` | no | `https://receiver.example.com/events` | Registers the built-in HTTP sink as the outbox consumer `http` ([18 §Built-in HTTP sink](18-fact-outbox.md#built-in-http-sink)). Unset ⇒ no sink. |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | no | `/run/secrets/outbox-token` | Bearer token file, re-read on every delivery. Requires an `https://` URL. |
+| `PROXIMA_OUTBOX_HTTP_CA_FILE` | no | `/etc/proxima/receiver-ca.pem` | PEM trust root for the receiver; when set, the only one. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
@@ -374,12 +377,15 @@ tool selection, lower blast radius) and fail-closed — `core_transfer` and
 itself a security boundary: every tool call remains gated by per-actor authz and
 role checks.
 
-`PROXIMA_TOOL_PROFILE=code` serves code search without memory: it advertises
-`proxima-code_search_chunks`, `proxima-code_open_file_revision`,
-`proxima-code_search_commits` and `proxima-code_list_repos`, and no memory tool or
-memory resource. A call outside the profile is refused, so agents on it cannot
-write memory whatever they are prompted. Repository administration is opt-in:
-`PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot,proxima-code_get_ingest_run`.
+`PROXIMA_TOOL_PROFILE=code` serves code search without memory writes: its
+palette holds `proxima-code_search_chunks`, `proxima-code_open_file_revision`,
+`proxima-code_search_commits` and `proxima-code_list_repos`. A write outside the
+profile is refused, so agents on it cannot write memory whatever they are
+prompted. Like every profile it narrows writes and owner-audience keys, never a
+read for every audience ([12 §Scope keys](12-tool-manifest.md#scope-keys)): the
+owner's memories stay searchable and readable, and so does
+`proxima-code_get_ingest_run`. Repository administration is opt-in:
+`PROXIMA_TOOL_ALLOW=proxima-code_register_repo,proxima-code_start_ingest_head_snapshot`.
 A build without the code flavor refuses the profile at startup.
 
 **Per-user tool scope is a host concern, not a substrate feature.** The env
@@ -391,7 +397,8 @@ attaches it with
 `AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the shared edge
 intersects it with the env ceiling (`ToolScope::intersect` only narrows, never
 widens), so a per-user scope can restrict but never exceed the deployment
-ceiling. Proxima ships the mechanism; which subject gets which scope is the
+ceiling. Like every palette it narrows writes and owner-audience keys, not a
+read for every audience ([12 §Scope keys](12-tool-manifest.md#scope-keys)). Proxima ships the mechanism; which subject gets which scope is the
 host's policy.
 
 MCP clients send `X-Proxima-Owner` on `initialize`, or rely on the host's
@@ -536,12 +543,54 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 
 | Concern | Deployment rule |
 |---|---|
-| delivery | in process, to the intakes the host passes to `outbox_intake(..)` / `outbox_consumer(name, ..)`, one drain per consumer; no broker, no cargo feature, no env var. Without one the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)). A consumer removed from the configuration stays registered until it is retired ([18 §Consumers](18-fact-outbox.md#consumers)) |
-| the shipped `proxima-mcp` binary | supplies no intake, so its outbox is captured and not drained: a deployment that registers a listenable type must embed Proxima in a host that supplies one, or the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
+| delivery | in process, to the intakes the host passes to `outbox_intake(..)` / `outbox_consumer(name, ..)`, one drain per consumer, plus the built-in HTTP sink (consumer `http`) when `PROXIMA_OUTBOX_HTTP_URL` is set; no broker, no cargo feature. Without one the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)). A consumer removed from the configuration stays registered until it is retired ([18 §Consumers](18-fact-outbox.md#consumers)) |
+| the shipped `proxima-mcp` binary | supplies no intake of its own: set `PROXIMA_OUTBOX_HTTP_URL` to drain to an HTTP receiver, or embed Proxima in a host that supplies one. Otherwise its outbox is captured and not drained, and the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
 | forwarding to a broker | **host-owned.** A host that forwards from its intake provisions the broker's topology, storage, capacity, permissions and retention itself; Proxima sees only that `accept` returned ([18 §Forwarding to a broker](18-fact-outbox.md#forwarding-to-a-broker)) |
 | capacity | `PROXIMA_OUTBOX_MAX_PENDING` is the database-side bound and fails listenable writes with `CapacityExhausted` (HTTP **503**). A stalled intake (including a full broker behind it) shows up here |
 | erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Events already delivered to the host's intake or broker are outside that reach — match the host's retention to its obligation |
 | delivered-record retention | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` reclaims database storage from records that are already published. Off by default; floor 60 s; it can never remove a `pending` or `claimed` record whatever its age |
+
+## Other stores
+
+A host can let callers read memory stores beside this one without copying
+them here (issue #462). Implement
+`proxima_core::storage_ports::other_stores::OtherStores` (`stores`, `search`,
+`read`, each as the caller) and wire it with `RuntimeBuilder::other_stores`
+(or `Proxima::app().other_stores`). Each store call is bounded (2 s by
+default); publish `OtherStoresService::new(port).with_timeout(..)` through
+`services` for another bound.
+
+- A remote memory is `<store>:<handle>`. Store names are
+  `[a-z][a-z0-9_-]{1,63}` and never `local`, so they cannot collide with the
+  local `F:`/`A:`/`P:` handles.
+- `core_search_memories` takes an optional `stores` list (`local` for this
+  store). In `tools/list` it is rendered per caller as an enum of `local`
+  plus every store `stores(caller)` returns, each with its description;
+  with no port wired the schema is unchanged. Omitted, a search covers this
+  store and every readable store in parallel; a `schema_id` only one store
+  declares searches that store only. Lists merge by reciprocal rank (k=60)
+  and the merged page is cut to `limit`; each hit names its `store`, and
+  stores that did not answer in time are listed in `unanswered`. Other
+  stores answer on the first page only, and later pages page the local
+  store. A local hit the merge pushes past `limit` is not repeated on the
+  next page; page with `stores: ["local"]` to see every local hit.
+- `core_derive` accepts `<store>:<handle>` sources next to at least one
+  local source, and `core_interpret` accepts `<store>:<handle>` subjects
+  the same way. Each one is read as the caller first; an unreadable, erased
+  or unreachable one refuses the whole call before any write. Remote
+  origins and subjects are recorded in `proxima_core.memory_external_origin`
+  (migration 0029), with no constraint on the remote side; the local origin
+  trigger is unchanged. Remote subjects are folded into an interpretation's
+  id, so the same claim about different remote memories is a different
+  memory.
+- The lineage walk reads remote origins (and an interpretation's remote
+  subjects) through the port and renders an
+  erased one with `status: "erased"`, an unreachable one (or no port) with
+  `status: "unavailable"`; it never fails on them.
+- `proxima://memory/<store>:<handle>` reads through the port.
+
+Without a port nothing changes: `stores` accepts only `local` and
+qualified handles are refused.
 
 ## Owner-RLS rollout
 

@@ -115,6 +115,14 @@ impl MemoryAuthoringPort for PgStorage {
                 req.references,
             )
             .await?;
+            let edge_count = edge_count.saturating_add(
+                verbs::derive_append::record_external_origins(
+                    &mut tx,
+                    &outcome,
+                    req.external_origins,
+                )
+                .await?,
+            );
             tx.commit().await.map_err(crate::error::map_err)?;
             Ok(AuthorDerivedOutcome {
                 memory_id: outcome.memory_id,

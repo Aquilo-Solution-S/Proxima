@@ -30,6 +30,7 @@ fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
         body_max_chars: None,
         spaces: Vec::new(),
         cursor: None,
+        stores: None,
     }
 }
 
@@ -262,4 +263,170 @@ fn spaces_dedup_by_resolved_owner_not_raw_key() {
         super::query_fingerprint("needle", &query_args, None, None, &lexical(deduped)),
         super::query_fingerprint("needle", &query_args, None, None, &lexical(single)),
     );
+}
+
+mod other_stores {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    use super::super::{
+        SearchMemoriesOutput, SearchMemoryOutput, SearchRanking, caller_input_schema,
+        merge_store_hits,
+    };
+    use crate::storage_ports::other_stores::{
+        OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteRead, RemoteSearch,
+        StoreCaller, StoreInfo, StoreName,
+    };
+    use crate::verbs::query::EntityKind;
+
+    fn local_hit(n: usize) -> SearchMemoryOutput {
+        SearchMemoryOutput {
+            memory_id: uuid::Uuid::now_v7(),
+            memory: format!("F:local-{n}"),
+            space: "current".into(),
+            kind: "Fact".into(),
+            schema_id: "core/agent-note-v1".into(),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            snippet: String::new(),
+            score: 1.0,
+            lexical_score: 1.0,
+            similarity_score: 0.0,
+            tags: Vec::new(),
+            body: None,
+            body_truncated: None,
+            store: None,
+        }
+    }
+
+    fn remote_hit(n: usize) -> RemoteHit {
+        RemoteHit {
+            handle: format!("r{n}"),
+            kind: EntityKind::Fact,
+            schema_id: "remote/note".into(),
+            snippet: String::new(),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_merged_page_is_cut_to_the_limit() {
+        let mut output = SearchMemoriesOutput {
+            mode: "lexical".into(),
+            degraded_to_lexical: false,
+            ranking: SearchRanking::Score,
+            memories: (0..3).map(local_hit).collect(),
+            neighbor_edges: Vec::new(),
+            next_cursor: None,
+            has_more: false,
+            unanswered: None,
+        };
+        let wiki = StoreName::new("wiki").expect("name");
+        let crm = StoreName::new("crm").expect("name");
+        merge_store_hits(
+            &mut output,
+            vec![
+                (wiki, (0..3).map(remote_hit).collect()),
+                (crm, (0..3).map(remote_hit).collect()),
+            ],
+            vec!["slow".into()],
+            4,
+        );
+        let order: Vec<&str> = output
+            .memories
+            .iter()
+            .map(|hit| hit.memory.as_str())
+            .collect();
+        // Rank 0 of every list, then rank 1 of the first: RRF, cut at 4.
+        assert_eq!(order, ["F:local-0", "wiki:r0", "crm:r0", "F:local-1"]);
+        assert!(output.memories.iter().all(|hit| hit.store.is_some()));
+        assert_eq!(output.ranking, SearchRanking::Rank);
+        assert_eq!(output.unanswered, Some(vec!["slow".to_string()]));
+    }
+
+    struct TwoStores;
+
+    impl OtherStores for TwoStores {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async {
+                Ok(vec![
+                    StoreInfo {
+                        name: StoreName::new("wiki").expect("name"),
+                        description: "Team wiki pages".into(),
+                        schema_ids: Vec::new(),
+                    },
+                    StoreInfo {
+                        name: StoreName::new("crm").expect("name"),
+                        description: "Customer records".into(),
+                        schema_ids: Vec::new(),
+                    },
+                ])
+            })
+        }
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _handle: &'a str,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            Box::pin(async { Ok(RemoteRead::NotFound) })
+        }
+    }
+
+    fn static_schema() -> serde_json::Value {
+        crate::mcp::schema::mcp_tool_schema::<super::super::SearchMemoriesArgs>().schema
+    }
+
+    #[tokio::test]
+    async fn without_a_port_the_schema_is_the_static_one() {
+        let ctx = super::super::super::memory_spaces::test_ctx::ctx_for(
+            crate::UserId::new(uuid::Uuid::now_v7()),
+            Vec::new(),
+        );
+        let schema = static_schema();
+        assert!(schema["properties"].get("stores").is_none(), "{schema}");
+        assert_eq!(caller_input_schema(&ctx, schema.clone()).await, schema);
+    }
+
+    #[tokio::test]
+    async fn with_a_port_stores_is_an_enum_of_the_callers_stores() {
+        let mut ctx = super::super::super::memory_spaces::test_ctx::ctx_for(
+            crate::UserId::new(uuid::Uuid::now_v7()),
+            Vec::new(),
+        );
+        ctx.services = crate::FlavorServices::with(OtherStoresService::new(Arc::new(TwoStores)));
+        let schema = caller_input_schema(&ctx, static_schema()).await;
+        let stores = &schema["properties"]["stores"];
+        assert_eq!(stores["type"], "array");
+        assert_eq!(
+            stores["items"]["enum"],
+            serde_json::json!(["local", "wiki", "crm"])
+        );
+        assert_eq!(stores["items"]["oneOf"][1]["const"], "wiki");
+        assert_eq!(
+            stores["items"]["oneOf"][1]["description"],
+            "Team wiki pages"
+        );
+        let prose = stores["description"].as_str().expect("description");
+        assert!(prose.contains("`crm`: Customer records"), "{prose}");
+        // Everything else is the static schema.
+        let mut without = schema.clone();
+        without["properties"]
+            .as_object_mut()
+            .expect("props")
+            .remove("stores");
+        assert_eq!(without, static_schema());
+    }
 }

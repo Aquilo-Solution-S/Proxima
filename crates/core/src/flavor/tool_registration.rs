@@ -113,7 +113,15 @@ impl FlavorRegistry {
             }
         })?;
         warn_undescribed_properties(T::NAME, &args_schema);
-        let properties = flat_tool_property_names(&args_schema);
+        let properties: std::sync::Arc<[String]> = flat_tool_property_names(&args_schema)
+            .iter()
+            .cloned()
+            .chain(
+                <T as McpTool>::CALLER_RENDERED_FIELDS
+                    .iter()
+                    .map(ToString::to_string),
+            )
+            .collect();
         // Tool registrations live for the process lifetime; leaking the
         // closure preserves the descriptor's copyable call-handle semantics.
         let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {

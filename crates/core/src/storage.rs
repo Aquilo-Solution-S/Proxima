@@ -517,6 +517,10 @@ pub struct AuthorDerivedRequest<'a> {
     /// as the row, which is what makes them
     /// [`crate::EdgeKind::Reference`] pins.
     pub references: &'a [EdgeEndpoint],
+    /// Memories of other stores this memory was also made from. Storage
+    /// records them beside the row, in the same transaction, without any
+    /// constraint on the remote side; a replay records nothing.
+    pub external_origins: &'a [crate::storage_ports::other_stores::QualifiedHandle],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -234,6 +234,32 @@ pub fn canonical_scope_keys_excluding(
     keys
 }
 
+/// The subset of [`canonical_scope_keys`] no palette narrows: every
+/// registered tool's [open reads](crate::mcp::KeyDeclaration::is_open_read)
+/// and every read-only core resource. Removing one of these from a palette
+/// changes nothing a caller may do, so a configuration that names one to
+/// narrow it is refused where it is read.
+///
+/// # Panics
+///
+/// As [`canonical_scope_keys`].
+#[must_use]
+pub fn canonical_open_read_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
+    let mut keys: Vec<ScopeKey> = registry
+        .list_mcp_tools()
+        .iter()
+        .flat_map(crate::mcp::McpToolDescriptor::open_read_keys)
+        .chain(
+            all_core_resources()
+                .filter(|resource| resource.declaration().is_open_read())
+                .map(|resource| ScopeKey::Resource(resource.key())),
+        )
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 #[cfg(test)]
 mod effect_tests {
     use super::{McpToolAnnotations, Replay, ToolEffect};

@@ -13,6 +13,15 @@ schema work ships **exactly one migration file per version** —
 several. v0.0.9 is `0002_v009_declaration_triggers.sql` (core) and
 `20260824000020_v009_declaration_triggers.sql` (code flavor).
 
+## v0.0.33
+
+Existing v0.0.32 databases upgrade in place. One forward core migration;
+released files stay byte-for-byte unchanged. No flavor migration.
+
+| Lane | Migration |
+|---|---|
+| Core | `0029_v035_cross_store_origins.sql`: `proxima_core.memory_external_origin (t, store, handle)` — the origins a memory takes from other stores ([15 §Other stores](../15-deployment.md#other-stores)); no foreign key, owner RLS of class `memory_owner` |
+
 ## v0.0.32
 
 No migration: v0.0.31 databases run unchanged.

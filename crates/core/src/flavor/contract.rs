@@ -1449,12 +1449,12 @@ pub struct ToolContract {
 
 /// One `proxima://` resource.
 ///
-/// A palette assembled from tools alone denies every resource read, because
-/// `read_resource` funnels through the same flat-string gate with the
-/// resource's scope key standing in for a tool name. So resources are
+/// `read_resource` funnels through the same flat gate as a tool call, with
+/// the resource's scope key standing in for a tool name. So resources are
 /// first-class contract entries — and they carry a **typed** `read_only`,
-/// so the owner-role gate does not have to infer a read from a
-/// `tool.starts_with("resource:")` string test.
+/// which both gates read through [`Self::declaration`] instead of inferring
+/// a read from a `tool.starts_with("resource:")` string test: a read passes
+/// every palette, and needs read access to the owner.
 ///
 /// Only flavor #0 may declare resources; the registry rejects a non-empty
 /// list from any other ordinal.
@@ -1479,6 +1479,17 @@ pub struct ResourceContract {
 }
 
 impl ResourceContract {
+    /// What this resource's key declares, for every audience: a read when
+    /// [`Self::read_only`] says so, else a write.
+    #[must_use]
+    pub const fn declaration(&self) -> crate::mcp::KeyDeclaration {
+        crate::mcp::KeyDeclaration::shared(if self.read_only {
+            Some(crate::mcp::ToolEffect::ReadOnly)
+        } else {
+            None
+        })
+    }
+
     /// This resource's palette key, [`Self::scope_key`] parsed.
     ///
     /// # Panics

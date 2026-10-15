@@ -102,10 +102,9 @@ impl DynamicHandler {
             let generated = {
                 let ctx = listing?;
                 let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
-                let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
                 selfdoc::build_instructions(
                     &advertised_tool_ids(self.server.registry(), caller),
-                    &advertised_resource_scope_keys(scope),
+                    &advertised_resource_scope_keys(auth.as_ref()),
                 )
             };
             let host = match &auth {
@@ -259,7 +258,6 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let resource = Resource::new(selfdoc::HOW_TO_URI, selfdoc::HOW_TO_NAME)
             .with_title(selfdoc::HOW_TO_TITLE)
             .with_description(selfdoc::HOW_TO_DESCRIPTION)
@@ -267,7 +265,9 @@ impl ServerHandler for DynamicHandler {
         let mut resources = vec![resource];
         resources.extend(
             all_core_resources()
-                .filter(|resource| !resource.is_template && resource_scope_allows(scope, resource))
+                .filter(|resource| {
+                    !resource.is_template && resource_allowed_for_auth(auth.as_ref(), resource)
+                })
                 .map(raw_resource_from_meta),
         );
         std::future::ready(Ok(ListResourcesResult::with_all_items(resources)
@@ -282,9 +282,10 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
     {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let resource_templates = all_core_resources()
-            .filter(|resource| resource.is_template && resource_scope_allows(scope, resource))
+            .filter(|resource| {
+                resource.is_template && resource_allowed_for_auth(auth.as_ref(), resource)
+            })
             .map(raw_resource_template_from_meta)
             .collect();
         std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(
@@ -319,11 +320,10 @@ impl ServerHandler for DynamicHandler {
         let server = self.server.clone();
         async move {
             if uri == selfdoc::HOW_TO_URI {
-                let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
                 let ctx = how_to_ctx?;
                 let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
                 let advertised = advertised_tool_ids(server.registry(), caller);
-                let advertised_resources = advertised_resource_scope_keys(scope);
+                let advertised_resources = advertised_resource_scope_keys(auth.as_ref());
                 let body = selfdoc::how_to_markdown(&advertised, &advertised_resources);
                 return Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(body, selfdoc::HOW_TO_URI)
@@ -361,6 +361,25 @@ impl ServerHandler for DynamicHandler {
         async move {
             let ctx = listing?;
             let caller = Caller::listing(auth.as_ref(), ctx.as_ref());
+            // `core_search_memories` names the caller's readable stores when
+            // an other-stores port is wired; the port is asked once here
+            // because the projection below is synchronous.
+            let search_schema = match ctx.as_ref() {
+                Some(ctx) => Some(
+                    caller_search_input_schema(
+                        ctx,
+                        self.server
+                            .registry()
+                            .list_mcp_tools()
+                            .iter()
+                            .find(|d| d.name == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES)
+                            .map(|d| project_dispatcher_actions_for_auth(caller, d))
+                            .unwrap_or_default(),
+                    )
+                    .await,
+                ),
+                None => None,
+            };
             let mut tools: Vec<Tool> = self
                 .server
                 .registry()
@@ -368,7 +387,15 @@ impl ServerHandler for DynamicHandler {
                 .iter()
                 .filter(|descriptor| tool_allowed_for_auth(caller, descriptor))
                 .map(|descriptor| {
-                    let schema = project_dispatcher_actions_for_auth(caller, descriptor);
+                    let schema = match &search_schema {
+                        Some(schema)
+                            if descriptor.name
+                                == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES =>
+                        {
+                            schema.clone()
+                        }
+                        _ => project_dispatcher_actions_for_auth(caller, descriptor),
+                    };
                     let tool = Tool::new(
                         Cow::Owned(provider_safe_tool_name(descriptor.name)),
                         Cow::Borrowed(descriptor.description),
@@ -781,6 +808,13 @@ pub(crate) fn project_dispatcher_actions_for_auth(
     })
 }
 
+async fn caller_search_input_schema(
+    ctx: &McpToolCtx,
+    schema: serde_json::Value,
+) -> serde_json::Value {
+    proxima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema).await
+}
+
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
     let mut hints = ToolAnnotations::new();
     if let Some(read_only) = annotations.read_only {
@@ -821,19 +855,28 @@ fn static_resource_uri(uri_template: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn resource_scope_allows(
-    scope: Option<&ToolScope>,
+/// Whether `auth` may see one core resource: the palette admits its key
+/// ([`ToolScope::admits`]: a read passes every palette), and the owner role
+/// allows what it declares. The call gate judges a read the same way, so
+/// what a listing shows is what a read is admitted to.
+pub(crate) fn resource_allowed_for_auth(
+    auth: Option<&McpAuthContext>,
     resource: &proxima_core::flavor::ResourceContract,
 ) -> bool {
-    match scope {
-        Some(scope) => scope.allows(&ScopeKey::Resource(resource.key())),
-        None => UNAUTHENTICATED_SCOPE_ALLOWS,
-    }
+    let declared = resource.declaration();
+    let in_scope = auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
+        ctx.authz
+            .tool_scope()
+            .admits(&ScopeKey::Resource(resource.key()), declared)
+    });
+    in_scope && owner_role_allows(auth, declared.is_read())
 }
 
-pub(crate) fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
+pub(crate) fn advertised_resource_scope_keys(
+    auth: Option<&McpAuthContext>,
+) -> BTreeSet<&'static str> {
     all_core_resources()
-        .filter(|resource| resource_scope_allows(scope, resource))
+        .filter(|resource| resource_allowed_for_auth(auth, resource))
         .map(|resource| resource.scope_key)
         .collect()
 }
@@ -1054,20 +1097,13 @@ pub(crate) fn annotations_for_auth(
     caller: Caller<'_>,
     descriptor: &McpToolDescriptor,
 ) -> Option<McpToolAnnotations> {
-    if descriptor.action_arg_specs.is_empty() && descriptor.argv_action_specs.is_empty() {
-        return descriptor.annotations();
-    }
     // Each action's classification is the descriptor's single rule, never
     // re-derived here.
-    ToolEffect::strongest(
-        descriptor
-            .actions()
-            .filter(|(action, _)| {
-                caller.auth.is_none() || action_allowed_for_auth(caller, descriptor, action)
-            })
-            .map(|(_, effect)| effect),
-    )
-    .map(McpToolAnnotations::registered)
+    descriptor
+        .effect_over(|action| {
+            caller.auth.is_none() || action_allowed_for_auth(caller, descriptor, action)
+        })
+        .map(McpToolAnnotations::registered)
 }
 
 /// Whether a request that carries no bound auth context may see or call
@@ -1156,22 +1192,26 @@ pub fn strip_call_context_args(args: &mut serde_json::Value) {
     obj.remove("model_id");
 }
 
-/// Whether `scope` holds the key of a host tool, which is flat: its name as a
-/// [`ToolName`]. A served name is one (the host tool list checked it), so a
-/// name that is not is held by no palette.
-fn host_tool_in_scope(scope: &ToolScope, name: &str) -> bool {
+/// Whether `scope` admits a host tool, which is flat: its key is its name as
+/// a [`ToolName`], and its declaration is the host's, for every audience (the
+/// host lists its tools per caller). A served name is a key (the host tool
+/// list checked it), so a name that is not is held by no palette.
+fn host_tool_in_scope(scope: &ToolScope, name: &str, effect: ToolEffect) -> bool {
     match ToolName::parse(name) {
-        Ok(name) => scope.allows(&ScopeKey::Tool(name)),
+        Ok(name) => scope.admits(
+            &ScopeKey::Tool(name),
+            proxima_core::KeyDeclaration::shared(Some(effect)),
+        ),
         Err(_) => matches!(scope, ToolScope::All),
     }
 }
 
-/// Whether this caller may see one host tool: its name in the palette (a
-/// host tool is flat), the owner role its declaration needs and, in a
-/// listing, every request behavior's `visible`.
+/// Whether this caller may see one host tool: the palette admits it (a read
+/// passes every palette, a write needs its name), the owner role its
+/// declaration needs and, in a listing, every request behavior's `visible`.
 fn host_tool_allowed_for_auth(caller: Caller<'_>, tool: &McpHostTool) -> bool {
     let in_scope = caller.auth.map_or(UNAUTHENTICATED_SCOPE_ALLOWS, |ctx| {
-        host_tool_in_scope(ctx.authz.tool_scope(), &tool.name)
+        host_tool_in_scope(ctx.authz.tool_scope(), &tool.name, tool.effect)
     });
     in_scope
         && owner_role_allows(caller.auth, tool.effect.is_read_only())
@@ -1308,7 +1348,9 @@ mod output_contract_tests;
 mod tests {
     use super::*;
     use proxima_core::mcp::Replay;
-    use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
+    use proxima_core::protocol::{
+        action as protocol_action, resource as protocol_resource, tool as protocol_tool,
+    };
 
     fn palette(ids: &[&str]) -> ToolScope {
         ToolScope::Palette(
@@ -1375,6 +1417,91 @@ mod tests {
             audience: proxima_core::mcp::McpToolAudience::Shared,
         },
     ];
+
+    /// #462: listing uses the call gate's predicate. Under an empty palette
+    /// an undeclared flat tool is not listed, a read-only one is, and a
+    /// mixed dispatcher shows its read action only.
+    #[test]
+    fn listing_under_an_empty_palette_shows_reads_only() {
+        let auth = full_auth(ToolScope::Palette(Vec::new()));
+        let caller = Caller::new(Some(&auth));
+
+        assert!(!tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor("stub_undeclared", None)
+        ));
+        assert!(!tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor(
+                "stub_write",
+                Some(ToolEffect::Additive(Replay::NonIdempotent))
+            )
+        ));
+        assert!(tool_allowed_for_auth(
+            caller,
+            &flavor_descriptor("stub_read", Some(ToolEffect::ReadOnly))
+        ));
+
+        let mut mixed = flavor_descriptor("stub_mixed", None);
+        mixed.action_arg_specs = MIXED_ACTIONS;
+        assert!(tool_allowed_for_auth(caller, &mixed));
+        assert!(action_allowed_for_auth(caller, &mixed, "look"));
+        assert!(!action_allowed_for_auth(caller, &mixed, "touch"));
+
+        // A read for the owner alone stays with the palette.
+        let mut owner_read = flavor_descriptor("stub_owner_read", Some(ToolEffect::ReadOnly));
+        owner_read.audience = proxima_core::mcp::McpToolAudience::Owner;
+        assert!(!tool_allowed_for_auth(caller, &owner_read));
+        let held = full_auth(ToolScope::Palette(vec![
+            ScopeKey::parse("stub_owner_read").expect("a scope key"),
+        ]));
+        assert!(tool_allowed_for_auth(Caller::new(Some(&held)), &owner_read));
+
+        for resource in all_core_resources() {
+            assert!(
+                resource_allowed_for_auth(Some(&auth), resource),
+                "{} is a read and is listed",
+                resource.scope_key
+            );
+        }
+    }
+
+    /// A resource is listed as it is read: the palette admits it and the
+    /// owner role allows what it declares. A caller with no role on the owner
+    /// is shown none, under any palette; a resource that is no read needs
+    /// the palette.
+    #[test]
+    fn a_resource_is_listed_only_where_it_is_admitted() {
+        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let stranger = McpAuthContext {
+            owner,
+            authz: proxima_core::AuthzContext::for_subject(
+                proxima_core::UserId::new(uuid::Uuid::now_v7()),
+                proxima_core::AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::All),
+        };
+        for resource in all_core_resources() {
+            assert!(
+                !resource_allowed_for_auth(Some(&stranger), resource),
+                "{} is not listed to a caller with no role",
+                resource.scope_key
+            );
+        }
+
+        let memory = all_core_resources()
+            .find(|resource| resource.scope_key == protocol_resource::MEMORY)
+            .expect("the memory resource");
+        let write = proxima_core::flavor::ResourceContract {
+            read_only: false,
+            ..*memory
+        };
+        let auth = full_auth(ToolScope::Palette(Vec::new()));
+        assert!(resource_allowed_for_auth(Some(&auth), memory));
+        assert!(!resource_allowed_for_auth(Some(&auth), &write));
+        let held = full_auth(ToolScope::Palette(vec![ScopeKey::Resource(write.key())]));
+        assert!(resource_allowed_for_auth(Some(&held), &write));
+    }
 
     fn full_auth(scope: ToolScope) -> McpAuthContext {
         let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));

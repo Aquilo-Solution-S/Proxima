@@ -569,7 +569,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     )?;
 
     let allowed_tools = BTreeSet::from([
-        "core_search_memories".to_string(),
+        "core_remember".to_string(),
         "proxima-code_list_repos".to_string(),
     ]);
     let running = Proxima::<ProximaMcpApp>::app()
@@ -618,7 +618,11 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name").to_string())
         .collect();
-    assert_eq!(mcp_tools, allowed_tools);
+    // The palette's own entries, plus every read (admitted under every
+    // palette, #462), and no write the palette does not hold.
+    assert!(mcp_tools.is_superset(&allowed_tools), "{mcp_tools:?}");
+    assert!(mcp_tools.contains("core_search_memories"), "{mcp_tools:?}");
+    assert!(!mcp_tools.contains("core_forget"), "{mcp_tools:?}");
 
     let no_auth = client
         .get(&openapi_url)
@@ -646,18 +650,60 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let document: serde_json::Value = response.json().await?;
     assert_eq!(document["openapi"], "3.2.0");
     assert_eq!(document["info"]["version"], proxima_core::RELEASE_VERSION);
-    let rest_tool_paths: BTreeSet<String> = document["paths"]
-        .as_object()
-        .expect("OpenAPI paths")
+    let paths = document["paths"].as_object().expect("OpenAPI paths");
+    let rest_tool_paths: BTreeSet<String> = paths
         .keys()
-        .filter(|path| path.starts_with("/v1/tools/"))
+        .filter(|path| {
+            path.strip_prefix("/v1/tools/")
+                .is_some_and(|rest| !rest.contains('/'))
+        })
         .cloned()
         .collect();
-    let expected_paths: BTreeSet<String> = allowed_tools
+    let expected_paths: BTreeSet<String> = mcp_tools
         .iter()
         .map(|tool| format!("/v1/tools/{tool}"))
         .collect();
     assert_eq!(rest_tool_paths, expected_paths);
+    // A dispatcher's per-action routes: the palette holds no action leaf, so
+    // each is a read every palette admits (#462), of a tool MCP lists, whose
+    // MCP schema offers that action.
+    let mcp_schemas: std::collections::BTreeMap<&str, String> = catalog["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| {
+            (
+                tool["name"].as_str().expect("tool name"),
+                tool["inputSchema"].to_string(),
+            )
+        })
+        .collect();
+    let mut action_routes = 0;
+    for (path, item) in paths {
+        let Some((tool, action)) = path
+            .strip_prefix("/v1/tools/")
+            .and_then(|rest| rest.split_once('/'))
+        else {
+            continue;
+        };
+        action_routes += 1;
+        let schema = mcp_schemas
+            .get(tool)
+            .unwrap_or_else(|| panic!("{path}: {tool} is not listed over MCP"));
+        assert!(
+            schema.contains(&format!("\"{action}\"")),
+            "{path}: MCP does not offer {action}: {schema}"
+        );
+        assert_eq!(
+            item.pointer("/post/x-proxima-read-only"),
+            Some(&json!(true)),
+            "{path} is a read"
+        );
+    }
+    assert!(
+        action_routes > 0,
+        "a mixed dispatcher is listed for its reads"
+    );
 
     let list_repos_url = format!("{base}/v1/tools/proxima-code_list_repos");
     let foreign_rest = client

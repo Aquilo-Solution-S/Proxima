@@ -62,9 +62,11 @@ Environment:
                                 with PROXIMA_OIDC_SUBJECT_MAP_JSON.
   PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default),
                                 full (opt-in; adds core_transfer/core_membership)
-                                or code (code search reads only, no memory tools)
+                                or code (code search, no memory writes); every
+                                profile admits reads for every audience
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
-  PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
+  PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from
+                                profile; naming a read fails startup
   PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS
                                 Complete /embeddings request timeout
                                 (default 120; range 1..=3600)

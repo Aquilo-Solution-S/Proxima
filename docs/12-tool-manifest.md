@@ -78,19 +78,37 @@ command by `GoalWakeToolId::parse` / `DelegatedCommand::parse`. A name that
 does not parse is in no palette (`All` still holds it). Keys are
 case-sensitive, and whitespace, `/` and non-ASCII are refused.
 
-Three questions are asked of a palette, each a named `ToolScope` method:
+**A palette narrows writes and the owner's own keys, never a read for every
+audience.** Every key is judged by its `KeyDeclaration`: its declared
+`ToolEffect` and its `McpToolAudience` — a flat tool's, a dispatcher action's
+own (never the tool's join), a host tool's (shared), a core resource's
+(shared, a read when `read_only`). One that is `ReadOnly` and `Shared` is an
+*open read* (`KeyDeclaration::is_open_read`), and every palette admits it
+whatever it holds. Everything else needs the palette: a write, an undeclared
+key (silence is a write), and an `Owner`-audience read such as
+`core_membership:list_members`, so a host's non-owner surface keeps it out.
+Owner authorization runs after this gate, so a palette never lets a caller
+read another owner's memory.
 
-| Method | Admits action `a` of dispatcher `t` when the palette holds |
+Four questions are asked of a palette, each a named `ToolScope` method:
+
+| Method | Admits action `a` of dispatcher `t` when |
 |---|---|
-| `allows_action(t, a)`, the call gate | the leaf `t:a` |
-| `advertises_action(t, a)`, `tools/list` | the bare `t` or the leaf `t:a` |
-| `covers_command(t, Some(a))`, delegation | the bare `t` or the leaf `t:a` (a flat command needs its own key) |
+| `admits_action(t, a, declared)`, the call gate (`admits` for a flat key) | `a` is an open read, or the palette holds the leaf `t:a` |
+| `advertises_action(t, a)`, `tools/list` (with the open read, `McpToolDescriptor::action_advertised_by`) | the palette holds the bare `t` or the leaf `t:a` |
+| `covers_command(t, Some(a))`, delegation | the palette holds the bare `t` or the leaf `t:a` (a flat command needs its own key) |
+| `intersect`, layering a scope over another | — (key equality: a bare tool does not intersect with its leaves) |
 
-A hand-built palette holding a bare dispatcher name is therefore listed with
-its actions and refuses a call of one. Canonical palettes
-(`canonical_scope_keys`) never hold one; whether the call gate should follow the
-listing is a separate authorization decision. `ToolScope::intersect` is key
-equality: a bare tool does not intersect with its leaves.
+Listings — `tools/list`, `resources/list`, the REST catalog, `OpenAPI`,
+`CoreMcpTools::list_core_tools_for_scope` — admit by the same declaration, so
+what is listed is what a call is admitted to. Delegation does not: a command
+is delegable only when both the caller's palette and the deployment palette
+hold it, open read or not, so delegating never widens what another principal
+may do. A hand-built palette holding a bare dispatcher name is listed with its
+actions and refuses a call of one. Canonical palettes (`canonical_scope_keys`)
+never hold one; whether the call gate should follow the listing is a separate
+authorization decision. `canonical_open_read_keys` names the keys no palette
+narrows; `proxima-mcp` refuses a `PROXIMA_TOOL_DENY` entry among them.
 
 Registered MCP tool names are already provider-safe. Slash-separated
 schema ids remain separate from MCP wire ids.

@@ -135,6 +135,13 @@ const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
          consumer: no owner column and no content. It is deleted with its \
          record (ON DELETE CASCADE), so the record's surface reaches it.",
     ),
+    (
+        "proxima_core.memory_external_origin",
+        "Other-store origins of a derived memory (0029): (t, store, handle) \
+         with no owner column and no content of its own. Keyed on the \
+         memory's t, so a transfer moves it with the memory, and owner \
+         erase deletes it through a named leg over the selected memories.",
+    ),
 ];
 
 #[tokio::test]

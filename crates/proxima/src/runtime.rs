@@ -273,6 +273,16 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// See [`RuntimeBuilder::other_stores`].
+    #[must_use]
+    pub fn other_stores(
+        mut self,
+        port: Arc<dyn proxima_core::storage_ports::other_stores::OtherStores>,
+    ) -> Self {
+        self.overlay = self.overlay.other_stores(port);
+        self
+    }
+
     /// See [`RuntimeBuilder::health_endpoints`].
     #[must_use]
     pub fn health_endpoints(mut self, health_endpoints: bool) -> Self {
