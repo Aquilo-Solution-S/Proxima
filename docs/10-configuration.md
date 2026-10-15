@@ -111,6 +111,9 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_PUBLICATION_SOURCE` | Producer identity URI stamped into every captured CloudEvent `source` (see [18](18-fact-outbox.md)). **Required** once ≥1 listenable Fact type is registered; boot fails otherwise. Never caller-supplied. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_OUTBOX_HTTP_URL` | Registers the built-in HTTP sink as the outbox consumer `http`: one `POST` per event, raw CloudEvent body. Unset ⇒ no sink ([18 §Built-in HTTP sink](18-fact-outbox.md#built-in-http-sink)). |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Bearer token file for the HTTP sink, re-read on every delivery. Requires an `https://` URL. |
+| `PROXIMA_OUTBOX_HTTP_CA_FILE` | PEM trust root for the HTTP sink; when set, the only one. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an outbox consumer is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a record some consumer has not received, whatever its age. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |

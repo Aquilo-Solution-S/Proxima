@@ -178,6 +178,9 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_PUBLICATION_SOURCE` | when listenable | `urn:proxima:acme-prod` | Producer identity URI in every captured CloudEvent. Required once a listenable Fact type is registered; boot fails otherwise. |
 | `PROXIMA_OUTBOX_MAX_PENDING` | no | `100000` | Unpublished-record ceiling; at the ceiling listenable writes fail `CapacityExhausted`. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | no | `524288` | Largest captured export; over-cap writes fail `PayloadTooLarge`. |
+| `PROXIMA_OUTBOX_HTTP_URL` | no | `https://receiver.example.com/events` | Registers the built-in HTTP sink as the outbox consumer `http` ([18 §Built-in HTTP sink](18-fact-outbox.md#built-in-http-sink)). Unset ⇒ no sink. |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | no | `/run/secrets/outbox-token` | Bearer token file, re-read on every delivery. Requires an `https://` URL. |
+| `PROXIMA_OUTBOX_HTTP_CA_FILE` | no | `/etc/proxima/receiver-ca.pem` | PEM trust root for the receiver; when set, the only one. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
@@ -548,8 +551,8 @@ Optional. Contract: [18](18-fact-outbox.md). Recipe:
 
 | Concern | Deployment rule |
 |---|---|
-| delivery | in process, to the intakes the host passes to `outbox_intake(..)` / `outbox_consumer(name, ..)`, one drain per consumer; no broker, no cargo feature, no env var. Without one the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)). A consumer removed from the configuration stays registered until it is retired ([18 §Consumers](18-fact-outbox.md#consumers)) |
-| the shipped `proxima-mcp` binary | supplies no intake, so its outbox is captured and not drained: a deployment that registers a listenable type must embed Proxima in a host that supplies one, or the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
+| delivery | in process, to the intakes the host passes to `outbox_intake(..)` / `outbox_consumer(name, ..)`, one drain per consumer, plus the built-in HTTP sink (consumer `http`) when `PROXIMA_OUTBOX_HTTP_URL` is set; no broker, no cargo feature. Without one the publisher is off, capture is unaffected and records are retained ([18 §Delivery](18-fact-outbox.md#delivery)). A consumer removed from the configuration stays registered until it is retired ([18 §Consumers](18-fact-outbox.md#consumers)) |
+| the shipped `proxima-mcp` binary | supplies no intake of its own: set `PROXIMA_OUTBOX_HTTP_URL` to drain to an HTTP receiver, or embed Proxima in a host that supplies one. Otherwise its outbox is captured and not drained, and the backlog reaches `PROXIMA_OUTBOX_MAX_PENDING` and listenable writes fail |
 | forwarding to a broker | **host-owned.** A host that forwards from its intake provisions the broker's topology, storage, capacity, permissions and retention itself; Proxima sees only that `accept` returned ([18 §Forwarding to a broker](18-fact-outbox.md#forwarding-to-a-broker)) |
 | capacity | `PROXIMA_OUTBOX_MAX_PENDING` is the database-side bound and fails listenable writes with `CapacityExhausted` (HTTP **503**). A stalled intake (including a full broker behind it) shows up here |
 | erasure | `publication_outbox` is owner-scoped (`EraseRule::ByOwner`) and an owner erase destroys the owner's records; a single-memory erase deletes the record explicitly on `t`. There is no FK cascade from `memory` — `forget` would have destroyed undelivered events ([13](13-compliance.md#what-an-erase-destroys)). Events already delivered to the host's intake or broker are outside that reach — match the host's retention to its obligation |

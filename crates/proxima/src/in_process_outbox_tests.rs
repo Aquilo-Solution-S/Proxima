@@ -188,6 +188,19 @@ impl World {
         .expect("delivery lane")
     }
 
+    /// Wait until `consumer`'s lane on one record reaches `wanted`. The
+    /// record as a whole also owes the `default` lane, so its own state is
+    /// not the signal here.
+    async fn wait_for_lane(&self, t: Uuid, consumer: &str, wanted: &str) {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while self.lane_state(t, consumer).await != wanted {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("delivery lane changes");
+    }
+
     /// The drain a test runs itself over the outbox: a short lease and poll,
     /// and `hook` between `accept` and the mark.
     fn drain(
@@ -525,6 +538,76 @@ async fn two_consumers_each_receive_every_fact_and_one_failing_does_not_hold_up_
             vec![(id, 1)],
             "the steady consumer saw one delivery, unaffected by audit's retries"
         );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+/// The built-in HTTP sink (#462) behind the real drain: a receiver that
+/// answers 503 and then 200 gets the event, and the record is published once.
+#[tokio::test]
+async fn the_http_sink_retries_a_503_and_publishes_once_the_receiver_accepts() {
+    use crate::outbox_http::tests::{Ca, Files, Receiver, Reply, intake};
+    let ca = Ca::new();
+    let receiver = Receiver::start(&ca, &[Reply::Status(503), Reply::Status(200)]).await;
+    let files = Files::new(&ca);
+    files.rotate();
+    let sink = Arc::new(intake(&receiver, &files));
+    let Some(world) =
+        World::configured(|app| app.outbox_consumer(crate::outbox_http::consumer_name(), sink))
+            .await
+    else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let t = capture(&world.built, world.owner, "delivered over HTTP").await;
+        world.wait_for_lane(t, "http", "published").await;
+        let seen = receiver.seen();
+        assert_eq!(seen.len(), 2, "one 503, one 200");
+        assert_eq!(
+            seen[0].body, seen[1].body,
+            "the retry carries the same bytes"
+        );
+        assert_eq!(
+            seen.iter()
+                .map(|s| s.header("proxima-delivery-count").map(str::to_owned))
+                .collect::<Vec<_>>(),
+            [Some("1".to_owned()), Some("2".to_owned())]
+        );
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(
+            receiver.seen().len(),
+            2,
+            "published means delivered no more"
+        );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+/// A 422 is the receiver's durable refusal: the lane settles (a rejection is
+/// a decision, docs/18 §Delivery) and the receiver is hit exactly once.
+#[tokio::test]
+async fn the_http_sink_settles_a_422_after_one_request() {
+    use crate::outbox_http::tests::{Ca, Files, Receiver, Reply, intake};
+    let ca = Ca::new();
+    let receiver = Receiver::start(&ca, &[Reply::Status(422)]).await;
+    let files = Files::new(&ca);
+    files.rotate();
+    let sink = Arc::new(intake(&receiver, &files));
+    let Some(world) =
+        World::configured(|app| app.outbox_consumer(crate::outbox_http::consumer_name(), sink))
+            .await
+    else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let t = capture(&world.built, world.owner, "refused over HTTP").await;
+        world.wait_for_lane(t, "http", "published").await;
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(receiver.seen().len(), 1, "a rejection is never retried");
     })
     .catch_unwind()
     .await;
