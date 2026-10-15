@@ -1,5 +1,19 @@
 # Migrate the Flavor SDK
 
+## v0.0.34
+
+Pin all Proxima dependencies to the same `v0.0.34` tag. One forward core
+migration ([migration policy §v0.0.34](migrations.md#v0034)); no flavor migration.
+
+| Change | Host action |
+|---|---|
+| Fact occurrence time | **Breaking:** `FactWriteCommand::from_payload(source_id, payload)` loses its time argument; set a time with `.occurred_at(at)` (the new `FactWriteCommand.occurred_at`), or omit it and the Fact occurred at its write time. A caller that passed `now_utc()` passes nothing ([01 §Properties of an Event](../01-event-source.md#properties-of-an-event)) |
+| `FactReceiptDraft` | **Breaking:** keeps only `source_id`; its `observed_at` and `occurred_at` are gone — the command carries the time |
+| Occurrence bound | An `occurred_at` more than five minutes in the future (`OCCURRED_AT_FUTURE_BOUND`) is refused with `InvalidArgument` on every Fact write path, the library included |
+| Reads | `MemoryRow`, `MemorySearchResult` and `MemorySnapshot` gain `occurred_at` (`Some` on every Fact, `None` otherwise); `core_search_memories` hits and `proxima://memory/{id}` return it as RFC 3339, omitted when absent. A struct literal of these types adds the field |
+| Outbox envelope `time` | Now the Fact's `occurred_at` ([18 §Publication Contract](../18-fact-outbox.md#publication-contract)); unchanged for a Fact written without one |
+| `DerivedMemory::external_origins` | **Breaking:** takes `ReadOrigin`s, which only `OtherStoresService::read_origin` makes, so every recorded remote origin was read as the caller. Remote origins must share the local origins' layer |
+
 ## v0.0.33
 
 Pin all Proxima dependencies to the same `v0.0.33` tag. One forward core
@@ -13,7 +27,7 @@ migration ([migration policy §v0.0.33](migrations.md#v0033)); no flavor migrati
 | Resource listings | `resources/list`, the REST catalog and `OpenAPI` list a resource only to a caller whose owner role may read it, as tools already were |
 | `CoreMcpTools::list_core_tools_for_scope` | A dispatcher's `args_schema` and `effect` cover only the actions the scope admits |
 | HTTP outbox sink | Optional: `PROXIMA_OUTBOX_HTTP_URL` (+ `PROXIMA_OUTBOX_HTTP_TOKEN_FILE`, `PROXIMA_OUTBOX_HTTP_CA_FILE`) registers the built-in consumer `http` ([18 §Built-in HTTP sink](../18-fact-outbox.md#built-in-http-sink)). A host that registers its own consumer named `http` and sets the URL fails boot |
-| Other stores | Optional: `RuntimeBuilder::other_stores(Arc<dyn OtherStores>)` lets `core_search_memories`, `core_derive`, `core_interpret` and `proxima://memory/{id}` reach other stores by `<store>:<handle>` ([15 §Other stores](../15-deployment.md#other-stores)). A host without the port behaves as before. `McpTool::CALLER_RENDERED_FIELDS` (default empty) is new. A host that authors `DerivedMemory::external_origins` passes `ReadOrigin`s, which only `OtherStoresService::read_origin` makes, so every recorded remote origin was read as the caller |
+| Other stores | Optional: `RuntimeBuilder::other_stores(Arc<dyn OtherStores>)` lets `core_search_memories`, `core_derive`, `core_interpret` and `proxima://memory/{id}` reach other stores by `<store>:<handle>` ([15 §Other stores](../15-deployment.md#other-stores)). A host without the port behaves as before. `McpTool::CALLER_RENDERED_FIELDS` (default empty) is new |
 
 ## v0.0.32
 

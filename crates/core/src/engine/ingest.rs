@@ -8,7 +8,7 @@ use crate::llm::EmbeddingSpace;
 use crate::verbs::fact_ingest::{
     AuthorizedFactCore, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
     AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, CitationSpec,
-    FactIngestOutcome, FactWriteCommand, InlineCitedObjectDraft,
+    FactIngestOutcome, FactWriteCommand, InlineCitedObjectDraft, check_occurred_at,
 };
 use crate::verbs::persist_mcp_call::{
     MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput, McpCallLogOutcome,
@@ -50,7 +50,11 @@ fn bind_fact_natural_key(
         .map_err(|err| ProtocolError::invalid_argument("natural_key", err))
 }
 
-fn normalize_fact_source_kind(draft: &mut FactWriteCommand) -> Result<(), ProtocolError> {
+/// The one check every Fact authorization path runs on the draft before it
+/// mints a witness: the draft is a Fact, and its writer-given occurrence
+/// time is admitted against this host's clock and stored in the form
+/// storage keeps ([`check_occurred_at`]).
+fn normalize_fact_draft(draft: &mut FactWriteCommand) -> Result<(), ProtocolError> {
     if draft.kind.is_empty() {
         "fact".clone_into(&mut draft.kind);
     }
@@ -59,6 +63,12 @@ fn normalize_fact_source_kind(draft: &mut FactWriteCommand) -> Result<(), Protoc
             "kind",
             "Fact ingest requires a Fact source",
         ));
+    }
+    if let Some(occurred_at) = draft.occurred_at {
+        draft.occurred_at = Some(check_occurred_at(
+            occurred_at,
+            time::OffsetDateTime::now_utc(),
+        )?);
     }
     Ok(())
 }
@@ -71,7 +81,9 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one owner
     /// it may write Facts on; `UnknownSchema` when the
-    /// Fact schema or provided citation schemas are not registered.
+    /// Fact schema or provided citation schemas are not registered;
+    /// `InvalidArgument` when the draft's `occurred_at` lies more than
+    /// [`crate::OCCURRED_AT_FUTURE_BOUND`] in the future.
     /// Caller-fixable storage rejections (concurrent citation) surface as
     /// `InvalidArgument`; infrastructure faults as `Internal`.
     ///
@@ -117,7 +129,9 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one owner it
     /// may write Facts on; `UnknownSchema` when the Fact schema or provided
-    /// citation schemas are not registered.
+    /// citation schemas are not registered; `InvalidArgument` when the
+    /// draft's `occurred_at` lies more than [`crate::OCCURRED_AT_FUTURE_BOUND`]
+    /// in the future.
     pub async fn authorize_fact_ingest<A>(
         &self,
         authority: &A,
@@ -171,7 +185,7 @@ impl Engine {
         session_visible: &[MemoryId],
         session_visible_kinds: &[(MemoryId, EntityKind)],
     ) -> Result<AuthorizedFactWrite, ProtocolError> {
-        normalize_fact_source_kind(&mut draft)?;
+        normalize_fact_draft(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -215,8 +229,10 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one owner it
     /// may write Facts on; `UnknownSchema` when any schema is absent for the
-    /// required kind; `InvalidArgument` when JSON payload validation fails; or
-    /// `Internal` when the cited object produces no content hash.
+    /// required kind; `InvalidArgument` when JSON payload validation fails or
+    /// the draft's `occurred_at` lies more than
+    /// [`crate::OCCURRED_AT_FUTURE_BOUND`] in the future; or `Internal` when
+    /// the cited object produces no content hash.
     pub async fn authorize_fact_with_citation<A>(
         &self,
         authority: &A,
@@ -231,7 +247,7 @@ impl Engine {
         let permit = self
             .authorize_write(authority, &owner, AccessKind::Fact)
             .await?;
-        normalize_fact_source_kind(&mut draft)?;
+        normalize_fact_draft(&mut draft)?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_fact_ingest`. The Fact payload is built from a
@@ -273,8 +289,10 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot resolve exactly one
-    /// owner it may write Facts on; or `UnknownSchema` when the Fact
-    /// schema is absent for the required kind.
+    /// owner it may write Facts on; `UnknownSchema` when the Fact
+    /// schema is absent for the required kind; or `InvalidArgument` when the
+    /// draft's `occurred_at` lies more than [`crate::OCCURRED_AT_FUTURE_BOUND`]
+    /// in the future.
     pub async fn authorize_fact_with_citation_by_ref<A>(
         &self,
         authority: &A,
@@ -289,7 +307,7 @@ impl Engine {
         let permit = self
             .authorize_write(authority, &owner, AccessKind::Fact)
             .await?;
-        normalize_fact_source_kind(&mut draft)?;
+        normalize_fact_draft(&mut draft)?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -900,15 +918,14 @@ impl Engine {
 
         let receipt_id = input.receipt_id();
         let payload = input.payload();
-        let mut draft =
-            FactWriteCommand::from_payload(MCP_CALL_SOURCE_ID, &payload, input.observed_at)
-                .occurred_at(input.occurred_at)
-                // Content-addressed I/O citation: the same request/response bytes
-                // under one Owner share one cited object, whatever else differs.
-                .with_citation(CitationSpec::v1(
-                    MCP_CALL_IO_SCHEMA,
-                    input.io_content_hash(),
-                ));
+        let mut draft = FactWriteCommand::from_payload(MCP_CALL_SOURCE_ID, &payload)
+            .occurred_at(input.occurred_at)
+            // Content-addressed I/O citation: the same request/response bytes
+            // under one Owner share one cited object, whatever else differs.
+            .with_citation(CitationSpec::v1(
+                MCP_CALL_IO_SCHEMA,
+                input.io_content_hash(),
+            ));
         // Whole-verb replay key. `from_payload` digests the payload alone,
         // which would collapse two identical calls made at different times
         // into one Fact; `McpCallLogInput::receipt_id` folds the timestamps
@@ -1003,7 +1020,7 @@ mod tests {
     }
 
     fn referenced_draft(payload: &ReferencedTestFact) -> FactWriteCommand {
-        FactWriteCommand::from_payload("test/references", payload, time::OffsetDateTime::now_utc())
+        FactWriteCommand::from_payload("test/references", payload)
     }
 
     fn reference_engine(
@@ -1382,7 +1399,6 @@ mod tests {
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },
-            time::OffsetDateTime::now_utc(),
         );
 
         let authorized = engine
@@ -1406,8 +1422,7 @@ mod tests {
             state: crate::goal_write::GoalState::Abandoned,
             change: crate::GoalChange::Abandon,
         };
-        let draft =
-            FactWriteCommand::from_payload("test/source", &forged, time::OffsetDateTime::now_utc());
+        let draft = FactWriteCommand::from_payload("test/source", &forged);
 
         let error = engine
             .authorize_fact_ingest(&authz, draft, &[SidecarPayload::fact(forged)])
@@ -1428,7 +1443,6 @@ mod tests {
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },
-            time::OffsetDateTime::now_utc(),
         );
 
         let err = engine
@@ -1450,7 +1464,6 @@ mod tests {
             &TestFact {
                 fact_id: "fact-1".to_owned(),
             },
-            time::OffsetDateTime::now_utc(),
         );
         "abstraction".clone_into(&mut draft.kind);
 
@@ -1473,7 +1486,6 @@ mod tests {
             &TestFact {
                 fact_id: "fact-1".to_string(),
             },
-            time::OffsetDateTime::now_utc(),
         );
         let cited_object = InlineCitedObjectDraft {
             schema_id: SchemaId::new("test/cited-object".into()),
@@ -1514,7 +1526,7 @@ mod tests {
     }
 
     fn listenable_draft(payload: &crate::test_fixtures::ListenableProbeV1) -> FactWriteCommand {
-        FactWriteCommand::from_payload("probe/source", payload, time::OffsetDateTime::now_utc())
+        FactWriteCommand::from_payload("probe/source", payload)
     }
 
     /// The capture is assembled from the DEPLOYMENT and the PERMIT, never

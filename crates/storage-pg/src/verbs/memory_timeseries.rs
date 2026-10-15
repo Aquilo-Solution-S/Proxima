@@ -31,6 +31,7 @@ pub struct MemoryRow {
     pub origins: Vec<Uuid>,
     pub refs: Vec<Uuid>,
     pub goal_refs: Vec<Uuid>,
+    pub occurred_at: Option<time::OffsetDateTime>,
 }
 
 /// The admission a write asks the timeseries to prepare: whose row it is,
@@ -94,8 +95,24 @@ pub(crate) struct PreparedMemoryAdmissionNew {
     sidecar_tables: Vec<String>,
     handle: Uuid,
     t: Uuid,
+    /// The `memory.occurred_at` this admission stores, resolved once here
+    /// and handed unchanged to the row insert and the outbox seal: a Fact's
+    /// writer-given time, else its write time read out of `t`. `None` for
+    /// an Abstraction or Perspective.
+    occurred_at: Option<time::OffsetDateTime>,
     expected_head_t: Option<Uuid>,
     targets: Vec<Uuid>,
+}
+
+impl PreparedMemoryAdmission {
+    /// The occurrence time a new admission will store; `None` for a replay
+    /// (which writes no row) and for an Abstraction or Perspective.
+    pub(crate) fn occurred_at(&self) -> Option<time::OffsetDateTime> {
+        match self {
+            Self::New(prepared) => prepared.occurred_at,
+            Self::Replay(_) => None,
+        }
+    }
 }
 
 /// One txn: owners upsert + ingest_keys + memory_head + memory + announce(append).
@@ -180,13 +197,16 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 /// `sidecar_tables` is the stamp the caller then backs with its sidecar rows
 /// in the same transaction: empty for the payload-less write-act Fact, the
 /// goal-change table for a goal's change Fact.
+///
+/// Returns the outcome with the occurrence time the admission stored, which
+/// a goal's change Fact publishes; `None` only for a replay.
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     draft: &FactWriteCommand,
     identity: (Uuid, Uuid),
     sidecar_tables: &[String],
-) -> Result<FactIngestOutcome, StorageError> {
+) -> Result<(FactIngestOutcome, Option<time::OffsetDateTime>), StorageError> {
     let prepared = prepare_memory_admission_at(
         tx,
         MemoryAdmissionDraft {
@@ -208,13 +228,17 @@ pub(crate) async fn ingest_unpinned_fact_at(
     .await?;
     let prepared = match claim_prepared_memory_admission(tx, prepared).await? {
         PreparedMemoryAdmission::New(prepared) => prepared,
-        PreparedMemoryAdmission::Replay(outcome) => return Ok(outcome),
+        PreparedMemoryAdmission::Replay(outcome) => return Ok((outcome, None)),
     };
+    let occurred_at = prepared.occurred_at;
     // Goal writes acquire this reserved handle together with their complete
     // lifecycle union before persistence. Re-entering the Memory lifecycle
     // lock here would acquire a new handle after the Goal `t` locks and invert
     // the cross-entity order.
-    materialize_prepared_memory_admission_after_locks(tx, prepared, draft.blob_id, None).await
+    let outcome =
+        materialize_prepared_memory_admission_after_locks(tx, prepared, draft.blob_id, None)
+            .await?;
+    Ok((outcome, occurred_at))
 }
 
 /// Take every declared scope's fence shared, then run each scope's
@@ -271,29 +295,7 @@ async fn prepare_memory_admission_at(
     let MemoryAdmissionDraft { owner, draft, .. } = admission;
     let owner_id = owner.into_inner();
 
-    let source_id = draft.source_id.clone();
-    let ingest_key = draft.ingest_key.clone();
-    if source_id.is_some() != ingest_key.is_some() {
-        return Err(StorageError::ConstraintViolation(
-            "source_id and ingest_key must both be set or both be absent".into(),
-        ));
-    }
-
-    let kind = if draft.kind.is_empty() {
-        "fact"
-    } else {
-        draft.kind.as_str()
-    };
-    if !matches!(kind, "fact" | "abstraction" | "perspective") {
-        return Err(StorageError::ConstraintViolation(
-            "kind must be fact, abstraction, or perspective".into(),
-        ));
-    }
-    if kind != "fact" && (source_id.is_some() || ingest_key.is_some()) {
-        return Err(StorageError::ConstraintViolation(
-            "A/P cannot carry source_id/ingest_key".into(),
-        ));
-    }
+    let kind = validated_admission_kind(draft)?;
     let mut persisted_origins = pin_memory_ids(admission.origins)?;
     let (mut refs, goal_refs) = pin_reference_ids(admission.references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
@@ -319,7 +321,7 @@ async fn prepare_memory_admission_at(
     // append must wait on the fence rather than insert the row and then wait
     // behind its own uncommitted owner row.
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, owner).await?;
-    if let Some(source_id) = source_id.as_deref() {
+    if let Some(source_id) = draft.source_id.as_deref() {
         crate::access::owner_columns::lock_source_fence_shared_tx(tx, owner, source_id).await?;
     }
     // Then the flavor-declared lifecycle scopes, shared, BEFORE the handle
@@ -344,6 +346,11 @@ async fn prepare_memory_admission_at(
             .await
             .map_err(map_err)?
     };
+    let occurred_at = (kind == "fact").then(|| {
+        draft
+            .occurred_at
+            .unwrap_or_else(|| MemoryId::new(t).created_at())
+    });
 
     let expected_head_t: Option<Uuid> =
         sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
@@ -381,10 +388,44 @@ async fn prepare_memory_admission_at(
             sidecar_tables: admission.sidecar_tables.to_vec(),
             handle,
             t,
+            occurred_at,
             expected_head_t,
             targets,
         },
     )))
+}
+
+/// The kind a draft is stored as. Only a Fact carries a source, an ingest key
+/// and an occurrence time; an Abstraction or Perspective that names one is
+/// refused here rather than by the table's CHECKs
+/// (`memory_fact_occurred_at_chk` for the time).
+fn validated_admission_kind(draft: &FactWriteCommand) -> Result<&str, StorageError> {
+    if draft.source_id.is_some() != draft.ingest_key.is_some() {
+        return Err(StorageError::ConstraintViolation(
+            "source_id and ingest_key must both be set or both be absent".into(),
+        ));
+    }
+    let kind = if draft.kind.is_empty() {
+        "fact"
+    } else {
+        draft.kind.as_str()
+    };
+    if !matches!(kind, "fact" | "abstraction" | "perspective") {
+        return Err(StorageError::ConstraintViolation(
+            "kind must be fact, abstraction, or perspective".into(),
+        ));
+    }
+    if kind != "fact" && (draft.source_id.is_some() || draft.ingest_key.is_some()) {
+        return Err(StorageError::ConstraintViolation(
+            "A/P cannot carry source_id/ingest_key".into(),
+        ));
+    }
+    if kind != "fact" && draft.occurred_at.is_some() {
+        return Err(StorageError::ConstraintViolation(
+            "A/P cannot carry occurred_at".into(),
+        ));
+    }
+    Ok(kind)
 }
 
 async fn admission_handle(
@@ -912,9 +953,9 @@ async fn insert_memory_revision(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables)
+             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13)",
+                 $13, $14)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -929,6 +970,7 @@ async fn insert_memory_revision(
     .bind(&prepared.refs)
     .bind(&prepared.goal_refs)
     .bind(&prepared.sidecar_tables)
+    .bind(prepared.occurred_at)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -1022,7 +1064,8 @@ pub(crate) async fn read_memory_by_t(
     t: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
-        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, origins, refs, goal_refs
+        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, origins, refs, goal_refs,
+                occurred_at
            FROM proxima_core.memory
           WHERE t = $1",
     )
@@ -1041,7 +1084,7 @@ pub(crate) async fn read_memory_head(
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.source_id, m.ingest_key,
-                m.origins, m.refs, m.goal_refs
+                m.origins, m.refs, m.goal_refs, m.occurred_at
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.handle = $1",

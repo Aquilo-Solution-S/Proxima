@@ -717,8 +717,8 @@ async fn insert_commit_row(
     .execute(&mut **tx)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables)
-         VALUES ($1, $2, 'fact', $3, $4, $5)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(t)

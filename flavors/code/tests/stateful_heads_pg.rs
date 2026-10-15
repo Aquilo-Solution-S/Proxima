@@ -69,7 +69,6 @@ impl FactPayload for StatelessFactV1 {
 }
 
 fn fresh_draft(_owner: OwnerId, schema: &str, payload: &[u8]) -> FactWriteCommand {
-    let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
@@ -81,9 +80,8 @@ fn fresh_draft(_owner: OwnerId, schema: &str, payload: &[u8]) -> FactWriteComman
         lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
-            observed_at: now,
-            occurred_at: now,
         }),
+        occurred_at: None,
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),

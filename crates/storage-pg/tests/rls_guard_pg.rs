@@ -853,7 +853,7 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         )
         .await;
         let mut transaction = admin.begin().await.unwrap();
-        sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,sidecar_tables) VALUES ($1,$2,'fact',$3,'core/test',ARRAY['proxima_core.agent_note_v1'])")
+        sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,sidecar_tables, occurred_at) VALUES ($1,$2,'fact',$3,'core/test',ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))")
             .bind(handle).bind(t).bind(owner).execute(&mut *transaction).await.unwrap();
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1(t,note_id,title,body) VALUES ($1,$2,$3,$3)",
@@ -976,7 +976,7 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     sqlx::query("INSERT INTO proxima_core.memory_head(handle,schema_id,kind,owner_id,t) VALUES ($1,'core/agent-note-v1','fact',$2,$3)")
         .bind(new_handle).bind(owner_a).bind(new_t)
         .execute(&mut *writer).await.unwrap();
-    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,sidecar_tables) VALUES ($1,$2,'fact',$3,'core/agent-note-v1',ARRAY['proxima_core.agent_note_v1'])")
+    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,sidecar_tables, occurred_at) VALUES ($1,$2,'fact',$3,'core/agent-note-v1',ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))")
         .bind(new_handle).bind(new_t).bind(owner_a)
         .execute(&mut *writer).await.unwrap();
     sqlx::query("INSERT INTO proxima_core.agent_note_v1(t,note_id,title,body) VALUES ($1,$2,'runtime','runtime')")

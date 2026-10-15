@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::edge::EdgeEndpoint;
 use crate::engine::WritePermit;
+use crate::error::ProtocolError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     FactPayload, FactReceiptId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
@@ -78,11 +79,49 @@ pub struct InlineCitedObjectDraft {
     pub payload_bytes: Vec<u8>,
 }
 
+/// The receipt a sourced Fact write asks for: the source whose delivery it
+/// is. [`FactWriteCommand::receipt_id_for_owner`] folds it into the receipt
+/// id. When the observation occurred is the command's `occurred_at`, not a
+/// receipt field.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactReceiptDraft {
     pub source_id: SourceId,
-    pub observed_at: time::OffsetDateTime,
-    pub occurred_at: time::OffsetDateTime,
+}
+
+/// How far past the write's clock a Fact's `FactWriteCommand.occurred_at`
+/// may lie: an observation cannot postdate its own recording, and two
+/// hosts' clocks disagreeing by seconds is not a writer error.
+pub const OCCURRED_AT_FUTURE_BOUND: time::Duration = time::Duration::minutes(5);
+
+/// Admit a writer's occurrence time against the clock reading `now`.
+///
+/// Returns the value the Fact stores: in UTC and truncated to whole
+/// microseconds, the precision of a Postgres `timestamptz`, so the time
+/// stored, published in the outbox envelope and read back is one value.
+///
+/// # Errors
+///
+/// [`ProtocolError::invalid_argument`] on `occurred_at` when it lies more
+/// than [`OCCURRED_AT_FUTURE_BOUND`] after `now`.
+pub(crate) fn check_occurred_at(
+    occurred_at: time::OffsetDateTime,
+    now: time::OffsetDateTime,
+) -> Result<time::OffsetDateTime, ProtocolError> {
+    if occurred_at > now + OCCURRED_AT_FUTURE_BOUND {
+        return Err(ProtocolError::invalid_argument(
+            "occurred_at",
+            format!(
+                "must not lie more than {} minutes in the future",
+                OCCURRED_AT_FUTURE_BOUND.whole_minutes()
+            ),
+        ));
+    }
+    occurred_at
+        .checked_to_offset(time::UtcOffset::UTC)
+        .and_then(|utc| utc.replace_microsecond(utc.microsecond()).ok())
+        .ok_or_else(|| {
+            ProtocolError::invalid_argument("occurred_at", "is not representable in UTC")
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -124,6 +163,13 @@ pub struct FactWriteCommand {
     pub lexical_language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<FactReceiptDraft>,
+    /// When the observation occurred. `None` ⇒ the write time, read out of
+    /// the `t` storage mints. Every Fact stores the resolved value and every
+    /// read returns it; an Abstraction or Perspective carries none.
+    /// Supersession, recency and versioning still order by `t`. The engine
+    /// refuses a value more than [`OCCURRED_AT_FUTURE_BOUND`] in the future.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub citation: Option<Citation>,
     /// Additional reference pins, separate from payload-declared references.
     /// Excluded from receipt key material; replay still requires matching pins.
@@ -719,11 +765,10 @@ impl FactWriteCommand {
     /// to the same key and replay, different values digest apart and
     /// mint. The raw bytes stay in `payload`, where
     /// [`Self::receipt_id_for_owner`] folds them.
-    pub fn from_payload<P: FactPayload>(
-        source_id: impl Into<String>,
-        payload: &P,
-        observed_at: time::OffsetDateTime,
-    ) -> Self {
+    ///
+    /// The command carries no occurrence time: the Fact occurred when it is
+    /// written unless the `occurred_at` builder says otherwise.
+    pub fn from_payload<P: FactPayload>(source_id: impl Into<String>, payload: &P) -> Self {
         let source_id = source_id.into();
         let receipt_key = payload.receipt_key();
         Self {
@@ -737,9 +782,8 @@ impl FactWriteCommand {
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new(source_id),
-                observed_at,
-                occurred_at: observed_at,
             }),
+            occurred_at: None,
             citation: None,
             additional_references: Vec::new(),
             refs: Vec::new(),
@@ -784,12 +828,11 @@ impl FactWriteCommand {
         self
     }
 
-    /// Override the occurrence time while preserving the observation time.
+    /// When the observation occurred, for a Fact recorded after the fact
+    /// (an import, a backfill); sets the `occurred_at` field.
     #[must_use]
-    pub fn occurred_at(mut self, occurred_at: time::OffsetDateTime) -> Self {
-        if let Some(receipt) = &mut self.receipt {
-            receipt.occurred_at = occurred_at;
-        }
+    pub const fn occurred_at(mut self, occurred_at: time::OffsetDateTime) -> Self {
+        self.occurred_at = Some(occurred_at);
         self
     }
 
@@ -832,4 +875,48 @@ pub struct FactIngestOutcome {
     /// upload is that the second caller gets the first caller's object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_object_id: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OCCURRED_AT_FUTURE_BOUND, check_occurred_at};
+    use crate::error::ErrorCode;
+
+    fn at(rfc3339: &str) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(rfc3339, &time::format_description::well_known::Rfc3339)
+            .expect("RFC 3339")
+    }
+
+    #[test]
+    fn an_occurrence_beyond_the_future_bound_is_refused() {
+        let now = at("2026-10-15T12:00:00Z");
+        let err = check_occurred_at(
+            now + OCCURRED_AT_FUTURE_BOUND + time::Duration::microseconds(1),
+            now,
+        )
+        .expect_err("past the bound");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("occurred_at"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_occurrence_within_the_clock_skew_or_in_the_past_is_admitted() {
+        let now = at("2026-10-15T12:00:00Z");
+        let at_bound = now + OCCURRED_AT_FUTURE_BOUND;
+        assert_eq!(
+            check_occurred_at(at_bound, now).expect("at the bound"),
+            at_bound
+        );
+        let backdate = at("2023-03-22T08:15:00Z");
+        assert_eq!(check_occurred_at(backdate, now).expect("past"), backdate);
+    }
+
+    #[test]
+    fn an_admitted_occurrence_is_utc_and_whole_microseconds() {
+        let now = at("2026-10-15T12:00:00Z");
+        let admitted =
+            check_occurred_at(at("2023-03-22T10:15:00.123456789+02:00"), now).expect("past");
+        assert_eq!(admitted, at("2023-03-22T08:15:00.123456Z"));
+        assert_eq!(admitted.offset(), time::UtcOffset::UTC);
+    }
 }

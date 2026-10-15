@@ -21,8 +21,9 @@ Pins between nodes. There is no edge table.
 | **Reference** — points-at a Goal | schema-declared `references()` | `memory.goal_refs[]` |
 | **Interpretation** — a claim | an interpretation Perspective | ordinary `refs` on that node |
 
-Supersession is a later `t` on the same `handle`, not a pin. Authorship is a
-row column when present.
+Supersession is a later `t` on the same `handle`, not a pin, and follows the
+write time: a backdated Fact's `occurred_at` never reorders a series.
+Authorship is a row column when present.
 
 ```
 proxima_core.memory (

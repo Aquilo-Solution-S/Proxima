@@ -231,6 +231,7 @@ fn derived_memory_command(
         rendered_text: Some(draft.text.clone()),
         lexical_language: draft.lexical_language.map(str::to_string),
         receipt: None,
+        occurred_at: None,
         citation: None,
         // The authorized endpoint slices below are the sole pin source. Keep
         // compatibility fields empty so this backend cannot accidentally

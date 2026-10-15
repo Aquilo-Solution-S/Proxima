@@ -662,11 +662,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
         let engine = built.host().engine();
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
         let original = sdk_fact();
-        let draft = proxima::FactWriteCommand::from_payload(
-            "sdk/binding",
-            &original,
-            time::OffsetDateTime::now_utc(),
-        );
+        let draft = proxima::FactWriteCommand::from_payload("sdk/binding", &original);
         let sidecars = [SidecarPayload::fact(original.clone())];
         let authorized = engine
             .authorize_fact_ingest(&authz, draft.clone(), &sidecars)
@@ -1308,8 +1304,8 @@ async fn insert_raw_fact_admission(
     let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, sidecar_tables)
-         VALUES ($1, $2, 'fact', $3, $4, $5)",
+            (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(t)

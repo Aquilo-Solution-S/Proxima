@@ -51,6 +51,9 @@ pub struct MemorySnapshot {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: OwnerId,
+    /// When the observation occurred (`memory.occurred_at`): `Some` for
+    /// every Fact, `None` for an Abstraction or Perspective.
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub text: Option<String>,
     pub payload: Option<SidecarPayload>,
 }

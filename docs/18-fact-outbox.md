@@ -111,7 +111,7 @@ substitutes today's installation identity.
 | `type` | the registered schema id, **verbatim** — the version travels in `dataschema` only, so a consumer subscription is not version-pinned | typed registration |
 | `dataschema` | `proxima://schema/{schema_id}/{schema_version}` — resolved against the build-time catalog and served by the MCP resource; **no HTTP fetch** at publish or consume time | typed registration |
 | `datacontenttype` | `application/json` | const |
-| `time` | RFC 3339 (ms precision), decoded from the UUIDv7 timestamp inside `t`. `memory` carries no `recorded_at` column, so the recording time is read out of the id rather than stamped a second time — stable across republication | the id itself |
+| `time` | RFC 3339, when the occurrence happened (`CloudEvents` `time`): the Fact's `occurred_at` ([01 §Properties of an Event](01-event-source.md#properties-of-an-event)). For a Fact written without one that is its write time, decoded from the UUIDv7 inside `t` (ms precision) — stable across republication | `memory.occurred_at` |
 | `subject` | the series the event belongs to, as a bare lowercase UUID: the Fact's series handle, or for `core/goal-change-v1` the goal's `series` (§Ordering) | write session |
 | `sequence` (ext) | the event's position in that series, a 20-digit zero-padded decimal starting at 1, so string order is numeric order (`CloudEvents` sequence extension; §Ordering) | the series' head, under the series lock |
 | `data` | the typed export (serde of the registered payload) | payload |
@@ -258,8 +258,8 @@ captured Fact `t`. Its delivery happens on `publication_delivery` lanes
 There is **no `source` column and no `recorded_at` column**. Both live in the
 envelope and nowhere else: `source` is one configured value per installation
 (a column would be the same string on every row and could drift from the
-envelope's), and the recording time is decoded from the UUIDv7 inside `t`
-rather than stamped a second time.
+envelope's), and the envelope's `time` is the Fact's `memory.occurred_at`,
+whose default is the write time decoded from the UUIDv7 inside `t`.
 
 Table `proxima_core.publication_delivery` (migration `0026`) holds one lane
 per (record, consumer registered when the record was captured):

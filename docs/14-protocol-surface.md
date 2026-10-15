@@ -212,7 +212,8 @@ Snapshot read of memories and goals scoped to the server-resolved authorized Own
 | schema id | optional |
 | supersession | heads-only or include superseded |
 | Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
-| pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` |
+| pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` — the write time, never a Fact's `occurred_at` |
+| occurrence | every Fact row carries `occurred_at` ([01 §Properties of an Event](01-event-source.md#properties-of-an-event)); Abstractions and Perspectives carry none |
 | payloads | optional typed payload projections; identity hydration by memory/goal ids |
 | stateful Facts | heads by registered natural key; a flavor-defined tombstone payload is the current hot head and suppresses the prior present row |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |

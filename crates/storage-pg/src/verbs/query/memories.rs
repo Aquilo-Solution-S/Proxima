@@ -310,7 +310,7 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
-                m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
+                m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at \
          FROM proxima_core.memory m \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
          WHERE m.owner_id = ANY($1::uuid[])",
@@ -331,7 +331,7 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
            SELECT m.t AS memory_id, m.handle, \
                   COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                   m.owner_id, m.schema_id, m.sidecar_tables, \
-                  m.kind::text AS kind, m.origins, m.refs, m.goal_refs \
+                  m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at \
            FROM (SELECT h.handle, h.t FROM proxima_core.memory_head h \
                  WHERE h.owner_id = o.owner_id",
     );

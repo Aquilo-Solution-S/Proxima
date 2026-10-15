@@ -50,6 +50,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: origins
             .into_iter()

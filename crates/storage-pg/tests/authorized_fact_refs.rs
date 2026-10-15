@@ -160,8 +160,7 @@ fn draft(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> FactWriteCommand {
         goal_id,
         target_kind: "fact".to_owned(),
     };
-    let now = time::OffsetDateTime::now_utc();
-    FactWriteCommand::from_payload("test/authorized-fact-refs", &payload, now)
+    FactWriteCommand::from_payload("test/authorized-fact-refs", &payload)
 }
 
 fn payload(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> ReferencedFactV1 {
@@ -340,11 +339,7 @@ fn inline_citation() -> InlineCitedObjectDraft {
 }
 
 fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
-    FactWriteCommand::from_payload(
-        "test/authorized-fact-refs",
-        payload,
-        time::OffsetDateTime::now_utc(),
-    )
+    FactWriteCommand::from_payload("test/authorized-fact-refs", payload)
 }
 
 async fn create_goal(
@@ -557,11 +552,8 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             fact_id.into_inner(),
             goal_id.into_inner(),
         );
-        let inline_draft = FactWriteCommand::from_payload(
-            "test/authorized-citation",
-            &inline_payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let inline_draft =
+            FactWriteCommand::from_payload("test/authorized-citation", &inline_payload);
         let cited_object = inline_citation();
         let authorized = engine
             .authorize_fact_with_citation(
@@ -589,11 +581,8 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
             fact_id.into_inner(),
             goal_id.into_inner(),
         );
-        let by_ref_draft = FactWriteCommand::from_payload(
-            "test/authorized-citation",
-            &by_ref_payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let by_ref_draft =
+            FactWriteCommand::from_payload("test/authorized-citation", &by_ref_payload);
         let authorized = engine
             .authorize_fact_with_citation_by_ref(
                 &authz,
@@ -970,8 +959,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
+                 sidecar_tables, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
         )
         .bind(reference_handle)
         .bind(owner.into_inner())
@@ -993,8 +982,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}')",
+                 sidecar_tables, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}', uuid_extract_timestamp($1))",
         )
         .bind(memory_ref_handle)
         .bind(owner.into_inner())
@@ -1025,8 +1014,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
+                 sidecar_tables, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
         )
         .bind(goal_ref_handle)
         .bind(owner.into_inner())
@@ -1053,8 +1042,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .await?;
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}')",
+                (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}', uuid_extract_timestamp($1))",
         )
         .bind(origin_handle)
         .bind(owner.into_inner())
@@ -1116,8 +1105,8 @@ async fn goal_erase_serializes_against_reference_admission() {
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                     (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                     sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}')",
+                     sidecar_tables, occurred_at)
+                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
             )
             .bind(handle)
             .bind(owner_id)
@@ -1213,8 +1202,8 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
                 .map_err(|_| sqlx::Error::Protocol("lock-wait observer was dropped".to_owned()))?;
             let inserted = sqlx::query(
                 "INSERT INTO proxima_core.memory
-                    (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables)
-                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, $4, '{}')",
+                    (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at)
+                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, $4, '{}', uuid_extract_timestamp($1))",
             )
             .bind(handle)
             .bind(owner_id)

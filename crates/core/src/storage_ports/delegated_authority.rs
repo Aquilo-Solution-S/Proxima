@@ -914,7 +914,6 @@ mod tests {
             &TestFact {
                 value: "one".into(),
             },
-            time::OffsetDateTime::now_utc(),
         )
     }
 

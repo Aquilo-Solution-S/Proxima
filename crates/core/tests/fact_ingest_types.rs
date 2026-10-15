@@ -7,7 +7,6 @@ use proxima_core::{OwnerId, SchemaId, SchemaVersion, SourceId, UserId};
 use uuid::Uuid;
 
 fn fresh_command() -> FactWriteCommand {
-    let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
@@ -19,9 +18,8 @@ fn fresh_command() -> FactWriteCommand {
         lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
-            observed_at: now,
-            occurred_at: now,
         }),
+        occurred_at: None,
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".to_string()),

@@ -214,6 +214,11 @@ pub struct MemorySearchResult {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub created_at: time::OffsetDateTime,
+    /// When the observation occurred (`memory.occurred_at`): `Some` for
+    /// every Fact, `None` for an Abstraction or Perspective. Ranking,
+    /// recency and cursors still follow `created_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub snippet: String,
     /// Pure modes retain their raw score. Hybrid uses weighted reciprocal
     /// rank fusion with one-based ranks and k = 60; values are comparable
@@ -432,6 +437,10 @@ pub struct MemoryRow {
     /// outside this query's visible Goal set are folded into [`Self::refs`]
     /// so their stored kind is not disclosed.
     pub goal_refs: Vec<GoalId>,
+    /// When the observation occurred (`memory.occurred_at`): `Some` for
+    /// every Fact, `None` for an Abstraction or Perspective. Supersession
+    /// and recency still order by `id`.
+    pub occurred_at: Option<time::OffsetDateTime>,
     /// Typed sidecar projection populated by storage at read time. Protocol
     /// adapters serialize it at the transport boundary.
     pub payload: Option<SidecarPayload>,

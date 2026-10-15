@@ -149,6 +149,7 @@ struct AdmitRow {
     kind: String,
     schema_id: String,
     created_at: time::OffsetDateTime,
+    occurred_at: Option<time::OffsetDateTime>,
 }
 
 /// Request search on a caller-owned transaction connection. All candidate,
@@ -961,7 +962,8 @@ fn search_admit_sql(heads_only: bool) -> String {
         "SELECT m.t,
                 m.kind::text,
                 m.schema_id,
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
+                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at,
+                m.occurred_at
            {from}
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])
@@ -1225,6 +1227,7 @@ async fn admit_hits_on_connection(
                 kind,
                 schema_id: SchemaId::new(row.schema_id),
                 created_at: row.created_at,
+                occurred_at: row.occurred_at,
                 snippet: String::new(),
                 score,
                 lexical_score: hit.lexical_score.unwrap_or_default(),

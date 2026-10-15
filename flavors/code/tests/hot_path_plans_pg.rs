@@ -451,9 +451,9 @@ async fn seed_chunk_corpus(
                 AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
          )
          INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
          SELECT handle, t, 'fact', $1, 'proxima-code/code-chunk-v1',
-                ARRAY['proxima_code.code_chunk_v1']
+                ARRAY['proxima_code.code_chunk_v1'], uuid_extract_timestamp(t)
            FROM ids",
     )
     .bind(owner.into_inner())

@@ -324,8 +324,8 @@ pub async fn seed_memory_with_sidecars_in_tx(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8)",
+            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id, occurred_at)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
     )
     .bind(handle)
     .bind(t)

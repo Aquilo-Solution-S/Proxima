@@ -484,8 +484,8 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 .expect("seeded schema declares a sidecar table");
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, content_id, origins, sidecar_tables)
-                 VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8])",
+                     (handle, t, kind, owner_id, schema_id, content_id, origins, sidecar_tables, occurred_at)
+                 VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8], CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
             )
             .bind(handle)
             .bind(t)

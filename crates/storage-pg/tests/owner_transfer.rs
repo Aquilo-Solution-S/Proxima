@@ -230,6 +230,7 @@ fn draft() -> FactWriteCommand {
         rendered_text: None,
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),
@@ -273,8 +274,7 @@ async fn ingest_mcp_call_fact(
         io_truncated: false,
         io_content_hash: [3_u8; 32],
     };
-    let mut draft =
-        FactWriteCommand::from_payload("proxima/fact", &payload, time::OffsetDateTime::now_utc());
+    let mut draft = FactWriteCommand::from_payload("proxima/fact", &payload);
     // `extra` may carry a `LanguagePolicy::PerRow` schema; the mcp sidecar
     // itself pins its configuration and reads no language bind.
     draft.lexical_language =
@@ -2347,9 +2347,9 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs,
-                 goal_refs, sidecar_tables)
+                 goal_refs, sidecar_tables, occurred_at)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', '{}', '{}',
-                     '{}', '{}')",
+                     '{}', '{}', uuid_extract_timestamp($2))",
         )
         .bind(first.handle)
         .bind(drift_t)

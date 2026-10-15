@@ -164,9 +164,11 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerId) -> Result<Vec<Uu
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, schema_id, owner_id, sidecar_tables)
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, schema_id, owner_id, sidecar_tables, occurred_at)
          SELECT t, t, 'fact', 'core/agent-note-v1', $2,
-                ARRAY['proxima_core.agent_note_v1'] FROM unnest($1::uuid[]) AS t",
+                ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(t)
+           FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)
     .bind(owner.into_inner())

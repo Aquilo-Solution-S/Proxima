@@ -28,7 +28,10 @@ use crate::verbs::fact_embeddings::RouteSpaces;
 /// which sidecars the original Memory admission declared.
 /// Version 8 records the width of each embedding space next to its model id.
 /// Older objects restore at 1024, the only width a vector could have then.
-pub const COLD_FORMAT_VERSION: u8 = 8;
+/// Version 9 records `memory.occurred_at`. An older object's Fact restores
+/// its write time read out of `t`, the value migration 0030 backfills hot
+/// Facts with; an older Abstraction or Perspective restores none.
+pub const COLD_FORMAT_VERSION: u8 = 9;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -92,6 +95,7 @@ struct HotRow {
     goal_refs: Vec<Uuid>,
     sidecar_tables: Vec<String>,
     content_id: Option<Uuid>,
+    occurred_at: Option<time::OffsetDateTime>,
 }
 
 /// The rows a lifecycle call may reach: one owner's, of every stored Memory
@@ -187,6 +191,7 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     write_uuid_list(&mut out, &rec.row.origins)?;
     write_uuid_list(&mut out, &rec.row.refs)?;
     write_uuid_list(&mut out, &rec.row.goal_refs)?;
+    write_opt_time(&mut out, rec.row.occurred_at)?;
     write_str(&mut out, &rec.schema_id)?;
     // The dump names are data from the cold boundary. Persist the original
     // Memory stamp separately so a caller cannot mint a new valid sidecar by
@@ -292,6 +297,12 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         },
         sidecar_tables: Vec::new(),
         content_id: None,
+        occurred_at: None,
+    };
+    row.occurred_at = if version >= 9 {
+        read_opt_time(bytes, &mut i)?
+    } else {
+        (row.kind == "fact").then(|| proxima_core::MemoryId::new(row.t).created_at())
     };
     let schema_id = read_str(bytes, &mut i)?;
     let sidecar_tables = if version >= 6 {
@@ -415,6 +426,24 @@ fn write_opt_uuid(out: &mut Vec<u8>, value: Option<Uuid>) {
     }
 }
 
+/// An optional instant as microseconds since the Unix epoch, the precision a
+/// `timestamptz` column holds.
+fn write_opt_time(
+    out: &mut Vec<u8>,
+    value: Option<time::OffsetDateTime>,
+) -> Result<(), StorageError> {
+    match value {
+        None => out.push(0),
+        Some(at) => {
+            let micros = i64::try_from(at.unix_timestamp_nanos().div_euclid(1_000))
+                .map_err(|_| StorageError::Internal("cold time exceeds i64 microseconds".into()))?;
+            out.push(1);
+            out.extend_from_slice(&micros.to_be_bytes());
+        }
+    }
+    Ok(())
+}
+
 fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) -> Result<(), StorageError> {
     write_count(out, values.len())?;
     for id in values {
@@ -465,6 +494,25 @@ fn read_opt_str(bytes: &[u8], i: &mut usize) -> Result<Option<String>, StorageEr
         0 => Ok(None),
         _ => Ok(Some(read_str(bytes, i)?)),
     }
+}
+
+fn read_opt_time(
+    bytes: &[u8],
+    i: &mut usize,
+) -> Result<Option<time::OffsetDateTime>, StorageError> {
+    if read_u8(bytes, i)? == 0 {
+        return Ok(None);
+    }
+    let end = i.saturating_add(8);
+    let slice: [u8; 8] = bytes
+        .get(*i..end)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| StorageError::Internal("cold eof time".into()))?;
+    *i = end;
+    let micros = i64::from_be_bytes(slice);
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
+        .map(Some)
+        .map_err(|err| StorageError::Internal(format!("cold time: {err}")))
 }
 
 fn read_opt_uuid(bytes: &[u8], i: &mut usize) -> Result<Option<Uuid>, StorageError> {
@@ -712,11 +760,11 @@ async fn load_embed_spaces(
         .collect()
 }
 
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id
+const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
            FROM proxima_core.memory
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
@@ -2527,9 +2575,9 @@ async fn insert_hydrated_memory_row(
     let result = sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables)
+             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13)",
+                 $13, $14)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
@@ -2544,6 +2592,7 @@ async fn insert_hydrated_memory_row(
     .bind(refs)
     .bind(goal_refs)
     .bind(rec.row.sidecar_tables.clone())
+    .bind(rec.row.occurred_at)
     .execute(tx.as_mut())
     .await;
     if let Err(error) = result {
@@ -3926,6 +3975,7 @@ mod tests {
                 goal_refs,
                 sidecar_tables: Vec::new(),
                 content_id: None,
+                occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
             },
             schema_id: "core/upload-v1".to_owned(),
             sidecar_dumps: Vec::new(),
@@ -4047,6 +4097,60 @@ mod tests {
             &decoded,
             &crate::core_pg_sidecars()
         ));
+    }
+
+    #[test]
+    fn a_current_cold_object_round_trips_when_its_fact_occurred() {
+        let mut rec = cold_row(Vec::new(), Vec::new());
+        let backdate = time::OffsetDateTime::from_unix_timestamp_nanos(1_679_472_900_123_456_000)
+            .expect("an instant");
+        rec.row.occurred_at = Some(backdate);
+        let decoded =
+            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
+        assert_eq!(decoded.row.occurred_at, Some(backdate));
+
+        rec.row.kind = "abstraction".to_owned();
+        rec.row.occurred_at = None;
+        let decoded =
+            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
+        assert_eq!(decoded.row.occurred_at, None);
+    }
+
+    /// A v8 object predates `memory.occurred_at`. Its Fact restores the write
+    /// time read out of `t`, which is what migration 0030 backfilled every
+    /// hot Fact with; an Abstraction restores none, as the CHECK requires.
+    #[test]
+    fn a_pre_occurrence_cold_object_restores_a_facts_write_time() {
+        for (kind, written) in [("fact", true), ("abstraction", false)] {
+            let mut rec = cold_row(Vec::new(), Vec::new());
+            rec.row.kind = kind.to_owned();
+            let mut v8 = vec![8_u8];
+            super::write_uuid(&mut v8, rec.row.handle);
+            super::write_uuid(&mut v8, rec.row.t);
+            super::write_str(&mut v8, &rec.row.kind).expect("kind");
+            super::write_uuid(&mut v8, rec.row.owner_id);
+            super::write_opt_str(&mut v8, rec.row.source_id.as_deref()).expect("source");
+            super::write_opt_str(&mut v8, rec.row.ingest_key.as_deref()).expect("ingest key");
+            super::write_opt_uuid(&mut v8, rec.row.blob_id);
+            super::write_uuid_list(&mut v8, &rec.row.origins).expect("origins");
+            super::write_uuid_list(&mut v8, &rec.row.refs).expect("refs");
+            super::write_uuid_list(&mut v8, &rec.row.goal_refs).expect("goal refs");
+            super::write_str(&mut v8, &rec.schema_id).expect("schema");
+            super::write_str_list(&mut v8, &[]).expect("sidecar stamp");
+            super::write_count(&mut v8, 0).expect("no sidecars");
+            super::write_str_list(&mut v8, &[]).expect("embed models");
+            super::write_count(&mut v8, 0).expect("embed widths");
+            super::write_opt_str(&mut v8, None).expect("sketch");
+            super::write_count(&mut v8, 0).expect("no details");
+
+            let decoded = super::decode_record(&v8).expect("v8 decodes");
+            assert_eq!(decoded.format_version, 8);
+            assert_eq!(
+                decoded.row.occurred_at,
+                written.then(|| proxima_core::MemoryId::new(rec.row.t).created_at()),
+                "{kind}"
+            );
+        }
     }
 
     #[test]

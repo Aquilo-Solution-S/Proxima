@@ -35,7 +35,7 @@ pub struct RecordUtteranceArgs {
     pub space: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional RFC3339 timestamp of when this utterance originally happened, for importing historical conversations (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering still follows ingestion time. Omit for 'now'."
+        description = "Optional RFC3339 timestamp of when this utterance originally happened, for importing historical conversations. Stored as the Fact's occurred_at and returned on every read; at most 5 minutes in the future. Recency ordering still follows ingestion time. Omit for 'now'."
     )]
     pub observed_at: Option<String>,
     #[serde(default)]
@@ -89,13 +89,16 @@ impl McpTool for RecordUtteranceTool {
                 });
             let source_id = format!("{SOURCE_ID}/{source_instance_id}");
 
-            let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
-                .unwrap_or_else(time::OffsetDateTime::now_utc);
+            // The engine bounds it and defaults it to the write time.
+            let occurred_at = super::util::parse_observed_at(args.observed_at.as_deref())?;
             let lexical_language =
                 crate::lexical_language::resolve_lexical_language(args.language.as_deref(), text)
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let draft = FactWriteCommand::from_payload(source_id, &payload, observed_at)
-                .with_lexical_language(Some(lexical_language));
+            let draft = FactWriteCommand {
+                occurred_at,
+                ..FactWriteCommand::from_payload(source_id, &payload)
+            }
+            .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
             let sidecars = [SidecarPayload::fact(payload.clone())];

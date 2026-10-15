@@ -48,7 +48,7 @@ pub struct RememberArgs {
     pub space: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "RFC3339 time this was originally observed, for imports; not in the future. Stored as provenance only; ordering and versioning use write time. Omit for now."
+        description = "RFC3339 time this was originally observed, for imports. Stored as the Fact's occurred_at and returned on every read; at most 5 minutes in the future. Ordering and versioning still use write time. Omit for now."
     )]
     pub observed_at: Option<String>,
     #[serde(default)]
@@ -122,15 +122,18 @@ impl McpTool for RememberTool {
                 tags,
                 idempotency_key,
             };
-            let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
-                .unwrap_or_else(time::OffsetDateTime::now_utc);
+            // The engine bounds it and defaults it to the write time.
+            let occurred_at = super::util::parse_observed_at(args.observed_at.as_deref())?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{title}\n{body}"),
             )
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let draft = FactWriteCommand::from_payload(SOURCE_ID, &payload, observed_at)
-                .with_lexical_language(Some(lexical_language));
+            let draft = FactWriteCommand {
+                occurred_at,
+                ..FactWriteCommand::from_payload(SOURCE_ID, &payload)
+            }
+            .with_lexical_language(Some(lexical_language));
 
             let engine = ctx.require_engine()?;
             let outcome = if let Some(citation) = args.citation {

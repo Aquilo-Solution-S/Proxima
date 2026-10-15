@@ -189,7 +189,7 @@ Closed vocabularies are SQL enums.
 |---|---|
 | `owners` | `owner_id`, `kind`; no seeded rows — a fresh DB starts empty and rows are minted on first owner write |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
-| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id` |
+| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id`, `occurred_at` (on every Fact, on nothing else; [01 §Properties of an Event](01-event-source.md#properties-of-an-event)) |
 | `erased_pin_target` | permanent database-only identity witnesses for hard-erased Memory/Goal targets: `t` PK and closed `kind`, with no owner or payload |
 | `content` | owner-scoped payload; `UNIQUE (owner_id, schema_id, content_hash)` |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
@@ -204,7 +204,7 @@ Closed vocabularies are SQL enums.
 | embeddings / jobs / heads | independent of graph authorship |
 | core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `write_act_v1`, `goal_change_v1`, `task_goal_v1` |
 
-No `edges`, `memories`, `goals` (plural), `fact_entities`, `fact_receipts`, `cited_objects`, `citation_mappings`, `change_event` tables.
+No `edges`, `memories`, `goals` (plural), `fact_entities`, `fact_receipts`, `cited_objects`, `citation_mappings`, `change_event` tables. A Fact's occurrence time is its `memory.occurred_at`, not a receipt row.
 
 Physical schema source of truth: the ordered SQL files in
 `crates/storage-pg/migrations/`; `0001_v008.sql` is the frozen baseline.

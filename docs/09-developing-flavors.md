@@ -541,11 +541,9 @@ Invocation:
 
 ```rust
 // `from_payload` carries no owner; the engine stamps it from authorization.
-let draft = FactWriteCommand::from_payload(
-    "acme/importer",
-    &fact_payload,
-    observed_at,
-);
+// `occurred_at` is optional: without it the Fact occurred at its write time.
+let draft = FactWriteCommand::from_payload("acme/importer", &fact_payload)
+    .occurred_at(observed_at);
 let cited_object = InlineCitedObjectDraft {
     schema_id: UploadedBlobV1::schema_id(),
     schema_version: SchemaVersion::new(UploadedBlobV1::SCHEMA_VERSION),

@@ -538,8 +538,8 @@ async fn projection_rows_follow_their_memory_kind() {
         .await
         .expect("memory head");
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins)
-             VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'code/test', $5, $6)",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at)
+             VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'code/test', $5, $6, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
         )
         .bind(handle)
         .bind(t)

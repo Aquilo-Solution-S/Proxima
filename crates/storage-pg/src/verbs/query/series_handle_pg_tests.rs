@@ -28,6 +28,7 @@ fn draft() -> FactWriteCommand {
         rendered_text: Some("north quay survey".into()),
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),

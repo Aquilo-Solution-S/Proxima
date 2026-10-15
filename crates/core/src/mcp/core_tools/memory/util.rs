@@ -113,34 +113,30 @@ pub fn normalize_idempotency_key(key: Option<String>) -> Result<Option<String>, 
     .transpose()
 }
 
-/// Clock-skew tolerance for caller-supplied `observed_at` timestamps.
-const OBSERVED_AT_FUTURE_SKEW: time::Duration = time::Duration::minutes(5);
-
 /// Parse an optional caller-supplied `observed_at` backdate (RFC3339).
-/// Historical import writes the original observation time into the Fact's
-/// receipt provenance (`fact_receipts.observed_at`/`occurred_at`); it does
-/// not alter `memories.created_at`, which orders supersession heads and
-/// recency and deliberately has no write path.
+/// Historical import writes the original observation time as the Fact's
+/// `occurred_at`, which every read returns. It does not alter `created_at`,
+/// the write time that orders supersession heads and recency and has no
+/// write path.
+///
+/// Parse only: the engine refuses an occurrence more than
+/// [`crate::verbs::fact_ingest::OCCURRED_AT_FUTURE_BOUND`] in the future on
+/// every Fact write path, this one included.
 ///
 /// # Errors
 ///
-/// Returns [`McpToolError::InvalidInput`] when the value is not RFC3339 or
-/// lies in the future beyond a small clock-skew tolerance (an observation
-/// cannot postdate its own recording).
+/// Returns [`McpToolError::InvalidInput`] when the value is not RFC3339.
 pub fn parse_observed_at(raw: Option<&str>) -> Result<Option<time::OffsetDateTime>, McpToolError> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let parsed = time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339)
-        .map_err(|err| {
-        McpToolError::InvalidInput(format!("observed_at must be an RFC3339 timestamp: {err}"))
-    })?;
-    if parsed > time::OffsetDateTime::now_utc() + OBSERVED_AT_FUTURE_SKEW {
-        return Err(McpToolError::InvalidInput(
-            "observed_at must not be in the future".into(),
-        ));
-    }
-    Ok(Some(parsed))
+    raw.map(|raw| {
+        time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).map_err(
+            |err| {
+                McpToolError::InvalidInput(format!(
+                    "observed_at must be an RFC3339 timestamp: {err}"
+                ))
+            },
+        )
+    })
+    .transpose()
 }
 
 /// Upper bound on distinct normalized tags per memory.
@@ -344,22 +340,6 @@ mod tests {
         assert!(parse_observed_at(Some("22.03.2023")).is_err());
         assert!(parse_observed_at(Some("2023-03-22")).is_err());
         assert!(parse_observed_at(Some("")).is_err());
-    }
-
-    #[test]
-    fn future_observed_at_is_rejected_beyond_clock_skew() {
-        let far_future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-        let raw = far_future
-            .format(&time::format_description::well_known::Rfc3339)
-            .expect("format");
-        assert!(parse_observed_at(Some(&raw)).is_err());
-        // Small skew (under the 5-minute tolerance) must pass: two hosts'
-        // clocks disagreeing by seconds is not a caller error.
-        let near_now = time::OffsetDateTime::now_utc() + time::Duration::seconds(30);
-        let raw = near_now
-            .format(&time::format_description::well_known::Rfc3339)
-            .expect("format");
-        assert!(parse_observed_at(Some(&raw)).is_ok());
     }
 
     const MAX_IDEMPOTENCY_KEY_CHARS: usize = IdempotencyKey::MAX_CHARS;

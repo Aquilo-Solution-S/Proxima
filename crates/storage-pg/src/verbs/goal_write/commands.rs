@@ -555,6 +555,7 @@ mod lifecycle_lock_tests {
             rendered_text: None,
             lexical_language: None,
             receipt: None,
+            occurred_at: None,
             citation: None,
             additional_references: Vec::new(),
             refs: Vec::new(),

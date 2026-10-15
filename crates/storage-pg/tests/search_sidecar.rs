@@ -156,9 +156,9 @@ async fn seed_note_lang(
     let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables)
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
          VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                 ARRAY['proxima_core.agent_note_v1'])",
+                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))",
     )
     .bind(handle)
     .bind(t)
@@ -570,8 +570,8 @@ async fn tagged_search_scans_flavor_sidecars() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
         )
         .bind(fact_handle)
         .bind(fact_t)
@@ -1666,9 +1666,9 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 let mut stamped = pool.begin().await?;
                 sqlx::query(
                     "INSERT INTO proxima_core.memory
-                         (handle, t, kind, owner_id, schema_id, sidecar_tables)
+                         (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
                      VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                             ARRAY['proxima_core.agent_note_v1'])",
+                             ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))",
                 )
                 .bind(handle)
                 .bind(t)

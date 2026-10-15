@@ -288,6 +288,7 @@ mod other_stores {
             kind: "Fact".into(),
             schema_id: "core/agent-note-v1".into(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
+            occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
             snippet: String::new(),
             score: 1.0,
             lexical_score: 1.0,

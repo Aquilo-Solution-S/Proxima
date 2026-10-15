@@ -785,6 +785,7 @@ fn draft(source_id: &str, ingest_key: &str) -> FactWriteCommand {
         rendered_text: Some(ingest_key.to_owned()),
         lexical_language: None,
         receipt: None,
+        occurred_at: None,
         citation: None,
         additional_references: Vec::new(),
         refs: Vec::new(),

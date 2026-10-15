@@ -106,7 +106,7 @@ pub use tool::*;
 
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
+    FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
