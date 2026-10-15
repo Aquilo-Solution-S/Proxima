@@ -1,4 +1,4 @@
--- v0.0.33: a Fact keeps when it occurred (issue #466).
+-- v0.0.34: a Fact keeps when it occurred (issue #466).
 --
 -- A Fact's write time is its `t` (UUIDv7) and orders supersession, recency
 -- and cursors. When the observation itself happened is a second, independent
