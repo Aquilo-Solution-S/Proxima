@@ -349,7 +349,7 @@ The inverses are substrate-local.
 |---|---|
 | already-sent email / message / PR / transfer / notice | not rolled back by substrate deletion |
 | downstream cleanup | the host's obligation |
-| embedding provider egress | Fact and derived text sent to the configured embedding endpoint is disclosure to an external processor. Non-loopback plaintext HTTP is rejected |
+| embedding provider egress | Fact and derived text sent to the configured embedding endpoint is disclosure to an external processor. Plaintext HTTP is rejected unless the host is loopback or named in `PROXIMA_PLAINTEXT_HOSTS` |
 | uploaded cited blobs | owner erase removes, in-band, every object named by that owner's `blob_uploads` and `cooled` rows — keys carry no owner, so the rows are the index and a transferred artefact is erased by whoever now holds it. Abandoned uploads whose row is gone are reclaimed by the required object-store lifecycle rule on `pending/` (see [15 §Blob storage lifecycle](15-deployment.md#blob-storage-lifecycle)) |
 | legally significant tool calls | require the human-approval flow; automatic blocking is deferred (see [12](12-tool-manifest.md#compliance-metadata)) |
 

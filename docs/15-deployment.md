@@ -161,7 +161,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. Set `code` for a code-search deployment (below). |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. An entry that is not a scope key, or names nothing this build registers, fails startup naming it. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow, parsed as allow is. An entry naming a read for every audience fails boot: a profile never narrows one. Owner erase is not exposed as an MCP action. |
-| `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
+| `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback and for hosts named in `PROXIMA_PLAINTEXT_HOSTS`. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return `PROXIMA_EMBED_DIM`-wide vectors. |
 | `PROXIMA_EMBED_DIM` | no | `768` | Vector width: 384, 768, 1024, 1536, 2048 or 3072. Default `1024`; any other value fails boot. |
@@ -187,6 +187,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_S3_ACCESS_KEY_ID` | with bucket | `proxima` | Static S3 access key id. |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | with bucket | `proxima-dev` | Static S3 secret access key; never logged. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
+| `PROXIMA_PLAINTEXT_HOSTS` | no | `gateway` | exact host names that may use plaintext `http://` besides loopback (S3 endpoint, embeddings base URL). Wildcards, ranges and IP literals fail boot ([10 §Plaintext hosts](10-configuration.md#plaintext-hosts)). |
 | `PROXIMA_PG_*` | no | see [env-vars](reference/env-vars.md) | Pool and search tuning (`MAX_CONNECTIONS`, `HNSW_*`, `SEMANTIC_*`). Defaults are the shipped path. |
 
 ## No standing bypass

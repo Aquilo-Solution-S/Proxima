@@ -119,7 +119,8 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ACCESS_KEY_ID` | Required static access key id when the bucket is set. |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | Required static secret access key when the bucket is set; redacted in debug output. |
-| `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
+| `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. `https://`, or `http://` to loopback or a host named in `PROXIMA_PLAINTEXT_HOSTS`. |
+| `PROXIMA_PLAINTEXT_HOSTS` | Comma-separated exact host names that may use plaintext `http://` besides loopback, for the S3 endpoint and the embeddings base URL ([§ Plaintext hosts](#plaintext-hosts)). Unset ⇒ loopback only. |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | S3 path-style addressing flag. |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | Presigned upload URL TTL. |
 | `PROXIMA_S3_READ_TTL_SECONDS` | Presigned read URL TTL. |
@@ -578,7 +579,7 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 
 | Env var | Required | Default | Meaning |
 |---|---:|---|---|
-| `PROXIMA_EMBED_BASE_URL` | when embeddings enabled | - | OpenAI-compatible embeddings API base. Plaintext `http://` is accepted for loopback only. |
+| `PROXIMA_EMBED_BASE_URL` | when embeddings enabled | - | OpenAI-compatible embeddings API base. Plaintext `http://` is accepted for loopback and for hosts named in `PROXIMA_PLAINTEXT_HOSTS`. |
 | `PROXIMA_EMBED_MODEL` | when embeddings enabled | - | Model id sent to `/embeddings`. |
 | `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_DIM` | no | `1024` | Vector width, one of 384, 768, 1024, 1536, 2048, 3072. Any other value fails boot. |
@@ -847,6 +848,22 @@ capability type: boot checks `dim` against the vector column;
 `matryoshka` / `max_input_chars` are host-injected client flags (see
 [Embedding Client](#embedding-client)).
 
+<a id="plaintext-hosts"></a>
+## Plaintext hosts
+
+`PROXIMA_PLAINTEXT_HOSTS` names hosts that may use plaintext `http://` in
+addition to loopback, for a hop that never leaves the machine (a sidecar by
+service name on a network with no route out, `http://gateway:9090`).
+
+| Rule | Fact |
+|---|---|
+| Value | comma-separated exact host names; ASCII-case-insensitive; no scheme, port or path |
+| Default | unset or blank ⇒ no host named; every endpoint validates as before |
+| Refused at boot | `*` wildcards, ranges (`/`), IP literals, all-digit labels (`10.0.0.1-9`), empty entries, any non-host-name character |
+| Lanes | `PROXIMA_S3_ENDPOINT_URL` and `PROXIMA_EMBED_BASE_URL`, through `proxima_core::validate_endpoint_url_for_hosts`; an embeddings redirect hop is checked the same way |
+| Not widened | HTTPS-only lanes (outbox HTTP sink, OIDC JWKS of a non-loopback issuer); OIDC issuer/JWKS loopback exception |
+| Library host | `S3RuntimeConfig::plaintext_hosts`, `OpenAiCompatConfig::with_plaintext_hosts`; both take `PlaintextHosts::parse` / `from_lookup` |
+
 <a id="large-artefact-s3"></a>
 ## Large Artefact S3
 
@@ -860,6 +877,7 @@ configuration. Resolved by `S3RuntimeConfig` from env:
 | `PROXIMA_S3_ACCESS_KEY_ID` | with bucket | - |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | with bucket | - |
 | `PROXIMA_S3_ENDPOINT_URL` | no | AWS region endpoint |
+| `PROXIMA_PLAINTEXT_HOSTS` | no | none (loopback only) |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | no | `false` |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | no | `900` |
 | `PROXIMA_S3_READ_TTL_SECONDS` | no | `300` |
