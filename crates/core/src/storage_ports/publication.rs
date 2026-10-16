@@ -348,6 +348,27 @@ pub trait PublicationOutboxPort: Send + Sync {
         claim: ClaimToken,
     ) -> Result<AckOutcome, StorageError>;
 
+    /// Re-check `consumer`'s claim on a record immediately before delivery,
+    /// and extend its lease by `lease` when it still holds.
+    ///
+    /// `true` only when the lane is still `claimed` under `claim`, the lease
+    /// has not expired, and the record is still deliverable by the claim's
+    /// own filter (its origin stands and it was not erased). `false` means
+    /// the record must not be delivered under this claim: another drain
+    /// took the lane over after the lease expired, or the record was erased
+    /// after it was claimed. The caller neither marks nor releases it.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the renewal statement.
+    async fn renew_claim(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+        lease: Duration,
+    ) -> Result<bool, StorageError>;
+
     /// Return `consumer`'s claim on a record to `pending`, fenced on `claim`.
     ///
     /// # Errors

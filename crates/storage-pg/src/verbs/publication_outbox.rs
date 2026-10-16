@@ -419,6 +419,56 @@ impl PublicationOutboxPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
     }
 
+    async fn renew_claim(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+        lease: Duration,
+    ) -> Result<bool, StorageError> {
+        if lease < MIN_CLAIM_LEASE {
+            return Err(StorageError::ConstraintViolation(format!(
+                "publication renew lease is {} ms, under the {} ms floor",
+                lease.as_millis(),
+                MIN_CLAIM_LEASE.as_millis(),
+            )));
+        }
+        let mut tx = self.platform_transaction().await?;
+        // The same deliverability filter as CLAIM_SQL, so a record the claim
+        // would no longer hand out is not delivered under an older claim.
+        let renewed = sqlx::query(
+            "UPDATE proxima_core.publication_delivery lane
+                SET lease_expires_at = now() + make_interval(secs => $4)
+               FROM proxima_core.publication_outbox record
+              WHERE record.t = lane.t
+                AND lane.t = $1
+                AND lane.consumer = $2
+                AND lane.state = 'claimed'
+                AND lane.claim_token = $3
+                AND lane.lease_expires_at > now()
+                AND EXISTS (
+                    SELECT 1 FROM proxima_core.publication_origin origin
+                    JOIN proxima_core.owners original_owner
+                      ON original_owner.owner_id = origin.original_owner_id
+                   WHERE origin.t = record.t
+                     AND origin.original_owner_id = record.owner_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.erased_pin_target erased
+                     WHERE erased.t = record.t
+                )",
+        )
+        .bind(id)
+        .bind(consumer.as_str())
+        .bind(claim.into_inner())
+        .bind(lease.as_secs_f64())
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)
+        .map(|done| done.rows_affected() == 1);
+        crate::owner_scope::finish_transaction(tx, renewed).await
+    }
+
     async fn release(
         &self,
         consumer: &ConsumerName,

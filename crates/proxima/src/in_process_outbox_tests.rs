@@ -614,3 +614,204 @@ async fn the_http_sink_settles_a_422_after_one_request() {
     .await;
     world.finish(outcome).await;
 }
+
+/// A sink every drain in a test delivers to, so a second delivery of one
+/// event shows up whichever drain made it. The first `accept` can be held:
+/// it parks on `reached`/`resume` before it records anything.
+#[derive(Debug)]
+struct GatedIntake {
+    gate_first: AtomicBool,
+    reached: Arc<tokio::sync::Barrier>,
+    resume: Arc<tokio::sync::Barrier>,
+    accepted: Arc<Mutex<Vec<String>>>,
+}
+
+impl GatedIntake {
+    fn new(gate_first: bool, accepted: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            gate_first: AtomicBool::new(gate_first),
+            reached: Arc::new(tokio::sync::Barrier::new(2)),
+            resume: Arc::new(tokio::sync::Barrier::new(2)),
+            accepted,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DurableIntake for GatedIntake {
+    async fn accept(&self, event: &ReceivedEvent) -> Result<Intake, IntakeError> {
+        if self.gate_first.swap(false, Ordering::SeqCst) {
+            self.reached.wait().await;
+            self.resume.wait().await;
+        }
+        self.accepted
+            .lock()
+            .expect("accepted lock")
+            .push(event.id.clone());
+        Ok(Intake::Accepted)
+    }
+}
+
+impl World {
+    /// One drain whose passes a test runs itself, with a lease no test
+    /// outlives: expiry happens only when a test forces it in SQL.
+    fn manual_drain(&self, intake: Arc<dyn DurableIntake>) -> Arc<Drain> {
+        let settings = Settings {
+            lease: Duration::from_secs(3600),
+            accept_timeout: Duration::from_secs(3600),
+            ..Settings::new()
+        };
+        Arc::new(Drain::new(
+            self.built.outbox_for_tests(),
+            ConsumerName::default(),
+            intake,
+            settings,
+            Arc::new(Proceed),
+        ))
+    }
+
+    /// Run one pass of `drain` to completion on its own task.
+    fn pass(drain: &Arc<Drain>) -> tokio::task::JoinHandle<usize> {
+        let drain = drain.clone();
+        tokio::spawn(async move {
+            let (_gate, worker) = proxima_core::QuiesceGate::new();
+            drain
+                .pass(&CancellationToken::new(), &worker)
+                .await
+                .unwrap_or_default()
+        })
+    }
+
+    async fn event_id(&self, t: Uuid) -> String {
+        sqlx::query_scalar("SELECT event_id FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(t)
+            .fetch_one(&self.pool)
+            .await
+            .expect("outbox row")
+    }
+
+    /// Hard-delete one Fact row, the way an erase finally does: its
+    /// dependent rows first, then the `memory` row, whose deletion trigger
+    /// writes the erase witness the claim filter reads. The probe app's
+    /// sidecar is not in the storage verb's registry, so the test runs the
+    /// deletes itself rather than the verb.
+    async fn mark_erased(&self, t: Uuid) {
+        let mut tx = self.pool.begin().await.expect("begin erase");
+        let dependents: Vec<(String, String)> = sqlx::query_as(
+            "SELECT con.conrelid::regclass::text, att.attname::text
+               FROM pg_constraint con
+               JOIN pg_attribute att
+                 ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+              WHERE con.contype = 'f'
+                AND con.confrelid = 'proxima_core.memory'::regclass",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .expect("memory dependents");
+        for (table, column) in dependents {
+            // Catalog-sourced identifiers in a test helper.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE {column} = $1"
+            )))
+            .bind(t)
+            .execute(&mut *tx)
+            .await
+            .expect("delete dependent rows");
+        }
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(&mut *tx)
+            .await
+            .expect("delete the memory row");
+        tx.commit().await.expect("commit erase");
+        let witnessed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
+        )
+        .bind(t)
+        .fetch_one(&self.pool)
+        .await
+        .expect("erase witness");
+        assert!(witnessed, "the delete left the erase witness");
+    }
+}
+
+/// A record erased after the drain claimed it, but before the drain got to
+/// it, is never handed to the intake.
+#[tokio::test]
+async fn erase_between_claim_and_accept_is_not_delivered() {
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let first = capture(&world.built, world.owner, "delivered").await;
+        let second = capture(&world.built, world.owner, "erased while claimed").await;
+        let erased_id = world.event_id(second).await;
+        let accepted = Arc::new(Mutex::new(Vec::new()));
+        let intake = Arc::new(GatedIntake::new(true, accepted.clone()));
+        let drain = world.manual_drain(intake.clone());
+
+        let pass = World::pass(&drain);
+        intake.reached.wait().await;
+        world.mark_erased(second).await;
+        intake.resume.wait().await;
+        assert_eq!(pass.await.expect("pass joins"), 2, "one pass claimed both");
+
+        let accepted = accepted.lock().expect("accepted lock").clone();
+        let first_id = world.event_id(first).await;
+        assert_eq!(accepted.len(), 1, "only the unerased Fact is delivered");
+        assert!(accepted[0] == first_id, "the delivered event is the unerased one");
+        assert!(
+            !accepted.contains(&erased_id),
+            "the erased record is not delivered"
+        );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+/// A claim whose lease expired while its drain was busy is taken over by a
+/// second drain. When the first drain gets to the record, its claim is no
+/// longer current and it must not deliver the record again.
+#[tokio::test]
+async fn expired_lease_delivered_by_one_process() {
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let _held = capture(&world.built, world.owner, "holds drain A").await;
+        let contested = capture(&world.built, world.owner, "lease expires").await;
+        let contested_id = world.event_id(contested).await;
+        let accepted = Arc::new(Mutex::new(Vec::new()));
+        let intake_a = Arc::new(GatedIntake::new(true, accepted.clone()));
+        let drain_a = world.manual_drain(intake_a.clone());
+        let drain_b = world.manual_drain(Arc::new(GatedIntake::new(false, accepted.clone())));
+
+        let pass_a = World::pass(&drain_a);
+        intake_a.reached.wait().await;
+        // Drain A holds both claims and is busy with the first record.
+        sqlx::query(
+            "UPDATE proxima_core.publication_delivery
+                SET lease_expires_at = now() - interval '1 second'
+              WHERE t = $1 AND consumer = 'default'",
+        )
+        .bind(contested)
+        .execute(&world.pool)
+        .await
+        .expect("force the lease to expire");
+        assert_eq!(World::pass(&drain_b).await.expect("pass joins"), 1);
+        intake_a.resume.wait().await;
+        pass_a.await.expect("pass joins");
+
+        let deliveries = accepted
+            .lock()
+            .expect("accepted lock")
+            .iter()
+            .filter(|id| **id == contested_id)
+            .count();
+        assert_eq!(deliveries, 1, "the record is delivered by one process");
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
