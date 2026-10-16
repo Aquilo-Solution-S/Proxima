@@ -1,6 +1,6 @@
 //! Proxima code flavor — Rust + TypeScript cAST chunker and Fact schemas.
 //!
-//! See docs/08 for flavor architecture.
+//! See `docs/concepts.md` for flavor architecture.
 
 pub mod calls;
 pub mod chunker;
@@ -66,14 +66,7 @@ pub mod testkit {
         owner: &proxima_core::OwnerId,
         repo_id: uuid::Uuid,
     ) -> Result<crate::repos::RepoEraseReceipt, crate::repos::RepoRegistryError> {
-        erase_repo(
-            engine,
-            authz,
-            &store.clone().with_owner_scope(authz.owner_scope().cloned()),
-            owner,
-            repo_id,
-        )
-        .await
+        erase_repo(engine, authz, store, owner, repo_id).await
     }
 }
 

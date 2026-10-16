@@ -1,6 +1,6 @@
 use crate::OwnerId;
 use crate::OwnerScope;
-use crate::read_models::{ActiveGoalSummary, GoalWakeCandidate, GoalWakeCandidateRequest};
+use crate::read_models::ActiveGoalSummary;
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
@@ -12,7 +12,7 @@ use crate::verbs::goal_write::{
 #[async_trait::async_trait]
 pub trait GoalWritePort: Send + Sync {
     /// Resolve an exact stored command before callers renew admission of its
-    /// mutable assignment, evidence, prior-head, or wake targets.
+    /// mutable assignment, evidence, or prior-head targets.
     ///
     /// Owner write authority is still mandatory. `None` means the request id
     /// is fresh; a reused id with a changed declaration is an error rather
@@ -64,16 +64,6 @@ pub trait GoalReadPort: Send + Sync {
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
 
-    /// Wake configs for the given goals, restricted to goals whose owner
-    /// is in `read_owners`. Goals without a wake config are absent from
-    /// the result — absence is data, not an error.
-    async fn load_goal_wake_configs(
-        &self,
-        owner_scope: Option<&OwnerScope>,
-        read_owners: &[OwnerId],
-        goal_ids: &[crate::GoalId],
-    ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError>;
-
     /// Load the exact evidence vector from one owner-scoped Goal row.
     ///
     /// `None` deliberately means either absent or owned by another owner. The
@@ -85,13 +75,4 @@ pub trait GoalReadPort: Send + Sync {
         owner: &OwnerId,
         goal_id: crate::GoalId,
     ) -> Result<Option<Vec<crate::MemoryId>>, StorageError>;
-}
-
-#[async_trait::async_trait]
-pub trait GoalWakeCandidatePort: Send + Sync {
-    async fn list_goal_wake_candidates(
-        &self,
-        owner_scope: Option<&OwnerScope>,
-        req: &GoalWakeCandidateRequest<'_>,
-    ) -> Result<Vec<GoalWakeCandidate>, StorageError>;
 }

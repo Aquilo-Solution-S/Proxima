@@ -76,7 +76,7 @@ pub trait PublicationOriginEligibilityPort: Send + Sync {
     ) -> Result<PublicationOriginEligibility, StorageError>;
 }
 
-/// The name one outbox consumer is registered under (docs/18 §Consumers).
+/// The name one outbox consumer is registered under (docs/host-integration.md).
 ///
 /// Every consumer has its own delivery lane per record: its own claim,
 /// attempts and published mark, so one consumer's failures never hold or
@@ -212,7 +212,7 @@ pub enum PublisherIdError {
 ///
 /// It identifies an installation LINEAGE, not a database instance: a
 /// restore or a clone carries the same value, which is why pointing a copy
-/// at the original's broker remains an operator responsibility (docs/18).
+/// at the original's broker remains an operator responsibility (docs/host-integration.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OriginScope(Uuid);
 

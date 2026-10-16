@@ -1,13 +1,11 @@
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
-use super::change::ChangeEventPort;
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
     EmbeddingWritePort, EmbeddingWriteProof,
 };
 use super::fact::FactIngestPort;
-use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
-use super::mcp::McpCallReadPort;
+use super::goals::{GoalReadPort, GoalWritePort};
 use super::memory::{
     CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
@@ -17,12 +15,8 @@ use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
 use crate::owner_inverse::OwnerEraseTarget;
-use crate::read_models::{
-    ActiveGoalSummary, ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest,
-    MemorySchemaSpec, MemorySnapshot,
-};
+use crate::read_models::{ActiveGoalSummary, MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
-use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
@@ -33,7 +27,6 @@ use crate::verbs::goal_write::{
     DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
     ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::{
     EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, OwnerId, Relation, SourceId,
     UserId,
@@ -82,17 +75,6 @@ impl FactIngestPort for RejectingStorage {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
-    }
-}
-
-#[async_trait::async_trait]
-impl McpCallReadPort for RejectingStorage {
-    async fn read_mcp_call_history(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _req: &McpCallHistoryRequest,
-    ) -> Result<McpCallHistoryResponse, StorageError> {
-        Ok(McpCallHistoryResponse { calls: Vec::new() })
     }
 }
 
@@ -152,7 +134,6 @@ impl MemoryReadPort for RejectingStorage {
             goals: Vec::new(),
             edges: Vec::new(),
             next_cursor: None,
-            seq_high_water: None,
         })
     }
 
@@ -558,15 +539,6 @@ impl GoalReadPort for RejectingStorage {
         Ok(Vec::new())
     }
 
-    async fn load_goal_wake_configs(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _goal_ids: &[crate::GoalId],
-    ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
     async fn load_goal_evidence(
         &self,
         _scope: Option<&crate::OwnerScope>,
@@ -574,42 +546,6 @@ impl GoalReadPort for RejectingStorage {
         _goal_id: crate::GoalId,
     ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
         Ok(None)
-    }
-}
-
-#[async_trait::async_trait]
-impl GoalWakeCandidatePort for RejectingStorage {
-    async fn list_goal_wake_candidates(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _req: &GoalWakeCandidateRequest<'_>,
-    ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl ChangeEventPort for RejectingStorage {
-    async fn change_history(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _req: &ChangeHistoryRequest,
-    ) -> Result<ChangeHistoryResponse, StorageError> {
-        Ok(ChangeHistoryResponse {
-            events: Vec::new(),
-            seq_high_water: None,
-        })
-    }
-
-    async fn list_change_events_after(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _after: uuid::Uuid,
-        _limit: usize,
-    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        Ok(Vec::new())
     }
 }
 

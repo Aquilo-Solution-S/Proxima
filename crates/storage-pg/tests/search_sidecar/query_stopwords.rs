@@ -1,3 +1,4 @@
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_storage_pg::test_fixtures::fresh_pg;
 
 async fn analyzed(pool: &sqlx::PgPool, config: &str, query: &str) -> Result<String, sqlx::Error> {
@@ -156,7 +157,7 @@ async fn lexical_search_uses_dominant_german_stopwords_for_english_rows()
     let distractor = super::seed_note(pool, owner, "function words", "der die das und").await?;
     let page = pg
         .search_memories(
-            None,
+            Some(&owner_scope_for_tests(&[owner])),
             &super::search_req(
                 owner,
                 "Wie funktioniert der checkpoint recovery und das commit protocol?",

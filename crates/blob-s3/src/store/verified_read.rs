@@ -14,7 +14,7 @@ use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
 use super::keys::locator_was_minted_here;
 use super::rows::{BlobReadRecord, load_blob_read_record_on_connection};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 
 fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobReadError> {
     if byte_len > max_bytes.get() {
@@ -122,7 +122,10 @@ impl CitedBlobReadPort for CitedBlobStore {
         // the raw locator, so authorization after SQL would already be late.
         ensure_owner_access(authz, &owner).map_err(|_| CitedBlobReadError::AccessDenied)?;
 
-        let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
+        let owner_scope = authz
+            .owner_scope()
+            .ok_or(CitedBlobReadError::AccessDenied)?;
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
         let row = load_blob_read_record_on_connection(tx.as_mut(), &owner, cited_object_id)
@@ -202,8 +205,12 @@ mod tests {
 
     #[tokio::test]
     async fn denial_happens_before_locator_lookup() {
-        let store =
-            CitedBlobStore::new(lazy_test_pool(), store_config(None, None)).expect("test store");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("test store");
         let allowed = OwnerId::from(UserId::new(Uuid::now_v7()));
         let denied = OwnerId::from(UserId::new(Uuid::now_v7()));
         let authz = AuthzContext::single_owner(&allowed, AuthPath::HostBearer);

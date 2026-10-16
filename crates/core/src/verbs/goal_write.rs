@@ -1,12 +1,12 @@
 //! `GoalWrite` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"`GoalWrite`" and
-//! docs/06-goals-and-self.md §"Goal entity". The
+//! See docs/protocol.md §"`GoalWrite`" and
+//! docs/concepts.md §"Goal entity". The
 //! storage-side body lives in proxima-storage-pg.
 
+use crate::ProtocolError;
 use crate::publication::PublicationStamp;
 use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
-use crate::{FlavorRegistryFrozen, ProtocolError, ScopeKey};
 use crate::{
     GoalChange, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, OwnerId,
     PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
@@ -166,7 +166,6 @@ pub struct GoalDraft {
     pub sidecar_payload: Option<SidecarPayload>,
     pub state: GoalState,
     pub topology: GoalTopologyWrite,
-    pub wake: Option<GoalWakeConfigWrite>,
     pub supersedes_goal_id: Option<GoalId>,
     pub authorship: GoalAuthorship,
     pub request_id: String,
@@ -179,7 +178,6 @@ impl GoalDraft {
         owner: OwnerId,
         payload: GoalPayloadWrite,
         topology: GoalTopologyWrite,
-        wake: Option<GoalWakeConfigWrite>,
         authorship: GoalAuthorship,
         request_id: IdempotencyKey,
     ) -> Self {
@@ -193,7 +191,6 @@ impl GoalDraft {
             sidecar_payload: payload.sidecar_payload,
             state: GoalState::Active,
             topology,
-            wake,
             supersedes_goal_id: None,
             authorship,
             request_id: request_id.into_string(),
@@ -210,14 +207,13 @@ impl GoalDraft {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
-    pub change_event_seq: uuid::Uuid,
     /// Index rows the goal write asserted — one `reference` per
     /// declared topology entry (assignment Perspective, dependency
     /// Goals, evidence memories). A count, not ids: an edge has no
     /// identity beyond its content.
     pub edge_count: usize,
     /// True when the same `(owner, request_id)` existed and the
-    /// body matched — see docs/14 §`GoalWrite`.
+    /// body matched — see docs/protocol.md
     pub idempotent_replay: bool,
 }
 
@@ -329,7 +325,7 @@ impl GoalDependencyRef {
 /// for — the Goal knows the Perspective it inspires, the Goals it waits
 /// on, and the evidence it rests on — so storage derives one
 /// [`crate::EdgeKind::Reference`] index row per entry inside the goal
-/// write's own transaction (docs/16-edges.md). No relation is
+/// write's own transaction (docs/concepts.md). No relation is
 /// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
@@ -385,189 +381,6 @@ impl GoalTopologyWrite {
     #[must_use]
     pub fn evidence(&self) -> &[GoalEvidenceRef] {
         &self.evidence
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum GoalWakeTrigger {
-    FactSchema {
-        schema_id: SchemaId,
-        schema_version: SchemaVersion,
-    },
-    FactMemory {
-        memory_id: MemoryId,
-    },
-}
-
-/// Longest wake tool id, in characters. Generous: the point of the bound is
-/// to refuse something that is clearly not a tool id, and the registry
-/// lookup below is what actually decides.
-pub const MAX_WAKE_TOOL_ID_CHARS: usize = 200;
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct GoalWakeToolId(String);
-
-impl GoalWakeToolId {
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` when the id is not provider-safe or does not
-    /// resolve to a registered tool/action leaf in the frozen registry.
-    pub fn parse(
-        raw: impl Into<String>,
-        registry: &FlavorRegistryFrozen,
-    ) -> Result<Self, ProtocolError> {
-        let raw = raw.into();
-        // The cap counts characters, matching the message the caller sees.
-        // A byte count would refuse a short non-ASCII id for exceeding
-        // something the caller cannot measure.
-        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS).map_err(|violation| {
-            ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
-        })?;
-        // A key prints back as the text it parsed from, so `value` is the
-        // canonical id.
-        registered_tool_key(value, registry).map(|_| Self(value.to_string()))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-/// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
-/// for a flat tool, a [`ScopeKey::Action`] for a declared action. The one
-/// resolution wake tool ids and delegated commands share.
-///
-/// # Errors
-///
-/// `InvalidArgument` on `tool_id` when `value` is no scope key, names a
-/// resource, is not registered, is a dispatcher without its action, or names
-/// an action the tool does not declare.
-pub(crate) fn registered_tool_key(
-    value: &str,
-    registry: &FlavorRegistryFrozen,
-) -> Result<ScopeKey, ProtocolError> {
-    const NOT_CANONICAL: &str = "tool id must be provider-safe canonical id";
-    const LEAF_REGISTERED: &str = "leaf action scope required and must be registered";
-    let invalid = |reason| ProtocolError::invalid_argument("tool_id", reason);
-    if value.contains('/') {
-        return Err(invalid(NOT_CANONICAL));
-    }
-    let Ok(key) = ScopeKey::parse(value) else {
-        // Text that is no key: the colon says which message the caller gets.
-        return Err(invalid(if value.contains(':') {
-            LEAF_REGISTERED
-        } else {
-            NOT_CANONICAL
-        }));
-    };
-    match &key {
-        // Both halves resolve through the descriptor's own `action_arg_specs`
-        // rather than the substrate `CoreActionMeta` tables, so a flavor
-        // dispatcher's leaf is nameable in a wake config.
-        ScopeKey::Action { tool, action } => {
-            let declared = registry.mcp_tool(tool.as_str()).is_some_and(|descriptor| {
-                descriptor
-                    .action_arg_specs
-                    .iter()
-                    .any(|spec| spec.action == action.as_str())
-            });
-            if declared {
-                Ok(key)
-            } else {
-                Err(invalid(LEAF_REGISTERED))
-            }
-        }
-        ScopeKey::Tool(tool) => match registry.mcp_tool(tool.as_str()) {
-            Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
-                Err(invalid("leaf action scope required for grouped tools"))
-            }
-            Some(_) => Ok(key),
-            None => Err(invalid("tool id is not registered")),
-        },
-        // `resource:name` is a read, not a tool or a leaf.
-        ScopeKey::Resource(_) => Err(invalid(LEAF_REGISTERED)),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct GoalWakeConfigWrite {
-    trigger: GoalWakeTrigger,
-    tool_ids: Vec<GoalWakeToolId>,
-    prompt: String,
-    hard_memory_ids: Vec<MemoryId>,
-}
-
-impl GoalWakeConfigWrite {
-    pub const MAX_PROMPT_CHARS: usize = 20_000;
-
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` when prompt/tool/memory shape is invalid.
-    pub fn new(
-        trigger: GoalWakeTrigger,
-        tool_ids: Vec<GoalWakeToolId>,
-        prompt: impl Into<String>,
-        hard_memory_ids: &[MemoryId],
-    ) -> Result<Self, ProtocolError> {
-        let raw = prompt.into();
-        let prompt = check_trimmed_len(&raw, Self::MAX_PROMPT_CHARS)
-            .map_err(|violation| {
-                ProtocolError::invalid_argument("prompt", violation.reason("wake prompt"))
-            })?
-            .to_string();
-        if tool_ids.is_empty() {
-            return Err(ProtocolError::invalid_argument(
-                "tool_ids",
-                "wake toolset must be nonempty",
-            ));
-        }
-        let mut tools = std::collections::BTreeSet::new();
-        for tool in tool_ids {
-            tools.insert(tool);
-        }
-        let mut memory_ids = std::collections::BTreeSet::new();
-        for memory_id in hard_memory_ids {
-            if !memory_ids.insert(*memory_id) {
-                return Err(ProtocolError::invalid_argument(
-                    "hard_memory_ids",
-                    "duplicate hard memory id",
-                ));
-            }
-        }
-        Ok(Self {
-            trigger,
-            tool_ids: tools.into_iter().collect(),
-            prompt,
-            hard_memory_ids: memory_ids.into_iter().collect(),
-        })
-    }
-
-    #[must_use]
-    pub const fn trigger(&self) -> &GoalWakeTrigger {
-        &self.trigger
-    }
-
-    #[must_use]
-    pub fn tool_ids(&self) -> &[GoalWakeToolId] {
-        &self.tool_ids
-    }
-
-    #[must_use]
-    pub fn prompt(&self) -> &str {
-        &self.prompt
-    }
-
-    #[must_use]
-    pub fn hard_memory_ids(&self) -> &[MemoryId] {
-        &self.hard_memory_ids
     }
 }
 
@@ -641,7 +454,6 @@ fn normalize_goal_display_field(
 pub struct GoalCreateRequest<P> {
     pub owner: OwnerId,
     pub topology: GoalTopologyWrite,
-    pub wake: Option<GoalWakeConfigWrite>,
     pub title: String,
     pub text: String,
     pub payload: P,
@@ -680,7 +492,6 @@ impl<P> GoalCreateRequest<P> {
             owner,
             topology: GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
                 .expect("empty topology is valid"),
-            wake: None,
             title: title.into(),
             text: text.into(),
             payload,
@@ -705,12 +516,6 @@ impl<P> GoalCreateRequest<P> {
     #[must_use]
     pub fn with_topology(mut self, topology: GoalTopologyWrite) -> Self {
         self.topology = topology;
-        self
-    }
-
-    #[must_use]
-    pub fn with_wake(mut self, wake: Option<GoalWakeConfigWrite>) -> Self {
-        self.wake = wake;
         self
     }
 
@@ -775,7 +580,6 @@ pub struct ModifyGoalAtomicRequest<'a> {
     pub owner: OwnerId,
     pub prior_goal_id: GoalId,
     pub replacement: GoalPayloadWrite,
-    pub wake: Option<Option<GoalWakeConfigWrite>>,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub context: GoalAtomicContext<'a>,
@@ -786,7 +590,6 @@ pub struct ModifyGoalAtomicRequest<'a> {
 pub struct ChildGoalDraft {
     pub payload: GoalPayloadWrite,
     pub evidence: Vec<GoalEvidenceRef>,
-    pub wake: Option<GoalWakeConfigWrite>,
     pub request_id: IdempotencyKey,
 }
 

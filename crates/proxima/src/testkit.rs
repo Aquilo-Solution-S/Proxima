@@ -9,9 +9,7 @@
 pub use proxima_pg_testkit::*;
 
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, Role, UserId};
-use proxima_storage_pg::{
-    PgPoolConfig, PgSidecarRegistry, PgStorage, PgTuning, register_core_pg_sidecars,
-};
+use proxima_storage_pg::{PgPoolConfig, PgSidecarRegistry, PgTuning, register_core_pg_sidecars};
 use sqlx::PgPool;
 
 use crate::bundle::FlavorBundle;
@@ -137,7 +135,7 @@ impl HostTemplate {
         // Nothing may stay connected to a database that is renamed into place.
         pool.close().await;
         let (_, platform_url) = split_role_urls(&staging).await?;
-        let pg = PgStorage::connect_for_migrations_with_config(
+        let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
             PgTuning::default(),

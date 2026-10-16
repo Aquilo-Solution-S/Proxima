@@ -33,7 +33,7 @@ mod pagination_tests;
 /// Prefix-colliding keys are deliberately excluded.
 ///
 /// Deletion is by `(key, version_id)`, not by key alone. On a *versioned*
-/// bucket — the deployment recommended in `docs/how-to/operate.md` — a
+/// bucket — the deployment recommended in `docs/operate.md` — a
 /// key-only `delete_objects` merely inserts a delete marker and leaves the
 /// noncurrent object versions recoverable via `GetObject?versionId` — the
 /// bytes an erase claimed to destroy, still readable. Enumerating versions and

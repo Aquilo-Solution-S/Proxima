@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{TestDb, apply_current_migrations};
+use common::{HistoricalDb, apply_current_migrations_pool};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
@@ -165,7 +165,7 @@ enum Installer {
     Current,
 }
 
-async fn platform_connection(db: &TestDb) -> PgConnection {
+async fn platform_connection(db: &HistoricalDb) -> PgConnection {
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
         .expect("split roles");
@@ -175,9 +175,9 @@ async fn platform_connection(db: &TestDb) -> PgConnection {
 }
 
 /// A migrated database and a connection as the role that owns its tables.
-async fn migrated_platform() -> (TestDb, PgConnection) {
-    let db = TestDb::fresh_before_owner_rls().await;
-    apply_current_migrations(&db.pg)
+async fn migrated_platform() -> (HistoricalDb, PgConnection) {
+    let db = HistoricalDb::fresh_before_owner_rls().await;
+    apply_current_migrations_pool(&db.pool)
         .await
         .expect("current migrations");
     let conn = platform_connection(&db).await;

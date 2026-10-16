@@ -25,7 +25,7 @@ pub struct ProximaHost {
     pub(crate) engine: Arc<Engine>,
     pub(crate) registry: Arc<FlavorRegistryFrozen>,
     pub(crate) pool: PgPool,
-    pub(crate) platform_scope: Option<PgPlatformScope>,
+    pub(crate) platform_scope: PgPlatformScope,
     pub(crate) pg_tuning: PgTuning,
     pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub(crate) erase_context: PgHostStateEraseContext,
@@ -98,9 +98,9 @@ impl ProximaHost {
         self.pg_tuning
     }
 
-    /// The platform scope boot validated; `None` without a platform URL.
+    /// The platform scope boot validated.
     #[must_use]
-    pub fn platform_scope_for_host(&self) -> Option<PgPlatformScope> {
+    pub fn platform_scope_for_host(&self) -> PgPlatformScope {
         self.platform_scope.clone()
     }
 
@@ -130,7 +130,7 @@ impl ProximaHost {
 
     /// This installation's minted identity, for a host that forwards the
     /// outbox to its own broker: it stamps this on its copies, and its cleaner
-    /// ignores any message that does not carry it (docs/18).
+    /// ignores any message that does not carry it (docs/host-integration.md).
     #[must_use]
     pub const fn origin_scope_for_host(&self) -> OriginScope {
         self.origin_scope
@@ -191,7 +191,7 @@ impl ProximaHost {
             registry: Arc::new(engine.registry().clone()),
             engine,
             pool: PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new()),
-            platform_scope: None,
+            platform_scope: PgPlatformScope::for_tests(),
             pg_tuning: PgTuning::default(),
             pg_sidecars: Arc::default(),
             erase_context: PgHostStateEraseContext::for_surfaces_for_tests(

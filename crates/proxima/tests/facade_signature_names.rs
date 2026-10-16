@@ -14,8 +14,6 @@
 //! `host_only` names must not appear in `src/flavor.rs`, `both_tiers` names are
 //! imported through both paths.
 //!
-//! Known and open: the Flavor SDK has signature-exposed types it does not name
-//! yet; they are listed in `docs/reference/public-api.md` and are not exported.
 
 use std::collections::HashSet;
 
@@ -116,7 +114,7 @@ facade_names! {
     // Needed by the storage-port methods' requests, rows and outcomes (`FactIngestPort`,
     // `GoalWritePort`, ...).
     storage_port_rows {
-        host_only: [AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
+        host_only: [AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
         both_tiers: [],
     }
 
@@ -127,17 +125,17 @@ facade_names! {
         both_tiers: [AuthorizedFactWithCitation, AuthorizedFactWithCitationRef],
     }
 
-    // Needed by `QueryRequest`, `QueryResponse`, `MemoryLineageRequest`, `ChangeHistoryResponse`,
+    // Needed by `QueryRequest`, `QueryResponse`, `MemoryLineageRequest`,
     // `EdgeFilter`.
     read_rows {
-        host_only: [ChangeEvent, ChangeEventForWake, ChangeEventKind, FactCitationCursor, MemoryLineageCursor, QueryCursor, QueryPage],
+        host_only: [FactCitationCursor, MemoryLineageCursor, QueryCursor, QueryPage],
         both_tiers: [Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, GoalRow],
     }
 
     // Needed by `StoragePortsBuilder`'s setters, `Engine::with_storage_ports`, the `*Port` traits
     // behind the handles.
     storage_ports {
-        host_only: [ChangeEventHandle, ChangeEventPort, CitationHandle, CitationPort, EmbeddingJobHandle, EmbeddingJobPort, EmbeddingMaintenanceHandle, EmbeddingMaintenancePort, EmbeddingTextHandle, EmbeddingTextPort, EmbeddingWriteHandle, EmbeddingWritePort, FactIngestHandle, FactIngestPort, GoalReadHandle, GoalReadPort, GoalWakeCandidateHandle, GoalWakeCandidatePort, GoalWriteHandle, GoalWritePort, McpCallReadHandle, McpCallReadPort, MemoryAuthoringHandle, MemoryAuthoringPort, MemoryInspectHandle, MemoryInspectPort, MemoryReadHandle, MemoryReadPort, OwnerAccessReadHandle, OwnerAccessReadPort, OwnerDropProofHandle, OwnerDropProofPort, OwnerEraseAuthorityHandle, OwnerEraseAuthorityPort, OwnerInverseHandle, OwnerInversePort, OwnerMembershipAdminHandle, OwnerMembershipAdminPort, OwnerTransferHandle, OwnerTransferPort, SourceCursorHandle, SourceCursorPort, StoragePortsBuildError, WriteSession, WriteSessionFactory, WriteSessionFactoryHandle],
+        host_only: [CitationHandle, CitationPort, EmbeddingJobHandle, EmbeddingJobPort, EmbeddingMaintenanceHandle, EmbeddingMaintenancePort, EmbeddingTextHandle, EmbeddingTextPort, EmbeddingWriteHandle, EmbeddingWritePort, FactIngestHandle, FactIngestPort, GoalReadHandle, GoalReadPort, GoalWriteHandle, GoalWritePort, MemoryAuthoringHandle, MemoryAuthoringPort, MemoryInspectHandle, MemoryInspectPort, MemoryReadHandle, MemoryReadPort, OwnerAccessReadHandle, OwnerAccessReadPort, OwnerDropProofHandle, OwnerDropProofPort, OwnerEraseAuthorityHandle, OwnerEraseAuthorityPort, OwnerInverseHandle, OwnerInversePort, OwnerMembershipAdminHandle, OwnerMembershipAdminPort, OwnerTransferHandle, OwnerTransferPort, SourceCursorHandle, SourceCursorPort, StoragePortsBuildError, WriteSession, WriteSessionFactory, WriteSessionFactoryHandle],
         both_tiers: [],
     }
 
@@ -150,7 +148,7 @@ facade_names! {
     // Needed by the arguments and results of the Engine verbs a host calls (`get_graph`,
     // `list_members`, ...).
     engine_verbs {
-        host_only: [EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationPage, FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow, GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts, StoragePortsBuilder],
+        host_only: [EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationPage, FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GroupMemberPage, InboundPinQuery, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts, StoragePortsBuilder],
         both_tiers: [EmbeddingMode, UploadCompleted, UploadCompletionExpectation],
     }
 
@@ -161,9 +159,9 @@ facade_names! {
     }
 
     // Needed by `McpToolDescriptor`, `McpTool`, `RequestHeaderAllowlist::extract`,
-    // `McpCallLogInput`.
+    // MCP tool descriptor and request vocabulary.
     mcp_tool_vocabulary {
-        host_only: [McpActionSchema, McpCallFn, McpCallLoggedV1, McpDispatcherSchema, McpUnknownFieldPolicy, MemoryHandleClass],
+        host_only: [McpActionSchema, McpCallFn, McpDispatcherSchema, McpUnknownFieldPolicy, MemoryHandleClass],
         both_tiers: [McpActionArgSpec, McpAuthorContext, RequestHeaders, ToolError],
     }
 
@@ -307,7 +305,7 @@ facade_names! {
 
     // Needed by `PgStorage`'s public methods; host API only like `PgStorage`.
     pg_storage_methods {
-        host_only: [CascadedDetail, ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdObjectStore, ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, HostStateEraseSelection, HostStateFactCopyLocator, HostStateLifecycleSurface, OwnerSurfaces, OwnerSurfacesError, PruneOwnerOutcome, ScopeSurfaces, StorageMaintenanceLock],
+        host_only: [CascadedDetail, ColdObjectStore, ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, HostStateEraseSelection, HostStateFactCopyLocator, HostStateLifecycleSurface, OwnerSurfaces, OwnerSurfacesError, ScopeSurfaces, StorageMaintenanceLock],
         both_tiers: [],
     }
 

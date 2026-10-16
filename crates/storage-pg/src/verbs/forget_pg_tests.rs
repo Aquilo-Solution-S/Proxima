@@ -437,7 +437,6 @@ async fn insert_unassigned_goal(
             assignment_t: None,
             dependency_t: vec![],
             evidence_t: vec![],
-            wake_id: None,
             mint_write_act: false,
             write_act_t: None,
         },
@@ -475,8 +474,7 @@ async fn forget_hydrate_and_erase() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -591,13 +589,6 @@ async fn forget_hydrate_and_erase() {
         .await?;
         assert_eq!(restored.0.as_deref(), Some("src"));
         assert_eq!(restored.1.as_deref(), Some("k1"));
-        let op: String = sqlx::query_scalar(
-            "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(op, "append");
         assert_eq!(
             erased_pin_target_kind(pool, t).await?,
             None,
@@ -629,7 +620,8 @@ async fn forget_hydrate_and_erase() {
             std::slice::from_ref(&key),
             "the erase owes the cold object it just unlinked"
         );
-        let purge = purge_cold_objects_after_commit(pool, &cold, &plan).await;
+        let platform = pg.platform_scope_for_host();
+        let purge = purge_cold_objects_after_commit(pool, &platform, &cold, &plan).await;
         assert_eq!(purge.purged, 1);
         assert!(!purge.pending);
         assert!(
@@ -662,9 +654,6 @@ async fn forget_hydrate_and_erase() {
     result.expect("forget test failed");
 }
 
-/// An erase announce is a ChangeHistory event, and a reader pages events by
-/// series handle. Binding `t` into the handle column made every erase event
-/// name a series that does not exist.
 /// A backdated Fact keeps when it occurred through a forget and a hydrate:
 /// the cold record carries `occurred_at` and the restored row reads it back.
 #[tokio::test]
@@ -675,8 +664,7 @@ async fn a_backdated_fact_keeps_when_it_occurred_through_forget_and_hydrate() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -722,73 +710,6 @@ async fn a_backdated_fact_keeps_when_it_occurred_through_forget_and_hydrate() {
 }
 
 #[tokio::test]
-async fn erase_announce_carries_the_series_handle() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_core_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
-        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-
-        // Two t on one handle, so a handle-shaped and a t-shaped value differ.
-        let first = pg
-            .ingest_fact_atomic(&permit, &draft(Some(("src", "e1"))), None)
-            .await?;
-        let mut second_draft = draft(Some(("src", "e2")));
-        second_draft.handle = Some(first.handle);
-        let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
-        assert_eq!(second.handle, first.handle);
-        let t = second.memory_id.into_inner();
-        assert_ne!(t, second.handle, "the erased t is not its own handle");
-
-        let mut tx = pool.begin().await?;
-        erase_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &erase_context(surfaces()),
-            &owner,
-            t,
-        )
-        .await?;
-        tx.commit().await?;
-
-        let announced: Uuid = sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.announce
-              WHERE t = $1 AND op = 'erase'
-              ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(
-            announced, first.handle,
-            "the erase announce must name the series, not the erased t"
-        );
-        let series_heads: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
-        )
-        .bind(announced)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(
-            series_heads, 1,
-            "the announced handle resolves to a live series"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("erase announce handle test failed");
-}
-
-/// Forget and hydrate run in platform scope, so the permit's write limit is
-/// the only kind check: a row above it is `NotFound`, hot or cooled (#387).
-#[tokio::test]
 async fn forget_and_hydrate_stop_at_the_permit_kind() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
@@ -796,10 +717,9 @@ async fn forget_and_hydrate_stop_at_the_permit_kind() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url)
+        let pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
-        pg.run_before_owner_rls_migrations().await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let facts = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let abstractions = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
@@ -846,8 +766,9 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -990,8 +911,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1038,8 +958,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1132,8 +1051,7 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1204,8 +1122,7 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1261,8 +1178,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1390,8 +1306,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1485,8 +1400,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1564,8 +1478,7 @@ async fn hydrate_of_older_cooled_version_preserves_newer_head() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1629,8 +1542,7 @@ async fn historical_restore_may_reuse_a_closed_handle_but_new_pins_may_not() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -1793,8 +1705,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
@@ -1857,8 +1768,7 @@ async fn oneshot_forget_put_does_not_hold_row_lock() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -1907,8 +1817,7 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2003,8 +1912,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2082,8 +1990,7 @@ async fn forget_dumps_every_stamped_extra() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2216,8 +2123,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2294,7 +2200,8 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
             erased_pin_target_kind(pool, cooled_t).await?,
             Some("fact".to_owned())
         );
-        purge_cold_objects_after_commit(pool, &cold, &plan).await;
+        let platform = pg.platform_scope_for_host();
+        purge_cold_objects_after_commit(pool, &platform, &cold, &plan).await;
 
         // The Goal trigger has its own vocabulary and does not depend on the
         // memory erase path. Delete a real Goal row to exercise that trigger.
@@ -2313,7 +2220,6 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -2344,8 +2250,7 @@ async fn exact_hydrate_restores_witnessed_sole_fact_origin() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2460,8 +2365,7 @@ async fn concurrent_hydrates_recreate_an_empty_memory_head() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -2699,8 +2603,9 @@ async fn reversed_overlapping_hydration_batches_do_not_deadlock() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let base_cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(base_cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(base_cold.clone());
         let pool = pg.pool_for_tests().clone();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -2798,8 +2703,9 @@ async fn hydrate_retries_when_cold_digest_changes_under_lock() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests().clone();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -2879,8 +2785,7 @@ async fn exact_hydrate_restores_memory_and_goal_witness_refs() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -2965,8 +2870,7 @@ async fn hydrate_rejects_unknown_and_wrong_kind_witnesses_atomically() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3219,8 +3123,7 @@ async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3317,8 +3220,9 @@ async fn a_legacy_cooled_locator_is_unsupported_and_untouched() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests().clone();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -3391,11 +3295,10 @@ async fn transferred_cooled_source_hydrates_after_target_erase() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, destination);
         let pool = pg.pool_for_tests();
         let cold = MemoryColdStore::default();
 
@@ -3491,8 +3394,7 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3594,8 +3496,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3699,8 +3600,7 @@ async fn forget_and_admit_preserve_grounding_support() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3852,8 +3752,7 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -3908,8 +3807,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -3959,7 +3857,8 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         cold.release_first_put.add_permits(1);
         forget.await?.expect("the record restores");
         let plan = erase.await?;
-        let purge = purge_cold_objects_after_commit(&pool, cold.as_ref(), &plan).await;
+        let platform = pg.platform_scope_for_host();
+        let purge = purge_cold_objects_after_commit(&pool, &platform, cold.as_ref(), &plan).await;
         assert!(purge.purged >= 1, "erase must purge the cooled payload");
         assert_eq!(cold.puts.load(Ordering::SeqCst), 1);
         assert_eq!(cold.deletes.load(Ordering::SeqCst), 1);
@@ -3997,8 +3896,9 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -4062,8 +3962,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -4142,8 +4041,7 @@ async fn forget_pinless_abstraction_is_refused() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -4200,8 +4098,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let p1 = OwnerWritePermit::new_for_tests(
             OwnerId::from(UserId::new(Uuid::now_v7())),
             AccessKind::Fact,
@@ -4350,8 +4247,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -4464,8 +4360,7 @@ async fn admission_locks_pins_before_series_head() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -4580,8 +4475,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -4679,8 +4573,7 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -4824,8 +4717,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -4835,6 +4727,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), &surfaces(), t).await?;
         drop(conn);
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
         assert!(
             pg.transfer_to_owner(
                 &permit,
@@ -4890,11 +4783,11 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
-        let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let source_permit =
+            OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination);
         let pool = pg.pool_for_tests();
         let first = pg
             .ingest_fact_atomic(&source_permit, &draft(None), None)
@@ -4963,8 +4856,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -5069,8 +4961,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let cold = PurgeRecordingCold::default();
         let retired_key = "objects/retired-debt";
@@ -5118,7 +5009,8 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
             1
         );
 
-        let outcome = purge_cold_objects_after_commit(pool, &cold, &plan).await;
+        let platform = pg.platform_scope_for_host();
+        let outcome = purge_cold_objects_after_commit(pool, &platform, &cold, &plan).await;
         assert_eq!(
             (
                 outcome.attempted,
@@ -5167,8 +5059,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -5200,7 +5091,8 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         .await?;
         tx.commit().await?;
 
-        let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
+        let platform = pg.platform_scope_for_host();
+        let purged = purge_cold_objects_after_commit(pool, &platform, &FailDeleteCold, &plan).await;
         assert_eq!(purged.purged, 0, "a refusing object store destroys nothing");
         assert!(purged.pending);
         let pending: Vec<String> = sqlx::query_scalar(
@@ -5243,8 +5135,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();
@@ -5349,8 +5240,8 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 /// forget does not touch would be deleted by the forget, silently, with the
 /// declaration sitting three files away saying otherwise.
 ///
-/// Core ships one `Keep` memory sidecar, `mcp_call_logged_v1`, and its rows
-/// survive only because it is ALSO `TransferRule::RetainAtSource` and
+/// A legacy `Keep` memory sidecar and its rows survive only because it is
+/// ALSO `TransferRule::RetainAtSource` and
 /// therefore `pg_sidecar!(owner_pinned: true)`, which the walk skips a few
 /// lines earlier for an entirely different reason. Remove the pinning and the
 /// `Keep` bought nothing.
@@ -5372,8 +5263,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -5460,8 +5350,7 @@ async fn hydrate_files_no_embedding_job_for_a_never_schema() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let cold = MemoryColdStore::default();
@@ -5497,8 +5386,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?.with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -5752,7 +5640,7 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         )
         .await?;
         let mut owner_pinned_record = decode_record(&cold.get(&owner_pinned_key).await?)?;
-        owner_pinned_record.sidecar_dumps[0].0 = "proxima_core.mcp_call_logged_v1".into();
+        owner_pinned_record.sidecar_dumps[0].0 = "proxima_core.retired_sidecar_v1".into();
         replace_cold_record(
             pool,
             cold.as_ref(),
@@ -5872,8 +5760,8 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
         assert!(!legacy_result.committed);
         assert_eq!(
             legacy_result.outcomes[0].status,
-            MemoryHydrationStatus::UnsupportedColdObject,
-            "pre-v6 objects fail closed because their sidecar stamp is absent"
+            MemoryHydrationStatus::UnsupportedColdFormat { format_version: 5 },
+            "restoration names the unsupported older format"
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -5927,7 +5815,9 @@ async fn authorized_hydration_reports_typed_one_and_set_outcomes() {
             .await?;
         assert_eq!(
             future_result.outcomes[0].status,
-            MemoryHydrationStatus::UnsupportedColdObject
+            MemoryHydrationStatus::UnsupportedColdFormat {
+                format_version: COLD_FORMAT_VERSION.saturating_add(1),
+            }
         );
 
         let foreign_result = MemoryAuthoringPort::hydrate_memories(
@@ -6009,8 +5899,9 @@ async fn authorized_hydration_reports_witness_count_after_erase_race() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);

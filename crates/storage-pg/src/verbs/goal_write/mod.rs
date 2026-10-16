@@ -7,8 +7,7 @@ use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalState,
-    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome,
-    ModifyGoalAtomicRequest, SystemOrigin, TransitionGoalAtomicRequest,
+    GoalWriteOutcome, ModifyGoalAtomicRequest, SystemOrigin, TransitionGoalAtomicRequest,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -27,7 +26,6 @@ mod lifecycle;
 mod prior;
 mod replay;
 mod types;
-mod wake;
 
 use edges::assert_goal_topology_references;
 use evidence::{
@@ -46,7 +44,7 @@ use replay::{
     modify_replay_declaration, record_goal_replay_declaration, require_goal_replay,
     resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
 };
-use types::{EvidenceTarget, InsertedGoal, RowColumns, StoredGoal, WakeWrite};
+use types::{EvidenceTarget, InsertedGoal, RowColumns, StoredGoal};
 
 pub(crate) use crate::verbs::goal_timeseries::{
     GoalWritePreparation, lock_prepared_goal_write, lock_prepared_goal_writes,

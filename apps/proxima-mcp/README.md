@@ -6,7 +6,7 @@ wiring template for other hosts.
 
 ## Run Locally
 
-Follow [`docs/getting-started/local-dev.md`](../../docs/getting-started/local-dev.md):
+Follow [`docs/get-started.md`](../../docs/get-started.md):
 Postgres, `proxima-dev-idp`, then:
 
 ```sh
@@ -24,14 +24,14 @@ Substrate-only (no code flavor): `cargo run -p proxima-mcp --no-default-features
 
 - MCP bearer auth is host/OIDC only. Local means a local issuer, not a bypass.
 - MCP initialize: send `X-Proxima-Owner: personal:<USER_ID>` or another authorized owner key.
-- Configure OIDC/host auth per [`docs/10-configuration.md`](../../docs/10-configuration.md) and [`docs/15-deployment.md`](../../docs/15-deployment.md).
+- Configure OIDC/host auth per [`docs/configuration.md`](../../docs/configuration.md) and [`docs/operate.md`](../../docs/operate.md).
 
 ## Tool Profiles
 
 Default is fail-closed `memory`. Local full surface (including
 `core_membership` / `core_transfer`): `PROXIMA_TOOL_PROFILE=full`. Code search
 without memory tools: `PROXIMA_TOOL_PROFILE=code` (see
-[`docs/15-deployment.md`](../../docs/15-deployment.md)).
+[`docs/get-started.md`](../../docs/get-started.md)).
 
 ## Discovery
 

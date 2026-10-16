@@ -13,7 +13,7 @@ Public tiers:
 `RuntimeBuilder::pg_pool_config` / `Proxima::pg_pool_config`, or resolve the
 same `PROXIMA_PG_*` variables through `Proxima::from_lookup`.
 
-See `src/lib.rs` rustdoc and [`../../docs/reference/public-api.md`](../../docs/reference/public-api.md).
+See `src/lib.rs` rustdoc and [`../../docs/host-integration.md`](../../docs/host-integration.md).
 
 Membership writes use `proxima::host` inside a host's platform-scoped
 `READ COMMITTED` transaction. Members are bare `OwnerId`; the write resolves
@@ -22,4 +22,4 @@ materialize upward `Role::meet` caps and `Role::join` across paths into
 `group_role_projection`; `roles_for_subject` and `group_role` read that
 projection in one query. Fixed-snapshot `REPEATABLE READ` and `SERIALIZABLE`
 writes return `StorageError::MembershipIsolation`. The host forms run no
-authorization/hooks ([10 §Roles inside a host transaction](../../docs/10-configuration.md#roles-inside-a-host-transaction)).
+authorization/hooks ([host integration](../../docs/host-integration.md)).

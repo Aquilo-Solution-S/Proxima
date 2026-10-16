@@ -1,7 +1,7 @@
 //! `FactIngest` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §`FactIngest` and
-//! docs/01-event-source.md. The storage-side body lives in
+//! See docs/protocol.md §`FactIngest` and
+//! docs/concepts.md. The storage-side body lives in
 //! `proxima-storage-pg`.
 
 use crate::verbs::query::SidecarAtom;
@@ -836,7 +836,7 @@ impl FactWriteCommand {
         self
     }
 
-    /// Canonical receipt id per docs/01: BLAKE3 of `source_id` ||
+    /// Canonical receipt id per docs/concepts.md: BLAKE3 of `source_id` ||
     /// the owner id's 16 bytes || schema-owned receipt key, separated by 0x00
     /// bytes. Re-receipt of the same observation produces the same hash by
     /// construction. Receiptless commands return `None` and are not replayed.
@@ -862,7 +862,6 @@ pub struct FactIngestOutcome {
     pub memory_id: MemoryId,
     /// Series handle.
     pub handle: Uuid,
-    pub change_event_seq: Uuid,
     /// True iff the same receipt id was already ingested.
     /// Receiptless Facts are never receipt-replayed.
     pub idempotent_replay: bool,

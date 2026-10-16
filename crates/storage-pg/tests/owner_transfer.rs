@@ -8,65 +8,31 @@ use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
-    ChangeEventPort, McpCallReadPort, MemoryInspectPort, MemoryReadPort, OwnerInversePort,
-    OwnerTransferPort, OwnerWritePermit,
+    MemoryReadPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::authenticated_context;
+use proxima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
-use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
-use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    AccessKind, AgentNoteV1, AuthPath, AuthzContext, ChangeEventKind, ColdObjectStore, Engine,
-    EntityId, EntityRef, FlavorRegistry, GoalId, GroupId, MemoryId, OwnerId, SchemaId,
-    SchemaVersion, SidecarPayload, StorageError, UserId,
+    AccessKind, AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, EntityId,
+    FlavorRegistry, GoalId, GroupId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
+    StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
 use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::wake_timeseries::{
-    WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
-};
 use proxima_storage_pg::{
     PgStorage, add_group_member, core_pg_sidecars, register_group, replace_group_member_relation,
 };
 use uuid::Uuid;
 
 const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
-
-fn memory_schema_specs() -> Vec<MemorySchemaSpec> {
-    proxima_core::FlavorRegistry::new()
-        .freeze_or_panic_for_tests()
-        .schemas()
-        .iter()
-        .filter_map(|schema| {
-            let kind = match schema.kind {
-                proxima_core::verbs::schema::PayloadKind::Fact => proxima_core::EntityKind::Fact,
-                proxima_core::verbs::schema::PayloadKind::Abstraction => {
-                    proxima_core::EntityKind::Abstraction
-                }
-                proxima_core::verbs::schema::PayloadKind::Perspective => {
-                    proxima_core::EntityKind::Perspective
-                }
-                _ => return None,
-            };
-            Some(MemorySchemaSpec {
-                kind,
-                schema_id: schema.schema_id.clone(),
-                schema_version: schema.schema_version,
-                sidecar_table: schema.sidecar_table.clone(),
-            })
-        })
-        .collect()
-}
 
 /// The five sidecar legs exactly as the engine assembles them: from the
 /// frozen flavor registry. Passing empty slices here would silently skip
@@ -258,165 +224,8 @@ fn note_payload(title: &str, body: &str) -> SidecarPayload {
     })
 }
 
-async fn ingest_mcp_call_fact(
-    pg: &PgStorage,
-    permit: &OwnerWritePermit,
-    extra: &[SidecarPayload],
-) -> Result<FactIngestOutcome, StorageError> {
-    let payload = McpCallLoggedV1 {
-        tool_name: "core_remember".into(),
-        actor_oid: "oid-1".into(),
-        actor_upn: "alice@example.test".into(),
-        ok: true,
-        error: None,
-        latency_ms: 5,
-        io_byte_len: 10,
-        io_truncated: false,
-        io_content_hash: [3_u8; 32],
-    };
-    let mut draft = FactWriteCommand::from_payload("proxima/fact", &payload);
-    // `extra` may carry a `LanguagePolicy::PerRow` schema; the mcp sidecar
-    // itself pins its configuration and reads no language bind.
-    draft.lexical_language =
-        Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
-    let mut payloads = vec![SidecarPayload::fact(payload)];
-    payloads.extend_from_slice(extra);
-    let authorized = AuthorizedFactWrite::new_for_tests(
-        OwnerWritePermit::new_for_tests(*permit.owner(), AccessKind::Fact),
-        draft,
-        McpCallLoggedV1::sidecar_table().map(str::to_owned),
-        Vec::new(),
-    )
-    .with_sidecar_payloads_for_tests(payloads);
-    pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await
-}
-
-/// A Fact carrying the mcp-call schema, for appending a second version to a
-/// series whose first version is a real tool call.
-fn mcp_draft() -> FactWriteCommand {
-    FactWriteCommand {
-        schema_id: SchemaId::new(
-            proxima_core::verbs::persist_mcp_call::MCP_CALL_FACT_SCHEMA.to_string(),
-        ),
-        ..draft()
-    }
-}
-
-/// How many of this Memory's hydrated payloads carry an actor identity,
-/// read as `owner`.
-async fn hydrated_actor_payloads(
-    pg: &PgStorage,
-    owner: OwnerId,
-    memory_id: MemoryId,
-) -> Result<usize, StorageError> {
-    let schemas = memory_schema_specs();
-    let response = pg
-        .query_memories(
-            None,
-            &[owner],
-            &QueryRequest {
-                memory_ids: vec![memory_id],
-                include_payloads: true,
-                ..QueryRequest::readable()
-            },
-            &schemas,
-        )
-        .await?;
-    Ok(response
-        .memories
-        .iter()
-        .filter(|memory| {
-            memory
-                .payload
-                .as_ref()
-                .and_then(|payload| payload.to_protocol_json().ok())
-                .is_some_and(|json| json.get("actor_upn").is_some())
-        })
-        .count())
-}
-
-async fn assert_owner_pinned_payload_redacted(
-    pg: &PgStorage,
-    owner: OwnerId,
-    memory_id: MemoryId,
-) -> Result<(), StorageError> {
-    let snapshots = pg
-        .load_memories_by_ids(None, &[owner], &[memory_id], &memory_schema_specs())
-        .await?;
-    assert_eq!(
-        snapshots.len(),
-        1,
-        "the transferred Memory remains visible when its owner-pinned payload stays behind"
-    );
-    let snapshot = &snapshots[0];
-    assert_eq!(snapshot.memory_id, memory_id);
-    assert_eq!(snapshot.owner, owner);
-    assert_eq!(
-        snapshot.schema_version.into_inner(),
-        McpCallLoggedV1::SCHEMA_VERSION
-    );
-    assert!(snapshot.payload.is_none());
-    assert!(snapshot.text.is_none());
-    Ok(())
-}
-
-/// Which owners the `mcp_call_logged_v1` rows for `t` are pinned to.
-async fn pinned_owners(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
-        .bind(t)
-        .fetch_all(pool)
-        .await
-}
-
-fn history_request(owner: OwnerId) -> McpCallHistoryRequest {
-    McpCallHistoryRequest {
-        owner,
-        actor_oid: None,
-        before: None,
-        limit: 10,
-        include_body: false,
-    }
-}
-
-async fn export_bundle(
-    pg: &PgStorage,
-    owner: OwnerId,
-) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
-    // The registry, not the caller, says which export shape names this id.
-    let kind: String =
-        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-            .bind(owner.into_inner())
-            .fetch_one(pg.pool_for_tests())
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-    let target = if kind == "personal" {
-        OwnerExportTarget::PersonalOwner {
-            user_id: owner.as_user(),
-        }
-    } else {
-        OwnerExportTarget::GroupOwner {
-            group_id: owner.as_group(),
-        }
-    };
-    pg.export_owner_bundle(
-        &ExportAuthorization::new_for_tests(target),
-        &contract_sidecar_tables(),
-    )
-    .await
-}
-
-/// The exported `mcp_call_logged_v1` rows, whole.
-///
-/// Returning the rows rather than a count is deliberate. Counting them cannot
-/// tell a row from a scalar: `to_jsonb(t)` resolves to the column named `t`,
-/// not the range table, when only one table is in scope, so an export emitting
-/// the primary key where the row belongs has the right cardinality and a bundle
-/// empty of content.
-fn mcp_rows_in(bundle: &proxima_core::owner_inverse::OwnerExportBundle) -> Vec<&serde_json::Value> {
-    bundle
-        .table("proxima_core.mcp_call_logged_v1")
-        .iter()
-        .collect()
+fn transfer_permit(permit: &OwnerWritePermit, destination: OwnerId) -> OwnerWritePermit {
+    OwnerWritePermit::transfer_for_tests(*permit.owner(), permit.access_kind(), destination)
 }
 
 fn destination() -> OwnerId {
@@ -438,10 +247,9 @@ async fn fresh_pg() -> (String, PgStorage) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 
@@ -497,11 +305,10 @@ async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdSt
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let cold = Arc::new(CountingColdStore::default());
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
         .with_cold(cold.clone());
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg, cold)
 }
 
@@ -511,11 +318,10 @@ async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let cold = Arc::new(MemoryColdStore::default());
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
         .with_cold(cold.clone());
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg, cold)
 }
 
@@ -526,6 +332,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
+        let dest_scope = owner_scope_for_tests(&[dest]);
         let pool = pg.pool_for_tests();
         // The typed write, not `ingest_fact_atomic` plus a hand-written row:
         // only a write that DECLARES `agent_note_v1` leaves a note row the
@@ -571,7 +378,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
 
         let first = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -620,7 +427,8 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "the hot sketch must follow its transferred Memory"
         );
         let dest_sketches =
-            MemoryReadPort::load_sketches(&pg, None, &[dest], &[written.memory_id]).await?;
+            MemoryReadPort::load_sketches(&pg, Some(&dest_scope), &[dest], &[written.memory_id])
+                .await?;
         assert_eq!(
             dest_sketches.len(),
             1,
@@ -651,7 +459,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         );
         let replay = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -736,7 +544,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         )];
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -842,7 +650,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
 
         let transferred = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(second.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -929,18 +737,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             "exclusive cooled Content is GC'd after its destination remap"
         );
 
-        // Announce is append-only and the earlier ingest already wrote rows
-        // for this `t` under the giver, so the assertion has to be scoped to
-        // what THIS hydrate appends. `seq` is a uuidv7 PK; the pre-hydrate
-        // set is the watermark.
-        let announce_before: Vec<Uuid> =
-            sqlx::query_scalar("SELECT seq FROM proxima_core.announce")
-                .fetch_all(pool)
-                .await?;
-
         let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
-        // The hydrate files a job per space the destination's route names;
-        // naming one keeps the job-owner assertion below from being vacuous.
         let dest_spaces = [proxima_core::EmbeddingSpace::new(
             "transfer-hydrate-model",
             proxima_core::EmbeddingDim::D1024,
@@ -966,13 +763,6 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             dest.into_inner(),
             "the reminted cold record must hydrate under the destination"
         );
-
-        // The `memory` row is right because the INSERT reads the owner off
-        // `cooled`. Everything ELSE the hydrate writes must too: the cold
-        // record's embedded `row.owner_id` is never rewritten by a transfer, so
-        // the bytes keep naming the giver forever. Each of these three surfaces
-        // is owner-scoped on read, so a giver-owned row here is a memory the
-        // giver gave away and can still reach.
         let sketch_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
                 .bind(first.memory_id.into_inner())
@@ -981,29 +771,8 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         assert_eq!(
             sketch_owner,
             dest.into_inner(),
-            "the sketch is read owner-scoped: hydrating it under the giver \
-             hands a transferred memory back to the owner that gave it away"
+            "the sketch is read owner-scoped: hydrating it under the giver hands a transferred memory back to the owner that gave it away"
         );
-
-        let hydrate_announce_owners: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.announce
-              WHERE t = $1 AND seq <> ALL($2::uuid[])",
-        )
-        .bind(first.memory_id.into_inner())
-        .bind(&announce_before)
-        .fetch_all(pool)
-        .await?;
-        assert!(
-            !hydrate_announce_owners.is_empty(),
-            "the hydrate announces, or this assertion proves nothing"
-        );
-        for announced in &hydrate_announce_owners {
-            assert_eq!(
-                *announced,
-                dest.into_inner(),
-                "the hydrate announces to the owner that HAS the memory now"
-            );
-        }
 
         let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
             "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
@@ -1046,7 +815,7 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -1074,13 +843,6 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
                 .await?;
         assert_eq!(head, (second.memory_id.into_inner(), dest.into_inner()));
 
-        let announced_t: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.announce
-              WHERE op = 'transfer' ORDER BY seq",
-        )
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(announced_t, vec![second.memory_id.into_inner(); 2]);
         Ok(())
     }
     .await;
@@ -1121,7 +883,7 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -1149,18 +911,6 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         .await?;
         assert_eq!(after, (0, 0, 2));
 
-        let announced: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
-            "SELECT owner_id, handle, t FROM proxima_core.announce
-              WHERE op = 'transfer' ORDER BY seq",
-        )
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(announced.len(), 2);
-        assert!(announced.iter().all(|(owner_id, announced_handle, t)| {
-            *announced_handle == first.handle
-                && *t == second.memory_id.into_inner()
-                && (*owner_id == owner.into_inner() || *owner_id == dest.into_inner())
-        }));
         Ok(())
     }
     .await;
@@ -1202,8 +952,7 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
 
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
-        let authz =
-            AuthzContext::for_subject(UserId::new(owner.into_inner()), AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         engine
             .transfer_to_owner(&authz, EntityId::Memory(written.memory_id), destination)
             .await?;
@@ -1332,6 +1081,8 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
 
         sqlx::raw_sql(
             "CREATE SEQUENCE public.transfer_race_probe;
+             GRANT USAGE, SELECT ON SEQUENCE public.transfer_race_probe
+             TO proxima_test_runtime, proxima_test_platform;
              CREATE FUNCTION public.block_owner_transfer() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1361,7 +1112,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             transfer_pg
                 .transfer_to_owner(
-                    &permit,
+                    &transfer_permit(&permit, dest),
                     EntityId::Memory(transferred_id),
                     dest,
                     &contract_sidecar_tables(),
@@ -1498,6 +1249,8 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
 
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE SEQUENCE public.transfer_citation_probe;
+             GRANT USAGE, SELECT ON SEQUENCE public.transfer_citation_probe
+             TO proxima_test_runtime, proxima_test_platform;
              CREATE FUNCTION public.block_source_citation_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1546,11 +1299,11 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         .await??;
 
         let transfer_pg = pg.clone();
-        let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let transfer_source_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &transfer_permit,
+                    &transfer_permit(&transfer_source_permit, destination),
                     EntityId::Memory(target.memory_id),
                     destination,
                     &contract_sidecar_tables(),
@@ -1662,6 +1415,8 @@ async fn transfer_serializes_destination_citation_dedupe() {
 
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE SEQUENCE public.destination_blob_probe;
+             GRANT USAGE, SELECT ON SEQUENCE public.destination_blob_probe
+             TO proxima_test_runtime, proxima_test_platform;
              CREATE FUNCTION public.block_destination_blob_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1678,6 +1433,12 @@ async fn transfer_serializes_destination_citation_dedupe() {
              EXECUTE FUNCTION public.block_destination_blob_insert();",
             destination = destination.into_inner(),
         )))
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "GRANT EXECUTE ON FUNCTION public.block_destination_blob_insert()
+             TO proxima_test_runtime, proxima_test_platform",
+        )
         .execute(pool)
         .await?;
 
@@ -1713,11 +1474,11 @@ async fn transfer_serializes_destination_citation_dedupe() {
         .await??;
 
         let transfer_pg = pg.clone();
-        let transfer_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let transfer_source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &transfer_permit,
+                    &transfer_permit(&transfer_source_permit, destination),
                     EntityId::Memory(source_row.memory_id),
                     destination,
                     &contract_sidecar_tables(),
@@ -1823,7 +1584,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -1859,7 +1620,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         .await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -1934,7 +1695,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -1969,7 +1730,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         .await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2042,7 +1803,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2113,7 +1874,7 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
 
             assert!(
                 pg.transfer_to_owner(
-                    &permit,
+                    &transfer_permit(&permit, destination),
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
@@ -2172,7 +1933,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2196,7 +1957,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
         .await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2245,7 +2006,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2314,10 +2075,10 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
 
         let transfer_pg = pg.clone();
         let transfer = tokio::spawn(async move {
-            let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            let transfer_source_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             transfer_pg
                 .transfer_to_owner(
-                    &transfer_permit,
+                    &transfer_permit(&transfer_source_permit, dest),
                     EntityId::Memory(first.memory_id),
                     dest,
                     &contract_sidecar_tables(),
@@ -2451,7 +2212,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
         let left_transfer = tokio::spawn(async move {
             left_pg
                 .transfer_to_owner(
-                    &left_permit,
+                    &transfer_permit(&left_permit, right),
                     EntityId::Memory(left_row.memory_id),
                     right,
                     &contract_sidecar_tables(),
@@ -2462,7 +2223,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
         let right_transfer = tokio::spawn(async move {
             right_pg
                 .transfer_to_owner(
-                    &right_permit,
+                    &transfer_permit(&right_permit, left),
                     EntityId::Memory(right_row.memory_id),
                     left,
                     &contract_sidecar_tables(),
@@ -2546,7 +2307,7 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
 
         let moved = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(original.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -2579,7 +2340,7 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
 
 /// A caller can resolve a cooled Memory under its prior owner after the series
 /// head has already moved elsewhere. Transfer must return clean `false` and
-/// leave every hot/cold row and announce lane untouched. The head DELETE
+/// leave every hot/cold row untouched. The head DELETE
 /// variant is not statically constructible (`memory.handle` FK-references
 /// `memory_head`), so the probe diverges the head owner, which
 /// `memory_head_t_only` admits.
@@ -2621,14 +2382,10 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         .bind(dest.into_inner())
         .fetch_one(pool)
         .await?;
-        let announces_before: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.announce")
-                .fetch_one(pool)
-                .await?;
 
         let transferred = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(first.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -2660,20 +2417,6 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(hot_owner, owner.into_inner());
-        let transfer_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(transfer_rows, 0, "no lane may announce a failed transfer");
-        let announces_after: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.announce")
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(
-            announces_after, announces_before,
-            "a rolled-back transfer leaves the log exactly as it was"
-        );
         let destination_owner_after: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
         )
@@ -2714,7 +2457,6 @@ async fn transfer_refuses_goal_entities() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -2724,7 +2466,7 @@ async fn transfer_refuses_goal_entities() {
 
         let err = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Goal(GoalId::new(out.t)),
                 dest,
                 &contract_sidecar_tables(),
@@ -2749,12 +2491,6 @@ async fn transfer_refuses_goal_entities() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(row_owner, owner.into_inner());
-        let transfer_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(transfer_rows, 0, "a refused transfer announces nothing");
 
         // DDL backstops behind the storage guard: goal rows refuse UPDATE
         // entirely, and `goal_head_t_only` freezes the head's owner_id.
@@ -2788,197 +2524,6 @@ async fn transfer_refuses_goal_entities() {
     result.expect("goal transfer refusal failed");
 }
 
-/// The erase-poison scenario: transferring an armed goal would strand its
-/// `wake_config` row under the prior owner while the moved goal keeps arming
-/// it, and that owner's owner erase would abort forever on the
-/// `ON DELETE RESTRICT` FK. Refusal keeps the wake row erasable.
-#[tokio::test]
-async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
-    let (db_name, pg) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerId::from(user);
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let dest = destination();
-        let pool = pg.pool_for_tests();
-        let mut tx = pool.begin().await?;
-        let wake = insert_wake_config(
-            &mut tx,
-            &owner,
-            &WakeConfigDraft {
-                trigger_kind: WakeTriggerKind::FactSchema,
-                trigger_schema_id: Some("core/test-fact-v1".into()),
-                trigger_t: None,
-                tool_ids: vec!["core.remember".into()],
-                prompt: "private prompt".into(),
-                hard_memory_t: vec![],
-            },
-        )
-        .await?;
-        let goal_handle =
-            write_armed_goal(&mut tx, &owner, "armed goal", "pub-armed", wake).await?;
-        tx.commit().await?;
-        let goal_t: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1")
-            .bind(goal_handle)
-            .fetch_one(pool)
-            .await?;
-
-        let err = pg
-            .transfer_to_owner(
-                &permit,
-                EntityId::Goal(GoalId::new(goal_t)),
-                dest,
-                &contract_sidecar_tables(),
-                &[],
-            )
-            .await
-            .expect_err("an armed goal is refused like any goal");
-        assert!(matches!(err, StorageError::ConstraintViolation(_)));
-        let wake_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.wake_config WHERE wake_id = $1")
-                .bind(wake)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(
-            wake_owner,
-            owner.into_inner(),
-            "the wake row must stay with the goal's owner"
-        );
-
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-            user_id: user,
-            drop_event_id: "test-drop-armed-transfer".into(),
-        });
-        let outcome = pg
-            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
-            .await?;
-        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
-            panic!("erase must complete after the refused transfer, got {outcome:?}");
-        };
-        assert_eq!(
-            counts.get("wake_configs"),
-            1,
-            "the armed wake row is erased"
-        );
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
-        )
-        .bind(owner.into_inner())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(remaining, 0);
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("armed goal refusal / erase failed");
-}
-
-#[tokio::test]
-async fn transfer_writes_announce_rows_under_both_lanes() {
-    let (db_name, pg) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerId::from(user);
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
-        let pool = pg.pool_for_tests();
-        let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        let t = written.memory_id.into_inner();
-
-        assert!(
-            pg.transfer_to_owner(
-                &permit,
-                EntityId::Memory(written.memory_id),
-                dest,
-                &contract_sidecar_tables(),
-                &[]
-            )
-            .await?
-        );
-
-        // Raw rail: exactly one 'transfer' row per lane, same (handle, t).
-        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
-            "SELECT owner_id, handle, t FROM proxima_core.announce
-              WHERE op = 'transfer' ORDER BY seq",
-        )
-        .fetch_all(pool)
-        .await?;
-        let lanes: Vec<Uuid> = rows.iter().map(|(owner_id, _, _)| *owner_id).collect();
-        assert_eq!(
-            rows.len(),
-            2,
-            "one row per lane: prior owner and destination owner"
-        );
-        assert!(lanes.contains(&owner.into_inner()));
-        assert!(lanes.contains(&dest.into_inner()));
-        for (_, handle, event_t) in &rows {
-            assert_eq!(*handle, written.handle);
-            assert_eq!(*event_t, t);
-        }
-
-        // The prior owner's earlier 'append' row is untouched.
-        let (append_op, append_owner): (String, Uuid) =
-            sqlx::query_as("SELECT op::text, owner_id FROM proxima_core.announce WHERE seq = $1")
-                .bind(written.change_event_seq)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(append_op, "append");
-        assert_eq!(append_owner, owner.into_inner());
-
-        // The log stays append-only: the transfer wrote new rows, and no row
-        // accepts UPDATE.
-        let frozen =
-            sqlx::query("UPDATE proxima_core.announce SET op = 'append' WHERE op = 'transfer'")
-                .execute(pool)
-                .await;
-        assert!(frozen.is_err(), "announce rows must refuse UPDATE");
-
-        // Hydrated rail, prior owner's lane: the transfer event is visible.
-        let prior_lane = pg
-            .list_change_events_after(None, std::slice::from_ref(&owner), Uuid::nil(), 100)
-            .await?;
-        let departed = prior_lane
-            .iter()
-            .find(|row| {
-                matches!(
-                    &row.event.kind,
-                    ChangeEventKind::EntityTransfer { entity, .. }
-                        if *entity == EntityRef::Memory(MemoryId::new(t))
-                )
-            })
-            .expect("the prior owner's poll sees the transfer");
-        assert_eq!(departed.event.owner, owner);
-
-        // Destination lane: the arrival is visible under the new owner.
-        let dest_lane = pg
-            .list_change_events_after(None, &[dest], Uuid::nil(), 100)
-            .await?;
-        let arrived = dest_lane
-            .iter()
-            .find(|row| {
-                matches!(
-                    &row.event.kind,
-                    ChangeEventKind::EntityTransfer { entity, .. }
-                        if *entity == EntityRef::Memory(MemoryId::new(t))
-                )
-            })
-            .expect("the destination's poll sees the arrival");
-        assert_eq!(arrived.event.owner, dest);
-        assert!(
-            !dest_lane.iter().any(|row| matches!(
-                row.event.kind,
-                ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. }
-            )),
-            "the append stays on the prior owner's lane"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("transfer announce rows failed");
-}
-
 #[tokio::test]
 async fn transfer_moves_exclusive_blob_with_the_fact() {
     let (db_name, pg) = fresh_pg().await;
@@ -3006,7 +2551,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
         let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -3033,344 +2578,10 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
     result.expect("blob transfer failed");
 }
 
-/// Retain-at-source for the audit sidecar, and what "retain" means.
-///
-/// `mcp_call_logged_v1` describes the ACTOR of a tool call (`actor_upn`),
-/// not the memory, and it carries its own `owner_id` stamped with the owner
-/// that made the call. A transfer moves the memory and leaves the row
-/// exactly where it is: it stays reachable by the source (history, export,
-/// Art. 17 erase) and unreachable by the destination (its payload hydrate
-/// joins the memory's owner to the row's). Deleting the row instead would keep
-/// the destination out at the cost of history the source is entitled to. Every
-/// other sidecar (here: `agent_note_v1`) follows the memory.
-#[tokio::test]
-async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() {
-    let (db_name, pg) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let dest = destination();
-        let pool = pg.pool_for_tests();
-        // The Memory carries the mcp schema, so the payload hydrate really
-        // dispatches to this sidecar. Written against `core/test-fact-v1`
-        // it would dispatch elsewhere and the "destination sees nothing"
-        // assertion below would hold vacuously.
-        // Both sidecars ride one write, so the memory declares both: an
-        // ordinary sidecar the transfer moves, and the retained audit row.
-        let written = ingest_mcp_call_fact(&pg, &permit, &[note_payload("note", "body")]).await?;
-        let t = written.memory_id.into_inner();
-
-        let pinned_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(
-            pinned_owner,
-            owner.into_inner(),
-            "the sidecar is stamped with the owner that made the call"
-        );
-
-        // The assertion that follows the transfer is only worth anything if
-        // the payload hydrates in the first place.
-        assert_eq!(
-            hydrated_actor_payloads(&pg, owner, written.memory_id).await?,
-            1,
-            "the owner that made the call sees it in its own payload"
-        );
-
-        assert!(
-            pg.transfer_to_owner(
-                &permit,
-                EntityId::Memory(written.memory_id),
-                dest,
-                &contract_sidecar_tables(),
-                &[]
-            )
-            .await?
-        );
-
-        let still_pinned: Vec<Uuid> =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
-                .bind(t)
-                .fetch_all(pool)
-                .await?;
-        assert_eq!(
-            still_pinned,
-            vec![owner.into_inner()],
-            "the transfer must neither destroy the audit row nor re-home it"
-        );
-
-        let notes: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(notes, 1, "ordinary sidecars still follow the memory");
-        let memory_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(memory_owner, dest.into_inner());
-
-        // (a) The destination's payload hydrate excludes it. The sidecar
-        // read joins the Memory's owner to the row's own, so the row is
-        // invisible to whoever now holds the Memory.
-        assert_eq!(
-            hydrated_actor_payloads(&pg, dest, written.memory_id).await?,
-            0,
-            "the destination must not hydrate the prior owner's actor identity"
-        );
-        assert_owner_pinned_payload_redacted(&pg, dest, written.memory_id).await?;
-
-        // (b) The source still answers "what did my agents do".
-        let history = pg
-            .read_mcp_call_history(None, &history_request(owner))
-            .await?;
-        assert_eq!(
-            history.calls.len(),
-            1,
-            "the source keeps its own call history after giving the memory away"
-        );
-        assert_eq!(history.calls[0].tool_name, "core_remember");
-        let destination_history = pg
-            .read_mcp_call_history(None, &history_request(dest))
-            .await?;
-        assert!(
-            destination_history.calls.is_empty(),
-            "and the destination never inherits it"
-        );
-
-        // (d) Export follows the same owner: source in, destination out.
-        let source_bundle = export_bundle(&pg, owner).await?;
-        let exported = mcp_rows_in(&source_bundle);
-        assert_eq!(
-            exported.len(),
-            1,
-            "the source's Art. 15 bundle carries the calls it made"
-        );
-        // And carries them whole. A portability bundle that lists the right
-        // number of rows and none of their fields is not a copy of anything;
-        // `actor_upn` is the field this sidecar exists to retain, so it is
-        // the one worth naming.
-        assert_eq!(
-            exported[0]
-                .get("actor_upn")
-                .and_then(serde_json::Value::as_str),
-            Some("alice@example.test"),
-            "the exported row is the row, not its primary key: {:?}",
-            exported[0]
-        );
-        assert_eq!(
-            exported[0]
-                .get("tool_name")
-                .and_then(serde_json::Value::as_str),
-            Some("core_remember"),
-        );
-        let destination_bundle = export_bundle(&pg, dest).await?;
-        assert!(
-            mcp_rows_in(&destination_bundle).is_empty(),
-            "the destination's bundle must not carry another owner's actor rows"
-        );
-
-        // (c) And the source can still erase them, which is the half a
-        // de-registration would have lost: rows reachable by nobody are
-        // rows Art. 17 cannot honour.
-        let user_id = UserId::new(owner.into_inner());
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-            user_id,
-            drop_event_id: "test-drop-retained-audit".into(),
-        });
-        let erased = pg
-            .erase_personal_owner(&auth, user_id, &contract_sidecar_tables())
-            .await?;
-        assert!(
-            matches!(erased, OwnerEraseOutcome::Completed { .. }),
-            "source erase completed: {erased:?}"
-        );
-        let left: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.mcp_call_logged_v1 WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(
-            left, 0,
-            "the source's own erase reaches the rows it retained"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("audit sidecar retain-at-source failed");
-}
-
-/// A retained audit row belongs to its actor even after its Memory moves, but
-/// it still keeps the Memory's source attribution. Source-scope erasure must
-/// therefore use the moved Memory only to identify the source, not to
-/// re-decide the independently stored owner of the audit row.
-#[tokio::test]
-async fn source_scope_erase_reaches_a_retained_actor_log_after_transfer() {
-    let (db_name, pg) = fresh_pg().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let user_id = UserId::new(Uuid::now_v7());
-        let owner = OwnerId::from(user_id);
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let destination = destination();
-        let pool = pg.pool_for_tests();
-        let written = ingest_mcp_call_fact(&pg, &permit, &[]).await?;
-        let t = written.memory_id.into_inner();
-        assert!(
-            pg.transfer_to_owner(
-                &permit,
-                EntityId::Memory(written.memory_id),
-                destination,
-                &contract_sidecar_tables(),
-                &[],
-            )
-            .await?
-        );
-
-        let source_id = proxima_core::SourceId::new("proxima/fact");
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
-            user_id,
-            source_id: source_id.clone(),
-            drop_event_id: "erase-transferred-audit-source".into(),
-        });
-        let erased = pg
-            .erase_personal_source_scope(&auth, user_id, &source_id, &contract_sidecar_tables())
-            .await?;
-        assert!(matches!(erased, OwnerEraseOutcome::Completed { .. }));
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint
-                   FROM proxima_core.mcp_call_logged_v1
-                  WHERE t = $1 AND owner_id = $2",
-            )
-            .bind(t)
-            .bind(owner.into_inner())
-            .fetch_one(pool)
-            .await?,
-            0,
-            "the source owner can erase its retained row through source attribution"
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1",)
-                .bind(t)
-                .fetch_one(pool)
-                .await?,
-            destination.into_inner(),
-            "source-scope erase does not reach the transferred Memory"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("source-scope retained audit erase failed");
-}
-
-/// The other half of "the row does not follow the Memory": nothing the
-/// RECEIVING owner does to that Memory may reach the row.
-///
-/// Forget cools a Memory and deletes its sidecars into the cold object;
-/// erase deletes the Memory outright. Both are the destination's to perform
-/// after a transfer, and neither may destroy — or trip over — the source's
-/// audit trail. Owner-pinned tables are therefore held out of the forget
-/// dump entirely, and the row holds no foreign key into `memory`, so the
-/// destination's erase does not fail on a child row it cannot see.
-#[tokio::test]
-async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_trail() {
-    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-        let dest = registered_destination(pool).await?;
-
-        let first = ingest_mcp_call_fact(&pg, &permit, &[]).await?;
-        // A live head keeps the series transferable after the first version
-        // is cooled.
-        let mut later = mcp_draft();
-        later.handle = Some(first.handle);
-        later.ingest_key = Some("k2".into());
-        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
-        assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest, &contract_sidecar_tables(), &[])
-                .await?
-        );
-
-        // The destination cools the version that carries the audit row.
-        let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
-        MemoryAuthoringPort::forget_memory(&pg, &dest_permit, first.memory_id).await?;
-        assert_eq!(
-            pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.into_inner()],
-            "a forget by the receiving owner must not cool away another owner's audit row"
-        );
-
-        // ...and hydrates it back. The row was never in the dump, so it is
-        // not restored either — it never left.
-        let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &dest_permit, &[first.memory_id], &[])
-            .await?;
-        assert_eq!(
-            hydrated.outcomes[0].status,
-            proxima_core::MemoryHydrationStatus::Hydrated
-        );
-        assert_eq!(
-            pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.into_inner()],
-            "and the hydrate must not duplicate or re-home it"
-        );
-        assert_eq!(
-            hydrated_actor_payloads(&pg, dest, first.memory_id).await?,
-            0,
-            "the destination still cannot see the prior owner's actor identity"
-        );
-        assert_owner_pinned_payload_redacted(&pg, dest, first.memory_id).await?;
-
-        // Now the destination erases its whole owner. The Memory goes; the
-        // source's audit row stays, and the erase does not fail on it.
-        let group_id = dest.as_group();
-        let auth =
-            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
-        let erased = pg
-            .erase_group_owner(&auth, group_id, &contract_sidecar_tables())
-            .await?;
-        assert!(
-            matches!(erased, OwnerEraseOutcome::Completed { .. }),
-            "the destination's erase completes over a Memory whose audit row it does not own: {erased:?}"
-        );
-        let memories_left: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
-        )
-        .bind(first.handle)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(memories_left, 0, "the destination's memories are gone");
-        assert_eq!(
-            pinned_owners(pool, first.memory_id.into_inner()).await?,
-            vec![owner.into_inner()],
-            "the source's audit row outlives the Memory it describes"
-        );
-        let history = pg.read_mcp_call_history(None, &history_request(owner)).await?;
-        assert_eq!(
-            history.calls.len(),
-            1,
-            "and the source can still read it back"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("destination lifecycle must not reach the source audit trail");
-}
-
 /// FK safety with no migration-seeded `owners` row to lean on. The destination
 /// here has never been written to, so the transfer transaction
 /// must mint its `owners` row before any `owner_id` FK binds — including the
-/// destination's own announce lane.
+/// destination owner row.
 #[tokio::test]
 async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
     let (db_name, pg) = fresh_pg().await;
@@ -3391,7 +2602,7 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -3411,14 +2622,6 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
             kind, "personal",
             "the transfer mints the destination owner row"
         );
-        let dest_announce: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.announce
-              WHERE op = 'transfer' AND owner_id = $1",
-        )
-        .bind(dest.into_inner())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(dest_announce, 1, "the destination lane's FK holds");
         Ok(())
     }
     .await;
@@ -3463,7 +2666,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &source_permit,
+                    &transfer_permit(&source_permit, destination),
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
@@ -3496,6 +2699,12 @@ async fn absent_destination_append_waits_before_owner_insert() {
              FOR EACH ROW
              EXECUTE FUNCTION public.note_absent_owner_insert();"
         )))
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "GRANT USAGE, SELECT ON SEQUENCE public.absent_owner_insert_probe
+             TO proxima_test_runtime, proxima_test_platform",
+        )
         .execute(&pool)
         .await?;
 
@@ -3575,6 +2784,8 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
 
         sqlx::raw_sql(
             "CREATE SEQUENCE public.transfer_owner_insert_probe;
+             GRANT USAGE, SELECT ON SEQUENCE public.transfer_owner_insert_probe
+             TO proxima_test_runtime, proxima_test_platform;
              CREATE FUNCTION public.block_destination_owner_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -3598,10 +2809,10 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
 
         let transfer_pg = pg.clone();
         let transfer = tokio::spawn(async move {
-            let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            let transfer_source_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             transfer_pg
                 .transfer_to_owner(
-                    &transfer_permit,
+                    &transfer_permit(&transfer_source_permit, destination),
                     EntityId::Memory(written.memory_id),
                     destination,
                     &contract_sidecar_tables(),
@@ -3707,12 +2918,11 @@ async fn transfer_refuses_the_current_owner_as_destination() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
 
         let err = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, owner),
                 EntityId::Memory(written.memory_id),
                 owner,
                 &contract_sidecar_tables(),
@@ -3721,12 +2931,6 @@ async fn transfer_refuses_the_current_owner_as_destination() {
             .await
             .expect_err("a self-transfer is refused");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
-        let transfer_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(transfer_rows, 0, "a refused transfer announces nothing");
         Ok(())
     }
     .await;
@@ -3848,6 +3052,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
         let pool = pg.pool_for_tests();
         for owner in [source, foreign] {
             sqlx::query(
@@ -3884,9 +3089,9 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(written.memory_id),
-                destination(),
+                destination,
                 &contract_sidecar_tables(),
                 &[],
             )
@@ -3921,6 +3126,7 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
         let pool = pg.pool_for_tests();
         let hash = vec![44_u8; 32];
         let (blob_id, upload_id) = seed_cited_blob(pool, source, &hash).await?;
@@ -3936,9 +3142,9 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
-                destination(),
+                destination,
                 &contract_sidecar_tables(),
                 &[],
             )
@@ -3973,6 +3179,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
         let pool = pg.pool_for_tests();
         let hash = vec![45_u8; 32];
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
@@ -3981,9 +3188,9 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
-                destination(),
+                destination,
                 &contract_sidecar_tables(),
                 &[],
             )
@@ -4044,7 +3251,7 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -4094,7 +3301,7 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -4167,7 +3374,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
         let _source_shadow = cite(&pg, &permit, "mount-owned-shadow", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
                 destination,
                 &contract_sidecar_tables(),
@@ -4214,6 +3421,7 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
         let source = OwnerId::from(UserId::new(Uuid::now_v7()));
         let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let destination = destination();
         let pool = pg.pool_for_tests();
         let hash = vec![53_u8; 32];
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
@@ -4244,9 +3452,9 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
 
         let error = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, destination),
                 EntityId::Memory(moving.memory_id),
-                destination(),
+                destination,
                 &contract_sidecar_tables(),
                 &[],
             )
@@ -4315,7 +3523,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
 
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(mine.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -4414,7 +3622,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         let written = cite(&pg, &permit, "solo", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -4484,7 +3692,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
         let written = cite(&pg, &permit, "collide", source_blob).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(written.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -4555,7 +3763,7 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
         // Hop one: shared, so the destination mounts.
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, first),
                 EntityId::Memory(mine.memory_id),
                 first,
                 &contract_sidecar_tables(),
@@ -4575,7 +3783,7 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
         let _ = shadow;
         assert!(
             pg.transfer_to_owner(
-                &first_permit,
+                &transfer_permit(&first_permit, second),
                 EntityId::Memory(mine.memory_id),
                 second,
                 &contract_sidecar_tables(),
@@ -4643,7 +3851,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         let _also_mine = cite(&pg, &permit, "purge-also-mine", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(mine.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -4743,7 +3951,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         let _also_mine = cite(&pg, &permit, "race-also-mine", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(mine.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -4880,7 +4088,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         let handed_over = cite_from(&pg, &permit, "src-keep", "scope-keep", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(handed_over.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -5065,7 +4273,7 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         let handed_over = cite(&pg, &permit, "series-handed-over", blob_id).await?;
         assert!(
             pg.transfer_to_owner(
-                &permit,
+                &transfer_permit(&permit, dest),
                 EntityId::Memory(handed_over.memory_id),
                 dest,
                 &contract_sidecar_tables(),
@@ -5168,13 +4376,15 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
         // A second session whose statements give up rather than hang. Same
         // storage, its own pool: the per-connection statement timeout is
         // pool policy, so a second `PgStorage` IS the second session.
+        let (runtime_url, _) = split_role_urls(&db_name).await?;
         let writer = PgStorage::connect_with_config(
-            &db_url(&db_name),
+            &runtime_url,
             proxima_storage_pg::PgPoolConfig {
                 statement_timeout: std::time::Duration::from_millis(2500),
                 ..proxima_storage_pg::PgPoolConfig::default()
             },
             proxima_storage_pg::PgTuning::default(),
+            pg.platform_scope_for_host(),
         )
         .await?;
 

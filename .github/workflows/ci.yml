@@ -105,6 +105,10 @@ jobs:
         run: python3 scripts/check-doc-links.py
       - name: docs status labels
         run: python3 scripts/check-doc-status.py
+      - name: settings inventory
+        run: |
+          python3 scripts/check-settings.py --self-test
+          python3 scripts/check-settings.py
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
@@ -115,6 +119,7 @@ jobs:
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         run: |
           shellcheck scripts/changelog.sh
+          python3 scripts/check-upgrade-notes.py --self-test
           git cliff --offline --unreleased --output "${RUNNER_TEMP}/release-notes.md"
       # Merging a bump to `proxima_core::RELEASE_VERSION` cuts that tag and
       # publishes its notes (.github/workflows/release.yml). The PR is the

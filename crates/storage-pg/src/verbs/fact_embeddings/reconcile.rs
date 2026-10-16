@@ -92,15 +92,16 @@ WITH scoped AS MATERIALIZED (
 /// failures through the shared mapper.
 pub async fn reconcile_embeddings(
     pool: &PgPool,
+    platform: &crate::PgPlatformScope,
     options: EmbeddingReconcileOptions<'_>,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
-    reconcile_embeddings_with_platform(pool, None, options, stale_claim_timeout_seconds).await
+    reconcile_embeddings_with_platform(pool, platform, options, stale_claim_timeout_seconds).await
 }
 
 pub(crate) async fn reconcile_embeddings_with_platform(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     options: EmbeddingReconcileOptions<'_>,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
@@ -180,7 +181,7 @@ SELECT owner_id
 /// failures through the shared mapper.
 pub(crate) async fn embedding_owner_page(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     after: Option<OwnerId>,
     limit: i64,
 ) -> Result<Vec<OwnerId>, StorageError> {

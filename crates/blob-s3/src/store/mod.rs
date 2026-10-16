@@ -65,7 +65,7 @@ pub struct CitedBlobStore {
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
     system_authority: std::sync::Arc<std::sync::OnceLock<SystemAuthorityBinding>>,
-    platform_scope: Option<PgPlatformScope>,
+    platform_scope: PgPlatformScope,
 }
 
 impl CitedBlobStore {
@@ -74,7 +74,11 @@ impl CitedBlobStore {
     /// # Errors
     /// Returns [`BlobError::Config`] when the configured endpoint violates the
     /// HTTPS-or-loopback-or-named-host transport policy.
-    pub fn new(pool: sqlx::PgPool, mut config: S3RuntimeConfig) -> Result<Self, BlobError> {
+    pub fn new(
+        pool: sqlx::PgPool,
+        mut config: S3RuntimeConfig,
+        platform_scope: PgPlatformScope,
+    ) -> Result<Self, BlobError> {
         if let Some(endpoint_url) = &config.endpoint_url {
             validate_endpoint_url(endpoint_url, &config.plaintext_hosts)?;
         }
@@ -90,16 +94,8 @@ impl CitedBlobStore {
             config,
             client: tokio::sync::OnceCell::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
-            platform_scope: None,
+            platform_scope,
         })
-    }
-
-    /// Bind the host-owned platform transaction capability for maintenance
-    /// operations. Request paths continue to use their authenticated scope.
-    #[must_use]
-    pub fn with_platform_scope(mut self, scope: PgPlatformScope) -> Self {
-        self.platform_scope = Some(scope);
-        self
     }
 
     /// Internal facade boot seam. Bind host-wide operations to the same boot
@@ -155,7 +151,12 @@ mod tests {
     #[tokio::test]
     async fn store_debug_redacts_secret_before_and_after_client_initialization() {
         let secret = "test-secret-key";
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None)).unwrap();
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .unwrap();
         assert!(!format!("{store:?}").contains(secret));
         store.client().await.unwrap();
         assert!(!format!("{store:?}").contains(secret));
@@ -166,6 +167,7 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(Some("http://s3.internal:9000"), Some(1_024)),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("plaintext remote S3 endpoint rejected");
 
@@ -178,7 +180,11 @@ mod tests {
         let named = |hosts: &str| {
             let mut config = store_config(Some("http://gateway:9090"), Some(1_024));
             config.plaintext_hosts = proxima_core::PlaintextHosts::parse(hosts).unwrap();
-            CitedBlobStore::new(lazy_test_pool(), config)
+            CitedBlobStore::new(
+                lazy_test_pool(),
+                config,
+                proxima_storage_pg::PgPlatformScope::for_tests(),
+            )
         };
         named("gateway").expect("named host accepted");
         let error = named("other").expect_err("unnamed host refused");
@@ -186,6 +192,7 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(Some("http://gateway:9090"), Some(1_024)),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("nothing named: refused");
         assert!(error.to_string().contains("must use https"));
@@ -193,8 +200,12 @@ mod tests {
 
     #[tokio::test]
     async fn store_applies_default_cap_when_config_omits_it() {
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
-            .expect("default-capped store builds");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("default-capped store builds");
 
         assert_eq!(store.config.max_blob_bytes, Some(DEFAULT_MAX_BLOB_BYTES));
         let error = validate_prepare(
@@ -207,8 +218,12 @@ mod tests {
 
     #[tokio::test]
     async fn store_authority_binding_is_same_boot_idempotent_and_foreign_boot_rejected() {
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
-            .expect("test store builds");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("test store builds");
         let (_, authority) =
             Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
         let (_, foreign) =
@@ -237,8 +252,12 @@ mod tests {
         let mut config = store_config(None, None);
         config.read_ttl_seconds = u64::MAX;
 
-        let error = CitedBlobStore::new(lazy_test_pool(), config)
-            .expect_err("an unusable read TTL is refused at construction");
+        let error = CitedBlobStore::new(
+            lazy_test_pool(),
+            config,
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect_err("an unusable read TTL is refused at construction");
         assert!(matches!(error, BlobError::Config(_)));
         assert!(
             error.to_string().contains("PROXIMA_S3_READ_TTL_SECONDS"),
@@ -247,8 +266,12 @@ mod tests {
 
         let mut config = store_config(None, None);
         config.upload_ttl_seconds = 0;
-        let error = CitedBlobStore::new(lazy_test_pool(), config)
-            .expect_err("a zero upload TTL is refused");
+        let error = CitedBlobStore::new(
+            lazy_test_pool(),
+            config,
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect_err("a zero upload TTL is refused");
         assert!(
             error.to_string().contains("PROXIMA_S3_UPLOAD_TTL_SECONDS"),
             "the refusal names the variable to fix: {error}"
@@ -257,6 +280,11 @@ mod tests {
         // The boundary itself is usable, so the bound is not merely small.
         let mut config = store_config(None, None);
         config.read_ttl_seconds = crate::config::MAX_PRESIGN_TTL_SECONDS;
-        CitedBlobStore::new(lazy_test_pool(), config).expect("7 days is allowed");
+        CitedBlobStore::new(
+            lazy_test_pool(),
+            config,
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("7 days is allowed");
     }
 }

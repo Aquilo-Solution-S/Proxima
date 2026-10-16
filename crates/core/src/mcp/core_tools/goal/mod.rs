@@ -10,8 +10,8 @@ use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::tool::validate_trimmed_len;
 use crate::verbs::goal_write::{
     ChildGoalDraft, GoalAssignmentTarget, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite,
-    GoalTopologyWrite, GoalTransitionKind, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
-    GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
+    GoalTopologyWrite, GoalTransitionKind, GoalWriteOutcome, IdempotencyKey, OperatorKind,
+    SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{
@@ -106,35 +106,9 @@ pub struct GoalSetArgs {
     )]
     pub target_perspective: Option<String>,
     #[schemars(
-        description = "Arms the goal: when a matching Fact is appended it surfaces on `proxima://wake-candidates` with this prompt and toolset."
-    )]
-    pub wake: Option<GoalWakeArgs>,
-    #[schemars(
         description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
     )]
     pub idempotency_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct GoalWakeArgs {
-    #[schemars(
-        description = "Fact handle (`F:<uuid>`) whose exact row is the trigger. Give exactly one of `trigger_fact`, `trigger_schema_id`."
-    )]
-    pub trigger_fact: Option<String>,
-    #[schemars(
-        description = "Fact schema id, e.g. `core/agent-note-v1` (what `core_remember` writes); any appended Fact of it wakes the goal. Give exactly one of `trigger_fact`, `trigger_schema_id`."
-    )]
-    pub trigger_schema_id: Option<String>,
-    #[schemars(description = "Version of `trigger_schema_id`. Omit for 1.")]
-    pub trigger_schema_version: Option<u32>,
-    #[schemars(
-        description = "What the woken run may call, at least one: a flat tool's name (`core_search_memories`) or a dispatcher action as `tool:action` (`core_goal:set`). A bare dispatcher name is refused."
-    )]
-    pub tool_ids: Vec<String>,
-    #[schemars(description = "Prompt for the woken run, 1 to 20000 chars.")]
-    pub prompt: String,
-    #[schemars(description = "Memory handles the woken run must be able to read.")]
-    pub hard_memories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -155,8 +129,7 @@ pub enum CoreGoalArgs {
     Set(GoalSetArgs),
     /// Pause, resume, or abandon a goal.
     Transition(GoalTransitionArgs),
-    /// Replace an Active goal's title, text and payload; omitted evidence and wake carry
-    /// over.
+    /// Replace an Active goal's title, text and payload; omitted evidence carries over.
     Modify(GoalModifyArgs),
     /// Mark a goal Achieved, citing the memories that show it.
     MarkAchieved(GoalMarkAchievedArgs),
@@ -191,7 +164,6 @@ impl McpTool for CoreGoalTool {
                 "body",
                 "evidence",
                 "target_perspective",
-                "wake",
                 "idempotency_key",
             ],
             required_fields: &["schema_id", "title", "text", "evidence"],
@@ -217,8 +189,6 @@ impl McpTool for CoreGoalTool {
                 "text",
                 "body",
                 "evidence",
-                "wake",
-                "clear_wake",
                 "idempotency_key",
             ],
             required_fields: &["goal", "schema_id", "title", "text"],
@@ -281,10 +251,6 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_operator_goal_evidence(&ctx, &args.evidence)?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
-    let wake = args
-        .wake
-        .map(|wake| encode_wake_config(&ctx, wake))
-        .transpose()?;
     let topology =
         GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
@@ -297,7 +263,6 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
             &GoalCreatePayloadWriteRequest {
                 owner: ctx.owner,
                 topology,
-                wake,
                 payload,
                 request_id,
                 authorship,
@@ -452,13 +417,6 @@ pub struct GoalModifyArgs {
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
-        description = "Replacement wake config. Omit to keep the current one; `clear_wake` removes it."
-    )]
-    pub wake: Option<GoalWakeArgs>,
-    #[serde(default)]
-    #[schemars(description = "True disarms the goal. Not with `wake`.")]
-    pub clear_wake: bool,
-    #[schemars(
         description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
     )]
     pub idempotency_key: Option<String>,
@@ -480,16 +438,6 @@ async fn goal_modify(
         .as_ref()
         .map(|evidence| resolve_operator_goal_evidence(&ctx, evidence))
         .transpose()?;
-    let wake = match (args.wake, args.clear_wake) {
-        (Some(_), true) => {
-            return Err(McpToolError::InvalidInput(
-                "wake and clear_wake are mutually exclusive".into(),
-            ));
-        }
-        (Some(wake), false) => Some(Some(encode_wake_config(&ctx, wake)?)),
-        (None, true) => Some(None),
-        (None, false) => None,
-    };
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
     let engine = ctx.require_engine()?;
@@ -500,7 +448,6 @@ async fn goal_modify(
                 owner: ctx.owner,
                 prior_goal_id: prior,
                 replacement: payload,
-                wake,
                 authorship: system_operator_authorship(&ctx, "goal_modify"),
                 request_id,
                 evidence,
@@ -540,8 +487,6 @@ pub struct ChildGoalInput {
         description = "Abstraction handles (`A:<uuid>`) that motivate this child; at least one."
     )]
     pub evidence: Vec<String>,
-    #[schemars(description = "Arms this child, as `wake` arms a goal on `set`.")]
-    pub wake: Option<GoalWakeArgs>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -575,10 +520,6 @@ async fn goal_decompose(
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
             evidence: resolve_operator_goal_evidence(&ctx, &child.evidence)?,
-            wake: child
-                .wake
-                .map(|wake| encode_wake_config(&ctx, wake))
-                .transpose()?,
             request_id: root_key
                 .child("goal_decompose", index)
                 .map_err(McpToolError::InvalidInput)?,
@@ -658,56 +599,6 @@ pub(crate) fn encode_goal_payload(
         payload: payload_bytes,
         sidecar_payload,
     })
-}
-
-pub(crate) fn encode_wake_config(
-    ctx: &McpToolCtx,
-    args: GoalWakeArgs,
-) -> Result<GoalWakeConfigWrite, McpToolError> {
-    let trigger = match (args.trigger_fact.as_deref(), args.trigger_schema_id) {
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(McpToolError::InvalidInput(
-                "wake requires exactly one of trigger_fact or trigger_schema_id".into(),
-            ));
-        }
-        (Some(fact), None) => {
-            if args.trigger_schema_version.is_some() {
-                return Err(McpToolError::InvalidInput(
-                    "trigger_schema_version requires trigger_schema_id".into(),
-                ));
-            }
-            GoalWakeTrigger::FactMemory {
-                memory_id: ctx.resolve_fact_memory(fact)?,
-            }
-        }
-        (None, Some(schema_id)) => GoalWakeTrigger::FactSchema {
-            schema_id: SchemaId::new(schema_id),
-            schema_version: SchemaVersion::new(args.trigger_schema_version.unwrap_or(1)),
-        },
-    };
-    let tool_ids = args
-        .tool_ids
-        .iter()
-        .map(|raw| GoalWakeToolId::parse(raw.as_str(), &ctx.registry))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(McpToolError::Protocol)?;
-    let hard_memory_ids = args
-        .hard_memories
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|handle| ctx.resolve_memory(handle))
-        .collect::<Result<Vec<_>, _>>()?;
-    // Checked here rather than left to `GoalWakeConfigWrite::new`, which
-    // enforces the same bound for embedding hosts but cannot name which end
-    // of it was broken. Its check stays as the defensive one.
-    let prompt = validate_trimmed_len(
-        "wake prompt",
-        &args.prompt,
-        GoalWakeConfigWrite::MAX_PROMPT_CHARS,
-    )?;
-    GoalWakeConfigWrite::new(trigger, tool_ids, prompt, &hard_memory_ids)
-        .map_err(McpToolError::Protocol)
 }
 
 fn resolve_evidence(
@@ -912,7 +803,6 @@ mod tests {
                 payload: valid_goal_payload_args(),
                 evidence: vec![abstraction.clone()],
                 target_perspective: Some(perspective.clone()),
-                wake: None,
                 idempotency_key: Some("operator-set-authorship".into()),
             },
         )
@@ -928,8 +818,6 @@ mod tests {
                 goal: ctx.format_goal(crate::GoalId::new(uuid::Uuid::now_v7())),
                 payload: valid_goal_payload_args(),
                 evidence: Some(vec![abstraction.clone()]),
-                wake: None,
-                clear_wake: false,
                 idempotency_key: Some("operator-modify-authorship".into()),
             },
         )
@@ -946,7 +834,6 @@ mod tests {
                 children: vec![ChildGoalInput {
                     payload: valid_goal_payload_args(),
                     evidence: vec![abstraction],
-                    wake: None,
                 }],
                 target_perspective: Some(perspective),
                 idempotency_key: "operator-decompose-authorship".into(),
@@ -989,7 +876,6 @@ mod tests {
             },
             evidence,
             target_perspective: None,
-            wake: None,
             idempotency_key: None,
         }
     }
@@ -1019,8 +905,6 @@ mod tests {
                     body: serde_json::json!({}),
                 },
                 evidence: Some(Vec::new()),
-                wake: None,
-                clear_wake: false,
                 idempotency_key: None,
             },
         )
@@ -1079,108 +963,6 @@ mod tests {
         assert!(
             matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),
             "got {err:?}"
-        );
-    }
-
-    fn wake_args(
-        trigger_fact: Option<&str>,
-        trigger_schema_id: Option<&str>,
-        tool_ids: Vec<String>,
-    ) -> GoalWakeArgs {
-        GoalWakeArgs {
-            trigger_fact: trigger_fact.map(ToOwned::to_owned),
-            trigger_schema_id: trigger_schema_id.map(ToOwned::to_owned),
-            trigger_schema_version: None,
-            tool_ids,
-            prompt: "wake plan".into(),
-            hard_memories: None,
-        }
-    }
-
-    #[test]
-    fn encode_wake_config_requires_exactly_one_trigger() {
-        let ctx = test_ctx();
-        let fact = format!("F:{}", uuid::Uuid::now_v7());
-        let tools = vec!["core_search_memories".to_string()];
-
-        let neither = encode_wake_config(&ctx, wake_args(None, None, tools.clone()))
-            .expect_err("no trigger must be rejected");
-        assert!(
-            matches!(neither, McpToolError::InvalidInput(ref m) if m.contains("exactly one")),
-            "got {neither:?}",
-        );
-
-        let both = encode_wake_config(
-            &ctx,
-            wake_args(Some(fact.as_str()), Some("test/fact-v1"), tools.clone()),
-        )
-        .expect_err("two triggers must be rejected");
-        assert!(
-            matches!(both, McpToolError::InvalidInput(ref m) if m.contains("exactly one")),
-            "got {both:?}",
-        );
-
-        encode_wake_config(&ctx, wake_args(Some(fact.as_str()), None, tools.clone()))
-            .expect("fact-memory trigger encodes");
-        encode_wake_config(&ctx, wake_args(None, Some("test/fact-v1"), tools))
-            .expect("fact-schema trigger encodes");
-    }
-
-    #[test]
-    fn encode_wake_config_rejects_version_without_schema_trigger() {
-        let ctx = test_ctx();
-        let mut args = wake_args(
-            Some(format!("F:{}", uuid::Uuid::now_v7()).as_str()),
-            None,
-            vec!["core_search_memories".to_string()],
-        );
-        args.trigger_schema_version = Some(2);
-        let err = encode_wake_config(&ctx, args).expect_err("stray schema version must fail");
-        assert!(
-            matches!(err, McpToolError::InvalidInput(ref m) if m.contains("trigger_schema_id")),
-            "got {err:?}",
-        );
-    }
-
-    #[test]
-    fn encode_wake_config_validates_toolset_against_registry() {
-        let ctx = test_ctx();
-
-        let empty = encode_wake_config(&ctx, wake_args(None, Some("test/fact-v1"), Vec::new()))
-            .expect_err("empty toolset must fail");
-        assert!(
-            matches!(empty, McpToolError::Protocol(ref e) if e.message.contains("nonempty")),
-            "got {empty:?}",
-        );
-
-        let unknown = encode_wake_config(
-            &ctx,
-            wake_args(None, Some("test/fact-v1"), vec!["no_such_tool".into()]),
-        )
-        .expect_err("unregistered tool id must fail");
-        assert!(matches!(unknown, McpToolError::Protocol(_)), "{unknown:?}");
-
-        let grouped = encode_wake_config(
-            &ctx,
-            wake_args(None, Some("test/fact-v1"), vec!["core_goal".into()]),
-        )
-        .expect_err("grouped tool without leaf action must fail");
-        assert!(
-            matches!(grouped, McpToolError::Protocol(ref e) if e.message.contains("leaf")),
-            "got {grouped:?}",
-        );
-
-        let leaf = encode_wake_config(
-            &ctx,
-            wake_args(None, Some("test/fact-v1"), vec!["core_goal:set".into()]),
-        )
-        .expect("leaf action id encodes");
-        assert_eq!(
-            leaf.tool_ids()
-                .iter()
-                .map(GoalWakeToolId::as_str)
-                .collect::<Vec<_>>(),
-            vec!["core_goal:set"],
         );
     }
 }

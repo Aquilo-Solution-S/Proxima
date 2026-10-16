@@ -20,6 +20,11 @@ docs:
   - 'llms*.txt'
   - 'mkdocs.yml'
   - 'requirements-docs.txt'
+  - 'scripts/check-doc-*.py'
+  - 'scripts/check-settings.py'
+  - '**/*.rs'
+  - '**/*.sh'
+  - '**/*.yml'
 lean:
   - 'docs/lean/**'
   - 'scripts/check-lean-axioms.py'
@@ -33,6 +38,7 @@ image:
 release:
   - 'cliff.toml'
   - 'scripts/changelog.sh'
+  - 'scripts/check-upgrade-notes.py'
   - '.github/workflows/release.yml'
 all:
   - '.github/**'

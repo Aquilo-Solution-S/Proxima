@@ -8,12 +8,19 @@ use proxima_storage_pg::query::{
     owned_chunk_series_heads, owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
-use proxima_storage_pg::{PgTuning, begin_compatible_owner_transaction};
+use proxima_storage_pg::{PgTuning, begin_owner_transaction};
 use sqlx::PgPool;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
 
 /// Private code-flavor storage service passed to tools by the host.
+///
+/// A boot service has no request authority:
+/// ```compile_fail
+/// fn owner_scope(store: &proxima_code::CodeFlavorStore) {
+///     let _ = store.owner_scope();
+/// }
+/// ```
 ///
 /// Authz-filtered payload reads go straight to `proxima::flavor`
 /// (`&Engine`), never through this store.
@@ -27,7 +34,6 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
-    owner_scope: Option<OwnerScope>,
     tuning: PgTuning,
 }
 
@@ -42,11 +48,7 @@ impl CodeFlavorStore {
     #[doc(hidden)]
     #[must_use]
     pub fn from_backend_pool_for_host(pool: PgPool, tuning: PgTuning) -> Self {
-        Self {
-            pool,
-            owner_scope: None,
-            tuning,
-        }
+        Self { pool, tuning }
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -60,27 +62,19 @@ impl CodeFlavorStore {
     #[doc(hidden)]
     #[must_use]
     pub fn from_backend_pool_with_tuning_for_tests(pool: PgPool, tuning: PgTuning) -> Self {
-        Self {
-            pool,
-            owner_scope: None,
-            tuning,
-        }
+        Self { pool, tuning }
     }
 
     pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
     }
 
-    /// Attach the immutable request witness to this store handle. The boot
-    /// service remains unscoped; each MCP request receives its own clone.
-    #[must_use]
-    pub(crate) fn with_owner_scope(mut self, owner_scope: Option<OwnerScope>) -> Self {
-        self.owner_scope = owner_scope;
-        self
-    }
-
-    pub(crate) fn owner_scope(&self) -> Option<&OwnerScope> {
-        self.owner_scope.as_ref()
+    /// Bind the request witness once, before owner-scoped operations.
+    pub(crate) fn with_owner_scope(self, owner_scope: OwnerScope) -> ScopedCodeFlavorStore {
+        ScopedCodeFlavorStore {
+            store: self,
+            owner_scope,
+        }
     }
 
     /// Owner-only current file-revision heads of `repo_id` for `file_paths`.
@@ -88,12 +82,12 @@ impl CodeFlavorStore {
     /// Empty `file_paths` returns no rows.
     pub(crate) async fn owned_file_revision_heads(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         repo_id: uuid::Uuid,
         file_paths: &[String],
     ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = owned_file_revision_heads(
@@ -114,12 +108,12 @@ impl CodeFlavorStore {
     /// Owner-only `Present` heads whose path is not in `keep_paths`.
     pub(crate) async fn owned_present_file_revision_heads_except(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         repo_id: uuid::Uuid,
         keep_paths: &[String],
     ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = owned_present_file_revision_heads_except(
@@ -141,13 +135,13 @@ impl CodeFlavorStore {
     /// read-owner set, own rows first.
     pub(crate) async fn readable_file_revision_head_ts(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         read_owners: &[OwnerId],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = readable_file_revision_head_ts(
@@ -172,12 +166,12 @@ impl CodeFlavorStore {
     /// when the chunk stores none.
     pub(crate) async fn owned_chunk_head_classes(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         repo_id: uuid::Uuid,
         file_paths: &[String],
     ) -> Result<Vec<ChunkHeadClass>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = owned_chunk_head_classes(
@@ -198,12 +192,12 @@ impl CodeFlavorStore {
     /// Owner-only current chunk series of one file (any state).
     pub(crate) async fn owned_chunk_series_heads(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<ChunkSeriesHead>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = owned_chunk_series_heads(
@@ -225,13 +219,13 @@ impl CodeFlavorStore {
     /// set.
     pub(crate) async fn readable_chunk_head_ts_for_file(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         read_owners: &[OwnerId],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = readable_chunk_head_ts_for_file(
@@ -255,11 +249,11 @@ impl CodeFlavorStore {
     /// still go through the caller's authorized read.
     pub(crate) async fn head_chunk_call_pairs(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         chunk_ts: &[uuid::Uuid],
         limit: usize,
     ) -> Result<Vec<HeadChunkCallPair>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = head_chunk_call_pairs(
@@ -284,13 +278,13 @@ impl CodeFlavorStore {
     /// may not join, so the query itself is backend-owned.
     pub(crate) async fn nearest_code_chunk_candidates(
         &self,
-        owner_scope: Option<&OwnerScope>,
+        owner_scope: &OwnerScope,
         owner: OwnerId,
         query: &proxima_core::SpaceVector,
         filters: CodeChunkVectorFilters<'_>,
         limit: usize,
     ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows = nearest_code_chunk_candidates_on_connection(
@@ -308,13 +302,34 @@ impl CodeFlavorStore {
             .map_err(|error| ToolError::Other(error.to_string()))?;
         Ok(rows)
     }
+}
+
+/// A request-bound store; boot services cannot perform implicit owner reads.
+#[derive(Clone, Debug)]
+pub(crate) struct ScopedCodeFlavorStore {
+    store: CodeFlavorStore,
+    owner_scope: OwnerScope,
+}
+
+impl std::ops::Deref for ScopedCodeFlavorStore {
+    type Target = CodeFlavorStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+impl ScopedCodeFlavorStore {
+    pub(crate) fn owner_scope(&self) -> &OwnerScope {
+        &self.owner_scope
+    }
 
     /// Acceptance-criteria Facts for a work item, children in one JOIN.
     pub(crate) async fn acceptance_criteria_for_work_item(
         &self,
         work_item_t: uuid::Uuid,
     ) -> Result<Vec<CriteriaGroup>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, self.owner_scope())
+        let mut tx = begin_owner_transaction(&self.pool, self.owner_scope())
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows: Vec<CriteriaJoinRow> = sqlx::query_as(
@@ -341,7 +356,7 @@ impl CodeFlavorStore {
         &self,
         test_requested_t: uuid::Uuid,
     ) -> Result<Vec<AcceptanceCriterionV1>, ToolError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, self.owner_scope())
+        let mut tx = begin_owner_transaction(&self.pool, self.owner_scope())
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows: Vec<CriterionSqlRow> = sqlx::query_as(
@@ -372,7 +387,7 @@ impl CodeFlavorStore {
             return Ok(Vec::new());
         }
         let target_ids: Vec<uuid::Uuid> = targets.iter().map(|id| id.into_inner()).collect();
-        let mut tx = begin_compatible_owner_transaction(&self.pool, self.owner_scope())
+        let mut tx = begin_owner_transaction(&self.pool, self.owner_scope())
             .await
             .map_err(|error| ToolError::Other(error.to_string()))?;
         let rows =

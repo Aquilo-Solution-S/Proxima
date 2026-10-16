@@ -1,5 +1,4 @@
-//! Query starts at memory_head. ChangeHistory pages announce.seq.
-//! Owner transfer is `transfer_to_owner` (in-place series owner UPDATE).
+//! Query starts at memory_head.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::StorageError;
@@ -24,38 +23,6 @@ pub async fn query_heads(
     )
     .bind(owner_id)
     .bind(schema_id)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct AnnounceRow {
-    pub seq: Uuid,
-    pub owner_id: Uuid,
-    pub op: String,
-    pub entity: String,
-    pub handle: Uuid,
-    pub t: Uuid,
-}
-
-pub async fn change_history(
-    pool: &PgPool,
-    owner_id: Uuid,
-    after: Option<Uuid>,
-    limit: i64,
-) -> Result<Vec<AnnounceRow>, StorageError> {
-    sqlx::query_as(
-        "SELECT seq, owner_id, op::text, entity::text, handle, t
-           FROM proxima_core.announce
-          WHERE owner_id = $1
-            AND ($2::uuid IS NULL OR seq > $2)
-          ORDER BY seq
-          LIMIT $3",
-    )
-    .bind(owner_id)
-    .bind(after)
-    .bind(limit)
     .fetch_all(pool)
     .await
     .map_err(map_err)

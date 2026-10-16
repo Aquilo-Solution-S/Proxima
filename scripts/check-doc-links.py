@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -52,7 +53,14 @@ def markdown_files() -> list[Path]:
         ]
         if (ROOT / name).exists()
     ]
-    files.extend(sorted((ROOT / "docs").glob("**/*.md")))
+    # Include new public pages, exclude ignored planning documents, and skip
+    # deleted tracked files that will not be rendered.
+    inventory = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "docs"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    files.extend(sorted({ROOT / name for name in inventory
+                         if name.endswith(".md") and (ROOT / name).is_file()}))
     files.extend(sorted((ROOT / "apps").glob("*/README.md")))
     files.extend(sorted((ROOT / "crates").glob("*/README.md")))
     files.extend(sorted((ROOT / "flavors").glob("*/README.md")))
@@ -81,6 +89,16 @@ def main() -> int:
             if in_fence:
                 continue
             for target in LINK_RE.findall(line):
+                for prefix in (
+                    "https://github.com/Aquilo-Solution-S/Proxima/blob/main/",
+                    "https://github.com/Aquilo-Solution-S/Proxima/tree/main/",
+                ):
+                    if target.startswith(prefix):
+                        dest = unquote(target.removeprefix(prefix).split("#")[0])
+                        if not (ROOT / dest).exists():
+                            failures.append(
+                                f"{path.relative_to(ROOT)}:{lineno}: missing repository target {target}"
+                            )
                 if is_ignored_scheme(target):
                     continue
                 clean = target.split()[0]

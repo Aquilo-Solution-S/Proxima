@@ -571,26 +571,6 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
     assert_definers(pool, &schema_names, false).await
 }
 
-/// Detect whether the database has entered the owner-RLS epoch. This probe is
-/// separate from the strict runtime guard so migration tooling can inspect
-/// a pre-activation schema before applying the enforcing migration.
-///
-/// # Errors
-///
-/// Returns [`StorageError::Internal`] when the catalog probe fails.
-pub async fn owner_rls_enforced(pool: &PgPool, schemas: &[&str]) -> Result<bool, StorageError> {
-    let epoch: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxima_core' AND c.relname = 'owner_rls_epoch')",
-    ).fetch_one(pool).await.map_err(|error| StorageError::Internal(error.to_string()))?;
-    if epoch {
-        return Ok(true);
-    }
-    let flags: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r','p') AND (c.relrowsecurity OR c.relforcerowsecurity))",
-    ).bind(schemas).fetch_one(pool).await.map_err(|error| StorageError::Internal(error.to_string()))?;
-    Ok(flags)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{path_is_pinned, search_path};

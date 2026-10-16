@@ -168,9 +168,9 @@ async fn ungrounded_memories(pool: &PgPool) -> Result<i64, sqlx::Error> {
 /// RLS guard refuses a superuser pool once owner RLS is active.
 async fn migrated_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
     create_db(name).await?;
-    let pg = PgStorage::connect(&db_url(name)).await?;
+    let pg = PgStorage::connect_for_tests(db_url(name)).await?;
     let (_, platform_url) = split_role_urls(name).await?;
-    PgStorage::connect_for_migrations_with_config(
+    proxima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
@@ -186,7 +186,7 @@ async fn migrated_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
 /// which enforced RLS requires; the pin check under test is the same routine.
 async fn engine_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
     create_core_db(name).await?;
-    let pg = PgStorage::connect(&db_url(name)).await?;
+    let pg = PgStorage::connect_for_tests(db_url(name)).await?;
     let coarse = core_migrator()
         .iter()
         .find(|migration| migration.version == 22)

@@ -244,7 +244,7 @@ const PROXIMA_EXTENSION_PREFIX: &str = "proxima";
 
 /// Documented `CloudEvents` extension attributes this substrate writes on
 /// every event, which a host therefore cannot bind: `sequence` is the
-/// event's position in its subject (docs/18 §Ordering).
+/// event's position in its subject (docs/host-integration.md).
 const SUBSTRATE_EXTENSION_ATTRIBUTES: [&str; 1] = ["sequence"];
 
 /// One extension attribute's value.
@@ -717,7 +717,7 @@ struct CloudEventEnvelope<'a> {
 /// handle, or for a `core/goal-change-v1` Fact the goal's series. `sequence`
 /// is its position there, from 1, assigned by storage under the series lock
 /// in the capture transaction: a later write to the same subject always gets
-/// a larger one. It is NOT a delivery order — delivery can reorder (docs/18
+/// a larger one. It is NOT a delivery order — delivery can reorder (docs/host-integration.md
 /// §Ordering) — and it is not dense across subjects.
 ///
 /// Only storage builds one, at capture; a consumer reads it back off the

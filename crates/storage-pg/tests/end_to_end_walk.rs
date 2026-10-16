@@ -1,4 +1,4 @@
-//! The end-to-end walk: query, ChangeHistory and owner transfer over one
+//! The end-to-end walk: query and owner transfer over one
 //! corpus.
 #![allow(
     clippy::doc_markdown,
@@ -17,10 +17,7 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::query_timeseries::{change_history, query_heads};
-use proxima_storage_pg::verbs::wake_timeseries::{
-    WakeConfigDraft, WakeTriggerKind, insert_wake_config,
-};
+use proxima_storage_pg::verbs::query_timeseries::query_heads;
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
@@ -65,8 +62,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -126,19 +122,6 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
             .await?;
 
         let mut tx = pool.begin().await?;
-        let wake = insert_wake_config(
-            &mut tx,
-            &owner,
-            &WakeConfigDraft {
-                trigger_kind: WakeTriggerKind::FactSchema,
-                trigger_schema_id: Some("visit".into()),
-                trigger_t: None,
-                tool_ids: vec!["core.remember".into()],
-                prompt: "on visit".into(),
-                hard_memory_t: vec![],
-            },
-        )
-        .await?;
         let _g = write_goal(
             &mut tx,
             &owner,
@@ -153,7 +136,6 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 assignment_t: Some(self_p.memory_id.into_inner()),
                 dependency_t: vec![],
                 evidence_t: vec![sum.memory_id.into_inner()],
-                wake_id: Some(wake),
                 mint_write_act: true,
                 write_act_t: None,
             },
@@ -164,17 +146,11 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         let chunks = query_heads(pool, owner.into_inner(), "chunk").await?;
         assert_eq!(chunks.len(), 2);
 
-        let hist = change_history(pool, owner.into_inner(), None, 50).await?;
-        assert!(
-            hist.iter()
-                .any(|r| r.op == "append" && r.entity == "memory")
-        );
-        assert!(hist.iter().any(|r| r.entity == "goal"));
-
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
+        let transfer_permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
         let transferred = pg
             .transfer_to_owner(
-                &permit,
+                &transfer_permit,
                 EntityId::Memory(file.memory_id),
                 dest,
                 &transfer_surfaces(),

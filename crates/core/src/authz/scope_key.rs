@@ -383,8 +383,6 @@ mod tests {
             resource::MEMORY_LINEAGE,
             resource::TOOLS,
             resource::GRAPH,
-            resource::CHANGE_EVENTS,
-            resource::WAKE_CANDIDATES,
             resource::SCHEMAS,
             resource::SCHEMA,
             resource::GOALS,

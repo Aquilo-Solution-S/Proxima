@@ -27,7 +27,7 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
 pub use proxima_core::engine::{FactWrite, UnitOfWork};
-/// Goal write DTOs, including the nested topology and wake declarations.
+/// Goal write DTOs, including nested topology declarations.
 pub use proxima_core::engine::{
     GoalDecomposeRequest, GoalMarkAchievedRequest, GoalModifyRequest, GoalTransitionRequest,
 };
@@ -85,8 +85,7 @@ pub use proxima_core::verbs::fact_ingest::{
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
     GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
-    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
-    IdempotencyKey, OperatorKind, SystemOrigin,
+    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 /// Flavor-scoped erase ([`UnitOfWork::erase_own_series`]): the selection,
 /// the mode, the receipt, the refusal, and the per-call caps a caller pages
@@ -124,7 +123,7 @@ pub use proxima_core::{
     validate_endpoint_url, validate_endpoint_url_for_hosts,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]
-/// (Host API). `Engine` itself stays off this module (`docs/14`).
+/// (Host API). `Engine` itself stays off this module (`docs/protocol.md`).
 /// `AuthorizedFactWrite` is Engine-internal (UoW-first).
 ///
 /// [`AuthorizationHook`] is the advertised extension. Implementing `veto`
@@ -145,7 +144,7 @@ pub use proxima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, EntityKind,
     MemoryTarget, SeriesHandle,
 };
-/// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
+/// The connection vocabulary a flavor is allowed to speak (docs/concepts.md).
 ///
 /// A flavor never writes an edge, so none of these is a write surface.
 /// [`PayloadReference`] is the whole of what a payload declares — the field

@@ -15,7 +15,7 @@
 
 mod common;
 
-use common::{git, migrated_db, test_owner, write_file};
+use common::{authenticated_owner, git, migrated_db, owner_scope, test_owner, write_file};
 use proxima_code::chunker::MAX_BLOB_BYTES;
 use proxima_code::testkit::{build_engine, register_repo};
 use proxima_code::{
@@ -28,10 +28,7 @@ use proxima_core::llm::{
     SingleClientRouter,
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
-use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, Cursor, FactPayload, OwnerId, SchemaId,
-    SchemaVersion,
-};
+use proxima_core::{AbstractionPayload, Cursor, FactPayload, OwnerId, SchemaId, SchemaVersion};
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
 use std::sync::Arc;
@@ -50,7 +47,7 @@ async fn register_fixture_repo(
 ) {
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         &path.to_string_lossy(),
@@ -165,7 +162,7 @@ async fn local_git_source_full_cycle() {
         let owner = test_owner();
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -224,15 +221,7 @@ async fn local_git_source_full_cycle() {
             limit: 1000,
             ..QueryRequest::readable()
         };
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &q,
-            )
-            .await?;
+        let resp = engine.query(&authenticated_owner(&owner), &q).await?;
         assert_eq!(
             i64::try_from(resp.memories.len()).unwrap(),
             chunks_after_initial,
@@ -287,15 +276,7 @@ async fn local_git_source_full_cycle() {
             limit: 1000,
             ..QueryRequest::readable()
         };
-        let resp_all = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &q_all,
-            )
-            .await?;
+        let resp_all = engine.query(&authenticated_owner(&owner), &q_all).await?;
         // 3 initial revisions + 1 mutation = 4
         assert!(
             resp_all.memories.len() >= 4,
@@ -415,7 +396,7 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -494,7 +475,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -709,7 +690,7 @@ async fn ingest_queues_vectors_and_the_drain_sends_them_in_batches() {
                 DEFAULT_EMBED_WORKER_INTERVAL,
                 DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
             )?);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
         let repo = fixture_repo();
@@ -793,7 +774,7 @@ async fn a_poll_classes_each_commit_by_its_own_gitattributes() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
 
@@ -866,7 +847,7 @@ async fn a_poll_reclasses_files_an_attributes_commit_covers() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
         let repo = fixture_repo();
@@ -954,7 +935,7 @@ async fn a_snapshot_reclasses_files_an_attributes_commit_covers() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
         let ingest_ctx = CodeIngestContext::new(&engine, &authz, &store);
         let repo = fixture_repo();

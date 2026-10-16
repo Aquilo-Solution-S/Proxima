@@ -174,15 +174,11 @@ fn host_tier_names_the_mcp_edge() {
 
 #[test]
 fn host_tier_names_the_owner_rls_boot_surface() {
-    fn platform_scope(ctx: &proxima::AppContext) -> Option<proxima::PgPlatformScope> {
+    fn platform_scope(ctx: &proxima::AppContext) -> proxima::PgPlatformScope {
         ctx.host().platform_scope_for_host()
     }
-    async fn runtime_rls(ctx: &proxima::AppContext) -> Result<(), proxima::StorageError> {
-        proxima::assert_runtime_rls(&ctx.host().clone_pool_for_host(), &["proxima_core"]).await
-    }
 
-    let _: fn(&proxima::AppContext) -> Option<proxima::PgPlatformScope> = platform_scope;
-    std::hint::black_box(runtime_rls);
+    let _: fn(&proxima::AppContext) -> proxima::PgPlatformScope = platform_scope;
     let _: fn(_) -> proxima::StorageError = proxima::map_err;
     let _: fn(_) -> proxima::StorageError = proxima::flavor::map_err;
 }

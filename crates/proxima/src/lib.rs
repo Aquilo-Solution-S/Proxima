@@ -48,8 +48,7 @@
 //! dropped re-export fails to compile, and it fails when a host-only name shows
 //! up in the SDK. It is a list: add the type to `host.rs` and to a group there
 //! whenever a public signature names a new type. Nothing finds a signature
-//! whose type is missing from the list. The SDK tier has such gaps, known and
-//! open; `docs/reference/public-api.md` names them.
+//! whose type is missing from the list.
 //!
 //! The SDK names no storage handle and no owner-scoped transaction:
 //!
@@ -166,40 +165,6 @@ pub use proxima_core::authz::SystemAuthority;
 #[must_use]
 pub fn company_owner(id: uuid::Uuid) -> OwnerId {
     OwnerId::from(GroupId::new(id))
-}
-
-/// Persist one host-observed MCP tool call through an embedded engine.
-///
-/// `authz` is the authenticated context of the served MCP call (the
-/// host already holds it from dispatch); the engine authorizes the log
-/// Owner against it rather than trusting a caller-supplied Owner.
-///
-/// # Errors
-///
-/// Returns `Forbidden` when `authz` cannot access the log Owner or lacks an
-/// `Ingest`/write-capable owner role for that owner; or `Internal` on storage
-/// failure.
-pub async fn log_mcp_call(
-    engine: &Engine,
-    authz: &AuthzContext,
-    input: McpCallLogInput,
-) -> Result<McpCallLogOutcome, ProtocolError> {
-    engine.persist_mcp_call(authz, input).await
-}
-
-/// Read one Owner's MCP-call activity log through an embedded engine.
-/// Owner-scoped, `GraphRead`-gated; `req.actor_oid = Some` narrows to one actor.
-///
-/// # Errors
-///
-/// Returns `Forbidden` when `authz` cannot access `req.owner` or lacks
-/// graph-read, or `Internal` on storage failure / `limit == 0`.
-pub async fn read_mcp_call_history(
-    engine: &Engine,
-    authz: &AuthzContext,
-    req: &McpCallHistoryRequest,
-) -> Result<McpCallHistoryResponse, ProtocolError> {
-    engine.read_mcp_call_history(authz, req).await
 }
 
 /// Load one owner-scoped opaque source cursor through an embedded engine.

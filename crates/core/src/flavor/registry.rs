@@ -51,12 +51,6 @@ impl Default for FlavorRegistry {
         registry
             .try_add_cited_object_schema::<crate::citations::UploadedBlobPayload>()
             .expect("built-in cited-object schema registration must be valid");
-        registry
-            .try_add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>()
-            .expect("built-in MCP call fact schema registration must be valid");
-        registry
-            .try_add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>()
-            .expect("built-in MCP call cited-object schema registration must be valid");
         crate::memory::register_all(&mut registry)
             .expect("built-in memory registration must be valid");
         crate::goal::register_all(&mut registry).expect("built-in goal registration must be valid");

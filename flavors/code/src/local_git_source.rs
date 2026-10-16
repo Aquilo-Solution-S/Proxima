@@ -188,7 +188,14 @@ impl<'a> CodeIngestContext<'a> {
         // Owner-only `memory_head` of each named `(repo, path)` series —
         // the same series stateful-Fact NK ingest advances.
         self.store
-            .owned_file_revision_heads(self.authz.owner_scope(), owner, repo_id, file_paths)
+            .owned_file_revision_heads(
+                self.authz.owner_scope().ok_or_else(|| {
+                    IngestError::Storage("authenticated owner scope required".into())
+                })?,
+                owner,
+                repo_id,
+                file_paths,
+            )
             .await
             .map_err(|err| read_error(&err))?
             .into_iter()
@@ -204,7 +211,9 @@ impl<'a> CodeIngestContext<'a> {
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
         self.store
             .owned_present_file_revision_heads_except(
-                self.authz.owner_scope(),
+                self.authz.owner_scope().ok_or_else(|| {
+                    IngestError::Storage("authenticated owner scope required".into())
+                })?,
                 owner,
                 repo_id,
                 keep_paths,
@@ -223,7 +232,14 @@ impl<'a> CodeIngestContext<'a> {
         file_path: &str,
     ) -> Result<Vec<proxima_storage_pg::query::ChunkSeriesHead>, IngestError> {
         self.store
-            .owned_chunk_series_heads(self.authz.owner_scope(), owner, repo_id, file_path)
+            .owned_chunk_series_heads(
+                self.authz.owner_scope().ok_or_else(|| {
+                    IngestError::Storage("authenticated owner scope required".into())
+                })?,
+                owner,
+                repo_id,
+                file_path,
+            )
             .await
             .map_err(|err| read_error(&err))
     }
@@ -238,7 +254,14 @@ impl<'a> CodeIngestContext<'a> {
     ) -> Result<HashMap<String, FileClass>, IngestError> {
         let rows = self
             .store
-            .owned_chunk_head_classes(self.authz.owner_scope(), owner, repo_id, file_paths)
+            .owned_chunk_head_classes(
+                self.authz.owner_scope().ok_or_else(|| {
+                    IngestError::Storage("authenticated owner scope required".into())
+                })?,
+                owner,
+                repo_id,
+                file_paths,
+            )
             .await
             .map_err(|err| read_error(&err))?;
         rows.into_iter()
@@ -326,7 +349,11 @@ impl LocalGitSource {
     ) -> Result<(ScopeMatcher, String), IndexError> {
         let record = crate::repos::get_repo(
             ctx.pool(),
-            ctx.authz.owner_scope(),
+            ctx.authz.owner_scope().ok_or_else(|| {
+                crate::repos::RepoRegistryError::Storage(proxima_core::StorageError::Unavailable(
+                    "authenticated owner scope required".into(),
+                ))
+            })?,
             &self.owner,
             self.repo_id,
         )

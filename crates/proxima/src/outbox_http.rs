@@ -1,4 +1,4 @@
-//! The built-in HTTP outbox sink (docs/18 §Built-in HTTP sink): one
+//! The built-in HTTP outbox sink (docs/host-integration.md §Built-in HTTP sink): one
 //! [`DurableIntake`] that `POST`s each captured event, verbatim, to one URL.
 //!
 //! Configured from the environment only, and registered as the consumer

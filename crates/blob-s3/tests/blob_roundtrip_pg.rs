@@ -10,12 +10,12 @@ use proxima_core::storage_ports::{
     CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError,
     CitedBlobReadPort, CitedBlobReadUrl, CitedBlobReconcileOutcome, CitedBlobService,
     CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
-    OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
+    OwnerInversePort,
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, FlavorRegistry,
-    GroupId, OwnerId, Relation, StorageError, UserId,
+    AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, FlavorRegistry, GroupId, OwnerId,
+    Relation, StorageError, UserId,
 };
 use sha2::Digest;
 use std::num::NonZeroU64;
@@ -97,13 +97,9 @@ async fn fresh_storage() -> (PgStorage, String) {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
-    let pg = PgStorage::connect(&url)
+    let pg = PgStorage::connect_for_tests(url)
         .await
         .unwrap_or_else(|err| panic!("PG required for tests but unavailable: {err}"));
-    if let Err(err) = pg.run_before_owner_rls_migrations().await {
-        let _ = drop_db(&db_name).await;
-        panic!("migration failed: {err}");
-    }
     (pg, db_name)
 }
 
@@ -235,6 +231,24 @@ async fn complete_via_engine_with_expectation(
     Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
         .complete_upload_as_fact_with_expectation(blobs, ctx, owner, upload_id, &[], expectation)
+        .await
+}
+
+async fn transfer_via_engine(
+    pg: &PgStorage,
+    source_user: UserId,
+    entity: EntityId,
+    destination: OwnerId,
+) -> Result<(), ProtocolError> {
+    let authz =
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+            source_user,
+            [(destination, Relation::Admin.role())],
+            AuthPath::HostBearer,
+        ));
+    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
+        .transfer_to_owner(&authz, entity, destination)
         .await
 }
 
@@ -418,10 +432,18 @@ async fn prepare_then_complete_then_read_roundtrip() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body = b"test-bytes";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     let prepared = store
         .prepare_upload(
@@ -462,7 +484,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
         .await
         .expect("read url");
     // `complete` moves the object from its pending key to the final key
-    // derived from the upload row (doc 11 §Large artefact storage), so the
+    // derived from the upload row (docs/data-and-erasure.md §Large artefact storage), so the
     // presigned GET must reference the completed blob's key, not the
     // pending upload's.
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
@@ -505,14 +527,22 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "CREATE SEQUENCE public.upload_status_probe;
          CREATE FUNCTION public.block_upload_status_update() RETURNS trigger
-         LANGUAGE plpgsql AS $$
+         LANGUAGE plpgsql SECURITY DEFINER AS $$
          BEGIN
              PERFORM nextval('public.upload_status_probe');
              PERFORM pg_advisory_xact_lock({UPLOAD_STATUS_PROBE_LOCK});
@@ -668,9 +698,17 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body = b"terminal-race-bytes";
     let upload_id = staged_upload(
         &pool,
@@ -689,7 +727,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "CREATE SEQUENCE public.upload_status_probe;
          CREATE FUNCTION public.block_abort_status_update() RETURNS trigger
-         LANGUAGE plpgsql AS $$
+         LANGUAGE plpgsql SECURITY DEFINER AS $$
          BEGIN
              PERFORM nextval('public.upload_status_probe');
              PERFORM pg_advisory_xact_lock({UPLOAD_STATUS_PROBE_LOCK});
@@ -819,10 +857,18 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body = b"real";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let (cited_object_id, canonical_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &ctx, owner)
             .await
@@ -854,7 +900,10 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     assert!(matches!(error, CitedBlobReadError::TooLarge { .. }));
 
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &other,
+        AuthPath::HostBearer,
+    ));
     let error = store
         .collect_verified(
             &other_ctx,
@@ -913,7 +962,12 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body: &'static [u8] = b"candidate canonical bytes";
     // Deliberately a different length. A canonical object that differs in size
     // is still a canonical conflict, and must be reported as one rather than
@@ -921,7 +975,10 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     let existing: &'static [u8] = b"a canonical object of an entirely different size";
     assert_ne!(body.len(), existing.len());
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let (upload_id, _) = prepare_and_put_upload(
         &pool,
         &store,
@@ -1047,10 +1104,18 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body: &[u8] = b"%PDF-1.7 a handbook whose upload is contested";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     let upload_id = staged_upload(&pool, &store, &config, &ctx, owner, "handbuch.pdf", body).await;
 
@@ -1139,10 +1204,18 @@ async fn presigned_put_and_get_carry_the_bytes() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body: &[u8] = b"%PDF-1.7 a handbook that must survive the round trip";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let http = reqwest::Client::new();
 
     let prepared = store
@@ -1333,9 +1406,17 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     // The baseline answer for a cited object that does not exist at all.
     let missing = store
@@ -1453,9 +1534,18 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
-    let source = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
+    let source_user = UserId::new(Uuid::now_v7());
+    let source = OwnerId::from(source_user);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &source,
+        AuthPath::HostBearer,
+    ));
     let (destination, dest_ctx) = group_destination();
 
     let completed = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"transferred")
@@ -1466,19 +1556,14 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
         .await
         .expect("object present before the transfer");
 
-    let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
-    assert!(
-        pg.transfer_to_owner(
-            &permit,
-            EntityId::Memory(completed.memory_id),
-            destination,
-            &transfer_surfaces(),
-            &[]
-        )
-        .await
-        .expect("transfer"),
-        "the cited series transfers"
-    );
+    transfer_via_engine(
+        &pg,
+        source_user,
+        EntityId::Memory(completed.memory_id),
+        destination,
+    )
+    .await
+    .expect("transfer");
 
     // The row moved; the key did not.
     let after_key: String =
@@ -1559,9 +1644,18 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
-    let source = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
+    let source_user = UserId::new(Uuid::now_v7());
+    let source = OwnerId::from(source_user);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &source,
+        AuthPath::HostBearer,
+    ));
     let (destination, dest_ctx) = group_destination();
 
     let completed = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"erase-me-later")
@@ -1574,19 +1668,14 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
         .await
         .expect("second upload");
 
-    let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
-    assert!(
-        pg.transfer_to_owner(
-            &permit,
-            EntityId::Memory(completed.memory_id),
-            destination,
-            &transfer_surfaces(),
-            &[]
-        )
-        .await
-        .expect("transfer"),
-        "the cited series transfers"
-    );
+    transfer_via_engine(
+        &pg,
+        source_user,
+        EntityId::Memory(completed.memory_id),
+        destination,
+    )
+    .await
+    .expect("transfer");
 
     let client = config.client();
     erase_owner_and_drain(&pg, &store, source).await;
@@ -1626,11 +1715,12 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
 fn group_destination() -> (OwnerId, AuthzContext) {
     let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let member = UserId::new(Uuid::now_v7());
-    let ctx = AuthzContext::for_subject_with_role(
-        member,
-        [(group, Relation::Admin.role())],
-        AuthPath::HostBearer,
-    );
+    let ctx =
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+            member,
+            [(group, Relation::Admin.role())],
+            AuthPath::HostBearer,
+        ));
     (group, ctx)
 }
 
@@ -1730,6 +1820,10 @@ async fn dest_ctx_reads(
 /// its own authority, must be refused on A's upload and cited-object ids
 /// — and must not disturb A's rows in the attempt.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one two-owner scenario verifies refusal and retained upload state"
+)]
 async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
@@ -1739,10 +1833,18 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body = b"cross-owner-bytes";
     let owner_a = owner_fixture();
-    let ctx_a = AuthzContext::single_owner(&owner_a, AuthPath::HostBearer);
+    let ctx_a = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner_a,
+        AuthPath::HostBearer,
+    ));
 
     let prepared = store
         .prepare_upload(
@@ -1770,7 +1872,10 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         .blob;
 
     let owner_b = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let ctx_b = AuthzContext::single_owner(&owner_b, AuthPath::HostBearer);
+    let ctx_b = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner_b,
+        AuthPath::HostBearer,
+    ));
 
     let err = store
         .stage_upload(
@@ -1846,10 +1951,18 @@ async fn owner_erase_removes_the_completed_blobs_object() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let body = b"ocr-scan-with-pii";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     // Upload + complete: leaves a canonical object at objects/<upload_id>.
     let prepared = store
@@ -1950,10 +2063,18 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let (service, counters) = counted_blob_service(&store);
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body = b"versioned-pii-bytes";
 
     let prepared = store
@@ -2119,7 +2240,12 @@ async fn versioned_cold_delete_removes_exact_key_versions_and_preserves_prefix_c
         .await
         .expect("create exact-key delete marker");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     store
         .cold_store()
         .delete(&exact)
@@ -2189,10 +2315,18 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
 
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     let prepared = store
         .prepare_upload(
@@ -2242,7 +2376,10 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     // genuinely exists gets the same answer as for one that does not:
     // nothing. Not a denial, which would itself confirm the artefact.
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &other,
+        AuthPath::HostBearer,
+    ));
     let cross = store
         .find_held_blobs(&other_ctx, other, &[held_hash])
         .await
@@ -2385,6 +2522,10 @@ async fn reconcile_with_bound_authority(store: &CitedBlobStore) -> CitedBlobReco
 /// deltas. A test that asserted `missing_objects == 1` would pass alone and
 /// fail under `--test-threads`.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bucket scenario distinguishes missing, orphaned, and forged locators"
+)]
 async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
@@ -2393,10 +2534,18 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner_id = Uuid::now_v7();
     let owner = OwnerId::from(UserId::new(owner_id));
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
 
     // 1. HEALTHY: a real upload, left alone.
     let (healthy_id, healthy_key) =
@@ -2406,7 +2555,10 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
 
     // 2. LOST: a real upload whose object is then deleted underneath it.
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &other,
+        AuthPath::HostBearer,
+    ));
     let (lost_id, lost_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
             .await
@@ -2652,11 +2804,19 @@ async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let (service, counters) = counted_blob_service(&store);
     let body: &'static [u8] = b"completed-expectation-cannot-change";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let (upload_id, _) = prepare_and_put_upload(
         &pool,
         &store,
@@ -2727,11 +2887,19 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let (service, counters) = counted_blob_service(&store);
     let body: &'static [u8] = b"fresh-pending-mismatch";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let actual_hash = *blake3::hash(body).as_bytes();
     let cases = [
         (
@@ -2877,13 +3045,21 @@ async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let (service, counters) = counted_blob_service(&store);
     let original: &'static [u8] = b"canonical-retry-original";
     let replacement: &'static [u8] = b"canonical-retry-replaced";
     assert_eq!(original.len(), replacement.len());
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,
         &store,
@@ -2978,9 +3154,17 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body: &'static [u8] = b"versioned-abort-pending-bytes";
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,
@@ -3106,9 +3290,17 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body: &'static [u8] = b"post-put-abort-race";
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,
@@ -3286,9 +3478,17 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     let client = config.client();
     let _ = client.create_bucket().bucket(&config.bucket).send().await;
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body: &'static [u8] = b"erase-first-canonical-bytes";
     let (upload_id, _pending_key) = prepare_and_put_upload(
         &pool,
@@ -3305,6 +3505,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
 
     sqlx::raw_sql(
         "CREATE SEQUENCE erase_delete_probe;
+         GRANT USAGE ON SEQUENCE erase_delete_probe TO PUBLIC;
          CREATE FUNCTION erase_delete_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
                 PERFORM nextval('erase_delete_probe');
@@ -3398,7 +3599,9 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
         .await
         .expect("stage task join")
         .expect_err("an erased owner row is not a successful stage");
-    assert!(matches!(error, BlobError::State(message) if message == "upload not found for Owner"));
+    assert!(
+        matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
+    );
 
     let debt: (String, Option<Uuid>) = sqlx::query_as(
         "SELECT backend, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
@@ -3429,28 +3632,26 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     drop_db(&db_name).await.expect("drop db");
 }
 
-/// An erase that commits AFTER the canonical PUT leaves bytes nothing
-/// references — so the stage that published them owes them, durably.
-///
-/// The old contract kept the canonical object on the reasoning that a mounted
-/// or in-place-transferred row might still own it. That reasoning is only
-/// sound when it is CHECKED. Here nothing owns them: the erase enqueued the
-/// key the row named at the time (`pending/<id>`), never the canonical key
-/// this stage went on to write, so before this change the object survived
-/// every erase and every drain with no record that it existed. The refcount
-/// under the object key is what turns "may still be owned" into an answer.
-///
-/// Enqueue, not delete: the debt is a queue row, so a crash between the CAS
-/// and the provider call cannot lose it. The drain is the second half, and
-/// this test runs it — a debt nothing ever discharges is not a fix.
-#[tokio::test]
-#[allow(clippy::too_many_lines)] // the barrier fixture proves an erased-row race end to end
-async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
-    if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
-        return;
-    }
+/// A stage held at its locator write after its canonical PUT landed: the
+/// barrier blocks the `object_key` update until the test decides what became
+/// of the upload row.
+struct StageHeldAfterCanonicalPut {
+    pg: PgStorage,
+    pool: sqlx::PgPool,
+    store: CitedBlobStore,
+    config: S3RuntimeConfig,
+    client: Client,
+    owner: OwnerId,
+    upload_uuid: Uuid,
+    pending_key: String,
+    canonical_key: String,
+    barrier: sqlx::Transaction<'static, sqlx::Postgres>,
+    stage_task: tokio::task::JoinHandle<Result<CitedBlobStaged, BlobError>>,
+    db_name: String,
+}
 
+#[allow(clippy::too_many_lines)] // the barrier fixture pins one race window end to end
+async fn hold_stage_after_canonical_put(body: &'static [u8]) -> StageHeldAfterCanonicalPut {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let base = s3_config_for_dev();
@@ -3472,10 +3673,17 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-    let body: &'static [u8] = b"missing-owner-row-canonical-bytes";
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,
         &store,
@@ -3539,6 +3747,71 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    StageHeldAfterCanonicalPut {
+        pg,
+        pool,
+        store,
+        config,
+        client,
+        owner,
+        upload_uuid,
+        pending_key,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+    }
+}
+
+async fn drop_locator_barrier_and_db(pool: sqlx::PgPool, db_name: &str) {
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier trigger");
+    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier function");
+    drop(pool);
+    drop_db(db_name).await.expect("drop db");
+}
+
+/// An erase that commits AFTER the canonical PUT leaves bytes nothing
+/// references — so the stage that published them owes them, durably.
+///
+/// The old contract kept the canonical object on the reasoning that a mounted
+/// or in-place-transferred row might still own it. That reasoning is only
+/// sound when it is CHECKED. Here nothing owns them: the erase enqueued the
+/// key the row named at the time (`pending/<id>`), never the canonical key
+/// this stage went on to write, so before this change the object survived
+/// every erase and every drain with no record that it existed. The refcount
+/// under the object key is what turns "may still be owned" into an answer.
+///
+/// Enqueue, not delete: the debt is a queue row, so a crash between the CAS
+/// and the provider call cannot lose it. The drain is the second half, and
+/// this test runs it — a debt nothing ever discharges is not a fix.
+#[tokio::test]
+async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let body: &'static [u8] = b"missing-owner-row-canonical-bytes";
+    let StageHeldAfterCanonicalPut {
+        pg,
+        pool,
+        store,
+        config,
+        client,
+        owner,
+        upload_uuid,
+        pending_key,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+    } = hold_stage_after_canonical_put(body).await;
     // Leave multiple transfer versions and a marker for the missing-row
     // cleanup path to prove it is version-aware.
     put_object_via_sdk(&config, &pending_key, body).await;
@@ -3564,7 +3837,9 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         .await
         .expect("stage task join")
         .expect_err("missing owner row is not a successful stage");
-    assert!(matches!(error, BlobError::State(message) if message == "upload not found for Owner"));
+    assert!(
+        matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
+    );
     assert_s3_key_versions_absent(&config, &pending_key).await;
     // The debt is durable and names the bucket it is owed against. The owner
     // is NULL because the owner row is exactly what was erased.
@@ -3616,16 +3891,76 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         "the drain destroys the object the stage orphaned"
     );
 
-    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+    drop_locator_barrier_and_db(pool, &db_name).await;
+}
+
+/// The other answer to the same refcount: a transfer moved the upload row to
+/// another owner while the stage was in flight. That row is invisible under
+/// the staging owner's scope, so the refcount must be a platform question or
+/// the drain would delete bytes the other owner still names.
+#[tokio::test]
+async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let body: &'static [u8] = b"transferred-row-canonical-bytes";
+    let StageHeldAfterCanonicalPut {
+        pool,
+        config,
+        client,
+        upload_uuid,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+        ..
+    } = hold_stage_after_canonical_put(body).await;
+    let other_owner = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(other_owner)
         .execute(&pool)
         .await
-        .expect("drop locator barrier trigger");
-    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .expect("other owner");
+    sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $1 WHERE upload_id = $2")
+        .bind(other_owner)
+        .bind(upload_uuid)
         .execute(&pool)
         .await
-        .expect("drop locator barrier function");
-    drop(pool);
-    drop_db(&db_name).await.expect("drop db");
+        .expect("move upload row while stage is paused");
+    drop(barrier);
+
+    let error = stage_task
+        .await
+        .expect("stage task join")
+        .expect_err("a row moved away is not this owner's stage");
+    assert!(
+        matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
+    );
+    let owed: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&canonical_key)
+    .fetch_one(&pool)
+    .await
+    .expect("count debts");
+    assert_eq!(owed, 0, "bytes another owner's row names are not owed");
+    let retained = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("canonical bytes remain")
+        .body
+        .collect()
+        .await
+        .expect("read canonical bytes")
+        .into_bytes();
+    assert_eq!(retained.as_ref(), body);
+
+    drop_locator_barrier_and_db(pool, &db_name).await;
 }
 
 /// An already-expired upload is lifecycle-only: neither completion nor abort
@@ -3659,9 +3994,17 @@ async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
         .await
         .expect("enable versioning");
 
-    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )
+    .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let body: &'static [u8] = b"expired-at-entry-bytes";
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,

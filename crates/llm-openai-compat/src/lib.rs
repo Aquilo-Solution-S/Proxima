@@ -1,5 +1,5 @@
 //! OpenAI-compatible HTTP `EmbeddingClient` impls — the reference
-//! embedding adapter a host injects into the substrate (see docs/10).
+//! embedding adapter a host injects into the substrate (see docs/configuration.md).
 //! Proxima ships no embedding client of its own; this crate is the
 //! canonical one.
 //!

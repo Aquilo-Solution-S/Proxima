@@ -1,6 +1,6 @@
 //! Opt-in boot step (`PROXIMA_RUNTIME_GRANTS`, [`crate::RuntimeBuilder::runtime_grants`]):
 //! the platform role grants the runtime role its privileges — the runtime
-//! half of docs/15 §Owner-RLS rollout step 2.
+//! grant phase described in docs/operate.md.
 //!
 //! Runs once per boot, after migrations (or the `skip_migrations` preflight)
 //! and before the runtime pool connects, on the platform (migration) pool, in
@@ -58,21 +58,14 @@ impl RuntimeGrants {
     ///
     /// # Errors
     ///
-    /// [`ProximaError::Config`] when `platform_database_url` is unset, either
-    /// URL does not parse, or both URLs name the same user.
+    /// [`ProximaError::Config`] when either URL does not parse or both URLs
+    /// name the same user.
     pub(crate) fn plan(
         database_url: &str,
-        platform_database_url: Option<&str>,
+        platform_database_url: &str,
         schemas: Vec<String>,
         ledgers: Vec<String>,
     ) -> Result<Self, ProximaError> {
-        let Some(platform_database_url) = platform_database_url else {
-            return Err(ProximaError::Config(
-                "runtime grants require PROXIMA_PLATFORM_DATABASE_URL: the platform role \
-                 grants the DATABASE_URL role"
-                    .into(),
-            ));
-        };
         let runtime_role = url_user(database_url, "DATABASE_URL")?;
         let platform_role = url_user(platform_database_url, "PROXIMA_PLATFORM_DATABASE_URL")?;
         if runtime_role == platform_role {
@@ -506,13 +499,9 @@ mod tests {
 
     #[test]
     fn plan_refuses_without_split_roles() {
-        let missing =
-            RuntimeGrants::plan("postgres://rt@localhost/db", None, Vec::new(), Vec::new())
-                .expect_err("no platform URL");
-        assert!(matches!(missing, ProximaError::Config(_)), "{missing}");
         let same = RuntimeGrants::plan(
             "postgres://same:a@localhost/db",
-            Some("postgres://same:b@localhost/db"),
+            "postgres://same:b@localhost/db",
             Vec::new(),
             Vec::new(),
         )
@@ -523,7 +512,7 @@ mod tests {
         );
         let split = RuntimeGrants::plan(
             "postgres://rt:a@localhost/db",
-            Some("postgres://platform:b@localhost/db"),
+            "postgres://platform:b@localhost/db",
             Vec::new(),
             Vec::new(),
         )

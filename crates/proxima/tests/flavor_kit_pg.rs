@@ -87,7 +87,7 @@ static KIT_CONTRACT: FlavorContract = FlavorContract {
     },
 };
 
-/// Host/example lane (`docs/09` §Migrations: timestamp versions ending
+/// Host/example lane (`docs/build-a-flavor.md` §Migrations: timestamp versions ending
 /// `00..=19`).
 const KIT_MIGRATION_VERSION: i64 = 20_260_924_000_012;
 

@@ -2,7 +2,7 @@ use proxima::flavor::{
     FactPayload, FlavorBundle, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError, FlavorRegistryFrozen, PayloadKeyBuilder,
 };
-// Contract vocabulary is not on the `proxima` facade (docs/14 tiers), so a
+// Contract vocabulary is not on the `proxima` facade (docs/protocol.md tiers), so a
 // declaration is spelled against the substrate crate the way the in-tree
 // flavor does.
 use proxima::{AppInfo, FlavorApp, RuntimeBuilder};

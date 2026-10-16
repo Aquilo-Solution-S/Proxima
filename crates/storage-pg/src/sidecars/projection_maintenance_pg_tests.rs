@@ -149,8 +149,7 @@ where
         .await
         .expect("PG required for tests");
     let result = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         body(&pg).await
     }
     .await;
@@ -237,7 +236,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
     with_db("proxima_proj_transfer", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 

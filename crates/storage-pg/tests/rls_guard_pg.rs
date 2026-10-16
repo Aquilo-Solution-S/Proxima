@@ -944,7 +944,6 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
         "goal_erase_witness",
         "cooled_identity_seal",
         "goal_pin_target_checks",
-        "wake_pin_target_checks",
         "memory_pin_checks",
         "cooled_forget_grounding",
         "pins_have_grounding_support",

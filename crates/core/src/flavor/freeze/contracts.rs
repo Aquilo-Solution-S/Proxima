@@ -100,7 +100,7 @@ impl FlavorRegistry {
     /// constraint naming none of the cause. With the descriptor held to a
     /// contract, `SchemaWithoutContract` then covers each of that flavor's
     /// schemas in turn, so the pair is complete for every flavor composed
-    /// the sanctioned way (docs/09 §Registration).
+    /// the sanctioned way (docs/build-a-flavor.md).
     ///
     /// [`FlavorDescriptor`]: crate::flavor::FlavorDescriptor
     fn validate_registrations_are_claimed(&self) -> Result<(), FlavorRegistryError> {

@@ -3,9 +3,6 @@ use proxima_core::verbs::query::{GoalRow, MemoryRow};
 use proxima_core::{
     GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
-use sqlx::PgConnection;
-
-use crate::error::map_err;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -46,11 +43,11 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
     })
 }
 
-fn parse_memory_kind(kind: &str) -> Result<proxima_core::change_event::EntityKind, StorageError> {
+fn parse_memory_kind(kind: &str) -> Result<proxima_core::EntityKind, StorageError> {
     match kind {
-        "fact" | "Fact" => Ok(proxima_core::change_event::EntityKind::Fact),
-        "abstraction" | "Abstraction" => Ok(proxima_core::change_event::EntityKind::Abstraction),
-        "perspective" | "Perspective" => Ok(proxima_core::change_event::EntityKind::Perspective),
+        "fact" | "Fact" => Ok(proxima_core::EntityKind::Fact),
+        "abstraction" | "Abstraction" => Ok(proxima_core::EntityKind::Abstraction),
+        "perspective" | "Perspective" => Ok(proxima_core::EntityKind::Perspective),
         other => Err(StorageError::Internal(format!(
             "invalid memory kind {other}"
         ))),
@@ -94,32 +91,4 @@ pub(super) struct MemoryRowDb {
     pub(super) refs: Vec<uuid::Uuid>,
     pub(super) goal_refs: Vec<uuid::Uuid>,
     occurred_at: Option<time::OffsetDateTime>,
-}
-
-/// Cursor high-water over the requester's READ set — never a client-supplied
-/// principal. Computed across `read_owners` so it spans exactly the change
-/// events the requester may see (the same set `list_change_events_after`
-/// filters by); using `req.owner` here would leak whether/when a foreign
-/// owner has events.
-/// Connection-backed variant used by a caller that already established the
-/// request transaction. The pool wrapper above remains for compatibility.
-pub(crate) async fn read_seq_high_water_on_connection(
-    connection: &mut PgConnection,
-    owner_ids: &[uuid::Uuid],
-) -> Result<Option<uuid::Uuid>, StorageError> {
-    let sql = read_seq_high_water_sql();
-    // SQL-POLICY: fixed-fragment
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(owner_ids)
-        .fetch_optional(&mut *connection)
-        .await
-        .map_err(map_err)?;
-    Ok(row.map(|(v,)| v))
-}
-
-fn read_seq_high_water_sql() -> String {
-    "SELECT seq FROM proxima_core.announce \
-     WHERE owner_id = ANY($1::uuid[]) \
-     ORDER BY seq DESC LIMIT 1"
-        .into()
 }

@@ -6,10 +6,6 @@
 //! construction and carried on the handle; no query path re-reads the
 //! environment.
 //!
-//! A `PROXIMA_PG_*` variable this crate does not read is not ignored: the
-//! ones in `REMOVED_TUNING_VARS` refuse at boot, for the same reason a
-//! malformed value does — a knob that does nothing would ship a
-//! configuration the operator did not ask for.
 
 use std::ops::RangeInclusive;
 
@@ -17,16 +13,6 @@ use proxima_core::{StorageError, env_value};
 
 pub(crate) const DEFAULT_HNSW_EF_SEARCH: u32 = 100;
 pub(crate) const DEFAULT_HNSW_MAX_SCAN_TUPLES: u32 = 20_000;
-
-/// Tuning variables this crate does not read. Setting one refuses at
-/// boot rather than silently doing nothing; the error names the release
-/// that removed it.
-const REMOVED_TUNING_VARS: [&str; 4] = [
-    "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
-    "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
-    "PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT",
-    "PROXIMA_PG_SEMANTIC_OVERFETCH_MIN",
-];
 
 /// Accepted range for the two HNSW session knobs: they
 /// are interpolated into `SET LOCAL` ([`crate::pgvector::set_hnsw_search_sql`]),
@@ -109,8 +95,7 @@ impl PgTuning {
     /// # Errors
     ///
     /// Returns `StorageError::Unavailable` when a `PROXIMA_PG_*` tuning
-    /// variable is set to a value this crate cannot parse, or when a
-    /// variable this release removed (`REMOVED_TUNING_VARS`) is still set.
+    /// variable is set to a value this crate cannot parse.
     pub fn from_env() -> Result<Self, StorageError> {
         Ok(Self::from_lookup(&proxima_core::process_env)?.unwrap_or_default())
     }
@@ -142,8 +127,7 @@ impl PgTuning {
     /// # Errors
     ///
     /// Returns `StorageError::Unavailable` when a variable is set to a
-    /// value this crate cannot parse, or when a variable this release
-    /// removed (`REMOVED_TUNING_VARS`) is still set.
+    /// value this crate cannot parse.
     pub fn from_lookup(
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, StorageError> {
@@ -152,7 +136,6 @@ impl PgTuning {
     }
 
     fn resolve(lookup: &impl Fn(&str) -> Option<String>) -> Result<Self, StorageError> {
-        refuse_removed_vars(lookup)?;
         let defaults = Self::default();
         Ok(Self {
             hnsw_ef_search: env_int_in_range(
@@ -174,23 +157,6 @@ impl PgTuning {
             )?,
         })
     }
-}
-
-/// Refuse any removed tuning variable that is still set (blank reads as
-/// unset, like every other variable here). The error names the removal, so
-/// a deployment carrying a dead knob learns at boot — where the variable is
-/// still in hand — rather than by silently running the shipped path under a
-/// configuration banner nothing reads.
-fn refuse_removed_vars(lookup: &impl Fn(&str) -> Option<String>) -> Result<(), StorageError> {
-    for key in REMOVED_TUNING_VARS {
-        if let Some(value) = env_value(lookup, key) {
-            return Err(StorageError::Unavailable(format!(
-                "{key}={value} is set, but this knob was removed in v0.0.8 \
-                 and no longer does anything; unset it"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Parse an integer tuning variable that must land inside `range`, falling
@@ -274,22 +240,6 @@ mod tests {
                 err.to_string()
                     .contains(&format!("out-of-range {key}={value}")),
                 "{key}={value} reported {err}"
-            );
-        }
-    }
-
-    /// A removed knob fails loudly rather than no-ops: a deployment still
-    /// setting one learns at boot, from an error that names the removal,
-    /// instead of silently running the shipped path under a knob it thinks
-    /// it turned.
-    #[test]
-    fn a_removed_variable_still_set_refuses_at_boot() {
-        for key in REMOVED_TUNING_VARS {
-            let err = PgTuning::from_lookup(&env(&[(key, "off")])).unwrap_err();
-            let message = err.to_string();
-            assert!(
-                message.contains(&format!("{key}=off")) && message.contains("removed in v0.0.8"),
-                "{key} reported {err}"
             );
         }
     }

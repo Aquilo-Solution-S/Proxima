@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use proxima_core::{
     AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, StorageError, UserId,
 };
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 /// Stable Postgres-backed [`OwnerAccessPort`] adapter for embedding hosts.
@@ -16,10 +15,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct PgOwnerAccessResolver {
     pool: PgPool,
-    platform: Option<crate::PgPlatformScope>,
-    platform_url: Option<String>,
-    platform_schemas: Vec<String>,
-    platform_lazy: std::sync::Arc<tokio::sync::OnceCell<crate::PgPlatformScope>>,
+    platform: crate::PgPlatformScope,
 }
 
 impl std::fmt::Debug for PgOwnerAccessResolver {
@@ -31,20 +27,8 @@ impl std::fmt::Debug for PgOwnerAccessResolver {
 
 impl PgOwnerAccessResolver {
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            platform: None,
-            platform_url: None,
-            platform_schemas: Vec::new(),
-            platform_lazy: std::sync::Arc::default(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_platform_scope(mut self, platform: crate::PgPlatformScope) -> Self {
-        self.platform = Some(platform);
-        self
+    pub fn new(pool: PgPool, platform: crate::PgPlatformScope) -> Self {
+        Self { pool, platform }
     }
 
     #[must_use]
@@ -52,86 +36,13 @@ impl PgOwnerAccessResolver {
         self.pool.clone()
     }
 
-    /// Build a resolver against a lazily-connected pool: `database_url` is
-    /// parsed synchronously (this can fail, e.g. on a malformed URL) but no
-    /// network I/O happens until the first query. Host boot order is
-    /// typically "construct the authenticator, then connect storage"; a
-    /// lazy pool lets this adapter compose into that order without forcing
-    /// an eager async connect at authenticator-construction time.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Unavailable` when `database_url` does not
-    /// parse as a Postgres connection string.
-    pub fn connect_lazy(database_url: &str) -> Result<Self, StorageError> {
-        let pool = PgPoolOptions::new()
-            .connect_lazy(database_url)
-            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        Ok(Self {
-            pool,
-            platform: None,
-            platform_url: None,
-            platform_schemas: Vec::new(),
-            platform_lazy: std::sync::Arc::default(),
-        })
-    }
-
-    /// Lazily validate and share a separate platform pool for identity resolution.
-    ///
-    /// # Errors
-    /// Returns a storage error for an invalid runtime connection string.
-    /// Platform connection and role errors are returned on the first lookup.
-    pub fn connect_lazy_platform(
-        runtime_url: &str,
-        platform_url: &str,
-        schemas: &[&str],
-    ) -> Result<Self, StorageError> {
-        let pool = PgPoolOptions::new()
-            .connect_lazy(runtime_url)
-            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        Ok(Self {
-            pool,
-            platform: None,
-            platform_url: Some(platform_url.to_owned()),
-            platform_schemas: schemas.iter().map(|s| (*s).to_owned()).collect(),
-            platform_lazy: std::sync::Arc::default(),
-        })
-    }
-
-    async fn platform_scope_lazy(&self) -> Result<Option<crate::PgPlatformScope>, StorageError> {
-        if let Some(scope) = &self.platform {
-            return Ok(Some(scope.clone()));
-        }
-        let Some(url) = &self.platform_url else {
-            return Ok(None);
-        };
-        let scope = self
-            .platform_lazy
-            .get_or_try_init(|| async {
-                let pool = PgPoolOptions::new()
-                    .connect(url)
-                    .await
-                    .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-                let schemas: Vec<&str> = self.platform_schemas.iter().map(String::as_str).collect();
-                crate::PgPlatformScope::new(pool, &schemas).await
-            })
-            .await?;
-        Ok(Some(scope.clone()))
-    }
-
-    /// The transaction one probe runs in, rolled back by the caller: platform
-    /// scoped when the resolver has a platform scope, else the unscoped
-    /// compatible owner transaction.
+    /// The transaction one probe runs in, rolled back by the caller. Every
+    /// resolver carries the boot-validated platform authority.
     async fn begin_probe_transaction(&self) -> Result<Transaction<'static, Postgres>, AccessError> {
-        let platform_scope = self
-            .platform_scope_lazy()
+        self.platform
+            .begin()
             .await
-            .map_err(|err| resolution_error(&err))?;
-        match platform_scope.as_ref() {
-            Some(platform) => platform.begin().await,
-            None => crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await,
-        }
-        .map_err(|err| resolution_error(&err))
+            .map_err(|err| resolution_error(&err))
     }
 
     /// Whether `group` is registered as a group in the owner registry.

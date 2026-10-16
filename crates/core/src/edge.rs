@@ -1,6 +1,6 @@
 //! Pins — `memory.origins` / `memory.refs`. There is no edge table.
 //!
-//! docs/16-edges.md is the reference.
+//! docs/concepts.md is the reference.
 //!
 //! > Edges are fundamental, non-extensible connection patterns. An edge
 //! > carries no information beyond its existence: its endpoints, its
@@ -20,12 +20,12 @@
 //!   The [`Edge`] / [`EdgeKind`] types below are the read-side
 //!   projection of those columns, not a table.
 
-use crate::change_event::EntityRef;
+use crate::entity::EntityRef;
 use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// Closed substrate vocabulary for what an edge *is*. Two variants, not
 /// extensible — not by flavors, not by core features. A feature that
-/// seems to need a third kind fails the node-home test (docs/16 §The
+/// seems to need a third kind fails the node-home test (docs/concepts.md
 /// Thesis) and is missing a node, not a kind.
 ///
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -129,7 +129,7 @@ impl EdgeEndpoint {
     }
 
     /// F/A/P layer index, or `None` for Goal endpoints, which are a
-    /// separate entity axis (docs/06) and never enter the comparison.
+    /// separate entity axis (docs/concepts.md) and never enter the comparison.
     #[must_use]
     pub const fn layer(self) -> Option<u8> {
         match self.kind {
@@ -324,7 +324,7 @@ pub fn project_listed_edge<S: std::hash::BuildHasher>(
 
 /// Enforce the layering rule for a proposed edge: `ℓ(source) ≥
 /// ℓ(target)` for memory endpoints, with Goal endpoints outside the
-/// comparison (docs/16 §The Model).
+/// comparison (docs/concepts.md).
 ///
 /// This is what keeps a Fact from being an interpretation *source*: a
 /// Fact asserts no judgment, and every interpretation is a Perspective
@@ -374,7 +374,7 @@ mod tests {
     }
 
     /// The vocabulary is closed at two. A third variant is a design
-    /// change (docs/16 §The Model), not a patch, and this is the
+    /// change (docs/concepts.md), not a patch, and this is the
     /// test that says so out loud.
     #[test]
     fn the_vocabulary_is_exactly_two_kinds() {

@@ -22,9 +22,6 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::wake_timeseries::{
-    WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
-};
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 use sqlx::{PgPool, Postgres};
 use uuid::Uuid;
@@ -153,6 +150,9 @@ async fn create_citation_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx:
     )
     .execute(pool)
     .await?;
+    sqlx::query("GRANT ALL PRIVILEGES ON TABLE proxima_core.test_cited_object_v1, proxima_core.test_cited_span_v1 TO PUBLIC")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -271,17 +271,6 @@ async fn rows_for_blob(
     .await
 }
 
-fn wake_draft(prompt: &str) -> WakeConfigDraft {
-    WakeConfigDraft {
-        trigger_kind: WakeTriggerKind::FactSchema,
-        trigger_schema_id: Some("core/test-fact-v1".into()),
-        trigger_t: None,
-        tool_ids: vec!["core.remember".into()],
-        prompt: prompt.to_owned(),
-        hard_memory_t: vec![],
-    }
-}
-
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/test-fact-v1".to_string()),
@@ -316,9 +305,6 @@ fn source_fence_key(owner: OwnerId, source: &str) -> String {
     format!("proxima-source-fence:{}:{source}", owner.into_inner())
 }
 
-/// Wait for the exact advisory lock named by a production fence. Looking at
-/// all advisory waiters is racy when another test happens to be busy; the
-/// `pg_locks` split representation lets this probe identify only this key.
 async fn wait_for_ungranted_advisory_label(
     pool: &PgPool,
     label: &str,
@@ -414,10 +400,9 @@ async fn fresh_owner_erase_pg() -> (String, PgStorage) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 
@@ -498,7 +483,6 @@ fn goal_draft(request_id: &str) -> GoalWriteCommand {
         assignment_t: None,
         dependency_t: vec![],
         evidence_t: vec![],
-        wake_id: None,
         mint_write_act: true,
         write_act_t: None,
     }
@@ -512,8 +496,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
@@ -683,8 +666,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -757,179 +739,169 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
     result.expect("owner erase of cooled failed");
 }
 
-/// `wake_config` holds a free-text `prompt`, the armed `tool_ids`, and the
-/// hard-context `hard_memory_t` — owner-authored content. Erase deletes the
-/// referencing `goal` rows and never deletes the `owners` row, so the
-/// `ON DELETE RESTRICT` FK never fires: without an explicit statement the
-/// prompt text outlived the owner's erasure silently.
 #[tokio::test]
-async fn erase_personal_owner_destroys_wake_config() {
+async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
+        create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
+        let blob = cite_blob(&pg, owner, Some(("src", "k-blob")), 3).await?;
+        // A pending upload names no blob: owner data attributable to no source.
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                 (owner_id, bucket, object_key, filename, mime, expected_byte_len, expires_at)
+             VALUES ($1, 'bucket', 'pending/1', 'draft.pdf', 'application/pdf', 1,
+                     now() + interval '1 hour')",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
 
-        let mut tx = pool.begin().await?;
-        let armed = insert_wake_config(&mut tx, &owner, &wake_draft("armed prompt")).await?;
-        let idle = insert_wake_config(&mut tx, &owner, &wake_draft("idle prompt")).await?;
-        let goal_handle =
-            write_armed_goal(&mut tx, &owner, "armed goal", "wake-owner", armed).await?;
-        let goal_t: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1")
-            .bind(goal_handle)
-            .fetch_one(&mut *tx)
-            .await?;
-        tx.commit().await?;
-
-        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let mut tx = pool.begin().await?;
-        let other_wake = insert_wake_config(&mut tx, &other, &wake_draft("other prompt")).await?;
-        tx.commit().await?;
+        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let neighbour_blob = cite_blob(&pg, neighbour, Some(("src", "k-other")), 5).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
-            drop_event_id: "test-drop-wake".into(),
+            drop_event_id: "test-drop-blob".into(),
         });
         let outcome = pg
-            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, &citation_surfaces())
             .await?;
         let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(
-            counts.get("wake_configs"),
-            2,
-            "both wake rows are owner-authored"
-        );
+        assert_eq!(counts.get("blobs"), 1);
+        assert_eq!(counts.get("blob_uploads"), 2, "the pending upload goes too");
+        assert_eq!(counts.get("sidecar_rows"), 2, "both citation families");
 
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
+        assert_eq!(
+            rows_for_blob(pool, blob).await?,
+            (0, 0, 0, 0),
+            "no row keyed on the owner's blob survives"
+        );
+        let owner_uploads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE owner_id = $1",
         )
         .bind(owner.into_inner())
         .fetch_one(pool)
         .await?;
-        assert_eq!(
-            remaining, 0,
-            "owner erase must leave no wake_config row for the owner"
-        );
-        for gone in [armed, idle] {
-            let rows: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
-            )
-            .bind(gone)
-            .fetch_one(pool)
-            .await?;
-            assert_eq!(rows, 0);
-        }
+        assert_eq!(owner_uploads, 0, "no upload row of the owner survives");
 
-        let untouched: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
-        )
-        .bind(other_wake)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(untouched, 1, "another owner's wake config stays");
-        let witness: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
-        )
-        .bind(goal_t)
-        .fetch_optional(pool)
-        .await?;
         assert_eq!(
-            witness.as_deref(),
-            Some("goal"),
-            "owner erase hard-deletes the armed Goal and records a goal witness"
+            rows_for_blob(pool, neighbour_blob).await?,
+            (1, 1, 1, 1),
+            "another owner's cited blob is untouched"
         );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("owner wake_config erase failed");
+    result.expect("owner blob erase failed");
 }
 
-/// `wake_config` has no source attribution, so source scope cannot select even
-/// an unarmed row.
+/// Source scope can delete only blobs captured from its selected admissions.
+/// Surviving hot or cooled citations protect shared blobs, while an unrelated
+/// unreferenced completed upload is outside the source scope entirely.
 #[tokio::test]
-async fn erase_source_scope_keeps_all_wake_configs() {
+async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let cold = Arc::new(MemoryColdStore::default());
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        pg.ingest_fact_atomic(&permit, &draft(Some(("src-wake", "k-wake"))), None)
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
             .await?;
+        let t = written.memory_id.into_inner();
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        let key: String =
+            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
 
-        let mut tx = pool.begin().await?;
-        let armed = insert_wake_config(&mut tx, &owner, &wake_draft("armed prompt")).await?;
-        let orphan = insert_wake_config(&mut tx, &owner, &wake_draft("orphan prompt")).await?;
-        write_armed_goal(&mut tx, &owner, "armed goal", "wake-src", armed).await?;
-        tx.commit().await?;
+        sqlx::raw_sql(
+            "CREATE FUNCTION public.refuse_cold_delete() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 RAISE EXCEPTION 'injected cold delete refusal';
+             END
+             $$;
+             CREATE TRIGGER refuse_cold_delete
+             BEFORE DELETE ON proxima_core.cooled
+             FOR EACH ROW EXECUTE FUNCTION public.refuse_cold_delete();",
+        )
+        .execute(pool)
+        .await?;
 
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
-            source_id: SourceId::new("src-wake"),
-            drop_event_id: "test-drop-wake-src".into(),
+            drop_event_id: "test-drop-abort".into(),
         });
-        let outcome = pg
-            .erase_personal_source_scope(
-                &auth,
-                user,
-                &SourceId::new("src-wake"),
-                &contract_sidecar_tables(),
-            )
-            .await?;
-        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
-            panic!("expected completed erase, got {outcome:?}");
-        };
-        assert_eq!(
-            counts.get("wake_configs"),
-            0,
-            "source erase owns no wake rows"
+        let err = pg
+            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
+            .await
+            .expect_err("the injected cold delete refusal aborts the erase");
+        assert!(
+            err.to_string().contains("cold delete refusal"),
+            "got: {err}"
         );
 
-        let armed_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
-        )
-        .bind(armed)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(
-            armed_rows, 1,
-            "a wake a surviving goal arms must survive a source-scope erase"
+        assert!(
+            cold.get(&key).await.is_ok(),
+            "an aborted erase may not have destroyed the object"
         );
-        let orphan_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
+        let stub: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(stub, 1, "the locator is back, so the bytes must be too");
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
         )
-        .bind(orphan)
+        .bind(&key)
         .fetch_one(pool)
         .await?;
+        assert_eq!(pending, 0, "the pending mark rolls back with the erase");
+        let witness: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_optional(pool)
+        .await?;
         assert_eq!(
-            orphan_rows, 1,
-            "an unarmed wake row has no source attribution and must survive"
+            witness, None,
+            "an aborted owner erase must not leave a historical witness"
         );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("source-scope wake_config erase failed");
+    result.expect("aborted owner erase consistency test failed");
 }
 
-/// A `cold.delete` inside the erase transaction leaves `cooled` rows naming
-/// destroyed objects when the transaction rolls back. The keys are marked
-/// pending in-transaction and destroyed after the commit.
+/// `blob` holds the owner's content hashes and `blob_uploads` its filenames,
+/// buckets and S3 object keys; a registered citation sidecar holds whatever the
+/// flavor's citation payload is. Nothing collected any of it — erase deletes no
+/// `owners` row, so the FKs never fired and the rows were immortal.
+
 #[tokio::test]
 async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -939,8 +911,9 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -995,8 +968,9 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(RefusingDeleteCold::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -1046,7 +1020,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         );
         assert_eq!(failed_retry.remaining, 2);
 
-        let retry_pg = PgStorage::connect(&url)
+        let retry_pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
         let dry_run = retry_pg
@@ -1101,6 +1075,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
 /// non-transactional, so it survives the rollback the raise causes. The
 /// counter reading past one IS the retry: without the bounded loop the erase
 /// returns the error and the statement runs exactly once.
+
 #[tokio::test]
 async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1109,10 +1084,9 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url)
+        let pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
-        pg.run_before_owner_rls_migrations().await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -1134,6 +1108,11 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
              AFTER DELETE ON proxima_core.memory
              FOR EACH STATEMENT
              EXECUTE FUNCTION public.inject_erase_deadlock();",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.erase_deadlock_probe TO PUBLIC",
         )
         .execute(pool)
         .await?;
@@ -1182,6 +1161,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
 /// debt, so bytes an erase promised to destroy survived with no record that
 /// they did. The refusal is what makes that mis-wiring loud. The same pass
 /// must still drain a matching debt, or the guard would just be an outage.
+
 #[tokio::test]
 async fn a_drain_refuses_debts_owed_by_another_backend() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1191,8 +1171,9 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let cold = Arc::new(BucketNamedCold::new("wired-bucket"));
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -1271,160 +1252,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
 /// *after* the cooled rows are gone from the transaction, so the whole erase
 /// aborts. Nothing may have been destroyed in the object store by then: the
 /// `cooled` locator is back, so its bytes must be too.
-#[tokio::test]
-async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_core_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
-        let pool = pg.pool_for_tests();
-        let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerId::from(user);
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = pg
-            .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
-            .await?;
-        let t = written.memory_id.into_inner();
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
-        let key: String =
-            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
 
-        let outsider = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let outsider_permit = OwnerWritePermit::new_for_tests(outsider, AccessKind::Fact);
-        pg.ingest_fact_atomic(&outsider_permit, &draft(None), None)
-            .await?;
-        let mut tx = pool.begin().await?;
-        let wake = insert_wake_config(&mut tx, &owner, &wake_draft("held prompt")).await?;
-        write_armed_goal(&mut tx, &outsider, "outsider goal", "held", wake).await?;
-        tx.commit().await?;
-
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-            user_id: user,
-            drop_event_id: "test-drop-abort".into(),
-        });
-        let err = pg
-            .erase_personal_owner(&auth, user, &contract_sidecar_tables())
-            .await
-            .expect_err("the RESTRICT FK aborts the erase");
-        assert!(err.to_string().contains("wake_config"), "got: {err}");
-
-        assert!(
-            cold.get(&key).await.is_ok(),
-            "an aborted erase may not have destroyed the object"
-        );
-        let stub: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(stub, 1, "the locator is back, so the bytes must be too");
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
-        )
-        .bind(&key)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(pending, 0, "the pending mark rolls back with the erase");
-        let witness: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_optional(pool)
-        .await?;
-        assert_eq!(
-            witness, None,
-            "an aborted owner erase must not leave a historical witness"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("aborted owner erase consistency test failed");
-}
-
-/// `blob` holds the owner's content hashes and `blob_uploads` its filenames,
-/// buckets and S3 object keys; a registered citation sidecar holds whatever the
-/// flavor's citation payload is. Nothing collected any of it — erase deletes no
-/// `owners` row, so the FKs never fired and the rows were immortal.
-#[tokio::test]
-async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_core_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
-        let pool = pg.pool_for_tests();
-        create_citation_sidecar_tables(pool).await?;
-        let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerId::from(user);
-        let blob = cite_blob(&pg, owner, Some(("src", "k-blob")), 3).await?;
-        // A pending upload names no blob: owner data attributable to no source.
-        sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
-                 (owner_id, bucket, object_key, filename, mime, expected_byte_len, expires_at)
-             VALUES ($1, 'bucket', 'pending/1', 'draft.pdf', 'application/pdf', 1,
-                     now() + interval '1 hour')",
-        )
-        .bind(owner.into_inner())
-        .execute(pool)
-        .await?;
-
-        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let neighbour_blob = cite_blob(&pg, neighbour, Some(("src", "k-other")), 5).await?;
-
-        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
-            user_id: user,
-            drop_event_id: "test-drop-blob".into(),
-        });
-        let outcome = pg
-            .erase_personal_owner(&auth, user, &citation_surfaces())
-            .await?;
-        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
-            panic!("expected completed erase, got {outcome:?}");
-        };
-        assert_eq!(counts.get("blobs"), 1);
-        assert_eq!(counts.get("blob_uploads"), 2, "the pending upload goes too");
-        assert_eq!(counts.get("sidecar_rows"), 2, "both citation families");
-
-        assert_eq!(
-            rows_for_blob(pool, blob).await?,
-            (0, 0, 0, 0),
-            "no row keyed on the owner's blob survives"
-        );
-        let owner_uploads: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE owner_id = $1",
-        )
-        .bind(owner.into_inner())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(owner_uploads, 0, "no upload row of the owner survives");
-
-        assert_eq!(
-            rows_for_blob(pool, neighbour_blob).await?,
-            (1, 1, 1, 1),
-            "another owner's cited blob is untouched"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("owner blob erase failed");
-}
-
-/// Source scope can delete only blobs captured from its selected admissions.
-/// Surviving hot or cooled citations protect shared blobs, while an unrelated
-/// unreferenced completed upload is outside the source scope entirely.
 #[tokio::test]
 async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1435,8 +1263,9 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // The cited-upload fixtures below explicitly name this bucket.
         let cold = Arc::new(BucketNamedCold::new("bucket"));
-        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(cold.clone());
         let pool = pg.pool_for_tests();
         create_citation_sidecar_tables(pool).await?;
         let user = UserId::new(Uuid::now_v7());
@@ -1555,8 +1384,7 @@ async fn erasing_a_users_id_through_the_group_path_without_the_drop_proof_is_ref
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
@@ -1612,8 +1440,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let group = GroupId::new(Uuid::now_v7());
@@ -1669,8 +1496,7 @@ async fn erase_group_owner_completes_when_abandoned() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let group = GroupId::new(Uuid::now_v7());
@@ -1696,7 +1522,6 @@ async fn erase_group_owner_completes_when_abandoned() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -1750,8 +1575,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -1814,8 +1638,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -1918,8 +1741,7 @@ async fn erasing_a_member_removes_its_relations_and_preserves_other_members() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let user = UserId::new(Uuid::now_v7());
@@ -2329,7 +2151,7 @@ async fn owner_erase_excludes_a_memory_transferred_away_before_its_fence() {
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+                    &OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, destination),
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),
@@ -2431,7 +2253,7 @@ async fn destination_erase_includes_a_memory_transferred_in_before_its_fence() {
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &OwnerWritePermit::new_for_tests(source, AccessKind::Fact),
+                    &OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination),
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),
@@ -2524,7 +2346,7 @@ async fn destination_source_erase_includes_a_series_transferred_in_before_its_fe
         let transfer = tokio::spawn(async move {
             transfer_pg
                 .transfer_to_owner(
-                    &OwnerWritePermit::new_for_tests(source, AccessKind::Fact),
+                    &OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination),
                     EntityId::Memory(proxima_core::MemoryId::new(t)),
                     destination,
                     &contract_sidecar_tables(),

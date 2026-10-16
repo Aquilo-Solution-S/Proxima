@@ -1,4 +1,4 @@
-//! The pause gate of a claim-based background worker (docs/10 §Quiesce and
+//! The pause gate of a claim-based background worker (docs/configuration.md
 //! resume).
 //!
 //! A worker that claims queue rows under a lease holds the [`GateWorker`] half

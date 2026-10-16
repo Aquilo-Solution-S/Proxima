@@ -427,40 +427,9 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
-    /// `ForgetRule::Keep` on a memory sidecar and
-    /// `pg_sidecar!(owner_pinned: true)` are the same fact, because
-    /// owner-pinning is the ONLY mechanism by which the forget can honour
-    /// the declaration.
-    ///
-    /// The forget touches a stamped memory sidecar twice — `dump_stamped_
-    /// sidecars` reads its row into the cold record, and
-    /// `delete_memory_dependents` deletes it — and the single test either
-    /// walk applies is `is_owner_pinned`. Nothing in either one reads
-    /// `ForgetRule`. So a surface that declares `Keep` without the flag has
-    /// its rows dumped and deleted like any other, and the declaration is
-    /// prose. Core ships exactly one `Keep` memory sidecar,
-    /// `mcp_call_logged_v1`, and its rows survive because it is ALSO
-    /// `RetainAtSource` and therefore owner-pinned — an unrelated property
-    /// that happens to imply the right behaviour.
-    ///
-    /// WHY A REFUSAL AND NOT A SKIP IN THE WALK. Teaching
-    /// `delete_memory_dependents` to skip `Kept` fixes half of it and breaks
-    /// the other half: the dump walk would still copy the row into the cold
-    /// record, the rows would still be sitting in the hot table, and
-    /// `restore_registered_sidecars` INSERTs without `ON CONFLICT` — so the
-    /// next hydrate dies on a primary key. Honouring `Keep` properly means
-    /// exempting the table from the forget/hydrate cycle in both walks,
-    /// which is precisely and entirely what `owner_pinned` already means
-    /// ("Owner-pinned sidecars do not take part in forget/hydrate at all").
-    /// A second mechanism for it would be a second description of one fact.
-    ///
-    /// Checked in BOTH directions, like its sibling above. An owner-pinned
-    /// sidecar's rows are kept whatever its `ForgetRule` says, so declaring
-    /// `DumpThenDelete` there is equally a claim the substrate does not
-    /// honour.
-    ///
-    /// `ForgetLeg::derive` is the classifier — the same one freeze and the
-    /// forget read — rather than a second reading of `ForgetRule` here.
+    /// `Keep` and `owner_pinned` must agree: both dump and delete exempt
+    /// owner-pinned rows. A mismatch either loses kept data or duplicates it
+    /// on restore. `ForgetLeg::derive` supplies the shared classifier.
     fn check_keep_is_owner_pinned(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,

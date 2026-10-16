@@ -1,7 +1,7 @@
 use super::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalChange, GoalDraft, GoalId,
-    GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWakeConfigWrite, GoalWriteOutcome,
+    GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
     ModifyGoalAtomicRequest, OwnerId, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
@@ -68,7 +68,6 @@ fn draft_declaration(draft: &GoalDraft) -> Result<serde_json::Value, StorageErro
         "sidecar": sidecar_declaration(draft.sidecar_payload.as_ref())?,
         "state": draft.state,
         "topology": draft.topology,
-        "wake": draft.wake,
         "supersedes_goal_id": draft.supersedes_goal_id.map(GoalId::into_inner),
         "authorship": authorship_declaration(&draft.authorship),
     }))
@@ -135,7 +134,6 @@ pub(super) fn modify_replay_declaration(
         [
             ("prior_goal_id", serde_json::json!(prior)),
             ("replacement", payload_declaration(&req.replacement)?),
-            ("wake", modify_wake_declaration(req.wake.as_ref())),
             (
                 "authorship",
                 serde_json::json!(authorship_declaration(&req.authorship)),
@@ -143,14 +141,6 @@ pub(super) fn modify_replay_declaration(
             ("evidence", serde_json::json!(req.evidence)),
         ],
     ))
-}
-
-fn modify_wake_declaration(wake: Option<&Option<GoalWakeConfigWrite>>) -> serde_json::Value {
-    match wake {
-        None => serde_json::json!({"mode": "carry"}),
-        Some(None) => serde_json::json!({"mode": "clear"}),
-        Some(Some(config)) => serde_json::json!({"mode": "replace", "config": config}),
-    }
 }
 
 type ReplayProbeRow = (i64, Option<uuid::Uuid>, Option<i32>, Option<bool>);
@@ -173,7 +163,6 @@ pub(super) fn decompose_child_replay_declaration(
             ("child_index", serde_json::json!(child_index)),
             ("payload", payload_declaration(&child.payload)?),
             ("evidence", serde_json::json!(child.evidence)),
-            ("wake", serde_json::json!(child.wake)),
         ],
     ))
 }
@@ -300,7 +289,7 @@ pub(crate) async fn resolve_goal_command_replay_on(
 }
 
 /// Resolve one exact command replay from its persisted declaration before any
-/// live assignment, evidence, prior-head, or wake probe.
+/// live assignment, evidence, or prior-head probe.
 pub(super) async fn resolve_goal_replay(
     conn: &mut PgConnection,
     owner: &OwnerId,
@@ -338,7 +327,6 @@ fn replay_outcome(
         .ok_or_else(|| internal("Goal replay declaration has invalid edge_count"))?;
     Ok(GoalWriteOutcome {
         goal_id: GoalId::new(goal_t),
-        change_event_seq: goal_t,
         edge_count,
         idempotent_replay: true,
     })

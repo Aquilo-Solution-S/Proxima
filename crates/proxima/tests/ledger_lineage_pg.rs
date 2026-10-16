@@ -13,7 +13,6 @@ use proxima::{
     run_core_and_flavor_migrations,
 };
 use proxima_pg_testkit::SplitRoleDb;
-use proxima_storage_pg::PgStorage;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 
@@ -92,9 +91,13 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     let db = SplitRoleDb::create("proxima_ledger_lineage", &[])
         .await
         .expect("PG required");
-    let pg = PgStorage::connect(db.platform_url())
-        .await
-        .expect("platform storage");
+    let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxima_storage_pg::PgPoolConfig::from_env().expect("pool config"),
+        proxima_storage_pg::PgTuning::from_env().expect("PG tuning"),
+    )
+    .await
+    .expect("platform storage");
 
     run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND]))
         .await
@@ -145,9 +148,13 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
     let db = SplitRoleDb::create("proxima_ledger_lineage_skip", &[])
         .await
         .expect("PG required");
-    let pg = PgStorage::connect(db.platform_url())
-        .await
-        .expect("platform storage");
+    let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxima_storage_pg::PgPoolConfig::from_env().expect("pool config"),
+        proxima_storage_pg::PgTuning::from_env().expect("PG tuning"),
+    )
+    .await
+    .expect("platform storage");
 
     run_core_and_flavor_migrations(&pg, Vec::new())
         .await

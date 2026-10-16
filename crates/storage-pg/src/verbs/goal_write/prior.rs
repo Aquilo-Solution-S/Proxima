@@ -150,7 +150,6 @@ pub(super) fn draft_from_stored(
             evidence_refs(evidence),
         )
         .expect("stored topology has unique dependencies"),
-        wake: None,
         supersedes_goal_id: supersedes,
         authorship,
         request_id: request_id.to_string(),
@@ -189,7 +188,6 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
             evidence_refs(input.evidence),
         )
         .expect("stored topology has unique dependencies"),
-        wake: None,
         supersedes_goal_id: input.supersedes,
         authorship: input.authorship,
         request_id: input.request_id.to_string(),
@@ -215,7 +213,6 @@ pub(super) fn child_draft(
         *owner,
         child.payload.clone(),
         child_topology,
-        child.wake.clone(),
         authorship.clone(),
         child.request_id.clone(),
     ))

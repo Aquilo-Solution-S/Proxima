@@ -57,7 +57,7 @@ pub(crate) const ENV_OUTBOX_PUBLISHED_RETENTION_SECS: &str =
 pub(crate) const MIN_PUBLISHED_RETENTION: Duration = Duration::from_mins(1);
 
 /// Read how long a DELIVERED record is kept before the publisher task
-/// reclaims it (docs/18 §Retention).
+/// reclaims it (docs/host-integration.md §Retention).
 ///
 /// `None` — the default, and what `0` spells explicitly — keeps published
 /// records forever, which is the behaviour every deployment had before this
@@ -94,7 +94,7 @@ pub(crate) fn published_retention_from_lookup(
     Ok(Some(horizon))
 }
 
-/// Read the publication block (docs/18 §Configuration) into the ONE value
+/// Read the publication block (docs/host-integration.md §Configuration) into the ONE value
 /// the engine is built with.
 ///
 /// The result is not optional. Every deployment has a publication

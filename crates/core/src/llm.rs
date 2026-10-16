@@ -19,8 +19,6 @@ pub use space::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    #[error("LLM call failed: {0}")]
-    Llm(String),
     #[error("embedding call failed: {0}")]
     Embed(String),
     /// Embedding rejected for a cause retries cannot fix (e.g. input over
@@ -28,8 +26,6 @@ pub enum LlmError {
     /// fail terminally instead of burning retry attempts forever.
     #[error("embedding permanently rejected: {0}")]
     EmbedPermanent(String),
-    #[error("output validation failed: {0}")]
-    OutputValidation(String),
     #[error("internal: {0}")]
     Internal(String),
 }

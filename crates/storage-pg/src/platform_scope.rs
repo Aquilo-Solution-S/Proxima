@@ -13,6 +13,7 @@ pub struct PgPlatformScope {
     pool: PgPool,
     database_oid: i64,
     role_oid: i64,
+    schemas: std::sync::Arc<[String]>,
 }
 
 impl std::fmt::Debug for PgPlatformScope {
@@ -21,11 +22,30 @@ impl std::fmt::Debug for PgPlatformScope {
             .debug_struct("PgPlatformScope")
             .field("database_oid", &self.database_oid)
             .field("role_oid", &self.role_oid)
+            .field("schemas", &self.schemas)
             .finish_non_exhaustive()
     }
 }
 
 impl PgPlatformScope {
+    /// Construct a lazy authority for facade composition tests that never
+    /// execute a platform query.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the fixed test URL is rejected by `SQLx`'s URL parser.
+    #[cfg(feature = "test-fixtures")]
+    #[must_use]
+    pub fn for_tests() -> Self {
+        Self {
+            pool: PgPool::connect_lazy("postgres://invalid/proxima")
+                .expect("test platform pool URL is syntactically valid"),
+            database_oid: 0,
+            role_oid: 0,
+            schemas: std::sync::Arc::from([String::from("proxima_core")]),
+        }
+    }
+
     /// Validate the platform pool after migrations, before admitting runtime
     /// traffic or starting maintenance. `schemas` comes from host composition.
     ///
@@ -51,13 +71,19 @@ impl PgPlatformScope {
                 "platform data role must obey FORCE ROW LEVEL SECURITY",
             ));
         }
-        let enforcing = crate::owner_rls_enforced(&pool, schemas).await?;
-        crate::rls_guard::assert_platform_catalog(&pool, schemas, enforcing).await?;
+        crate::rls_guard::assert_platform_catalog(&pool, schemas, true).await?;
         Ok(Self {
             pool,
             database_oid,
             role_oid,
+            schemas: schemas.iter().map(|schema| (*schema).to_owned()).collect(),
         })
+    }
+
+    /// The composed schema inventory this authority was validated over. The
+    /// serving storage checks its runtime role's RLS over the same list.
+    pub(crate) fn schemas(&self) -> Vec<&str> {
+        self.schemas.iter().map(String::as_str).collect()
     }
 
     /// Begin a platform transaction under its explicit policy, including on
@@ -117,16 +143,12 @@ fn refused(message: &str) -> StorageError {
     StorageError::ConstraintViolation(message.to_owned())
 }
 
-/// Compatibility exists only before enforcement; never derives platform authority
-/// from a tenant owner or an absent owner witness.
+/// Begin a transaction under the boot-bound platform authority.
 pub(crate) async fn begin_platform_transaction(
-    runtime_pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    _runtime_pool: &PgPool,
+    platform: &PgPlatformScope,
 ) -> Result<Transaction<'static, Postgres>, StorageError> {
-    match platform {
-        Some(scope) => scope.begin().await,
-        None => crate::begin_compatible_owner_transaction(runtime_pool, None).await,
-    }
+    platform.begin().await
 }
 
 /// Open the transaction enclosing one migration source. `SQLx`'s per-file
@@ -175,7 +197,7 @@ pub async fn begin_migration_transaction(
 
 pub(crate) async fn begin_owner_lifecycle_transaction(
     pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    platform: &PgPlatformScope,
     permit: &proxima_core::storage_ports::OwnerWritePermit,
 ) -> Result<Transaction<'static, Postgres>, StorageError> {
     if let Some(scope) = permit.owner_scope() {
@@ -185,11 +207,9 @@ pub(crate) async fn begin_owner_lifecycle_transaction(
             ));
         }
     } else {
-        crate::begin_compatible_owner_transaction(pool, None)
-            .await?
-            .rollback()
-            .await
-            .map_err(map_err)?;
+        return Err(refused(
+            "authenticated OwnerScope is required for owner lifecycle maintenance",
+        ));
     }
     begin_platform_transaction(pool, platform).await
 }

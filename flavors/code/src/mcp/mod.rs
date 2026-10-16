@@ -8,15 +8,19 @@ use proxima_core::{ToolCtx, ToolError};
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
 
-pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolError> {
+pub(crate) fn code_store(
+    ctx: &ToolCtx,
+) -> Result<Arc<crate::store::ScopedCodeFlavorStore>, ToolError> {
     let store = ctx.service::<CodeFlavorStore>().ok_or_else(|| {
         ToolError::Other("code flavor requires a CodeFlavorStore tool service".into())
     })?;
     Ok(Arc::new(
-        store
-            .as_ref()
-            .clone()
-            .with_owner_scope(ctx.authz().owner_scope().cloned()),
+        store.as_ref().clone().with_owner_scope(
+            ctx.authz()
+                .owner_scope()
+                .cloned()
+                .ok_or_else(|| ToolError::Other("authenticated owner scope required".into()))?,
+        ),
     ))
 }
 
@@ -61,3 +65,28 @@ pub use repos::{
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
 pub use work_item_bundle::CodeWorkItemBundleTool;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, ToolServices, UserId};
+
+    #[tokio::test]
+    async fn an_unverified_tool_context_cannot_bind_a_store() {
+        let owner = UserId::new(uuid::Uuid::now_v7()).into();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("valid fixture URL");
+        let ctx = ToolCtx::new(
+            owner,
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            ToolServices::with(CodeFlavorStore::from_backend_pool_for_tests(pool)),
+        );
+
+        let error = code_store(&ctx).expect_err("unverified scope must be refused before SQL");
+        assert!(
+            matches!(error, ToolError::Other(message) if message == "authenticated owner scope required")
+        );
+    }
+}

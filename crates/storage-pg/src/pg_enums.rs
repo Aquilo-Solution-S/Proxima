@@ -1,16 +1,7 @@
 //! Typed decodes for the closed `proxima_core` Postgres enums.
 //!
-//! A `kind::text` readback matched on `&str` has no total arm. The catch-all
-//! must pick some value, and that pick is a guess the compiler cannot check —
-//! which is how one enum grew four different unknown-label behaviours across
-//! ten decode sites, three of them silently coercing to the most destructive
-//! reading (`forget` treating an unknown kind as a Fact, `announce` reporting
-//! a deletion as an append).
-//!
-//! Decoding into a `sqlx::Type` enum moves that decision to the boundary: an
-//! unrecognised label is a decode error where the row is read, and adding a
-//! Rust variant is a compile error in the `From` impls below rather than a
-//! silent re-route through a catch-all.
+//! Database labels are decoded at the row boundary. Unknown labels return a
+//! decode error; exhaustive `From` matches cover every admitted Rust variant.
 
 use proxima_core::EntityKind;
 
@@ -32,24 +23,6 @@ impl From<PgMemoryKind> for EntityKind {
             PgMemoryKind::Perspective => Self::Perspective,
         }
     }
-}
-
-/// `proxima_core.announce_op`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.announce_op", rename_all = "lowercase")]
-pub(crate) enum PgAnnounceOp {
-    Append,
-    Forget,
-    Erase,
-    Transfer,
-}
-
-/// `proxima_core.announce_entity`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.announce_entity", rename_all = "lowercase")]
-pub(crate) enum PgAnnounceEntity {
-    Memory,
-    Goal,
 }
 
 /// `proxima_core.pin_target_kind`. Four labels: the same three as

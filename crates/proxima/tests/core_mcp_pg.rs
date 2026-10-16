@@ -540,7 +540,18 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
-        let pg = PgStorage::connect(&runtime_url).await?;
+        let scope = proxima_storage_pg::PgPlatformScope::new(
+            sqlx::PgPool::connect(&platform_url).await?,
+            &["proxima_core"],
+        )
+        .await?;
+        let pg = PgStorage::connect_with_config(
+            &runtime_url,
+            proxima_storage_pg::PgPoolConfig::from_env()?,
+            proxima_storage_pg::PgTuning::from_env()?,
+            scope,
+        )
+        .await?;
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
         let authz = space_authz(
             personal,
@@ -2668,13 +2679,6 @@ async fn core_forget_cools_a_remembered_fact() {
                 .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(cooled, 1, "forget must leave the cooled stub");
-        let announce: String = sqlx::query_scalar(
-            "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(t)
-        .fetch_one(&admin_pool)
-        .await?;
-        assert_eq!(announce, "forget");
 
         let cold = built
             .host()

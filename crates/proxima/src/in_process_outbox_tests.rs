@@ -365,7 +365,6 @@ async fn set_and_pause(world: &World, pending: PendingWork) -> (GoalId, GoalId) 
         .create_goal(GoalCreateRequest {
             owner: world.owner,
             topology: topology.expect("topology"),
-            wake: None,
             title: "feed".into(),
             text: "feed".into(),
             payload: SimpleTextGoalV1 {},
@@ -588,7 +587,7 @@ async fn the_http_sink_retries_a_503_and_publishes_once_the_receiver_accepts() {
 }
 
 /// A 422 is the receiver's durable refusal: the lane settles (a rejection is
-/// a decision, docs/18 §Delivery) and the receiver is hit exactly once.
+/// a decision, docs/host-integration.md §Delivery) and the receiver is hit exactly once.
 #[tokio::test]
 async fn the_http_sink_settles_a_422_after_one_request() {
     use crate::outbox_http::tests::{Ca, Files, Receiver, Reply, intake};

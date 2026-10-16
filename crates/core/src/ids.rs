@@ -1,6 +1,6 @@
 //! Core ID newtypes.
 //!
-//! See docs/07-storage.md §"ID types" for semantics.
+//! See docs/concepts.md §"ID types" for semantics.
 
 use uuid::Uuid;
 
@@ -160,7 +160,7 @@ impl std::fmt::Display for SchemaVersion {
 }
 
 /// BLAKE3-32 `ContentHash` of (`source_id`, owner, payload).
-/// Per docs/07 §"ID types" — events use `ContentHash` for
+/// Per docs/concepts.md
 /// re-receipt dedup, not `UUIDv7`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FactReceiptId([u8; 32]);
@@ -177,7 +177,7 @@ impl FactReceiptId {
     }
 }
 
-/// Stable identifier of an Event Source. docs/07 §"ID types".
+/// Stable identifier of an Event Source. docs/concepts.md
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceId(String);
 

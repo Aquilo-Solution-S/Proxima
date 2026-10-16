@@ -6,18 +6,21 @@
 //! included.
 use std::borrow::Cow;
 
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls};
+use proxima_storage_pg::{PgPoolConfig, PgTuning, begin_migration_transaction, core_migrator};
+use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// A database with every migration up to 0029 applied and recorded.
-async fn database_at_0029(db_name: &str) -> TestResult<PgStorage> {
+async fn database_at_0029(db_name: &str) -> TestResult<sqlx::PgPool> {
     create_db(db_name).await?;
-    let pg = PgStorage::connect(&db_url(db_name)).await?;
     let (_, platform_url) = split_role_urls(db_name).await?;
-    let platform = sqlx::PgPool::connect(&platform_url).await?;
+    let platform = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&platform_url)
+        .await?;
     let mut staged = core_migrator();
     staged.migrations = Cow::Owned(
         staged
@@ -31,12 +34,12 @@ async fn database_at_0029(db_name: &str) -> TestResult<PgStorage> {
     staged.run(migration.as_mut()).await?;
     migration.commit().await?;
     drop(connection);
-    platform.close().await;
     assert!(
-        !super::column_exists(&pg, "memory", "occurred_at").await,
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'proxima_core' AND table_name = 'memory' AND column_name = 'occurred_at')")
+            .fetch_one(&platform).await?,
         "the fixture stands at 0029, before the column exists"
     );
-    Ok(pg)
+    Ok(platform)
 }
 
 /// A `UUIDv7` minted at an exact millisecond, so the write time the backfill
@@ -101,17 +104,19 @@ async fn stored_occurrence(
 async fn a_fact_written_before_the_column_occurred_at_its_write_time() -> TestResult {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
-        let pg = database_at_0029(&db_name).await?;
-        let pool = pg.pool_for_tests();
+        let pool = database_at_0029(&db_name).await?;
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+            .execute(&pool)
+            .await?;
         let owner = Uuid::now_v7();
         sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
-            .execute(pool)
+            .execute(&pool)
             .await?;
 
         let written_ms = 1_700_000_000_123;
         let fact = t_at(written_ms);
-        seed_memory(pool, owner, fact, "fact", &[], None).await?;
+        seed_memory(&pool, owner, fact, "fact", &[], None).await?;
         let content_id: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'test/upgrade-v1', $2)
@@ -119,11 +124,11 @@ async fn a_fact_written_before_the_column_occurred_at_its_write_time() -> TestRe
         )
         .bind(owner)
         .bind(vec![7_u8; 32])
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await?;
         let abstraction = t_at(written_ms + 1);
         seed_memory(
-            pool,
+            &pool,
             owner,
             abstraction,
             "abstraction",
@@ -132,19 +137,25 @@ async fn a_fact_written_before_the_column_occurred_at_its_write_time() -> TestRe
         )
         .await?;
 
-        super::apply_current_migrations(&pg).await?;
+        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &split_role_urls(&db_name).await?.1,
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await?;
+        migration.run_migrations().await?;
 
         let write_time =
             time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(written_ms) * 1_000_000)?;
-        assert_eq!(stored_occurrence(pool, fact).await?, Some(write_time));
-        assert_eq!(stored_occurrence(pool, abstraction).await?, None);
-        super::assert_current_markers(pool).await?;
-        super::assert_current_schema(pool).await?;
+        assert_eq!(stored_occurrence(&pool, fact).await?, Some(write_time));
+        assert_eq!(stored_occurrence(&pool, abstraction).await?, None);
+        super::assert_current_markers(&pool).await?;
+        super::assert_current_schema(&pool).await?;
 
         // Running the file again changes nothing.
-        super::apply_core_migrations(pool, 30..=30).await?;
-        assert_eq!(stored_occurrence(pool, fact).await?, Some(write_time));
-        assert_eq!(stored_occurrence(pool, abstraction).await?, None);
+        super::apply_core_migrations(&pool, 30..=30).await?;
+        assert_eq!(stored_occurrence(&pool, fact).await?, Some(write_time));
+        assert_eq!(stored_occurrence(&pool, abstraction).await?, None);
 
         // The backfill turned the append-only guard off for one statement.
         let refused = sqlx::query(
@@ -152,13 +163,13 @@ async fn a_fact_written_before_the_column_occurred_at_its_write_time() -> TestRe
               WHERE t = $1",
         )
         .bind(fact)
-        .execute(pool)
+        .execute(&pool)
         .await
         .expect_err("a Fact's occurrence time must not be rewritable");
         assert!(refused.to_string().contains("append-only"), "{refused}");
 
         // Every Fact carries the time, and nothing else does.
-        let refused = seed_memory(pool, owner, Uuid::now_v7(), "fact", &[], None)
+        let refused = seed_memory(&pool, owner, Uuid::now_v7(), "fact", &[], None)
             .await
             .expect_err("a Fact without an occurrence time must be refused");
         assert!(

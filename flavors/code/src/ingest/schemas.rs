@@ -1,7 +1,7 @@
 /// Stable source-id namespace for `LocalGitSource` events.
 pub const LOCAL_GIT_SOURCE_ID: &str = "proxima-code/local-git";
 
-// Per-fact-type citation schema-ids (docs/11). Raw file-revision
+// Per-fact-type citation schema-ids (see `docs/protocol.md`). Raw file-revision
 // Facts cite the observed file blob keyed by `content_sha256`.
 // Derived code-slice Abstractions do not carry citations; provenance
 // closes to file/commit Facts through `core/derived-from` edges.

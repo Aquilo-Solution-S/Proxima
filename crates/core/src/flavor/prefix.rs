@@ -1,6 +1,6 @@
 /// `const fn` byte-wise `str::starts_with` — used by `proxima_flavor!`
 /// to compile-check schema / tool / trigger prefixes. `str::starts_with`
-/// is not `const`, so the comparison is spelled out. See docs/08
+/// is not `const`, so the comparison is spelled out. See docs/host-integration.md
 /// §Schema namespacing: prefix violations reachable from associated
 /// `const`s or literals are now caught at build time, not at `register`.
 #[must_use]

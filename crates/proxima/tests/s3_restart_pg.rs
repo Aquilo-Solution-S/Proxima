@@ -717,10 +717,14 @@ async fn recover_and_cleanup(
             &["proxima_core"],
         )
         .await?;
-        let maintenance = PgStorage::connect(&runtime_url)
-            .await?
-            .with_platform_scope(platform)
-            .with_cold(Arc::new(cold.clone()));
+        let maintenance = PgStorage::connect_with_config(
+            &runtime_url,
+            proxima_storage_pg::PgPoolConfig::from_env()?,
+            proxima_storage_pg::PgTuning::from_env()?,
+            platform,
+        )
+        .await?
+        .with_cold(Arc::new(cold.clone()));
         let retried = maintenance
             .retry_cold_object_purges(ColdPurgeRetryOptions {
                 batch_size: 10,
@@ -1003,6 +1007,7 @@ async fn run_missing_cold(
             bucket: format!("pg-missing-bucket-{}", Uuid::now_v7().simple()),
             ..config.clone()
         },
+        host.host().platform_scope_for_host().clone(),
     )?;
     let missing_bucket = absent_bucket.cold_store().get(&missing_key).await;
     Ok(MissingColdObservation {

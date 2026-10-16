@@ -16,17 +16,43 @@ mod owner_id;
 mod owner_rls_table;
 #[path = "migrations/query_stopwords.rs"]
 mod query_stopwords;
+#[path = "migrations/retired_surfaces.rs"]
+mod retired_surfaces;
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
-use proxima_core::{AccessKind, EntityId, GroupId, MemoryId, OwnerId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
+// Historical schemas have no serving capability. Only fixture SQL can use
+// their pool; runtime behavior is exercised after boot in the serving suites.
+struct MigrationFixture(sqlx::PgPool);
+
+impl MigrationFixture {
+    fn pool_for_tests(&self) -> &sqlx::PgPool {
+        &self.0
+    }
+}
+
+trait DatabaseFixture {
+    fn pool_for_tests(&self) -> &sqlx::PgPool;
+}
+
+impl DatabaseFixture for MigrationFixture {
+    fn pool_for_tests(&self) -> &sqlx::PgPool {
+        &self.0
+    }
+}
+
+impl DatabaseFixture for PgStorage {
+    fn pool_for_tests(&self) -> &sqlx::PgPool {
+        self.pool_for_tests()
+    }
+}
+
+async fn table_exists(pg: &impl DatabaseFixture, table_name: &str) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (
              SELECT 1
@@ -41,7 +67,7 @@ async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
     .expect("table inventory query should succeed")
 }
 
-async fn column_exists(pg: &PgStorage, table: &str, column: &str) -> bool {
+async fn column_exists(pg: &impl DatabaseFixture, table: &str, column: &str) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (
              SELECT 1
@@ -58,7 +84,7 @@ async fn column_exists(pg: &PgStorage, table: &str, column: &str) -> bool {
     .expect("column inventory query should succeed")
 }
 
-async fn index_exists(pg: &PgStorage, index_name: &str) -> bool {
+async fn index_exists(pg: &impl DatabaseFixture, index_name: &str) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (
              SELECT 1
@@ -85,6 +111,11 @@ fn core_relations_named_in_storage_sql() -> BTreeSet<String> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
         &mut found,
     );
+    // These relations were removed by migration 0031; their historical
+    // source references are intentionally retained only in release history.
+    for retired in ["announce", "mcp_call_logged_v1", "wake_config"] {
+        found.remove(retired);
+    }
     assert!(
         found.len() > 10,
         "the scan found only {found:?}; it stopped reading the sources it exists to read"
@@ -179,7 +210,7 @@ async fn every_core_relation_named_in_storage_sql_exists() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
 
         let mut missing = Vec::new();
@@ -216,7 +247,7 @@ async fn migrations_apply_to_fresh_db() {
 
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
 
         for table in [
@@ -224,7 +255,6 @@ async fn migrations_apply_to_fresh_db() {
             "memory",
             "memory_head",
             "ingest_keys",
-            "announce",
             "cold_purge_pending",
             "erased_pin_target",
             "delegated_authority_grants",
@@ -395,7 +425,6 @@ async fn migrations_apply_to_fresh_db() {
             "group_memberships_member_user_id_idx",
             "embedding_jobs_pending_claim_idx",
             "owners_kind_idx",
-            "announce_owner_seq_idx",
             "embeddings_hnsw_d384",
             "embeddings_hnsw_d768",
             "embeddings_hnsw_d1024",
@@ -549,7 +578,7 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
@@ -720,7 +749,7 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
@@ -843,7 +872,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
@@ -1018,7 +1047,7 @@ async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
@@ -1114,7 +1143,7 @@ async fn memory_is_append_only_and_head_t_only() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
@@ -1233,7 +1262,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
 
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         assert_current_markers(pg.pool_for_tests()).await?;
 
@@ -1245,7 +1274,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing Goal replay append-only trigger must reject --stamp");
+            .expect_err("missing Goal replay append-only trigger must reject boot");
         assert!(
             err.to_string().contains("append-only trigger"),
             "marker error must name the missing Goal replay trigger: {err}"
@@ -1267,7 +1296,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing Goal replay declaration check must reject --stamp");
+            .expect_err("missing Goal replay declaration check must reject boot");
         assert!(
             err.to_string().contains("object check"),
             "marker error must name the missing Goal replay check: {err}"
@@ -1288,7 +1317,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing Goal replay Goal foreign key must reject --stamp");
+            .expect_err("missing Goal replay Goal foreign key must reject boot");
         assert!(
             err.to_string().contains("goal_t foreign key"),
             "marker error must name the missing Goal replay foreign key: {err}"
@@ -1329,7 +1358,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing cold purge primary key must reject --stamp");
+            .expect_err("missing cold purge primary key must reject boot");
         assert!(
             err.to_string().contains("primary key"),
             "marker error must name the missing cold-purge primary key: {err}"
@@ -1346,7 +1375,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
             .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing cooled.blob_id must reject --stamp");
+            .expect_err("missing cooled.blob_id must reject boot");
         assert!(
             err.to_string().contains("cooled.blob_id"),
             "marker error must name the missing cooled witness: {err}"
@@ -1363,7 +1392,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("incorrect embedding-job enum labels must reject --stamp");
+            .expect_err("incorrect embedding-job enum labels must reject boot");
         assert!(
             err.to_string().contains("labels/order"),
             "marker error must name the incorrect enum vocabulary: {err}"
@@ -1376,26 +1405,6 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
 
         sqlx::query(
-            "ALTER TYPE proxima_core.announce_op
-             RENAME VALUE 'transfer' TO 'transfer_old'",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("incorrect announce-op enum labels must reject --stamp");
-        assert!(
-            err.to_string().contains("announce_op labels/order"),
-            "marker error must name the incorrect announce vocabulary: {err}"
-        );
-        sqlx::query(
-            "ALTER TYPE proxima_core.announce_op
-             RENAME VALUE 'transfer_old' TO 'transfer'",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
             "ALTER TABLE proxima_core.embedding_jobs
              DROP CONSTRAINT embedding_job_processing_claim_chk",
         )
@@ -1403,7 +1412,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing processing-claim check must reject --stamp");
+            .expect_err("missing processing-claim check must reject boot");
         assert!(
             err.to_string().contains("processing claim check"),
             "marker error must name the missing check: {err}"
@@ -1419,7 +1428,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("unvalidated processing-claim check must reject --stamp");
+            .expect_err("unvalidated processing-claim check must reject boot");
         assert!(
             err.to_string().contains("processing claim check"),
             "marker error must reject a NOT VALID claim check: {err}"
@@ -1439,7 +1448,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
         let err = assert_current_markers(pg.pool_for_tests())
             .await
-            .expect_err("missing claim_token must reject --stamp");
+            .expect_err("missing claim_token must reject boot");
         assert!(
             err.to_string()
                 .contains("claim_token must be nullable uuid"),
@@ -1464,7 +1473,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
 
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         assert_current_markers(pool).await?;
@@ -1477,7 +1486,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .await?;
         let err = assert_current_markers(pool)
             .await
-            .expect_err("lexical default without its singleton primary key must reject --stamp");
+            .expect_err("lexical default without its singleton primary key must reject boot");
         assert!(
             err.to_string().contains("sole primary-key column"),
             "marker error must name the damaged lexical-default primary key: {err}"
@@ -1497,7 +1506,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .await?;
         let err = assert_current_markers(pool)
             .await
-            .expect_err("lexical default without CHECK (singleton) must reject --stamp");
+            .expect_err("lexical default without CHECK (singleton) must reject boot");
         assert!(
             err.to_string().contains("CHECK (singleton)"),
             "marker error must name the damaged lexical-default singleton check: {err}"
@@ -1517,7 +1526,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .await?;
         let err = assert_current_markers(pool)
             .await
-            .expect_err("lexical default without its active-language FK must reject --stamp");
+            .expect_err("lexical default without its active-language FK must reject boot");
         assert!(
             err.to_string()
                 .contains("must reference lexical_languages(config)"),
@@ -1540,7 +1549,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .await?;
         let err = assert_current_markers(pool)
             .await
-            .expect_err("a stamped table without its language FK must reject --stamp");
+            .expect_err("a stamped table without its language FK must reject boot");
         assert!(
             err.to_string()
                 .contains("every stamped lexical_language column"),
@@ -1560,7 +1569,7 @@ async fn schema_markers_reject_damaged_lexical_default() {
             .await?;
         let err = assert_current_markers(pool)
             .await
-            .expect_err("lexical default without its live singleton row must reject --stamp");
+            .expect_err("lexical default without its live singleton row must reject boot");
         assert!(
             err.to_string().contains("exactly one singleton=true row"),
             "marker error must name the missing lexical-default row: {err}"
@@ -1590,7 +1599,7 @@ async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled()
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         // Third field: the exact marker text the trigger-wiring group reports
@@ -1631,11 +1640,6 @@ async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled()
                 "goal",
                 "goal_pin_target_checks",
                 "goal target trigger timing or wiring is incorrect",
-            ),
-            (
-                "wake_config",
-                "wake_pin_target_checks",
-                "wake target trigger timing or wiring is incorrect",
             ),
             (
                 "memory",
@@ -1722,7 +1726,7 @@ async fn schema_markers_name_a_missing_relation_before_any_group_casts_it() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         assert_current_markers(pool).await?;
@@ -1781,7 +1785,7 @@ async fn schema_markers_reject_damaged_reference_integrity_function_bodies() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let record_definition: String = sqlx::query_scalar(
@@ -1889,9 +1893,8 @@ async fn pre_v008_database_fails_closed() {
         panic!("PG required for tests but admin connect failed: {e}");
     }
 
-    let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = connect_historical_fixture(&db_name).await?;
 
         sqlx::query("CREATE SCHEMA proxima_core")
             .execute(pg.pool_for_tests())
@@ -1900,7 +1903,7 @@ async fn pre_v008_database_fails_closed() {
             .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(
-            "CREATE TABLE public._sqlx_migrations (
+            "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
                  version bigint PRIMARY KEY,
                  description text NOT NULL,
                  installed_on timestamptz NOT NULL DEFAULT now(),
@@ -1952,15 +1955,14 @@ async fn embedding_spaces_migration_upgrades_1024_rows_in_place() {
         panic!("PG required for tests but admin connect failed: {e}");
     }
 
-    let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = connect_historical_fixture(&db_name).await?;
         let pool = pg.pool_for_tests();
         let mut staged = proxima_storage_pg::core_migrator();
         staged.migrations = std::borrow::Cow::Owned(
             staged
                 .iter()
-                .filter(|migration| migration.version < 14)
+                .filter(|migration| migration.version < 15)
                 .cloned()
                 .collect(),
         );
@@ -2075,9 +2077,9 @@ async fn embedding_chunks_migration_preserves_legacy_vectors_and_heads()
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let pg = connect_historical_fixture(&db_name).await?;
         let pool = pg.pool_for_tests();
-        let mut staged = proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls();
+        let mut staged = proxima_storage_pg::core_migrator();
         staged.migrations = std::borrow::Cow::Owned(
             staged.iter().filter(|migration| migration.version < 20).cloned().collect(),
         );
@@ -2183,7 +2185,7 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
 
         let declared: Vec<String> = sqlx::query_scalar(
@@ -2320,8 +2322,8 @@ fn generated_declaration_triggers_are_the_migration_text() {
         .expect("core's declaration triggers");
     assert_eq!(
         artifacts.len(),
-        7,
-        "flavor #0 registers seven memory sidecars; an eighth needs its trigger in the migration"
+        6,
+        "the retired call sidecar no longer receives a declaration trigger"
     );
     // `goal_change_v1` joined after 0002 was applied, so its text is the
     // unreleased 0025's goal-change section; the other six are 0002's.
@@ -2404,8 +2406,8 @@ fn generated_presence_triggers_are_the_migration_text() {
          six get a presence trigger and an orphan guard"
     );
     assert_eq!(
-        repoint, 7,
-        "every registered memory sidecar gets the UPDATE-of-key guard, owner-pinned included"
+        repoint, 6,
+        "every surviving registered memory sidecar gets the UPDATE-of-key guard"
     );
     assert_eq!(
         artifacts.len(),
@@ -2627,7 +2629,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
 
@@ -2720,7 +2722,7 @@ async fn goal_change_checks_refuse_the_rows_they_name() {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         // kind, has parent, pending, revision, the `goal_change_v1_<>_chk` that refuses it
@@ -2785,7 +2787,7 @@ async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let sidecars = frozen_core_sidecars();
@@ -2828,7 +2830,7 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let sidecars = frozen_core_sidecars();
@@ -2967,7 +2969,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
 
@@ -3077,7 +3079,7 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let sidecars = frozen_core_sidecars();
@@ -3100,7 +3102,13 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
         }
 
         let (runtime_url, _) = proxima_pg_testkit::split_role_urls(&db_name).await?;
-        let scoped = PgStorage::connect(&runtime_url).await?;
+        let scoped = PgStorage::connect_with_config(
+            &runtime_url,
+            proxima_storage_pg::PgPoolConfig::default(),
+            proxima_storage_pg::PgTuning::default(),
+            pg.platform_scope_for_host(),
+        )
+        .await?;
         let settings = || async {
             let path: String = sqlx::query_scalar("SHOW search_path")
                 .fetch_one(scoped.pool_for_tests())
@@ -3161,7 +3169,7 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
 
@@ -3243,7 +3251,7 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
 
@@ -3397,9 +3405,8 @@ async fn a_v008_database_upgrades_to_head_in_place() {
         panic!("PG required for tests but admin connect failed: {e}");
     }
 
-    let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = connect_historical_fixture(&db_name).await?;
         let pool = pg.pool_for_tests();
         seed_a_live_v008_database(pool).await?;
 
@@ -3448,7 +3455,7 @@ async fn a_v008_database_upgrades_to_head_in_place() {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29, 30,
+                23, 24, 25, 26, 27, 28, 29, 30, 31,
             ],
             "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
              baseline"
@@ -3597,8 +3604,11 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
-        apply_core_migrations(&pool, 1..=11).await?;
+        let fixture = connect_historical_fixture(&db_name).await?;
+        let pool = fixture.pool_for_tests().clone();
+        let mut staged = proxima_storage_pg::core_migrator();
+        staged.migrations = std::borrow::Cow::Owned(staged.iter().filter(|m| m.version <= 11).cloned().collect());
+        staged.run(&pool).await?;
 
         let original_personal = Uuid::now_v7();
         let current_group = Uuid::now_v7();
@@ -3656,43 +3666,26 @@ async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer()
         insert_legacy_outbox_row(&pool, orphan, current_group).await?;
         insert_legacy_outbox_row(&pool, witnessed, original_personal).await?;
 
-        // The runtime borrowed below reads each vector's width (0015) and the
-        // Fact's occurrence time (0030) when it cools a Fact; stage only those
-        // columns. 0012 reads neither.
-        sqlx::query(
-            "ALTER TABLE proxima_core.embeddings ADD COLUMN dim smallint NOT NULL DEFAULT 1024",
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query("ALTER TABLE proxima_core.memory ADD COLUMN occurred_at timestamptz")
-            .execute(&pool)
-            .await?;
-
-        // Establish the transfer through the runtime path: origin is the
-        // outbox's original owner even though the retained hot/cold Fact is
-        // now owned by the group.
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        let original_owner = OwnerId::from(UserId::new(original_personal));
-        let group_owner = OwnerId::from(GroupId::new(current_group));
-        let transfer_permit = OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact);
+        // Model the released schema's transfer/cooling writes. Current
+        // serving storage requires current RLS and cannot serve a v0.0.12
+        // fixture; current transfer and cold behavior have dedicated tests.
         for t in [transferred, hot_transferred] {
-            assert!(
-                OwnerTransferPort::transfer_to_owner(
-                    &pg,
-                    &transfer_permit,
-                    EntityId::Memory(MemoryId::new(t)),
-                    group_owner,
-                    pg.surfaces(),
-                    &[],
-                )
-                .await?,
-                "the migration fixture must perform an actual A-to-B transfer"
-            );
+            sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
+                .bind(t).bind(current_group).execute(&pool).await?;
+            sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE t = $1")
+                .bind(t).bind(current_group).execute(&pool).await?;
         }
-
-        let forget_permit = OwnerWritePermit::new_for_tests(group_owner, AccessKind::Fact);
         for t in [transferred, known_none, malformed, malformed_reverse, pruned] {
-            pg.forget_memory(&forget_permit, MemoryId::new(t)).await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, blob_id, content_id,
+                  source_id, ingest_key, origins, refs, goal_refs)
+                 SELECT t, handle, owner_id, kind, 'cold/' || t, blob_id, content_id,
+                        source_id, ingest_key, origins, refs, goal_refs
+                 FROM proxima_core.memory WHERE t = $1",
+            ).bind(t).execute(&pool).await?;
+            sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+                .bind(t).execute(&pool).await?;
         }
         // Manufacture a malformed legacy cooled pair while preserving every
         // other identity seal. The append-only exception is test-local data
@@ -4139,7 +4132,9 @@ async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
 
 /// Apply the current lane under its required platform role. The caller keeps
 /// its admin connection only for fixture setup and independent SQL assertions.
-async fn apply_current_migrations(pg: &PgStorage) -> Result<(), proxima_core::StorageError> {
+async fn apply_current_migrations(
+    pg: &impl DatabaseFixture,
+) -> Result<(), proxima_core::StorageError> {
     let database: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(pg.pool_for_tests())
         .await
@@ -4147,13 +4142,29 @@ async fn apply_current_migrations(pg: &PgStorage) -> Result<(), proxima_core::St
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database)
         .await
         .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let migration = PgStorage::connect_for_migrations_with_config(
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         proxima_storage_pg::PgPoolConfig::default(),
         proxima_storage_pg::PgTuning::default(),
     )
     .await?;
     migration.run_migrations().await
+}
+
+/// Migration and fixture authority, including before RLS exists. This pool
+/// is deliberately never wrapped in serving `PgStorage`.
+async fn connect_historical_fixture(
+    db_name: &str,
+) -> Result<MigrationFixture, Box<dyn std::error::Error>> {
+    let (_, platform_url) = proxima_pg_testkit::split_role_urls(db_name).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&platform_url)
+        .await?;
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+        .execute(&pool)
+        .await?;
+    Ok(MigrationFixture(pool))
 }
 
 async fn marker_platform_pool(

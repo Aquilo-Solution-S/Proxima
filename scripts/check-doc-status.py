@@ -1,52 +1,33 @@
 #!/usr/bin/env python3
+"""Enforce the twelve public pages and their current-status markers.
+
+Content correctness remains a review judgment; matching prose is not evidence
+that an implementation claim is true.
+"""
 from pathlib import Path
+import re
+import subprocess
 import sys
 
-REQUIRED_SUBSTRINGS = {
-    Path("AGENTS.md"): [
-        "Current build/runtime-opt-in REST projection",
-    ],
-    Path("README.md"): [
-        "## Authority",
-        "The Lean kernel",
-    ],
-    Path("docs/12-tool-manifest.md"): [
-        "> **Status:** current + deferred sections.",
-        "Deferred rows are design intent, not implementation claims.",
-    ],
-    Path("docs/13-compliance.md"): [
-        "> **Status:** current.",
-        "Deferred rows are design intent, not implementation claims.",
-    ],
-    Path("docs/14-protocol-surface.md"): [
-        "> **Status:** current + deferred sections.",
-        "Deferred rows are design intent, not implementation claims.",
-    ],
-    Path("docs/15-deployment.md"): [
-        "> **Status:** current + deferred sections.",
-        "Deferred rows are design intent, not implementation claims.",
-    ],
-    Path("docs/17-rest-surface.md"): [
-        "> **Status:** current.",
-    ],
-    Path("docs/reference/compliance-status.md"): [
-        "# Compliance Status",
-        "| Area | Status | Public claim |",
-        "deferred",
-        "not a current public guarantee",
-    ],
+ROOT = Path(__file__).resolve().parents[1]
+PAGES = {
+    "index", "concepts", "decisions", "get-started", "agents", "build-a-flavor",
+    "host-integration", "protocol", "operate", "configuration", "data-and-erasure",
+    "contributing",
 }
-
-failures = []
-for path, expected_chunks in REQUIRED_SUBSTRINGS.items():
-    if not path.exists():
-        failures.append(f"{path}: missing required status-checked file")
-        continue
-    text = path.read_text(encoding="utf-8")
-    for chunk in expected_chunks:
-        if chunk not in text:
-            failures.append(f"{path}: missing required status text: {chunk}")
-
-if failures:
-    print("\n".join(failures))
-    sys.exit(1)
+expected = {f"docs/{page}.md" for page in PAGES}
+inventory = subprocess.run(
+    ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "docs"],
+    cwd=ROOT, text=True, capture_output=True, check=True,
+).stdout.splitlines()
+actual = {name for name in inventory if name.endswith(".md") and (ROOT / name).is_file()}
+failures = [f"missing public page: {name}" for name in sorted(expected - actual)]
+failures += [f"unexpected public page: {name}" for name in sorted(actual - expected)]
+for name in sorted(expected & actual):
+    if not re.search(r"^> Status: current\.?$", (ROOT / name).read_text(), re.MULTILINE):
+        failures.append(f"{name}: missing '> Status: current.' marker")
+for failure in failures:
+    print(failure, file=sys.stderr)
+if not failures:
+    print(f"public docs: {len(actual)} current pages")
+sys.exit(bool(failures))

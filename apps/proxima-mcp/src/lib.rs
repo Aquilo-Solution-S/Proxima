@@ -25,13 +25,12 @@ use proxima_core::llm::{
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ScopeKey, ToolScope, all_core_actions,
-    all_core_resources,
+    FlavorRegistry, FlavorRegistryError, ScopeKey, ToolScope, all_core_actions, all_core_resources,
 };
 use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
 use proxima_storage_pg::{
-    ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
-    EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage,
+    ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingReconcileOptions,
+    EmbeddingReconcileScope, PgStorage,
 };
 
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
@@ -142,11 +141,6 @@ fn code_keep_set() -> [&'static str; 4] {
 type LinkedFlavors = (proxima_code::CodeFlavor,);
 #[cfg(not(feature = "code"))]
 type LinkedFlavors = ();
-
-type OidcBundle = (
-    Arc<dyn proxima_core::Authenticator>,
-    proxima::ResourceServerMetadata,
-);
 
 #[derive(Debug)]
 pub struct ProximaMcpApp;
@@ -266,16 +260,6 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
             other @ ArgsError::Invalid(_) => CliError::Args(other),
         })?;
         return run_maintain_blobs(config).await;
-    }
-    if args
-        .first()
-        .is_some_and(|arg| arg == "reconcile-embeddings")
-    {
-        return Err(CliError::Args(ArgsError::Invalid(
-            "use maintain-embeddings: it sweeps orphan embedding rows, enqueues \
-             missing embeddings, and prints a health report"
-                .into(),
-        )));
     }
     if args.first().is_some_and(|arg| arg == "serve") {
         args.remove(0);
@@ -474,9 +458,10 @@ async fn maintenance_storage(
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
     let tuning = proxima_storage_pg::PgTuning::from_env()
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    let migration_pg = PgStorage::connect_for_migrations_with_config(&platform_url, config, tuning)
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let migration_pg =
+        proxima_storage_pg::PgMigrationStorage::connect_with_config(&platform_url, config, tuning)
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
     run_core_and_flavor_migrations(&migration_pg, ProximaMcpApp::migrators())
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
@@ -489,14 +474,10 @@ async fn maintenance_storage(
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
     drop(migration_pg);
-    let storage = PgStorage::connect_with_config(database_url, config, tuning)
+    let storage = PgStorage::connect_with_config(database_url, config, tuning, platform_scope)
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?
-        .with_platform_scope(platform_scope)
         .with_embedding_runtime_policy(embedding_policy);
-    proxima_storage_pg::assert_runtime_rls(&storage.clone_pool_for_backend(), &schemas)
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
     Ok(storage)
 }
 
@@ -509,8 +490,8 @@ fn maintenance_platform_url() -> Result<String, CliError> {
     )
 }
 
-/// One storage-maintenance pass: the cold-object purge drain and/or
-/// change-log rotation, per the explicit action flags. Serialized across
+/// One storage-maintenance pass: the cold-object purge drain, when
+/// `--retry-cold-object-purges` asks for it. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
 /// with exit 0, like `maintain-embeddings`.
 async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), CliError> {
@@ -541,8 +522,12 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         let sidecars = sidecars
             .freeze_against(&registry)
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        let blobs = CitedBlobStore::new(storage.clone_pool_for_backend(), s3)
-            .map_err(|err| ProximaError::Config(err.to_string()))?;
+        let blobs = CitedBlobStore::new(
+            storage.clone_pool_for_backend(),
+            s3,
+            storage.platform_scope_for_host(),
+        )
+        .map_err(|err| ProximaError::Config(err.to_string()))?;
         storage
             .with_sidecars(sidecars)
             .with_cold(Arc::new(blobs.cold_store()))
@@ -572,18 +557,6 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         print_cold_purge_retry_report(&outcome, dry_run_suffix);
     }
 
-    if let Some(older_than_seconds) = config.prune_change_log_older_than_seconds {
-        let outcome = storage
-            .prune_change_log(ChangeEventPruneOptions {
-                older_than_seconds,
-                batch_size: config.batch_size,
-                dry_run: config.dry_run,
-            })
-            .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        print_prune_report(&outcome, older_than_seconds, dry_run_suffix);
-    }
-
     Ok(())
 }
 
@@ -592,21 +565,6 @@ fn print_cold_purge_retry_report(outcome: &ColdPurgeRetryOutcome, dry_run_suffix
         "cold-object-purge: selected={} purged={} failed={} remaining={}{dry_run_suffix}",
         outcome.selected, outcome.purged, outcome.failed, outcome.remaining
     );
-}
-
-fn print_prune_report(
-    outcome: &ChangeEventPruneOutcome,
-    older_than_seconds: i64,
-    dry_run_suffix: &str,
-) {
-    println!(
-        "change-log-prune: horizon={older_than_seconds}s owners={} pruned={}{dry_run_suffix}",
-        outcome.owners.len(),
-        outcome.events_pruned
-    );
-    for owner in &outcome.owners {
-        println!("  {} pruned={}", owner.owner, owner.events_pruned);
-    }
 }
 
 fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
@@ -631,38 +589,14 @@ fn build_app(
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
     let registered = registered_tool_ids()?;
     let tool_scope = tool_scope_from_env(&lookup, &registered)?;
-    let platform_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
-    let owner_access: Arc<dyn OwnerAccessPort> = if let Some(platform_url) = platform_url.as_deref()
-    {
-        Arc::new(
-            proxima_storage_pg::PgOwnerAccessResolver::connect_lazy_platform(
-                &config.database_url,
-                platform_url,
-                &["proxima_core"],
-            )
-            .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
-        )
-    } else {
-        Arc::new(
-            proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
-                .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
-        )
-    };
-    let oidc = oidc_from_env(&lookup, owner_access)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_lookup(&lookup)?
         .database_url(config.database_url)
         .tool_scope(tool_scope)
         .embedding_runtime_policy(embedding_policy);
-    if let Some(platform_url) = platform_url {
-        app = app.platform_database_url(platform_url);
-    }
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
-    }
-    if let Some((authenticator, metadata)) = oidc {
-        app = app.authenticator(authenticator).resource_metadata(metadata);
     }
     if let Some(client) = embedding_client_from_env(&lookup, embedding_policy)? {
         app = app.embedding_router(Arc::new(embedding_router_from_env(&lookup, client)?));
@@ -952,19 +886,6 @@ fn reject_open_read_denials(deny: &[ScopeKey], open_reads: &[ScopeKey]) -> Resul
     }
 }
 
-/// The OIDC bundle for this process, from the shared facade contract.
-///
-/// The env parsing itself lives in `proxima::auth` rather than here. MCP
-/// serving requires an `Authenticator`; the only one that ships is
-/// `proxima-auth-oidc`; an out-of-tree flavor takes exactly one dependency
-/// on this repository. This maps the error.
-fn oidc_from_env(
-    lookup: &impl Fn(&str) -> Option<String>,
-    owner_access: Arc<dyn OwnerAccessPort>,
-) -> Result<Option<OidcBundle>, CliError> {
-    proxima::auth::oidc_from_lookup(lookup, owner_access).map_err(CliError::Runtime)
-}
-
 /// Build the embedding client from env, or `None` for degraded mode.
 ///
 /// Any OpenAI-compatible `/embeddings` endpoint. Base URL and model are
@@ -1226,6 +1147,17 @@ mod tests {
         }
     }
 
+    fn build_app(
+        config: McpConfig,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Proxima<ProximaMcpApp>, CliError> {
+        let platform = config.database_url.clone();
+        super::build_app(config, |key| {
+            lookup(key)
+                .or_else(|| (key == "PROXIMA_PLATFORM_DATABASE_URL").then(|| platform.clone()))
+        })
+    }
+
     fn config() -> McpConfig {
         McpConfig {
             database_url: DEFAULT_DATABASE_URL.to_string(),
@@ -1356,23 +1288,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_embeddings_subcommand_points_at_maintain_embeddings() {
-        let err = run(["reconcile-embeddings".to_string()])
-            .await
-            .expect_err("an unserved subcommand must fail with guidance");
-        assert!(
-            err.to_string().contains("maintain-embeddings"),
-            "message: {err}"
-        );
-    }
-
-    #[tokio::test]
     async fn oidc_env_wires_authenticator_and_metadata() {
         build_app(config(), |key| match key {
             "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
-            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_SUBJECT_MAP_JSON" => Some(format!(
+                r#"[{{"iss":"https://idp.test","sub":"subject-1","user_id":"{}"}}]"#,
+                uuid::Uuid::nil()
+            )),
             "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("17".into()),
             _ => None,
         })
@@ -1385,10 +1309,16 @@ mod tests {
             "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
-            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_SUBJECT_MAP_JSON" => Some(format!(
+                r#"[{{"iss":"https://idp.test","sub":"subject-1","user_id":"{}"}}]"#,
+                uuid::Uuid::nil()
+            )),
             "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("0".into()),
             _ => None,
         })
+        .expect("builder accepts unresolved OIDC settings")
+        .build()
+        .await
         .expect_err("zero OIDC HTTP timeout must fail boot");
         assert!(
             err.to_string()
@@ -1421,26 +1351,12 @@ mod tests {
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
             _ => None,
         })
+        .expect("builder accepts unresolved OIDC settings")
+        .build()
+        .await
         .expect_err("missing subject map must be rejected");
         assert!(
-            err.to_string().contains("PROXIMA_OIDC_SUBJECT_MAP"),
-            "message: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn oidc_env_rejects_both_subject_map_formats_at_once() {
-        let err = build_app(config(), |key| match key {
-            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
-            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
-            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
-            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
-            "PROXIMA_OIDC_SUBJECT_MAP_JSON" => Some("[]".into()),
-            _ => None,
-        })
-        .expect_err("both subject map formats at once must be rejected");
-        assert!(
-            err.to_string().contains("mutually exclusive"),
+            err.to_string().contains("PROXIMA_OIDC_SUBJECT_MAP_JSON"),
             "message: {err}"
         );
     }
@@ -1460,7 +1376,10 @@ mod tests {
                 "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
                 "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
                 _ => None,
-            });
+            })
+            .expect("builder accepts unresolved OIDC settings")
+            .build()
+            .await;
             let Err(err) = result else {
                 panic!("http oidc URL must be rejected");
             };

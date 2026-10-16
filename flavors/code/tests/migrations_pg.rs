@@ -62,7 +62,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         common::apply_current_migrations(&pg).await?;
 
         // Verify the flavor sidecar tables exist.
@@ -117,7 +117,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         // Verify the M5 core tables exist.
-        for table in ["memory", "memory_head", "announce"] {
+        for table in ["memory", "memory_head"] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",

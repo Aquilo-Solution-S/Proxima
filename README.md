@@ -7,195 +7,30 @@
 
 # Proxima
 
-Typed, owner-scoped durable memory for agentic systems. Hosts and coding
-agents get persistent Facts, Abstractions, Perspectives, Goals, citations,
-retrieval, and provenance. Proxima does not own the product UX or the
-model loop.
+Typed, owner-scoped durable memory for agents: Facts, Abstractions,
+Perspectives, Goals, citations, retrieval, and provenance. A host supplies
+identity, event sources, model clients, scheduling, and effects.
 
-Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this
-version (uuidv7, the row id). There is no Edge table — pins live on the
-node (`origins[]` / `refs[]`). The frozen schema baseline is
-`crates/storage-pg/migrations/0001_v008.sql`; later additive migrations upgrade
-existing databases in place (see [migration policy](docs/how-to/migrations.md)).
-
-## Use Proxima When
-
-| You are... | Start with |
+| Task | Start here |
 |---|---|
-| Running the MCP memory server locally | [docs/getting-started/local-dev.md](docs/getting-started/local-dev.md) |
-| Connecting a coding agent | [docs/getting-started/connect-agent.md](docs/getting-started/connect-agent.md) |
-| Embedding Proxima in a Rust host | [crates/proxima](crates/proxima) |
-| Building a flavor | [docs/tutorials/build-first-flavor.md](docs/tutorials/build-first-flavor.md) |
-| Checking invariants / design | [docs/README.md](docs/README.md) |
-| Building the docs site | [docs/README.md](docs/README.md#docs-site) |
+| Run Postgres, connect an agent, remember and search | [Get started](docs/get-started.md) |
+| Understand identity, layering, pins, and Goals | [Concepts](docs/concepts.md) |
+| Embed the Rust facade | [Host integration](docs/host-integration.md) |
+| Build a linked vocabulary crate | [Build a flavor](docs/build-a-flavor.md) |
+| Discover actions, resources, and REST | [Protocol](docs/protocol.md) |
+| Deploy, back up, and maintain | [Operate](docs/operate.md) |
+| Find settings | [Configuration](docs/configuration.md) |
+| Contribute or build this site | [Contributing](docs/contributing.md) |
 
-## Five-Minute Local Start
+The [twelve-page documentation](docs/index.md) owns concepts and integration
+instructions. Rustdoc owns types, defaults, and limits; migrations own table
+shape; the running catalog owns operation schemas. The Lean kernel states
+principles; Rust code and tests define runtime behavior. A principle change
+starts in the kernel.
 
-Your machine, your Postgres, your embedding model. No hosted service.
+One deployment links core, storage, transports, and flavor crates at build
+time. The canonical host is [proxima-mcp](apps/proxima-mcp); its Code flavor
+is default-on. `--no-default-features` builds the substrate-only host. Crates
+are unpublished; Rust consumers pin the same git selector across the graph.
 
-```sh
-# 1. Postgres with pgvector
-# Optional: override the published host ports when 5434 or 9100 is occupied.
-# export PROXIMA_DEV_POSTGRES_PORT=55432
-# export PROXIMA_DEV_S3_PORT=59100
-docker compose -f docker-compose.dev.yml up -d --wait postgres
-# Replays role/extension preparation for existing volumes too; stop old hosts first.
-docker compose -f docker-compose.dev.yml exec -T postgres \
-  psql -U proxima -d proxima -v ON_ERROR_STOP=1 < scripts/pg-init.sql
-
-# 2. A local OIDC issuer (signs RS256). One auth path: bearer vs JWKS.
-#    Local means a local issuer, not a bypass. Prints env + client config.
-cargo run -p proxima-dev-idp
-
-# 3. In another shell, paste what step 2 printed, then:
-export DATABASE_URL="postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
-export PROXIMA_PLATFORM_DATABASE_URL="postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
-export PROXIMA_TOOL_PROFILE=full
-cargo run -p proxima-mcp
-```
-
-The dev Compose project publishes Postgres on host port `5434` and RustFS on
-host port `9100` by default when those services are started. Set
-`PROXIMA_DEV_POSTGRES_PORT` and/or `PROXIMA_DEV_S3_PORT` before starting
-Compose to use different host ports; the container ports remain `5432` and
-`9000`. See the [local development quickstart](docs/getting-started/local-dev.md)
-for the optional RustFS startup and environment block. If you use an override,
-export the same variable in every shell where you run Compose, `dev-idp`, or
-the server.
-
-Headless MCP at `http://127.0.0.1:31415/mcp`. Code flavor is default-on;
-`--no-default-features` is substrate-only.
-
-Semantic search needs an OpenAI-compatible `/embeddings` endpoint
-(1024-dim by default; set `PROXIMA_EMBED_DIM` for 384, 768, 1536, 2048 or
-3072). Local, no API key:
-
-```sh
-ollama pull qwen3-embedding:0.6b
-export PROXIMA_EMBED_BASE_URL=http://127.0.0.1:11434/v1
-export PROXIMA_EMBED_MODEL=qwen3-embedding:0.6b
-```
-
-Without an embedding client the server starts degraded: lexical search
-works; semantic and hybrid report the missing capability.
-
-Full walkthrough: [docs/getting-started/local-dev.md](docs/getting-started/local-dev.md).
-Hosted embed providers: [docs/10-configuration.md](docs/10-configuration.md).
-
-## Connecting Your Coding Agent To Proxima
-
-`cargo run -p proxima-dev-idp` prints a ready-to-paste command. Claude Code:
-
-```sh
-claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
-  --header "Authorization: Bearer <token-from-dev-idp>" \
-  --header "X-Proxima-Owner: personal:<user-id-from-dev-idp>"
-```
-
-JSON, for clients that take a config file:
-
-```json
-{
-  "mcpServers": {
-    "proxima": {
-      "url": "http://127.0.0.1:31415/mcp",
-      "headers": {
-        "Authorization": "Bearer <oidc-access-token>",
-        "X-Proxima-Owner": "personal:<user-uuid>"
-      }
-    }
-  }
-}
-```
-
-`X-Proxima-Owner` is required on MCP `initialize` unless the host
-authenticator names a default owner for the credential. The server binds that
-owner to the returned `Mcp-Session-Id` and rechecks authority on every
-request. `PROXIMA_MCP_BIND` overrides the listener. Non-loopback binds
-require `PROXIMA_EXPOSE_NETWORK=true` plus the gates in
-[docs/10-configuration.md](docs/10-configuration.md) and
-[docs/15-deployment.md](docs/15-deployment.md).
-
-In production, replace `dev-idp` with your issuer (Entra, Zitadel, Auth0,
-any standard JWKS). The server verifies both the same way.
-
-Agent setup and prompts: [docs/getting-started/connect-agent.md](docs/getting-started/connect-agent.md),
-[docs/agent/quickstart.md](docs/agent/quickstart.md),
-[llms.txt](llms.txt), [llms-full.txt](llms-full.txt).
-
-## Graph
-
-| Kind | What | Produced by |
-|---|---|---|
-| Fact | Immutable admitted observation. | FactIngest |
-| Abstraction | Derived conclusion over Facts or prior Abstractions. | F→A / A→A |
-| Perspective | Derived stance or interpretation of referenced memories. | A→P / Interpretation |
-| Goal | Desired end-state. Lifecycle is supersession. | GoalWrite |
-
-Self is a query, not a row. Citation is Fact ∪ Abstraction only.
-
-Pins are node content. Two kinds, kind follows the operation, no verb
-writes a pin. See [docs/16-edges.md](docs/16-edges.md).
-
-| Array | Statement |
-|---|---|
-| `origins[]` | made-from (`derived_from`) |
-| `refs[]` | points-at (`references()` on the payload) |
-
-Engine contract to clients: Query / ChangeHistory / GoalWrite /
-FactIngest / Schema. Owner-scoped, transport-agnostic
-([docs/14-protocol-surface.md](docs/14-protocol-surface.md)). MCP tools
-are thin callers of those verbs. Forget cools; erase runs only through the
-named compliance operations ([docs/13-compliance.md](docs/13-compliance.md)).
-
-Reads are Tesla-valve: sidecar / index → admit → project in Rust. No
-raw flavor SQL against `proxima_core.*`.
-
-## Host And Flavor Tiers
-
-| Tier | Import | Contract |
-|---|---|---|
-| Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary; call graph verbs; server-resolved `AuthzContext` |
-| Host extra-table | `AppContext::host()` → `ProximaHost::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools never see the pool |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas/tools/sidecars; no `PgPool`, no core-table SQL |
-
-```rust
-proxima::run::<App>().await?;
-
-Proxima::<App>::app()
-    .from_env()
-    .authenticator(auth)
-    .run()
-    .await?;
-```
-
-Wiring template: [apps/proxima-mcp](apps/proxima-mcp). Env/defaults:
-[crates/proxima](crates/proxima).
-
-## Authority
-
-The Lean kernel at [docs/lean/Causa](docs/lean/Causa) is the source of
-truth for domainless invariants (F/A/P layering, pins, operators, owner
-scoping, goals, citations, compliance). Numbered docs under `docs/` are
-rationale. When code or prose disagrees with the kernel, the kernel wins
-until renegotiated in writing.
-
-Index: [docs/README.md](docs/README.md). Origin ontology:
-[docs/universe.md](docs/universe.md).
-
-## Implementation
-
-Rust. One binary per deployment: Engine, storage, transports, and the
-flavor crates linked at build time, whose registry freezes at startup. A
-flavor is what a Proxima host serves under its own id, so a flavor can also
-be installed and run outside the host process. Workspace crates stay
-`publish = false`; the git tag is the version. In-tree / pin-by-git
-consumers must move with the tag.
-
-Existing databases on a pre-v0.0.8 ledger reset. There is no in-place
-ALTER lane from the prior schema.
-
-## License
-
-Apache License, Version 2.0. See [LICENSE](LICENSE) and
-[LICENSING.md](LICENSING.md).
+License: [Apache-2.0](LICENSE), [contribution terms](LICENSING.md).

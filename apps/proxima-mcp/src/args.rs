@@ -53,13 +53,7 @@ Environment:
                                 an identity source by itself)
   PROXIMA_OIDC_SUBJECT_MAP_JSON Issuer-aware (iss,sub)->user_id identity map:
                                 a JSON array of {iss, sub, user_id} objects.
-                                Required when PROXIMA_OIDC_ISSUER is set,
-                                unless PROXIMA_OIDC_SUBJECT_MAP is given
-                                instead.
-  PROXIMA_OIDC_SUBJECT_MAP      Single-issuer shorthand:
-                                sub:<uuid>,sub2:<uuid2>; every entry binds
-                                to PROXIMA_OIDC_ISSUER. Mutually exclusive
-                                with PROXIMA_OIDC_SUBJECT_MAP_JSON.
+                                Required when PROXIMA_OIDC_ISSUER is set.
   PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default),
                                 full (opt-in; adds core_transfer/core_membership)
                                 or code (code search, no memory writes); every
@@ -189,14 +183,11 @@ Actions (at least one):
                            Retry a bounded batch of exact object-store keys
                            left by committed owner erases. Live retry
                            requires the serving host's PROXIMA_S3_* block
-  --prune-change-log-older-than <DURATION>
-                           Delete change-log rows older than the horizon
-                           (e.g. 90d, 36h, 45m, 3600s)
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --batch-size <N>         Rows per transaction (default 1000)
-  --dry-run                Report what would be purged/pruned without
+  --dry-run                Report what would be purged without
                            changing anything
   -h, --help               Print this message
 ";
@@ -246,7 +237,6 @@ pub enum ReconcileScope {
 pub struct StorageMaintenanceConfig {
     pub database_url: String,
     pub retry_cold_object_purges: bool,
-    pub prune_change_log_older_than_seconds: Option<i64>,
     pub batch_size: i64,
     pub dry_run: bool,
 }
@@ -256,10 +246,6 @@ impl std::fmt::Debug for StorageMaintenanceConfig {
         f.debug_struct("StorageMaintenanceConfig")
             .field("database_url", &"<redacted>")
             .field("retry_cold_object_purges", &self.retry_cold_object_purges)
-            .field(
-                "prune_change_log_older_than_seconds",
-                &self.prune_change_log_older_than_seconds,
-            )
             .field("batch_size", &self.batch_size)
             .field("dry_run", &self.dry_run)
             .finish()
@@ -436,7 +422,6 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
 ) -> Result<StorageMaintenanceConfig, ArgsError> {
     let mut database_url: Option<String> = None;
     let mut retry_cold_object_purges = false;
-    let mut prune_older_than: Option<i64> = None;
     let mut batch_size: i64 = 1000;
     let mut dry_run = false;
 
@@ -452,14 +437,6 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
                     .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
                 match f {
                     "--database-url" => database_url = Some(value),
-                    "--prune-change-log-older-than" => {
-                        let seconds = parse_duration_seconds(&value).map_err(|err| {
-                            ArgsError::Invalid(format!(
-                                "invalid --prune-change-log-older-than {value:?}: {err}"
-                            ))
-                        })?;
-                        prune_older_than = Some(seconds);
-                    }
                     "--batch-size" => {
                         let parsed: i64 = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
@@ -475,11 +452,9 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
         }
     }
 
-    if !retry_cold_object_purges && prune_older_than.is_none() {
+    if !retry_cold_object_purges {
         return Err(ArgsError::Invalid(
-            "maintain-storage requires at least one action: --retry-cold-object-purges \
-             and/or --prune-change-log-older-than <DURATION>"
-                .into(),
+            "maintain-storage requires --retry-cold-object-purges".into(),
         ));
     }
 
@@ -488,37 +463,9 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
     Ok(StorageMaintenanceConfig {
         database_url,
         retry_cold_object_purges,
-        prune_change_log_older_than_seconds: prune_older_than,
         batch_size,
         dry_run,
     })
-}
-
-/// Parse an explicit-unit duration (`3600s`, `45m`, `36h`, `90d`, `12w`)
-/// into seconds. A bare number is rejected on purpose: the value feeds a
-/// destruction horizon, so the unit must be spelled out.
-fn parse_duration_seconds(raw: &str) -> Result<i64, String> {
-    let Some(unit) = raw.chars().last() else {
-        return Err("empty duration".into());
-    };
-    let multiplier: i64 = match unit {
-        's' => 1,
-        'm' => 60,
-        'h' => 3_600,
-        'd' => 86_400,
-        'w' => 604_800,
-        _ => return Err("duration needs a unit suffix: s, m, h, d, or w".into()),
-    };
-    let digits = &raw[..raw.len() - unit.len_utf8()];
-    let value: i64 = digits
-        .parse()
-        .map_err(|err| format!("invalid duration value {digits:?}: {err}"))?;
-    if value < 1 {
-        return Err("duration must be positive".into());
-    }
-    value
-        .checked_mul(multiplier)
-        .ok_or_else(|| "duration overflows".into())
 }
 
 #[cfg(test)]
@@ -596,7 +543,7 @@ mod tests {
     #[test]
     fn storage_maintenance_requires_an_action_flag() {
         let err = parse_storage_maintenance_args(["--dry-run".to_string()]).expect_err("no action");
-        assert!(err.to_string().contains("at least one action"));
+        assert!(err.to_string().contains("--retry-cold-object-purges"));
     }
 
     #[test]
@@ -609,21 +556,8 @@ mod tests {
         ])
         .expect("retry alone is a valid bounded pass");
         assert!(cfg.retry_cold_object_purges);
-        assert_eq!(cfg.prune_change_log_older_than_seconds, None);
         assert_eq!(cfg.batch_size, 17);
         assert!(cfg.dry_run);
-    }
-
-    #[test]
-    fn prune_horizon_rejects_bare_number_zero_and_junk() {
-        for raw in ["90", "0d", "-3h", "", "d", "1.5h", "90x"] {
-            let err = parse_storage_maintenance_args([
-                "--prune-change-log-older-than".into(),
-                raw.into(),
-            ])
-            .expect_err(raw);
-            assert!(err.to_string().contains("invalid"), "{raw}: {err}");
-        }
     }
 
     #[test]

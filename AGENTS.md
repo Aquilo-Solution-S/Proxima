@@ -1,322 +1,133 @@
 # AGENTS.md
 
-Conventions and load-bearing invariants for AI agents working in
-Proxima. Read [README](README.md) first; this doc covers what's
-easy to break.
+Read [README](README.md) first. The [twelve-page guide](docs/index.md) owns
+concepts and integration; avoid a second invariant or configuration ledger.
 
-## State of the repo
+## Scope and authority
 
-**Implementation phase.** The design lives in `docs/`; Rust crates and the
-optional REST projection have landed.
+- The Lean kernel in `docs/lean/Causa/` states principles. Rust code and tests
+  define runtime behavior. Change a principle in Lean first; `lake build` and
+  `scripts/check-lean-axioms.py` check the kernel, not a Rust refinement proof.
+- Types/defaults/limits: rustdoc. Tables: migrations. Settings:
+  [configuration](docs/configuration.md), checked bidirectionally by
+  `scripts/check-settings.py`. Action/resource schemas: the live catalog.
+- Keep work within existing crates/packages. Adding a binary, crate, service,
+  migration, protocol surface, or registration path requires an explicit task;
+  scope review enforces this boundary. Example: a retrieval fix does not
+  authorize a new inference service.
+- Scratch plans and bulky review evidence belong in ignored `.local/`. This is
+  a review judgment: tracked docs should survive the task; a failed-command
+  transcript belongs in a ledger, a lasting decision in `docs/decisions.md`.
 
-Code work is expected when the prompt asks for it. Keep edits scoped to
-the existing crates/packages; do not add new binaries, crates, services,
-migrations, protocol surfaces, or runtime registration paths without an
-explicit request.
+## Workspace
 
-## Where the design lives
-
-| Doc | Topic |
+| Path | Responsibility |
 |---|---|
-| `docs/universe.md` | Origin doc: ontology, the Spinning Wheel, three Realities |
-| `docs/01-event-source.md` | Membrane between Reality and the agent; `Owner` scoping |
-| `docs/02-memory.md` | F/A/P layering, edges, directionality |
-| `docs/16-edges.md` | the edge model: two closed kinds, kind-follows-operation, rebuildability |
-| `docs/03-schema-registry.md` | Payload traits (`FactPayload`, `AbstractionPayload`, `PerspectivePayload` — all required), sidecar tables, migration |
-| `docs/04-consolidation.md` | F→A, A→A and A→P operators; prompt locality |
-| `docs/05-actions.md` | Actions as ordinary Facts; wake/tool boundary |
-| `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
-| `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
-| `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-on `code` packaging feature |
-| `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
-| `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
-| `docs/11-citations.md` | `CitedObjectPayload` and `memory.blob_id`; bibliographic provenance, the Fact ∪ Abstraction citation rule |
-| `docs/12-tool-manifest.md` | Tool = build-time registered call surface; tool classes (core MCP / flavor MCP); no runtime tier |
-| `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
-| `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
-| `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
-| `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
-| `docs/18-fact-outbox.md` | Transactional Fact publication outbox + in-process delivery to a host intake: listen declaration, capture, CloudEvents contract, delivery state machine, host-only port |
-| `docs/19-host-state-maintenance.md` | Scoped host-state maintenance authority: boot-bound capability, participant/table scope, lifecycle callbacks, publication-origin erasure |
+| `apps/proxima-mcp` | Canonical MCP host; Code flavor default-on |
+| `crates/core` | Domain types, engine, typed ports, registry |
+| `crates/proxima` | Host facade and flavor SDK |
+| `crates/storage-pg`, `crates/blob-s3` | PostgreSQL and object backends |
+| `crates/mcp-server`, `crates/auth-oidc` | Transports and bearer authentication |
+| `crates/llm-openai-compat` | Host-injected embedding adapter |
+| `crates/pg-testkit` | Owned-server test databases/templates |
+| `flavors/code` | Linked Code vocabulary |
+| `tools/dev-idp`, `tools/dev-migrate` | Local issuer and database bootstrap |
 
-## Workspace layout
+## Branch and release policy
 
-```
-proxima/
-├── apps/
-│   └── proxima-mcp/         canonical MCP host (code flavor default-on)
-├── crates/
-│   ├── auth-oidc/           Rust OIDC JWT authenticator crate
-│   ├── blob-s3/             Rust S3 cited-blob service crate
-│   ├── core/                Rust lib crate `proxima-core`
-│   ├── llm-openai-compat/   Rust OpenAI-compatible embedding client crate
-│   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
-│   ├── pg-testkit/          Rust Postgres test helper crate
-│   ├── proxima/             Rust framework facade crate
-│   └── storage-pg/          Rust Postgres storage crate
-├── flavors/
-│   └── code/                Rust code flavor crate
-├── tools/
-│   ├── dev-idp/             loopback OIDC issuer for local MCP
-│   └── dev-migrate/         headless substrate+flavor migration runner (dev DB bootstrap)
-├── docs/                    design rationale + commentary
-│   └── lean/                **Lean kernel — THE source of truth** (see below)
-└── Cargo.toml               Rust workspace
-```
+1. `main` is PR-only; GitHub branch protection requires checks, up-to-date
+   branches, and admin enforcement. Never push directly.
+2. Reviewed short branches target `main` or a parent PR in an explicitly
+   requested stack. Fold stacks from child into parent. The final parent goes
+   through the required gate against current `main`.
+3. CI runs PRs targeting `main` on GitHub's merge ref, and re-runs on pushes to
+   `main`. Only `main` saves Rust caches. Run complete local gates for children.
+4. Merging a change to `proxima_core::RELEASE_VERSION` cuts `v${VERSION}` through
+   `release.yml`; an unchanged constant cuts no release. The version checker
+   validates the next published number. Never cut a manual release for a child.
+5. Released migrations are immutable; `scripts/check-migration-ranges.py` pins
+   every released file from `RELEASE_EPOCH`. Append one migration per core
+   version, and one dated migration per flavor version. See the named
+   v0.0.15 exception in [contributing](docs/contributing.md#migrations).
 
-## Kernel authority
+## Boundaries checked by code and review
 
-The Lean kernel at `docs/lean/Causa/` is the source of truth for
-Proxima's domainless invariants (F/A/P layering, edges, operators, owner
-scoping, goals, citations, compliance, composition). The prose docs under
-`docs/*.md` are rationale and commentary. When code or docs disagree with the
-kernel, **the kernel wins** until renegotiated in writing. Check it with
-`cd docs/lean && lake build`; coverage of doc invariants is tracked in
-`docs/lean/COVERAGE.md`.
-
-## Branch policy
-
-1. `main` is PR-only (required checks, up-to-date branches, `enforce_admins`);
-   no direct local pushes.
-2. Work continues on short reviewed branches targeting `main`.
-3. CI validates PRs targeting `main`, using GitHub's merge ref, and re-runs on
-   each push to `main` (the only ref that saves the Rust build caches). Trust
-   the successful required gate against up-to-date `main` once the PR merges.
-4. A release is cut by MERGING, not by tagging: a PR that bumps
-   `proxima_core::RELEASE_VERSION` becomes `v${RELEASE_VERSION}` on merge, with
-   git-cliff notes. A merge that leaves the constant alone cuts nothing.
-   `scripts/check-release-version.py` validates the bump on the PR.
-
-## Migration policy
-
-1. From v0.0.9 on, releases are non-breaking database-wise: a released
-   migration (every file a `v*` tag shipped, baselines included) is never
-   edited — no exceptions; a fix ships as a new migration. Existing databases
-   upgrade in place, and a release that needs schema work ships **one additive
-   migration file per version** (`000N_v0XY_<what>.sql` for core, one dated
-   `_v0XY_` file per flavor) — never several.
-2. A destructive new baseline is a deliberate, named release decision — never a
-   side effect of editing an applied file.
-3. Enforced by `scripts/check-migration-ranges.py`, which pins every migration
-   file each `v*` tag from v0.0.8 (`RELEASE_EPOCH`) on shipped
-   (`git ls-tree -r <tag>` vs `git hash-object`; details:
-   `docs/how-to/migrations.md` rule 2).
-4. **v0.0.15 coordinated cutover:** stop every older pack before owner-RLS
-   activation; older binaries cannot resume against the enforcing schema.
-   Keep the already-merged `0013_v015` index migration byte-for-byte and append
-   `0014_v015_owner_rls.sql`. This is the named exception to one core file per
-   release; it preserves existing migration checksums instead of rewriting 0013.
-   0014 was then edited in place after the tag (d12da4f2), which stopped every
-   database that had applied it from booting; it is the check's one
-   grandfathered entry and the list is closed (`docs/how-to/migrations.md`
-   §v0.0.15).
-
-Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
-source-owned pins with target redaction, optional Memory/Goal sidecars,
-`MemoryGraphValid`, `OperatorInvocation` for writes that declare a
-derivation, hard deletion only through `wipeable`, build-time flavor
-registries, set-based authorized reads, atomic command-port writes.
-
-## Agent operating discipline
-
-- Keep LLM-internal planning, scratch roadmaps, review ledgers, prompt drafts,
-  and bulky analysis under ignored `.local/`. Tracked docs should contain only
-  durable decisions, condensed rules, public rationale, and executable checks.
-- If you observe an error, failing check, stale contradiction, security concern,
-  flaky command, or tool failure, do not dismiss it as "not mine". Either:
-  1. fix it inside the accepted scope;
-  2. record it in a `.local/<topic>/...` ledger with command/output and why it
-     is deferred; or
-  3. escalate to the user when it blocks correctness, safety, or verification.
-- Never report success while known required checks fail. If a failure is
-  unrelated to the requested slice, say so explicitly and ledger it; do not hide
-  it or normalize it away.
-- Prefer small tracked changes plus rich `.local` evidence over broad prose that
-  will rot. When a durable rule changes, update Lean/COVERAGE or this file;
-  keep speculative implementation plans out of tracked docs.
-
-## Verification
-
-Use the smallest relevant check:
-
-| Surface | Command |
+| Boundary | Enforcer |
 |---|---|
-| Rust workspace | `cargo check --workspace` |
-| Rust lint | `cargo clippy --workspace --all-targets` |
+| F/A/P layering, closed pin roles, declared provenance | Typed write/operator ports; Lean principles; graph tests |
+| Server-resolved owner roles and source-owned pins | `AuthzContext`, owner command ports, mandatory owner RLS |
+| Optional kernel witnesses, typed schema contracts | Payload traits, registry freeze, authorized sidecar helpers |
+| Build-time flavors; no raw flavor core SQL | Facade SDK, architecture/SQL guardrails |
+| Atomic writes and scoped host state | `UnitOfWork`, private permits, PG rollback tests |
+| Hard deletion through authorized inverses | `wipeable` principle, erase ports, inverse-completeness tests |
+| Independent embeddings; similarity authors no pins | Retrieval/write separation and graph tests |
+| Trusted composed SQL and closed database vocabularies | SQL-policy gate; migration catalog tests |
 
-`cargo nextest run` is the fast path for the Rust suite; `cargo test`
-still works as fallback. PG tests clone a pre-migrated template DB.
-Single-test selection: `cargo nextest run -E 'test(<name>)'`.
+Judgment: if a proposed edge needs its own reason/confidence, find the node
+that owns the statement before adding code. Example: an interpretation belongs
+in a Perspective payload, not a third edge kind.
 
-PG tests need `PROXIMA_TEST_PG_URL` (the admin URL of a server you own); it
-has no default. Unset, a test panics naming the variable, except the ones that
-call `admin_url_or_skip()`, which skip with a message locally and fail under
-`CI=true`. The testkit's sweep and template GC act on every matching database
-behind that URL.
+## Delegation
 
-CI runs one pass, `cargo nextest run --workspace --all-targets --all-features`,
-which includes every feature-gated target (REST surface, mounted REST/OIDC
-e2e, Fact-outbox host lane, publisher supervision, in-process delivery).
-Plain `cargo nextest run --workspace` covers `apps/proxima-mcp` OIDC e2e
-without REST (code flavor is the host default).
-Substrate-only: `--no-default-features`. Touching the flavor's `mcp_tools`
-without the host e2e passes the flavor crate and fails the served tool list.
+Prefer native read-only Codex workers for non-trivial orientation and dependency
+tracing. After intent and invariants are clear, prefer bounded native Codex
+implementation workers with disjoint file ownership and executable gates.
+This is a judgment call to preserve the engineer's critical path: skip a worker
+for one known `rg` lookup. Non-Codex workers need explicit user selection.
 
-## Delegated agents (Codex / Vibe execution runs)
+The calling engineer owns scope, architecture, actual diff review, load-bearing
+verification, commits, pushes, and publication. Workers never commit or stage;
+in a worktree the index can be outside their write boundary. Do not revert
+other workers' edits or delegate secrets, customer data, or sensitive fixtures.
+These boundaries are enforced by worker briefs and orchestrator diff review.
 
-Rules for non-interactive agents executing a scoped brief in this repo:
+## Verification and failures
 
-- Lint gates are workspace-level and non-negotiable: `warnings = "deny"`,
-  `clippy::pedantic = deny`. Code is not done until
-  `cargo clippy --workspace --all-targets` is clean.
-- Tests: per-package `cargo test -p <crate> --lib` plus named
-  integration targets; PG-gated tests (e.g. `--test boot_pg`) need the
-  local dev Postgres and may be skipped when it is absent — say so.
-- Never commit; the orchestrator reviews the diff and commits.
-- Never weaken, delete, or `#[ignore]` a test assertion to get green —
-  restructure the implementation instead.
-- In git-worktree checkouts the index lives outside your write
-  boundary: no `git add`/`git mv`/`git rm`. Use plain `mv`/`cp`/`rm`;
-  rename detection happens at commit time.
-- Rust 2024, let-chains available; match surrounding style (see the
-  Verification table above for the smallest relevant check).
+CI-equivalent Rust gates:
 
-## MCP — live tool surface for agents
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
+cargo nextest run --workspace --all-targets --all-features
+```
 
-`cargo run -p proxima-mcp` exposes a Streamable HTTP MCP server
-(default `http://localhost:31415/mcp`). Client config and port override:
-[README §Connecting Your Coding Agent To Proxima](README.md#connecting-your-coding-agent-to-proxima).
+Workspace lints deny warnings and Clippy pedantic findings. Use `cargo check`
+and selected nextest tests during iteration; per-package success does not
+verify a flavor's served catalog. Changes to `mcp_tools` require the host e2e
+path. Substrate-only checks use `--no-default-features`.
 
-Treat the runtime MCP catalog as live implementation state, not kernel truth:
-`proxima://tools`, MCP `resources/list`, and `resources/templates/list` are the
-catalog authority for a running server. Current tool names may still contain
-pre-v0.0.4 vocabulary; do not preserve stale names as architecture precedent.
-The v0.0.4 refactor may break/rename MCP and wire surfaces to match the Lean
-kernel.
+PG tests require `PROXIMA_TEST_PG_URL`, an admin URL for a server you own.
+Testkit sweep/GC touches every matching test database behind that URL.
+`admin_url_or_skip()` skips locally and fails in CI; report every skip.
+`PROXIMA_TEST_DATABASE_URL` is the separate e2e database connection.
 
-Proxima self-ingests its own commits and chunks, so the graph holds this repo's
-causal chain. Prefer MCP queries over re-grepping when investigating commit or
-chunk history, but write findings back only through currently authorized tools
-and only when they satisfy the Lean invariants below.
+Docs, settings, architecture, SQL, schema, migration, release, and Lean commands
+are listed in [contributing](docs/contributing.md#local-verification) and CI.
+If any check fails, fix it, ledger exact command/output and a concrete deferral
+reason under `.local`, or escalate a blocker. Review must account for every
+observed failure; never report required checks green while one still fails.
+Never weaken, delete, or ignore a surviving behavioral assertion to pass.
 
-## Kernel guardrails — do not violate
+## Artifacts and commits
 
-Do not maintain a second long invariant ledger here. The Lean kernel and
-`docs/lean/COVERAGE.md` are authoritative; this section is only the condensed
-runtime checklist most likely to prevent regressions.
+- English repository artifacts. Documentation review favors technical facts,
+  signatures, tables, and links over repeated explanations: a second defaults
+  table would drift from rustdoc. `check-doc-status.py` enforces twelve pages;
+  link and settings gates enforce their own boundaries.
+- Mermaid diagrams are inline and rendered by `pymdownx.superfences` in the
+  strict MkDocs build. Keep diagrams conceptual; schemas remain generated.
+- Subjects use Conventional Commits: `docs(<scope>): …`,
+  `feat(<component>): …`, `fix(<component>): …`, `chore(<component>): …`.
+  Use existing crate/component names. Git-cliff groups these subjects.
+- Breaking changes carry an `Upgrade:` footer naming the concrete client or
+  operator action. Review judgment: readers need one usable upgrade note;
+  e.g. `Upgrade: Replace the retired resource with the host outbox intake.`
+  `cliff.toml` renders the footer; its fixture gate verifies rendering.
+- AI commits use `Co-Authored-By: Codex <noreply@openai.com>`, matching existing
+  commits. Add `Tesla-Valve:` trailers for decisions made under that skill.
 
-- **Layering:** strict F/A/P/Goal layering; no upward or similarity-authored
-  edges. Similarity is query-time only.
-- **Ownership/authz:** rows carry stable `OwnerRef`; the host resolves through
-  `OwnerState` / `OwnerAccessPort` into roles. No org predicate, ACL/share set,
-  retired read-scope API, materialized Personality/Self, or caller-supplied
-  resolved owner may authorize access.
-- **Composed SQL:** views require `security_invoker=true` and platform ownership;
-  materialized views and foreign tables are refused. Platform-owned definer
-  routines pin an explicit trusted schema prefix, then `pg_temp`, in `search_path`;
-  only trigger
-  routines may grant `EXECUTE` to `PUBLIC` or runtime authority.
-- **Facts:** Facts are admitted `Memory` rows; receipts prove admission only,
-  not external truth. Fact identity is the row id, not content hash, source id,
-  or receipt id.
-- **Sidecars:** Memory/Goal sidecars and Fact receipts are optional kernel
-  witnesses. Edges have no sidecar at all — there is no `OptionalEdgeSidecar`
-  in `Causa.Flavor`. A schema/engine contract may require a typed sidecar; the
-  kernel never requires a global sidecar nor permits untyped JSON escape
-  hatches for typed payloads.
-- **Pins (no Edge table):** `origins[]` (made-from) and `refs[]` (points-at)
-  live on the Memory row and pin target `t`. Two closed kinds; the kind follows
-  the operation; no verb writes a pin. Rebuildability is identity
-  (`derivePins`). Target render is hot / Cold / Unavailable. There is no
-  `Edge` / `FactEntity` / relation registry / follow-at-read. See Lean
-  `Causa.Edges`.
-- **Content:** owner-scoped typed payload (`Content`); many admissions may
-  share one `ContentId`. Admission identity stays `t`. Cross-owner hash
-  equality is not identity.
-- **Provenance/operators:** derived rows are valid only in an admitted table
-  graph (`MemoryGraphValid`). Operator outputs carry an `OperatorInvocation`
-  manifest/witness proving declared-input provenance/evidence completeness — a
-  write that declares NO derivation (an interpretation Perspective grounding
-  through its references) declares no inputs and carries no manifest, which is
-  legal and is the E4 case the kernel accommodates.
-- **Goals/Self/Wake:** Goals are structural entities. Lifecycle advances by a
-  later `t` on the same handle; topology/assignment/evidence are Goal row
-  columns (`dependency_t`, `assignment_t`, `evidence_t`) from which the index
-  entries are derived. Memory and Goal carry neither a supersession pointer nor
-  authorship; authorship is the write-act Fact. Self is a
-  cue-indexed query (`situatedSelf`), never a row and never parameterless.
-  Wake is armed Goal behavior, not a separate kernel entity.
-- **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on
-  Fact ∪ Abstraction (a Perspective never cites). Hard deletion is
-  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy) ∨ flavorScoped`;
-  a flavor-scoped erase is whole series of the flavor's own schemas, one
-  owner, Admin or system authority (Lean `FlavorScopedErase`, 13 §Flavor-scoped erase).
-  Embeddings are independent rows and never graph authors.
-- **Flavor/API/storage:** flavor composition is build-time; no runtime registry
-  or plugin tier. Flavor code must use authorized helpers/private permits, not
-  raw core-table SQL. Writes are atomic command-port operations or explicit
-  backend-owned UnitOfWork. Closed DB vocabularies use SQL enums.
-
-## Doc conventions
-
-- **Lead with technical facts.** Structs, signatures, set notation,
-  tables. One-line whys. No expository prose.
-- **No prose padding.** If a paragraph could be deleted without
-  losing information, delete it.
-- **Cross-reference numbered docs** by section: "(see 06 §Goal Entity)"
-  rather than restating.
-- **Diagrams in ASCII.** Match the existing tree / box style in
-  README and 02.
-
-## Commit conventions
-
-- Docs subject: `docs(<scope>): <summary>` — e.g.
-  `docs(02): close Q3 strict layering`.
-- Code subject: `feat(<component>): <summary>` /
-  `fix(<component>): <summary>` / `chore(<component>): <summary>`.
-  Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
-  `llm-openai-compat`, `blob-s3`, `auth-oidc`, `proxima`,
-  `pg-testkit`, `flavors-code`, `tools`.
-- Body: bulleted list of concrete changes; preserve the *why* when
-  the change is a decision, not a fix.
-- Co-authorship trailer for AI commits matches the parent CLAUDE.md
-  convention.
-
-## Common pitfalls
-
-- Treating tracked planning prose as durable architecture. Put bulky plans,
-  prompts, intermediate reviews, and ledgers in `.local/`; track only condensed
-  decisions and checks.
-- Seeing a failing command or contradiction and moving on silently. Fix it,
-  ledger it in `.local`, or escalate.
-- Preserving pre-v0.0.4 compatibility aliases for ontology the kernel removed.
-  Delete stale surfaces instead of rebranding them.
-- Authorizing through org, owner equality, read-scope, personality, Self, or
-  caller-provided roles instead of server-resolved `OwnerRef` roles.
-- Making edge targets decide edge-row visibility. Source-readable edges remain;
-  targets redact independently.
-- Making sidecars or Fact receipts globally mandatory, or replacing typed
-  schema contracts with untyped JSON maps.
-- Restoring runtime registration, raw flavor writes/reads against core tables,
-  or public access to storage internals.
-- Turning compliance into broad source-scope deletion. Hard delete needs
-  abandonment proof, or a flavor-scoped erase within its own schemas.
-- Using embeddings/similarity to author a connection.
-- Reaching for a verb that writes an edge, or a third edge kind. A feature that
-  seems to need one fails the node-home test and is missing a node.
-- "Fixing" terse docs by adding explanatory paragraphs instead of technical
-  facts, signatures, tables, and cross-references.
-
-## When unsure
-
-- Ambiguity in spec → ask before deciding. Architectural choices
-  compound.
-- Tension between two docs → flag it explicitly; don't paper over
-  it with a third interpretation.
-- A new component appears warranted → propose first, draft second.
-  The numbered-doc sequence is intentional.
-
-## Rules
-
-- Answer always precise, not in prose. Dense short fact based
-answers are preffered.
+If a requirement is ambiguous or conflicts with a principle, ask before making
+an architectural choice. Judgment: such choices compound; an unfamiliar helper
+name needs source inspection, a new authorization model needs agreement.

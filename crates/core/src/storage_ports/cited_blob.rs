@@ -1,7 +1,7 @@
 //! Host-wired cited-blob upload/read port for MCP tools and flavor
 //! background workers.
 //!
-//! Core stays blob/storage-agnostic (docs/07): the S3-backed cited-blob
+//! Core stays blob/storage-agnostic (docs/concepts.md): the S3-backed cited-blob
 //! lane (`proxima-blob-s3`) is reachable as a Rust library, but MCP tools
 //! live in core and cannot name the concrete store. This port is the
 //! seam: the host inserts a [`CitedBlobService`] into the composed flavor
@@ -12,7 +12,7 @@
 //! service to flavor workers, which need it for the half of artefact
 //! work that outlives a tool call.
 //!
-//! Transfer is by presigned URL only (docs/10 §Large Artefact S3): the
+//! Transfer is by presigned URL only (docs/configuration.md): the
 //! MCP transport caps request bodies, and clients must never see
 //! `bucket`/`object_key`. Every outcome struct here honours that.
 

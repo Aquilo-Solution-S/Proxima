@@ -813,7 +813,6 @@ mod tests {
             let s = build_instructions(&tools, &resources);
             for forbidden in [
                 "instantiate_personality", // ARCH-GUARDRAIL-ALLOW: a denied tool name that must never reach instructions
-                "add_wake_entry",
                 "emit_execution_request",
                 "wake_execute",
                 concat!("I", ":"),

@@ -2,7 +2,7 @@
 //! `register()` call. Frozen into a `FlavorRegistryFrozen` once all
 //! flavors have run.
 //!
-//! See docs/08 §Registration mechanism.
+//! See docs/host-integration.md
 
 use crate::authz::{AuthorizationHook, OwnerResolver};
 use crate::mcp::schema::{mcp_output_schema, mcp_tool_schema};

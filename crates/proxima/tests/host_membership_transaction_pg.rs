@@ -195,10 +195,14 @@ async fn connection_membership_write_keeps_user_registry_constraint() {
     );
     tx.rollback().await.expect("rollback refused membership");
 
-    let storage = PgStorage::connect(db.runtime_url())
-        .await
-        .expect("pool storage")
-        .with_platform_scope(scope);
+    let storage = PgStorage::connect_with_config(
+        db.runtime_url(),
+        proxima_storage_pg::PgPoolConfig::from_env().expect("pool config"),
+        proxima_storage_pg::PgTuning::from_env().expect("pool tuning"),
+        scope,
+    )
+    .await
+    .expect("pool storage");
     let pool_error = storage
         .bootstrap_group_admin(group, UserId::new(Uuid::now_v7()), Uuid::now_v7())
         .await

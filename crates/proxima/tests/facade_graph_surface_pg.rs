@@ -1449,7 +1449,7 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
     }
 }
 
-/// Host/example lane (`docs/09` §Migrations: timestamp versions ending
+/// Host/example lane (`docs/build-a-flavor.md` §Migrations: timestamp versions ending
 /// `00..=19`), so this fixture cannot collide with a first-party flavor.
 const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;
 

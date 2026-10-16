@@ -77,6 +77,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::MemoryReadPort;
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchPage, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
@@ -863,8 +864,7 @@ async fn run_identity(
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         seed(
             pg.pool_for_tests(),
             CI_NOTES_PER_OWNER,
@@ -903,9 +903,13 @@ async fn run_identity(
         }
 
         let projections = projections();
+        let owners: Vec<OwnerId> = (0..OWNERS).map(owner_at).collect();
+        let owner_scope = owner_scope_for_tests(&owners);
         let mut actual = Vec::new();
         for (name, req) in cases {
-            let page = pg.search_memories(None, &req, &projections).await?;
+            let page = pg
+                .search_memories(Some(&owner_scope), &req, &projections)
+                .await?;
             actual.push((name, render(&page)));
         }
 
@@ -1176,14 +1180,17 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         seed_starvation(pg.pool_for_tests()).await?;
 
         let projections = projections();
+        let owners: Vec<OwnerId> = (0..OWNERS).map(owner_at).collect();
+        let owner_scope = owner_scope_for_tests(&owners);
         let mut actual = Vec::new();
         for (name, req) in starvation_cases() {
-            let page = pg.search_memories(None, &req, &projections).await?;
+            let page = pg
+                .search_memories(Some(&owner_scope), &req, &projections)
+                .await?;
             actual.push((name, render(&page)));
         }
         for (name, lines) in &actual {
@@ -1418,14 +1425,17 @@ async fn a_kind_filter_does_not_starve_the_page() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         seed_kind_probe(pg.pool_for_tests()).await?;
 
         let projections = projections();
+        let owners: Vec<OwnerId> = (0..OWNERS).map(owner_at).collect();
+        let owner_scope = owner_scope_for_tests(&owners);
         let mut actual = Vec::new();
         for (name, req) in kind_probe_cases() {
-            let page = pg.search_memories(None, &req, &projections).await?;
+            let page = pg
+                .search_memories(Some(&owner_scope), &req, &projections)
+                .await?;
             actual.push((name, render(&page)));
         }
         for (name, lines) in &actual {

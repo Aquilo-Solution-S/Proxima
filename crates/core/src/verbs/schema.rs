@@ -1,7 +1,7 @@
 //! Schema verb — registry introspection.
 //!
-//! See docs/14-protocol-surface.md §"Schema" and
-//! docs/03-schema-registry.md.
+//! See docs/protocol.md §"Schema" and
+//! docs/build-a-flavor.md.
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
@@ -83,7 +83,7 @@ pub struct SchemaInfo {
     /// and Goal schemas whose payload needs no schema-owned columns, and is
     /// the only value for citation schemas, typed or opaque.
     pub sidecar_table: Option<String>,
-    /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
+    /// Natural-key columns for stateful Fact schemas (docs/build-a-flavor.md
     /// Fact schemas). Empty for stateless / non-Fact schemas. Decides
     /// which series `handle` an ingest lands on, which is what makes
     /// heads-only `Query` return one row per key.
@@ -112,7 +112,7 @@ impl SchemaInfo {
     /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
     /// either has a protocol-ingress parser or is an opaque `CitedObject`
     /// schema.
-    /// See docs/03-schema-registry.md.
+    /// See docs/build-a-flavor.md.
     #[must_use]
     pub(crate) fn opaque(
         schema_id: SchemaId,
@@ -668,7 +668,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Every flavor-owned lifecycle scope declaration in this binary
-    /// (docs/03 §Scope declaration), one per [`crate::ScopeKind`].
+    /// (docs/build-a-flavor.md), one per [`crate::ScopeKind`].
     ///
     /// The write path's only source for the fence key's namespace and the
     /// liveness probe's table and columns: storage spells neither, it reads
@@ -728,7 +728,7 @@ impl FlavorRegistryFrozen {
     /// binding.
     ///
     /// Host-state commands may only name non-core flavor state tables.
-    /// Memory sidecars, kernel surfaces, flavor #0 state (Goals, wake, …),
+    /// Memory sidecars, kernel surfaces, flavor #0 state (Goals, …),
     /// and undeclared names are not bindings.
     #[must_use]
     pub fn is_declared_state_surface(&self, table: &str) -> bool {
@@ -842,9 +842,6 @@ impl FlavorRegistryFrozen {
 
     /// The descriptor registered under `name`, if any.
     ///
-    /// Several call sites open-coded this scan — both `ScopeGateBehavior`
-    /// halves and wake-tool validation among them, the last of which
-    /// allocated a `HashSet<String>` of every registered tool id per call.
     /// Exact-name only: the REST router keeps its own lookup because it also
     /// accepts a request's provider-safe alias for a canonical name.
     #[must_use]

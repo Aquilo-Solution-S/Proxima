@@ -1,5 +1,5 @@
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls};
+use proxima_storage_pg::{begin_migration_transaction, core_migrator};
 use uuid::Uuid;
 
 /// 0023 names what decides the kind of every `proxima_core` table's rows and
@@ -11,7 +11,6 @@ async fn an_unclassified_table_refuses_the_kind_rule_migration()
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
         let (_, platform_url) = split_role_urls(&db_name).await?;
         let platform = sqlx::PgPool::connect(&platform_url).await?;
         let mut staged = core_migrator();
@@ -27,6 +26,7 @@ async fn an_unclassified_table_refuses_the_kind_rule_migration()
         staged.run(migration.as_mut()).await?;
         migration.commit().await?;
         drop(connection);
+        let pg = super::connect_historical_fixture(&db_name).await?;
 
         sqlx::query("CREATE TABLE proxima_core.unclassified_probe (owner_id uuid NOT NULL)")
             .execute(&platform)

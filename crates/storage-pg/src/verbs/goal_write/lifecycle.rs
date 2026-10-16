@@ -37,7 +37,6 @@ pub(super) async fn lifecycle_outcome(
     .await?;
     Ok(GoalWriteOutcome {
         goal_id: write.inserted.goal_id,
-        change_event_seq: write.inserted.change_event_seq,
         edge_count,
         idempotent_replay: false,
     })

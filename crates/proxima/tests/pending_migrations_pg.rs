@@ -19,7 +19,7 @@ use proxima::{
 use proxima_pg_testkit::{
     DbGuard, SplitRoleDb, create_db, db_url, split_role_urls, unique_db_name,
 };
-use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_migrator};
+use proxima_storage_pg::{PgMigrationStorage, PgPoolConfig, PgTuning, core_migrator};
 use split_core_db::clone_split_core_db;
 use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 use sqlx::{Connection, PgConnection, PgPool, SqlSafeStr};
@@ -111,7 +111,7 @@ struct Db {
     guard: Guard,
     admin: PgPool,
     /// Runs migrations as the platform role.
-    pg: PgStorage,
+    pg: PgMigrationStorage,
     platform_url: String,
     /// Pool of the platform role.
     platform: PgPool,
@@ -128,7 +128,7 @@ impl Db {
             admin: PgPool::connect(&db_url(guard.name()))
                 .await
                 .expect("admin pool"),
-            pg: PgStorage::connect_for_migrations_with_config(
+            pg: proxima_storage_pg::PgMigrationStorage::connect_with_config(
                 &platform_url,
                 PgPoolConfig::default(),
                 PgTuning::default(),
@@ -827,7 +827,7 @@ async fn a_plan_waits_for_a_run_mid_source_and_reports_the_state_after_it() {
         .expect("block");
     let platform_url = db.platform_url.clone();
     let run = tokio::spawn(async move {
-        let pg = PgStorage::connect_for_migrations_with_config(
+        let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
             PgTuning::default(),
@@ -1020,14 +1020,14 @@ async fn a_run_dropped_mid_source_does_not_return_its_connection_to_the_pool() {
         .execute(&mut blocker)
         .await
         .expect("block");
-    let pg = PgStorage::connect_for_migrations_with_config(
+    let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
         &db.platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
     )
     .await
     .expect("storage");
-    let pool = pg.pool_for_tests().clone();
+    let pool = pg.clone_pool_for_backend();
     let default_timeout: String = sqlx::query_scalar("SHOW statement_timeout")
         .fetch_one(&pool)
         .await

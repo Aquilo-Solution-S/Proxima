@@ -4,7 +4,7 @@
 //! [`DurableIntake`]: it hands each captured event to
 //! [`DurableIntake::accept`] and marks the record published only once
 //! `accept` has returned. Delivery is at-least-once; deduplicate on
-//! [`ReceivedEvent::id`] (docs/18).
+//! [`ReceivedEvent::id`] (docs/host-integration.md).
 
 use std::collections::BTreeMap;
 
@@ -38,7 +38,7 @@ pub struct CloudEventEnvelope {
     pub dataschema: Option<String>,
     #[serde(default)]
     pub time: Option<String>,
-    /// The series the event is about (docs/18 §Ordering).
+    /// The series the event is about (docs/host-integration.md).
     pub subject: Option<String>,
     /// The event's position in [`Self::subject`], 20 decimal digits (the
     /// `CloudEvents` sequence extension).
@@ -90,7 +90,7 @@ pub struct ReceivedEvent {
     pub envelope: CloudEventEnvelope,
     /// The envelope's `subject` and `sequence`, typed: where this event
     /// stands among the events about the same series. Delivery does not
-    /// follow it (docs/18 §Ordering): keep the last `sequence` applied per
+    /// follow it (docs/host-integration.md): keep the last `sequence` applied per
     /// `subject` and drop an event whose `sequence` is not greater. A missing
     /// or unpaired pair is malformed and refused by [`Self::from_record`].
     pub position: SubjectPosition,

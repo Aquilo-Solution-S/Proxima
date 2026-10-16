@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn production_docs_do_not_advertise_retired_goal_self_wake_surfaces() {
+fn production_docs_do_not_advertise_retired_entity_surfaces() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut offenders = Vec::new();
     for path in production_doc_paths(&root) {
@@ -36,7 +36,7 @@ fn production_docs_do_not_advertise_retired_goal_self_wake_surfaces() {
 }
 
 fn production_doc_paths(root: &Path) -> Vec<PathBuf> {
-    let mut out = vec![root.join("README.md"), root.join("docs/lean/README.md")];
+    let mut out = vec![root.join("README.md")];
     collect_docs(&root.join("docs"), &mut out);
     out.sort();
     out.dedup();

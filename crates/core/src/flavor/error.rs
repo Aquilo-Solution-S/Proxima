@@ -133,7 +133,7 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
     },
     /// A registered payload names a lifecycle scope no linked flavor
-    /// declares (docs/03 §Scope declaration). Without the declaration
+    /// declares (docs/build-a-flavor.md). Without the declaration
     /// storage has no registry table to probe and no columns to key the
     /// probe on, so every admission of that payload would either skip the
     /// fence or fail at the first write. Refused here, where the

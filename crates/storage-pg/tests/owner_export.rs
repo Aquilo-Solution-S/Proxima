@@ -83,8 +83,7 @@ async fn export_edges_are_the_pins_already_on_memory() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -146,8 +145,7 @@ async fn export_carries_cooled_locators_and_sketches() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -297,8 +295,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let pool = pg.pool_for_tests();
@@ -324,6 +321,9 @@ async fn export_carries_registered_citation_sidecar_rows() {
         )
         .execute(pool)
         .await?;
+        sqlx::query("GRANT ALL PRIVILEGES ON TABLE proxima_core.test_cited_object_v1, proxima_core.test_cited_span_v1 TO PUBLIC")
+            .execute(pool)
+            .await?;
 
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         for (holder, schema, seed, body, page) in [
@@ -403,8 +403,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -504,9 +503,7 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
-
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let surfaces = contract_sidecar_tables();
         let expected: std::collections::BTreeSet<&str> = surfaces
             .surfaces()

@@ -1,10 +1,7 @@
 //! Engine verb surfaces — typed contracts per
-//! docs/14-protocol-surface.md.
-pub mod change_history;
+//! docs/protocol.md.
 pub mod fact_ingest;
 pub mod goal_write;
-pub mod mcp_call_history;
 pub mod own_erase;
-pub mod persist_mcp_call;
 pub mod query;
 pub mod schema;

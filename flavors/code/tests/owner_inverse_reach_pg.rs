@@ -95,6 +95,10 @@ async fn the_bundle_carries_every_exportable_surface_of_both_flavors() {
 /// is not owner data under any reading and no flavor owns it.
 const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
     (
+        "proxima_core.owner_rls_epoch",
+        "Platform-owned RLS epoch state used to invalidate owner-scope claims; it is migration and runtime metadata, not owner data or a flavor surface.",
+    ),
+    (
         "proxima_core.closed_handle",
         "A tombstone for a handle, not a row about an owner: it records that \
          a handle may never be reused, which has to outlive every owner that \

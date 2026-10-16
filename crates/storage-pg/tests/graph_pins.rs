@@ -4,6 +4,7 @@
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
@@ -74,8 +75,9 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let specs = memory_schema_specs(&registry);
-        let pg = PgStorage::connect(&url).await?.with_flavors(&registry);
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_flavors(&registry);
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -112,7 +114,9 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
 
         let mut q = QueryRequest::readable();
         q.include_payloads = false;
-        let page = pg.query_memories(None, &[owner], &q, &specs).await?;
+        let page = pg
+            .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &q, &specs)
+            .await?;
         let derived_row = page
             .memories
             .iter()
@@ -134,7 +138,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
 
         let inbound = pg
             .load_inbound_pin_nodes(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 InboundPinQuery {
                     targets: &[leaf.memory_id],
@@ -154,14 +158,18 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         );
 
         let outbound = pg
-            .load_pin_nodes(None, &[owner], &[derived.memory_id])
+            .load_pin_nodes(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &[derived.memory_id],
+            )
             .await?;
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].origins, vec![leaf.memory_id]);
 
         let down = pg
             .walk_memory_lineage(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 &MemoryLineageRequest {
                     owner,
@@ -201,8 +209,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -236,7 +243,13 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
             )
             .await?;
 
-        let hubs = pg.load_pin_nodes(None, &[owner], &[hub.memory_id]).await?;
+        let hubs = pg
+            .load_pin_nodes(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &[hub.memory_id],
+            )
+            .await?;
         assert_eq!(hubs.len(), 1);
         let hub_node = &hubs[0];
         assert_eq!(hub_node.origins.len(), 3);
@@ -244,7 +257,9 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
 
         let mut pin_ids = hub_node.origins.clone();
         pin_ids.extend(hub_node.refs.iter().copied());
-        let visible_nodes = pg.load_pin_nodes(None, &[owner], &pin_ids).await?;
+        let visible_nodes = pg
+            .load_pin_nodes(Some(&owner_scope_for_tests(&[owner])), &[owner], &pin_ids)
+            .await?;
         assert_eq!(visible_nodes.len(), 3, "foreign pin is not an owned node");
         let visible: std::collections::HashMap<_, _> = visible_nodes
             .iter()
@@ -296,8 +311,7 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -323,7 +337,7 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
 
         let walked = pg
             .walk_memory_lineage(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 &MemoryLineageRequest {
                     owner,
@@ -389,8 +403,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
@@ -412,7 +425,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
 
         let page = pg
             .load_inbound_pin_nodes(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
@@ -435,7 +448,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
 
         let rest = pg
             .load_inbound_pin_nodes(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
@@ -467,8 +480,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
@@ -491,7 +503,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
 
         let heads = pg
             .load_inbound_pin_nodes(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
@@ -512,7 +524,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
 
         let all_hot = pg
             .load_inbound_pin_nodes(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
@@ -544,8 +556,7 @@ async fn lineage_diamond_visits_shared_node_once() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -605,7 +616,7 @@ async fn lineage_diamond_visits_shared_node_once() {
 
         let up = pg
             .walk_memory_lineage(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 &MemoryLineageRequest {
                     owner,
@@ -636,7 +647,7 @@ async fn lineage_diamond_visits_shared_node_once() {
 
         let down = pg
             .walk_memory_lineage(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &[owner],
                 &MemoryLineageRequest {
                     owner,
@@ -674,8 +685,7 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -714,7 +724,11 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
             after,
         };
         let page1 = pg
-            .walk_memory_lineage(None, &[owner], &req(2, None))
+            .walk_memory_lineage(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &req(2, None),
+            )
             .await?;
         assert_eq!(page1.edges.len(), 2);
         assert!(page1.truncated);
@@ -737,14 +751,22 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
         );
 
         let page2 = pg
-            .walk_memory_lineage(None, &[owner], &req(2, page1.next_cursor))
+            .walk_memory_lineage(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &req(2, page1.next_cursor),
+            )
             .await?;
         assert_eq!(page2.edges.len(), 2);
         assert!(page2.truncated);
         assert!(page2.edges.iter().all(|hop| hop.distance == 1));
 
         let page3 = pg
-            .walk_memory_lineage(None, &[owner], &req(2, page2.next_cursor))
+            .walk_memory_lineage(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &req(2, page2.next_cursor),
+            )
             .await?;
         assert_eq!(page3.edges.len(), 2);
         assert_eq!(page3.edges[0].distance, 1);
@@ -757,7 +779,11 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
             target: EntityRef::Memory(mids[0]),
         };
         let dist2 = pg
-            .walk_memory_lineage(None, &[owner], &req(10, Some(from_last_dist1)))
+            .walk_memory_lineage(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &req(10, Some(from_last_dist1)),
+            )
             .await?;
         assert!(dist2.edges.iter().all(|hop| hop.distance == 2));
         assert_eq!(dist2.edges.len(), 5);
