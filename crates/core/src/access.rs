@@ -92,8 +92,6 @@ pub enum AccessError {
     Resolution(String),
     #[error("subject {0:?} is registered as a group owner")]
     SubjectIsGroup(UserId),
-    #[error("a forwarding role cannot manage groups")]
-    ForwarderMayNotManage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
