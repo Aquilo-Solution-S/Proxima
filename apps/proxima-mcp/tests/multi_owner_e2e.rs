@@ -88,6 +88,16 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 
     let storage = common::runtime_storage(&runtime_url, &platform_url).await?;
     grant_member(&storage, owner_a, group_a, subject_a, Relation::Admin).await?;
+    // A second manager of group A, so revoking subject A below does not
+    // leave the group without a manager (storage refuses that).
+    grant_member(
+        &storage,
+        owner_a,
+        group_a,
+        UserId::new(Uuid::now_v7()),
+        Relation::Admin,
+    )
+    .await?;
     grant_member(&storage, owner_b, group_b, subject_a, Relation::Viewer).await?;
     grant_member(&storage, owner_b, group_b, subject_b, Relation::Admin).await?;
 

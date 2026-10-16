@@ -82,3 +82,46 @@ async fn managers_removing_each_other_one_refused() {
     drop_db(&db_name).await.ok();
     result.expect("managers removing each other");
 }
+
+/// The zero-manager guard is unconditional: a host-internal write, which
+/// names no caller, may not remove a group's last manager either.
+#[tokio::test]
+async fn host_removal_of_last_manager_refused() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let group = GroupId::new(Uuid::now_v7());
+        let manager = UserId::new(Uuid::now_v7());
+        pg.bootstrap_group_admin(group, manager, manager.into_inner())
+            .await?;
+        let permit = OwnerWritePermit::new_for_tests(OwnerId::from(group), AccessKind::Fact);
+
+        let refused = pg
+            .remove_group_member(
+                &MembershipWritePermit::new_for_tests(&permit, None, None, None),
+                group,
+                OwnerId::from(manager),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(proxima_core::StorageError::Conflict(_))),
+            "a host write may not remove the last manager: {refused:?}"
+        );
+        let owner_scope = owner_scope_for_tests(&[group.into()]);
+        let members = pg.list_group_members(Some(&owner_scope), group).await?;
+        assert!(
+            members
+                .iter()
+                .any(|(_, relation)| *relation == Relation::Admin),
+            "the group keeps its manager"
+        );
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result.expect("host removal of the last manager");
+}

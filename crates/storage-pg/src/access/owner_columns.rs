@@ -1012,7 +1012,7 @@ pub(crate) async fn remove_group_member(
                 endpoint_authority,
             )
             .await?;
-            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+            if had_manager && !group_has_manager(&mut tx, group_id).await? {
                 return Err(StorageError::Conflict(
                     "the change would leave the group without a manager".into(),
                 ));
@@ -1140,7 +1140,7 @@ pub(crate) async fn remove_group_member_relation(
                 endpoint_authority,
             )
             .await?;
-            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+            if had_manager && !group_has_manager(&mut tx, group_id).await? {
                 return Err(StorageError::Conflict(
                     "the change would leave the group without a manager".into(),
                 ));
@@ -1272,7 +1272,7 @@ pub(crate) async fn replace_group_member_relation(
             }
             replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to)
                 .await?;
-            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+            if had_manager && !group_has_manager(&mut tx, group_id).await? {
                 return Err(StorageError::Conflict(
                     "the change would leave the group without a manager".into(),
                 ));
