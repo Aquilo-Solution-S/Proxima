@@ -4,6 +4,8 @@
 
 use super::*;
 
+const RETRY_RECOVERY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Holds the facade's embedding worker for a whole test, so the test's own
 /// drains are the only ones and each drain's count is exact.
 ///
@@ -1735,4 +1737,162 @@ async fn retryable_failures_retain_jobs_without_partial_embeddings() {
     .await;
     fixture.shutdown().await;
     result.expect("retryable durable retention table");
+}
+
+#[derive(Debug, Default)]
+struct RecoveringRetryEmbedding {
+    first_batch: std::sync::OnceLock<tokio::time::Instant>,
+    batches: std::sync::atomic::AtomicUsize,
+    singles: std::sync::atomic::AtomicUsize,
+}
+
+impl RecoveringRetryEmbedding {
+    fn bound(self: &Arc<Self>) -> proxima_core::llm::BoundEmbeddingClient {
+        proxima_core::llm::BoundEmbeddingClient::bind(self.clone()).expect("lane width")
+    }
+
+    fn calls(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering;
+        (
+            self.batches.load(Ordering::SeqCst),
+            self.singles.load(Ordering::SeqCst),
+        )
+    }
+
+    fn in_failure_window(&self, now: tokio::time::Instant) -> bool {
+        self.first_batch.get().is_none_or(|start| {
+            now.saturating_duration_since(*start) < std::time::Duration::from_secs(1)
+        })
+    }
+
+    fn vector() -> Vec<f32> {
+        vec![1.0; proxima_core::llm::EmbeddingDim::D1024.width()]
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RecoveringRetryEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        self.singles
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if text == "ok" || !self.in_failure_window(tokio::time::Instant::now()) {
+            return Ok(Self::vector());
+        }
+        Err(RetryFailure::Http(429).error())
+    }
+
+    async fn embed_many(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, proxima_core::llm::LlmError> {
+        self.batches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let now = tokio::time::Instant::now();
+        self.first_batch.get_or_init(|| now);
+        if self.in_failure_window(now) {
+            return Err(RetryFailure::Http(429).error());
+        }
+        Ok(texts.iter().map(|_| Self::vector()).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "route-retry"
+    }
+    fn dim(&self) -> usize {
+        proxima_core::llm::EmbeddingDim::D1024.width()
+    }
+}
+
+/// One second of real time is intentional: durable jobs complete after the
+/// original client's busy window without rebinding or an acceptance-time call.
+#[tokio::test]
+async fn retryable_jobs_complete_after_the_same_clients_window_passes() {
+    use proxima_core::llm::EmbeddingRuntimePolicy;
+    let split_db = clone_split_core_db("proxima_core_route_retry_expiry")
+        .await
+        .expect("PG required for tests");
+    let default = EmbeddingRuntimePolicy::default();
+    let policy = EmbeddingRuntimePolicy::new(
+        default.request_timeout(),
+        default.batch_size(),
+        std::time::Duration::from_secs(1),
+        default.stale_claim_timeout(),
+    )
+    .expect("valid minimum retry interval");
+    let fixture = TwoOwnerFixture::boot_with_policy(split_db.name(), policy)
+        .await
+        .expect("routing fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let client = Arc::new(RecoveringRetryEmbedding::default());
+        let original = client.bound();
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(original.clone()));
+        let handles = [
+            fixture
+                .remember("current", "needle retry expiry first")
+                .await?,
+            fixture
+                .remember("current", "needle retry expiry second")
+                .await?,
+        ];
+        assert_eq!(client.calls(), (0, 0), "admission never calls the provider");
+        assert!(
+            client.first_batch.get().is_none(),
+            "seeding does not start the failure window"
+        );
+        let engine = fixture.built.host().engine();
+        let first = engine.drain_embedding_jobs(handles.len()).await?;
+        assert_eq!((first.processed, first.failed), (0, 0));
+        assert!(first.configuration_faults.is_empty());
+        assert_eq!(client.calls(), (1, 0), "one batch, no probe or isolation");
+        assert_retry_jobs_pending(&fixture, &handles).await?;
+
+        tokio::time::timeout(RETRY_RECOVERY_PATIENCE, async {
+            loop {
+                let drained = engine.drain_embedding_jobs(handles.len()).await?;
+                assert_eq!(drained.failed, 0);
+                assert!(drained.configuration_faults.is_empty());
+                if drained.processed > 0 {
+                    assert_eq!(
+                        drained.processed,
+                        handles.len(),
+                        "every retained job completes"
+                    );
+                    break;
+                }
+                assert_eq!(
+                    client.calls(),
+                    (1, 0),
+                    "backed-off drains make no provider requests or probes"
+                );
+                tokio::task::yield_now().await;
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await??;
+        assert_eq!(
+            client.calls(),
+            (2, 0),
+            "the same client succeeds on its second batch"
+        );
+        let route = engine.embedding_route(&fixture.personal).await?;
+        assert!(
+            route
+                .current_client()
+                .expect("current client")
+                .same_client(&original)
+        );
+        for handle in handles {
+            assert!(fixture.jobs(&handle).await?.is_empty());
+            assert_eq!(
+                fixture.stored_space(&handle).await?,
+                Some(("route-retry".to_owned(), 1024))
+            );
+        }
+        Ok(())
+    }
+    .await;
+    fixture.shutdown().await;
+    result.expect("same-original retry expiry completion");
 }

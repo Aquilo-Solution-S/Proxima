@@ -8,8 +8,8 @@ use tokio::time::Instant;
 
 use crate::OwnerId;
 use crate::llm::{
-    EmbeddingClient, EmbeddingConfigurationFault, EmbeddingRoute, EmbeddingRuntimePolicy,
-    EmbeddingSpace, LlmError,
+    EmbeddingClient, EmbeddingConfigurationFault, EmbeddingInputRefusal, EmbeddingRoute,
+    EmbeddingRuntimePolicy, EmbeddingSpace, LlmError,
 };
 
 const MAX_BACKOFF: Duration = Duration::from_mins(15);
@@ -67,10 +67,15 @@ impl ClientState {
 
     fn settle<T>(&mut self, result: &Result<T, LlmError>, base: Duration, now: Instant) {
         let (status, retry_after) = match result {
-            Ok(_) | Err(LlmError::InputRefused(_)) => {
+            Ok(_)
+            | Err(LlmError::InputRefused(
+                EmbeddingInputRefusal::PayloadTooLarge
+                | EmbeddingInputRefusal::UnprocessableContent,
+            )) => {
                 *self = Self::Ready;
                 return;
             }
+            Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap { .. })) => return,
             Err(LlmError::Configuration(fault)) => {
                 *self = Self::Paused(*fault);
                 return;
@@ -337,7 +342,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::llm::{BoundEmbeddingClient, EmbeddingInputRefusal};
+    use crate::llm::BoundEmbeddingClient;
 
     const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -347,6 +352,7 @@ mod tests {
         Configuration(EmbeddingConfigurationFault),
         Busy(Option<Duration>),
         Input,
+        LocalCap,
         WrongWidth,
         WrongCount,
         NonFinite,
@@ -380,6 +386,10 @@ mod tests {
                 Reply::Input => Err(LlmError::InputRefused(
                     EmbeddingInputRefusal::UnprocessableContent,
                 )),
+                Reply::LocalCap => Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap {
+                    actual_chars: 2_048,
+                    max_chars: 1_024,
+                })),
                 Reply::WrongWidth => Ok(vec![1.0; 383]),
                 Reply::NonFinite => Ok(vec![f32::NAN; 384]),
             }
@@ -594,6 +604,51 @@ mod tests {
             1,
             "no deadline overflow or early retry"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_local_input_cap_preserves_accumulated_provider_backoff() {
+        let control = EmbeddingControl::default();
+        let client = RecordingClient::new("local-cap", Reply::Busy(None));
+        let policy = EmbeddingRuntimePolicy::default();
+        let route = control.observe(
+            OwnerId::new(uuid::Uuid::now_v7()),
+            EmbeddingRoute::current(bound(&client)),
+            policy,
+        );
+        let bound = route.current_client().expect("current");
+        bound
+            .embed("first provider failure")
+            .await
+            .expect_err("busy");
+        tokio::time::advance(policy.worker_interval()).await;
+
+        *lock(&client.reply) = Reply::LocalCap;
+        assert!(matches!(
+            bound.embed("locally over the cap").await,
+            Err(LlmError::InputRefused(
+                EmbeddingInputRefusal::LocalCap { .. }
+            ))
+        ));
+        *lock(&client.reply) = Reply::Busy(None);
+        bound
+            .embed("second provider failure")
+            .await
+            .expect_err("busy");
+        let expected = policy.worker_interval() * 2;
+        assert!(
+            matches!(bound.embed("backed off").await,
+                Err(LlmError::Retryable { retry_after: Some(delay), .. }) if delay == expected),
+            "a local refusal did not contact the provider or heal its backoff"
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        *lock(&client.reply) = Reply::Accept;
+        tokio::time::advance(expected).await;
+        bound
+            .embed("provider recovered")
+            .await
+            .expect("retry at bound");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
