@@ -1,4 +1,4 @@
-use proxima_core::mcp::{Replay, ToolEffect};
+use proxima_core::mcp::{McpToolAudience, Replay, ToolEffect};
 use std::path::PathBuf;
 
 use proxima_core::mcp::cursor as wire_cursor;
@@ -13,6 +13,68 @@ use crate::{FileClassCounts, IndexReport};
 use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
+
+const PROXIMA_CODE_REPO_ROOTS: &str = "PROXIMA_CODE_REPO_ROOTS";
+
+/// Canonical server directories in which repository access is allowed.
+/// Constructed once at host boot; an empty value refuses registration and ingest.
+///
+/// ```compile_fail
+/// let _ = proxima_code::CodeRepoRoots(Vec::new());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CodeRepoRoots(Vec<PathBuf>);
+
+impl CodeRepoRoots {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Canonicalize the configured directories once, at host boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reason when a root is missing, unreadable, or not a directory.
+    pub fn new(roots: Vec<PathBuf>) -> Result<Self, String> {
+        roots
+            .into_iter()
+            .map(|root| {
+                let canonical = std::fs::canonicalize(&root).map_err(|err| {
+                    format!("root {} cannot be canonicalized: {err}", root.display())
+                })?;
+                if !canonical.is_dir() {
+                    return Err(format!("root {} is not a directory", root.display()));
+                }
+                Ok(canonical)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Self)
+    }
+
+    /// Canonicalize a repository path and admit it under a configured root.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid input when roots are unconfigured, the path cannot be
+    /// canonicalized, or its canonical form is outside every root.
+    pub fn admit(&self, path: &std::path::Path) -> Result<PathBuf, ToolError> {
+        if self.0.is_empty() {
+            return Err(ToolError::InvalidInput(format!(
+                "repository access requires {PROXIMA_CODE_REPO_ROOTS}"
+            )));
+        }
+        let canonical = std::fs::canonicalize(path).map_err(|err| {
+            ToolError::InvalidInput(format!("invalid repo path {}: {err}", path.display()))
+        })?;
+        if !self.0.iter().any(|root| canonical.starts_with(root)) {
+            return Err(ToolError::InvalidInput(format!(
+                "repository path is outside {PROXIMA_CODE_REPO_ROOTS}"
+            )));
+        }
+        Ok(canonical)
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRegisterRepoArgs {
@@ -192,6 +254,7 @@ pub struct IndexReportItem {
 pub struct CodeRegisterRepoTool;
 
 impl Tool for CodeRegisterRepoTool {
+    const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     const NAME: &'static str = "proxima-code_register_repo";
     const DESCRIPTION: &'static str = "Register one local Git repository for the current owner. Returns a repo_handle for code MCP tools.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
@@ -204,7 +267,8 @@ impl Tool for CodeRegisterRepoTool {
         args: CodeRegisterRepoArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeRegisterRepoOutput, ToolError>> {
         Box::pin(async move {
-            let canonical = canonical_git_repo(&args.path)?;
+            let roots = ctx.service::<CodeRepoRoots>().unwrap_or_default();
+            let canonical = canonical_git_repo(&args.path, &roots)?;
             let canonical_path = canonical.to_string_lossy().into_owned();
             let requested_scope = args.requested_scope();
             if let Some(existing) = repo_by_path(&ctx, &canonical_path).await? {
@@ -279,6 +343,7 @@ impl Tool for CodeRegisterRepoTool {
 pub struct CodeIngestHeadSnapshotTool;
 
 impl Tool for CodeIngestHeadSnapshotTool {
+    const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     const NAME: &'static str = "proxima-code_ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD, waiting for the result. Does not walk commit history. Refused while another ingestion run of this repository is active for the owner. For a large repository prefer proxima-code_start_ingest_head_snapshot, which returns at once.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
@@ -384,13 +449,9 @@ impl Tool for CodeListReposTool {
     }
 }
 
-fn canonical_git_repo(path: &str) -> Result<PathBuf, ToolError> {
+fn canonical_git_repo(path: &str, roots: &CodeRepoRoots) -> Result<PathBuf, ToolError> {
     let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err(ToolError::InvalidInput("path required".into()));
-    }
-    let canonical = std::fs::canonicalize(trimmed)
-        .map_err(|err| ToolError::InvalidInput(format!("invalid repo path {trimmed:?}: {err}")))?;
+    let canonical = roots.admit(std::path::Path::new(trimmed))?;
     if !canonical.join(".git").exists() {
         return Err(ToolError::InvalidInput(format!(
             "not a Git repository: {}",
@@ -624,5 +685,63 @@ pub(crate) fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         RepoRegistryError::Protocol(error) => ToolError::Protocol(error),
         RepoRegistryError::Database(error) => map_storage(error),
         RepoRegistryError::Storage(error) => ToolError::Other(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git_directory() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().expect("repo fixture");
+        std::fs::create_dir(repo.path().join(".git")).expect("git marker");
+        repo
+    }
+
+    #[test]
+    fn repository_root_accepts_canonical_inside_path() {
+        let repo = git_directory();
+        let roots = CodeRepoRoots::new(vec![repo.path().to_path_buf()]).expect("valid root");
+        assert_eq!(
+            canonical_git_repo(&repo.path().to_string_lossy(), &roots).expect("inside accepted"),
+            repo.path().canonicalize().expect("canonical fixture"),
+        );
+    }
+
+    #[test]
+    fn repository_root_refuses_outside_path() {
+        let root = tempfile::tempdir().expect("root fixture");
+        let outside = git_directory();
+        let roots = CodeRepoRoots::new(vec![root.path().to_path_buf()]).expect("valid root");
+        let error = canonical_git_repo(&outside.path().to_string_lossy(), &roots)
+            .expect_err("outside path must be refused");
+        assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
+    }
+
+    #[test]
+    fn repository_root_refuses_unconfigured_roots() {
+        let repo = git_directory();
+        for path in [
+            repo.path().to_string_lossy().as_ref(),
+            "",
+            "/definitely/missing",
+        ] {
+            let error = canonical_git_repo(path, &CodeRepoRoots::empty())
+                .expect_err("no configured roots must refuse registration");
+            assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_root_refuses_symlink_escape() {
+        let root = tempfile::tempdir().expect("root fixture");
+        let outside = git_directory();
+        let escaped = root.path().join("link");
+        std::os::unix::fs::symlink(outside.path(), &escaped).expect("symlink fixture");
+        let roots = CodeRepoRoots::new(vec![root.path().to_path_buf()]).expect("valid root");
+        let error = canonical_git_repo(&escaped.to_string_lossy(), &roots)
+            .expect_err("symlink escape must be refused");
+        assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
     }
 }

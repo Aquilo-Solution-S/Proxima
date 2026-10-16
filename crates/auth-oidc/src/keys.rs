@@ -433,9 +433,10 @@ impl HttpJwksResolver {
         for (index, entry) in set.keys.into_iter().enumerate() {
             // Tolerant parse: an unnamed, unsupported or malformed entry (a
             // wrong-typed member included) is skipped, so one such key in the
-            // issuer's set doesn't fail the others. An RSA entry is read from
-            // its four members alone, so members it never needed cannot sink
-            // it. The other key types are P-256 EC and Ed25519 OKP; such an
+            // issuer's set doesn't fail the others. RSA entries are checked
+            // for signing use and family-compatible algorithms before their
+            // modulus and exponent are materialized. The other key types are
+            // P-256 EC and Ed25519 OKP; such an
             // entry with any fault (another curve, a coordinate that is not 32
             // bytes, an `alg` that contradicts its `kty`, a `use` other than
             // `sig`, private material) is skipped, never half-trusted.
@@ -448,7 +449,15 @@ impl HttpJwksResolver {
                 continue;
             };
             let key = if fetched.is_rsa() {
-                let (Some(n), Some(e)) = (&fetched.n, &fetched.e) else {
+                let Ok(jwk) = Jwk::deserialize(&entry) else {
+                    tracing::debug!(%kid, "jwks RSA entry is not a well-formed JWK; skipped");
+                    continue;
+                };
+                if let Err(reason) = jwk.check_public_signing_key(AlgorithmFamily::Rsa) {
+                    tracing::debug!(%kid, %reason, "jwks RSA entry is not a usable signing key; skipped");
+                    continue;
+                }
+                let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
                     continue;
                 };
                 DecodingKey::from_rsa_components(n, e)
@@ -707,7 +716,13 @@ mod http_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::rsa::KeySize;
+    use aws_lc_rs::signature::{
+        KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair, RsaPublicKeyComponents,
+    };
     use axum::{Router, body::Body, http::StatusCode, response::Response, routing::get};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use tokio::sync::Barrier;
 
     use crate::config::{OidcConfigError, validate_https_url};
@@ -1392,24 +1407,67 @@ mod http_tests {
         server.abort();
     }
 
-    /// An RSA entry is read from `kid`, `kty`, `n` and `e` alone: members
-    /// the resolver never read, wrong-typed or not, do not sink it.
+    /// RSA entries with incompatible signing metadata are skipped, while a
+    /// valid RSA key beside them still resolves.
     #[tokio::test]
-    async fn an_rsa_entry_with_mistyped_foreign_members_still_resolves() {
+    async fn fetched_rsa_entries_require_signing_metadata() {
+        let signing = RsaKeyPair::generate(KeySize::Rsa2048).expect("generate signing key");
+        let public = RsaPublicKeyComponents::<Vec<u8>>::from(signing.public_key());
+        let n = URL_SAFE_NO_PAD.encode(public.n);
+        let e = URL_SAFE_NO_PAD.encode(public.e);
         let jwks = serde_json::json!({
             "keys": [
-                { "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E,
-                  "alg": 7, "use": 7, "crv": [], "x": 1, "y": {}, "d": 7 },
-                { "kid": "k2", "n": TEST_JWK_N, "e": TEST_JWK_E, "alg": 7, "x": 1 },
+                { "kid": "k1", "kty": "RSA", "n": n, "e": e,
+                  "use": "enc" },
+                { "kid": "k2", "kty": "RSA", "n": n, "e": e,
+                  "alg": "ES256" },
+                { "kid": "good", "kty": "RSA", "n": n, "e": e,
+                  "alg": "RS256", "use": "sig" },
             ]
         })
         .to_string();
         let (issuer, _fetches, server) = spawn_mock_idp(jwks).await;
-        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback issuer");
+        let resolver = HttpJwksResolver::new(issuer.clone(), None).expect("loopback issuer");
 
-        for kid in ["k1", "k2"] {
-            assert!(resolver.key_for(kid).await.is_ok(), "{kid}");
+        let validator = crate::authenticator::OidcTokenValidator::new(
+            crate::config::OidcAuthConfig {
+                issuer: issuer.clone(),
+                jwks_uri: None,
+                audience: "proxima-api".into(),
+                allowed_subjects: None,
+                leeway_secs: 0,
+            },
+            Arc::new(resolver),
+        )
+        .expect("validator");
+        let mut verified = Vec::new();
+        for kid in ["k1", "k2", "good"] {
+            let header = serde_json::json!({"alg": "RS256", "kid": kid});
+            let claims = serde_json::json!({
+                "sub": "subject-1", "iss": issuer, "aud": "proxima-api", "exp": 4_102_444_800_u64
+            });
+            let input = format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(header.to_string()),
+                URL_SAFE_NO_PAD.encode(claims.to_string()),
+            );
+            let mut signature = vec![0; signing.public_modulus_len()];
+            signing
+                .sign(
+                    &RSA_PKCS1_SHA256,
+                    &SystemRandom::new(),
+                    input.as_bytes(),
+                    &mut signature,
+                )
+                .expect("sign token");
+            let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
+            verified.push(validator.validate(&token).await.is_ok());
         }
+        assert_eq!(
+            verified,
+            [false, false, true],
+            "enc, ES256, valid RSA sibling"
+        );
         server.abort();
     }
 

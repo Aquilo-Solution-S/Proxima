@@ -56,10 +56,20 @@ OIDC adapter from `auth-oidc`. The authenticator validates the bearer, maps
 `X-Proxima-Owner` value is a raw owner UUID selected from that authorized
 scope. It is not an authorization proof.
 
+The scope gate judges the caller's role on the owner the call's `space`
+resolves to.
+
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor
 or add a caller-controlled ACL/share set.
+
+Attaching a subgroup or changing its relation requires manage authority on
+both groups. Detaching it requires manage authority on either endpoint;
+removing a person requires manage authority on the parent group. PostgreSQL
+write policies enforce these boundaries. Lock requests retain both endpoints
+for tree serialization; their read and write policies require manage authority
+on either endpoint.
 
 ## Other stores and HTTP
 
@@ -79,6 +89,12 @@ For a store accessed by flavor workers, register an `OtherStores` port with
 configured timeout. The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
+
+Derivation reads all foreign origins within one call-wide deadline and refuses
+before writing if they cannot all be read. Lineage deduplicates foreign origins
+across the page, bounds distinct reads, and renders unread origins as unavailable
+with a reason. The limits and concurrency contract live in
+[`other_stores` rustdoc](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/storage_ports/other_stores.rs).
 
 ## Fact publication outbox
 
@@ -101,6 +117,12 @@ the authenticated context. The host owns consumer ledgers, retention, and
 actor attribution. The typed `PublicationRecord`, `DurableIntake`, and delivery outcomes own the
 CloudEvents envelope and retry contract in rustdoc. Scheduling, execution, and
 call logging belong to the host; the outbox is its change channel.
+
+The built-in HTTP sink reads `PROXIMA_OUTBOX_HTTP_URL` and delivers each event
+to that receiver without following redirects. Plaintext HTTP requires loopback
+or an exact host entry in `PROXIMA_PLAINTEXT_HOSTS`, whether or not a token is
+configured. See [configuration](configuration.md) for the token-file and CA
+settings.
 
 ## Host-state participant
 

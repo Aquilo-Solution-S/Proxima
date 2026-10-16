@@ -208,6 +208,53 @@ async fn engine_allows_group_detach_from_either_endpoint() -> TestResult {
 }
 
 #[tokio::test]
+async fn member_endpoint_detach_removes_edge_without_parent_read_authority() -> TestResult {
+    let h = Harness::new().await?;
+    let both = authenticated_context(AuthzContext::for_subject_with_role(
+        h.admin,
+        [
+            (OwnerId::from(h.parent), Role::admin()),
+            (OwnerId::from(h.child), Role::admin()),
+        ],
+        AuthPath::HostBearer,
+    ));
+    let child_only = authenticated_context(AuthzContext::for_subject_with_role(
+        h.admin,
+        [(OwnerId::from(h.child), Role::admin())],
+        AuthPath::HostBearer,
+    ));
+    assert!(!child_only.may_read(&h.parent.into(), proxima_core::AccessKind::Fact));
+    let admin_pool = PgPool::connect(&db_url(&h.name)).await?;
+    for relation in [None, Some(Relation::Viewer)] {
+        h.engine
+            .add_member(&both, h.parent, OwnerId::from(h.child), Relation::Viewer)
+            .await?;
+        match relation {
+            None => {
+                h.engine
+                    .remove_member(&child_only, h.parent, h.child.into())
+                    .await?;
+            }
+            Some(relation) => {
+                h.engine
+                    .remove_member_relation(&child_only, h.parent, h.child.into(), relation)
+                    .await?;
+            }
+        }
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.group_edges WHERE child_group_id = $1",
+        )
+        .bind(h.child.into_inner())
+        .fetch_one(&admin_pool)
+        .await?;
+        assert_eq!(remaining, 0, "the member admin actually removes the edge");
+    }
+    admin_pool.close().await;
+    h.finish().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn member_endpoint_detach_runs_the_remove_hook() -> TestResult {
     let h = Harness::new_with_hook(Some(Arc::new(VetoRemovals))).await?;
     let both = authenticated_context(AuthzContext::for_subject_with_role(

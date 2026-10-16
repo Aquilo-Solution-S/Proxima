@@ -61,6 +61,7 @@ pub use ingest_runs::{CodeGetIngestRunTool, CodeStartIngestHeadSnapshotTool};
 pub use open_file_revision::CodeOpenFileRevisionTool;
 pub use repos::{
     CodeEraseRepoTool, CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool,
+    CodeRepoRoots,
 };
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;

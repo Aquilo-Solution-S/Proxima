@@ -623,6 +623,7 @@ async fn mcp_auth(
             unauthorized(&state, &path)
         };
     };
+    let principal = ctx.authz.principal();
     let identity = ctx.authz.identity_for_revalidation();
     let epoch_source = if ctx.authz.auth_path() == AuthPath::HostBearer {
         state.auth.host_authenticator()
@@ -630,11 +631,18 @@ async fn mcp_auth(
         None
     };
     request.extensions_mut().insert(ctx);
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
     if bind_new_session
         && let Some(session_id) = response_header_str(response.headers(), MCP_SESSION_ID_HEADER)
     {
-        state.sessions.bind(session_id, selected_owner).await;
+        let bound = state
+            .sessions
+            .bind(session_id, selected_owner, principal)
+            .await;
+        if !bound {
+            response.headers_mut().remove(MCP_SESSION_ID_HEADER);
+            *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        }
     }
     revalidate_response(response, identity, epoch_source, state.revalidation)
 }
@@ -1140,7 +1148,7 @@ mod tests {
         let bound = group_owner();
         let other = group_owner();
         let sessions = McpSessionBindings::new();
-        sessions.bind("sess-1", bound).await;
+        sessions.bind("sess-1", bound, bound).await;
         let app = forwarder_app(
             Arc::new(ForwarderAuth { subject }),
             Arc::new(PerOwnerAccess::new(
@@ -1185,7 +1193,8 @@ mod tests {
     async fn a_session_bound_to_an_unresolvable_party_is_not_found() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let sessions = McpSessionBindings::new();
-        sessions.bind("sess-1", group_owner()).await;
+        let owner = group_owner();
+        sessions.bind("sess-1", owner, owner).await;
         let app = forwarder_app(
             Arc::new(ForwarderAuth { subject }),
             Arc::new(PerOwnerAccess::new(subject, [])),
@@ -1907,7 +1916,7 @@ mod tests {
     async fn valid_token_with_bound_session_authorizes() {
         let owner = user_owner();
         let sessions = McpSessionBindings::new();
-        sessions.bind("sess-1", owner).await;
+        sessions.bind("sess-1", owner, owner).await;
         let app = auth_app(owner, sessions);
         let request = mcp_request("Bearer good-token")
             .header("Mcp-Session-Id", "sess-1")
@@ -1943,7 +1952,9 @@ mod tests {
         let authorized_owner = user_owner();
         let foreign_owner = user_owner();
         let sessions = McpSessionBindings::new();
-        sessions.bind("foreign-session", foreign_owner).await;
+        sessions
+            .bind("foreign-session", foreign_owner, foreign_owner)
+            .await;
         let app = auth_app(authorized_owner, sessions);
 
         let foreign_request = mcp_request("Bearer good-token")

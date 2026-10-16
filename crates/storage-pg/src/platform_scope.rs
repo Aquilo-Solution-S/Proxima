@@ -80,10 +80,22 @@ impl PgPlatformScope {
         })
     }
 
-    /// The composed schema inventory this authority was validated over. The
-    /// serving storage checks its runtime role's RLS over the same list.
-    pub(crate) fn schemas(&self) -> Vec<&str> {
-        self.schemas.iter().map(String::as_str).collect()
+    /// Union composed schemas with stored flavor surfaces for runtime checks.
+    pub(crate) async fn catalog_schemas(&self) -> Result<Vec<String>, StorageError> {
+        let mut transaction = self.begin().await?;
+        let mut schemas = self.schemas.to_vec();
+        let registered: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT split_part(table_name, '.', 1)
+               FROM proxima_core.flavor_surface",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(map_err)?;
+        schemas.extend(registered);
+        transaction.rollback().await.map_err(map_err)?;
+        schemas.sort();
+        schemas.dedup();
+        Ok(schemas)
     }
 
     /// Begin a platform transaction under its explicit policy, including on

@@ -10,7 +10,9 @@ use proxima_core::OwnerId;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareTs {
     pub owner: OwnerId,
+    /// Non-blank filename, at most 255 bytes.
     pub filename: String,
+    /// Non-blank media type, at most 127 bytes.
     pub mime: String,
     pub byte_len: u64,
 }

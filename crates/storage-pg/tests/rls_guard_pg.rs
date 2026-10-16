@@ -39,6 +39,9 @@ mod goal_owner_matches_head;
 #[path = "rls_guard_pg/privileged_objects.rs"]
 mod privileged_objects;
 
+#[path = "rls_guard_pg/omitted_schema.rs"]
+mod omitted_schema;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(

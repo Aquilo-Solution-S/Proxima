@@ -1,12 +1,13 @@
 //! `core/walk_memory_lineage` — wire-facing memory lineage walk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::storage_ports::other_stores::RemoteOriginRead;
 use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest};
 use crate::{MemoryHandleClass, MemoryId};
 
@@ -14,6 +15,7 @@ use super::get_memory::memory_class;
 
 const MAX_LINEAGE_DEPTH: u32 = 8;
 const DEFAULT_LINEAGE_DEPTH: u32 = 3;
+use crate::storage_ports::other_stores::MAX_LINEAGE_REMOTE_ORIGINS;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
@@ -89,6 +91,10 @@ pub struct LineageNodeOutput {
     /// on such a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Why an unavailable origin was not read when a page cap or deadline
+    /// prevented the read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 /// One hop of the walk. Lineage traverses `origin` and nothing else, so
@@ -188,6 +194,7 @@ pub async fn walk_memory_lineage(
                 distance: node.distance,
                 store: None,
                 status: None,
+                unavailable_reason: None,
             })
         })
         .collect::<Result<Vec<_>, McpToolError>>()?;
@@ -239,9 +246,36 @@ async fn append_external_origins(
         crate::storage_ports::other_stores::QualifiedHandle,
     )>,
 ) {
-    use crate::storage_ports::other_stores::RemoteRead;
-    const SNIPPET_CHARS: usize = 200;
     let service = super::other_stores::service(ctx);
+    let has_service = service.is_some();
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, origin) in &external {
+        if seen.insert(origin.clone()) {
+            unique.push(origin.clone());
+        }
+    }
+    let readable = unique.len().min(MAX_LINEAGE_REMOTE_ORIGINS);
+    let reads = match service {
+        Some(service) if readable > 0 => Some(
+            service
+                .read_origins_bounded(super::other_stores::caller(ctx), &unique[..readable])
+                .await,
+        ),
+        _ => None,
+    };
+    let reads = reads.unwrap_or_else(|| {
+        (0..readable)
+            .map(|_| {
+                Err(
+                    crate::storage_ports::other_stores::OtherStoresError::Unavailable(
+                        "origin unavailable".into(),
+                    ),
+                )
+            })
+            .collect()
+    });
+    let read_by_handle: HashMap<_, _> = unique.iter().take(readable).cloned().zip(reads).collect();
     for (memory_id, origin) in external {
         let Some(source) = nodes
             .iter()
@@ -253,31 +287,13 @@ async fn append_external_origins(
             continue;
         };
         let distance = source.1.saturating_add(1);
-        let read = match &service {
-            Some(service) => service
-                .read_bounded(super::other_stores::caller(ctx), &origin)
-                .await
-                .ok(),
-            None => None,
-        };
+        let capped = has_service
+            && unique.len() > MAX_LINEAGE_REMOTE_ORIGINS
+            && !read_by_handle.contains_key(&origin);
+        let read = read_by_handle.get(&origin);
         let handle = origin.to_string();
-        let (kind, schema_id, snippet, status) = match read {
-            Some(RemoteRead::Found(memory)) => (
-                memory.kind.as_str().to_string(),
-                memory.schema_id,
-                memory.body.chars().take(SNIPPET_CHARS).collect(),
-                None,
-            ),
-            Some(RemoteRead::Erased) => {
-                (String::new(), String::new(), String::new(), Some("erased"))
-            }
-            Some(RemoteRead::NotFound) | None => (
-                String::new(),
-                String::new(),
-                String::new(),
-                Some("unavailable"),
-            ),
-        };
+        let (kind, schema_id, snippet, status, unavailable_reason) =
+            project_remote_read(read, capped);
         if !nodes.iter().any(|node| node.memory == handle) {
             nodes.push(LineageNodeOutput {
                 memory: handle.clone(),
@@ -287,6 +303,7 @@ async fn append_external_origins(
                 distance,
                 store: Some(origin.store.to_string()),
                 status: status.map(ToString::to_string),
+                unavailable_reason: unavailable_reason.map(ToString::to_string),
             });
         }
         edges.push(LineageEdgeOutput {
@@ -295,6 +312,63 @@ async fn append_external_origins(
             kind: crate::EdgeKind::Origin.as_str().to_string(),
             distance,
         });
+    }
+}
+
+fn project_remote_read(
+    read: Option<&Result<RemoteOriginRead, crate::storage_ports::other_stores::OtherStoresError>>,
+    capped: bool,
+) -> (
+    String,
+    String,
+    String,
+    Option<&'static str>,
+    Option<&'static str>,
+) {
+    const SNIPPET_CHARS: usize = 200;
+    match read {
+        Some(Ok(RemoteOriginRead::Found(_, memory))) => (
+            memory.kind.as_str().to_string(),
+            memory.schema_id.clone(),
+            memory.body.chars().take(SNIPPET_CHARS).collect(),
+            None,
+            None,
+        ),
+        Some(Ok(RemoteOriginRead::Erased)) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("erased"),
+            None,
+        ),
+        Some(Err(crate::storage_ports::other_stores::OtherStoresError::DeadlineExceeded)) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            Some("deadline exceeded"),
+        ),
+        Some(Ok(RemoteOriginRead::NotFound)) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            None,
+        ),
+        Some(Err(_)) | None if !capped => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            None,
+        ),
+        Some(Err(_)) | None => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            Some("origin limit exceeded"),
+        ),
     }
 }
 
@@ -332,8 +406,20 @@ fn format_lineage_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::{LINEAGE_CURSOR, lineage_fingerprint};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::{LINEAGE_CURSOR, LineageNodeOutput, append_external_origins, lineage_fingerprint};
+    use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
+    use crate::storage_ports::other_stores::{
+        OtherStores, OtherStoresError, RemoteHit, RemoteMemory, RemoteRead, RemoteSearch,
+        StoreCaller, StoreInfo, StoreName,
+    };
     use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection};
+    use crate::{MemoryId, UserId};
+    use futures::future::BoxFuture;
 
     /// The cursor binds memory, direction, and depth; any of the three
     /// changing between pages fails closed. `limit` stays out of the
@@ -367,5 +453,140 @@ mod tests {
                 .expect_err("changed walk shape must fail closed");
             assert!(err.into_message().starts_with("cursor does not match"));
         }
+    }
+
+    struct SlowLineageStore {
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl OtherStores for SlowLineageStore {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _handle: &'a str,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
+                Ok(RemoteRead::Found(RemoteMemory {
+                    handle: "remote:lineage".into(),
+                    kind: crate::EntityKind::Fact,
+                    schema_id: "test/fact-v1".into(),
+                    title: None,
+                    body: String::new(),
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    tags: Vec::new(),
+                }))
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lineage_page_deduplicates_caps_and_deadline_marks_origins() {
+        let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
+        let reads = Arc::new(AtomicUsize::new(0));
+        ctx.services = crate::FlavorServices::with(
+            crate::storage_ports::other_stores::OtherStoresService::new(Arc::new(
+                SlowLineageStore {
+                    reads: Arc::clone(&reads),
+                },
+            )),
+        );
+        let mut nodes = (0u128..200)
+            .map(|index| {
+                let id = MemoryId::new(uuid::Uuid::from_u128(index + 1));
+                LineageNodeOutput {
+                    memory: ctx.format_memory_with_class(id, crate::MemoryHandleClass::Fact),
+                    kind: "fact".into(),
+                    schema_id: "test/fact-v1".into(),
+                    snippet: String::new(),
+                    distance: 0,
+                    store: None,
+                    status: None,
+                    unavailable_reason: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let origins = (0u128..200)
+            .flat_map(|node| {
+                let id = MemoryId::new(uuid::Uuid::from_u128(node + 1));
+                (0..255).map(move |offset| {
+                    (
+                        id,
+                        crate::storage_ports::other_stores::QualifiedHandle::parse(&format!(
+                            "remote:{offset}"
+                        ))
+                        .expect("origin"),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut edges = Vec::new();
+        let started = tokio::time::Instant::now();
+        let deadline = crate::storage_ports::other_stores::DEFAULT_REMOTE_BATCH_DEADLINE;
+        tokio::time::timeout(
+            deadline + std::time::Duration::from_millis(1),
+            append_external_origins(&ctx, &mut nodes, &mut edges, origins),
+        )
+        .await
+        .expect("lineage page must finish within the call deadline");
+        assert!(started.elapsed() <= deadline);
+        assert_eq!(reads.load(Ordering::SeqCst), 48);
+        assert_eq!(nodes.len(), 200 + 255);
+        let remote = nodes
+            .iter()
+            .filter(|node| node.store.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remote.iter().filter(|node| node.status.is_none()).count(),
+            40
+        );
+        assert_eq!(
+            remote
+                .iter()
+                .filter(|node| node.status.as_deref() == Some("unavailable"))
+                .count(),
+            215
+        );
+        assert_eq!(
+            remote
+                .iter()
+                .filter(|node| node.unavailable_reason.as_deref() == Some("origin limit exceeded"))
+                .count(),
+            191
+        );
+        assert_eq!(
+            remote
+                .iter()
+                .filter(|node| node.unavailable_reason.as_deref() == Some("deadline exceeded"))
+                .count(),
+            24
+        );
+        assert_eq!(edges.len(), 200 * 255);
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.unavailable_reason.as_deref() == Some("origin limit exceeded"))
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.unavailable_reason.as_deref() == Some("deadline exceeded"))
+        );
     }
 }

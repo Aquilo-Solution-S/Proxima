@@ -1,8 +1,7 @@
 # proxima-mcp
 
-Canonical Proxima host: Streamable HTTP MCP server, code flavor on by
-default. This is the binary to run locally with a coding agent and the
-wiring template for other hosts.
+Canonical Proxima host: Streamable HTTP MCP server. This is the binary to run locally with a
+coding agent and the wiring template for other hosts.
 
 ## Run Locally
 
@@ -18,7 +17,8 @@ cargo run -p proxima-mcp
 `dev-idp` prints the OIDC exports and a ready-to-paste agent command.
 Listens at `http://127.0.0.1:31415/mcp`.
 
-Substrate-only (no code flavor): `cargo run -p proxima-mcp --no-default-features`.
+For Code builds and repository administration, see
+[`operate`](../../docs/operate.md#container-and-network-boundary).
 
 ## Auth
 

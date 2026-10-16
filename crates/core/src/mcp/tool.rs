@@ -706,7 +706,7 @@ pub(crate) fn prepare_flat_tool_args(
 /// mismatched name is coerced, not silently ignored. Driven by the tool's own
 /// schema: a tool declaring `spaces` accepts a scalar `space`; a tool declaring
 /// `space` accepts a scalar `spaces` or a single-element `spaces` array.
-fn coerce_space_aliases(
+pub(crate) fn coerce_space_aliases(
     tool_name: &str,
     args: &mut serde_json::Value,
     properties: &[String],

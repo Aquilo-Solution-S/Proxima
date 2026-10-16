@@ -79,8 +79,8 @@ aws-sdk-s3 = { version = "1.79.0", default-features = false, features = [
 
 # tree-sitter deps for the code flavor (Rust, TypeScript, Python, Go). Core
 # and grammar crates version independently and must stay ABI-compatible, so
-# bump them as a set and let CI confirm they parse (workspace nextest, code
-# flavor default-on).
+# bump them as a set and let CI confirm they parse (workspace nextest with
+# --all-features).
 tree-sitter = "0.27"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"

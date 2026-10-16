@@ -13,6 +13,11 @@ connections use separate roles with `NOBYPASSRLS`. Serving requests enter an
 owner-scoped transaction; platform maintenance enters the separately authorized
 platform scope. Owner RLS is always enforced.
 
+The boot RLS guard covers composed schemas and schemas recorded in
+`proxima_core.flavor_surface`, including stored flavors absent from the binary.
+The platform connection reads that catalog; the runtime connection is checked
+against the combined inventory.
+
 `DATABASE_URL` and `PROXIMA_PLATFORM_DATABASE_URL` are both required for the
 canonical host. Provision the platform role as the schema/migration owner and
 the runtime role for serving grants. Development provisioning is executable in
@@ -31,11 +36,19 @@ exercise an authenticated owner read and write after deployment.
 
 ## Container and network boundary
 
-Build the default Code-flavor MCP image:
+Build the default substrate-only MCP image:
 
 ```sh
 docker build -t proxima-mcp .
 ```
+
+Code is opt-in: build the host with `--features code`. The default `memory`
+palette includes Code reads when linked; repository registration and ingestion
+require `full` or explicit `PROXIMA_TOOL_ALLOW` grants. Configure
+[`PROXIMA_CODE_REPO_ROOTS`](configuration.md) before boot. Registration and
+ingestion accept only canonical repository paths under those canonical roots,
+refusing symlink escapes and every path when no roots are set. Ingest rechecks
+registered paths against the current roots before starting and reading a tree.
 
 Supply the two database connections and OIDC configuration through the
 deployment's secret/config mechanism. Use a loopback bind for local use. A

@@ -23,7 +23,7 @@ concepts and integration; avoid a second invariant or configuration ledger.
 
 | Path | Responsibility |
 |---|---|
-| `apps/proxima-mcp` | Canonical MCP host; Code flavor default-on |
+| `apps/proxima-mcp` | Canonical MCP host; Code flavor opt-in |
 | `crates/core` | Domain types, engine, typed ports, registry |
 | `crates/proxima` | Host facade and flavor SDK |
 | `crates/storage-pg`, `crates/blob-s3` | PostgreSQL and object backends |
@@ -96,7 +96,7 @@ cargo nextest run --workspace --all-targets --all-features
 Workspace lints deny warnings and Clippy pedantic findings. Use `cargo check`
 and selected nextest tests during iteration; per-package success does not
 verify a flavor's served catalog. Changes to `mcp_tools` require the host e2e
-path. Substrate-only checks use `--no-default-features`.
+path. Verify both the all-features lane and the default substrate-only host.
 
 PG tests require `PROXIMA_TEST_PG_URL`, an admin URL for a server you own.
 Testkit sweep/GC touches every matching test database behind that URL.
