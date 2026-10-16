@@ -1,8 +1,6 @@
 //! `proxima://memories` — batch memory read by prefixed ids.
 //!
-//! Closes the wake-candidates hydration gap: `hard_memories` hands the
-//! caller N prefixed ids, and until this surface each one cost a separate
-//! `proxima://memory/{id}` round trip. One call returns the visible
+//! Hydrates a bounded set of prefixed memory ids in one call. Returns the visible
 //! subset plus an explicit `missing` list; not-exists and not-visible are
 //! deliberately indistinguishable, mirroring the single get.
 

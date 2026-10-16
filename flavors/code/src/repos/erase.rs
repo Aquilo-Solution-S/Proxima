@@ -4,7 +4,7 @@
 //! means; the substrate is the only place that knows how to erase a series.
 //! So the split is: [`FIND_REPO_ROWS_SQL`] names the admissions filed under
 //! the repository, and [`UnitOfWork::erase_own_series`] erases them, a page
-//! at a time (docs/13 §Flavor-scoped erase). The verb expands each to its
+//! at a time (see `docs/data-and-erasure.md`). The verb expands each to its
 //! whole series, erases every row that references the erase set through a
 //! foreign key, refuses a footprint that reaches another owner or another
 //! flavor's schema, and takes its own locks, fences and transaction. The
@@ -31,7 +31,7 @@ use proxima::flavor::{
 };
 use proxima_core::{AuthzContext, Engine, MemoryId, OwnerId, StorageError};
 use proxima_storage_pg::{
-    MAX_TRANSACTION_ATTEMPTS, begin_compatible_owner_transaction, is_transient_conflict,
+    MAX_TRANSACTION_ATTEMPTS, begin_owner_transaction, is_transient_conflict,
 };
 use uuid::Uuid;
 
@@ -190,9 +190,15 @@ pub async fn erase_repo(
     owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    let scope = authz.owner_scope().ok_or_else(|| {
+        RepoRegistryError::Storage(StorageError::Unavailable(
+            "authenticated owner scope required".into(),
+        ))
+    })?;
+    let scoped_store = store.clone().with_owner_scope(scope.clone());
     let tally = Tally::default();
     let repo_record_deleted = with_erase_retry(MAX_TRANSACTION_ATTEMPTS, || {
-        erase_repo_once(engine, authz, store, owner, repo_id, &tally)
+        erase_repo_once(engine, authz, &scoped_store, owner, repo_id, &tally)
     })
     .await?;
     Ok(RepoEraseReceipt {
@@ -270,7 +276,7 @@ fn is_transient(err: &RepoRegistryError) -> bool {
 async fn erase_repo_once(
     engine: &Engine,
     authz: &AuthzContext,
-    store: &CodeFlavorStore,
+    store: &crate::store::ScopedCodeFlavorStore,
     owner: &OwnerId,
     repo_id: Uuid,
     tally: &Tally,
@@ -332,11 +338,11 @@ async fn erase_repo_once(
 
 /// Up to `limit` rows filed under `repo_id`, as this owner sees them.
 async fn find_repo_rows(
-    store: &CodeFlavorStore,
+    store: &crate::store::ScopedCodeFlavorStore,
     repo_id: Uuid,
     limit: usize,
 ) -> Result<Vec<(String, Uuid)>, RepoRegistryError> {
-    let mut tx = begin_compatible_owner_transaction(store.pool(), store.owner_scope()).await?;
+    let mut tx = begin_owner_transaction(store.pool(), store.owner_scope()).await?;
     let found = sqlx::query_as(FIND_REPO_ROWS_SQL)
         .bind(repo_id)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
@@ -396,12 +402,12 @@ fn page_error(repo_id: Uuid, err: SeriesEraseError, found: &[(String, Uuid)]) ->
 /// under the fence is a write that landed after the last page: the attempt
 /// is refused as `FootprintIncomplete`, and the retry erases it.
 async fn retire_repo(
-    store: &CodeFlavorStore,
+    store: &crate::store::ScopedCodeFlavorStore,
     owner: &OwnerId,
     repo_id: Uuid,
 ) -> Result<bool, RepoRegistryError> {
     let principal_id = owner.into_inner();
-    let mut tx = begin_compatible_owner_transaction(store.pool(), store.owner_scope()).await?;
+    let mut tx = begin_owner_transaction(store.pool(), store.owner_scope()).await?;
     sqlx::query(ERASE_LOCK_TIMEOUT_SQL)
         .execute(&mut *tx)
         .await?;

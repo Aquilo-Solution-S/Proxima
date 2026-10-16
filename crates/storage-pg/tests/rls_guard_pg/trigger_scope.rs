@@ -8,14 +8,13 @@ use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
 use uuid::Uuid;
 
-const BRIDGED_ROUTINES: [&str; 10] = [
+const BRIDGED_ROUTINES: [&str; 9] = [
     "assert_erased_pin_target_insert",
     "memory_erase_witness",
     "cooled_erase_witness",
     "goal_erase_witness",
     "cooled_identity_seal",
     "goal_pin_target_checks",
-    "wake_pin_target_checks",
     "memory_pin_checks",
     "cooled_forget_grounding",
     "pins_have_grounding_support",
@@ -286,38 +285,6 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
         "goal_pin_target_checks",
         "23505",
         "collides with an existing entity",
-        outcome,
-    )
-    .await;
-
-    // wake_pin_target_checks
-    sqlx::query(
-        "INSERT INTO proxima_core.wake_config
-             (owner_id, trigger_kind, trigger_t, hard_memory_t, tool_ids, prompt)
-         VALUES ($1, 'fact_memory', $2, ARRAY[$2]::uuid[], ARRAY['core.remember'], 'wake')",
-    )
-    .bind(owner)
-    .bind(fact)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    assert_owner_scope(&mut tx, "wake_pin_target_checks return").await;
-    savepoint(&mut tx).await;
-    let outcome = sqlx::query(
-        "INSERT INTO proxima_core.wake_config
-             (owner_id, trigger_kind, trigger_t, hard_memory_t, tool_ids, prompt)
-         VALUES ($1, 'fact_memory', $2, ARRAY[$3]::uuid[], ARRAY['core.remember'], 'wake')",
-    )
-    .bind(owner)
-    .bind(fact)
-    .bind(Uuid::now_v7())
-    .execute(&mut *tx)
-    .await;
-    assert_refusal_restores_scope(
-        &mut tx,
-        "wake_pin_target_checks",
-        "23503",
-        "hard context memory does not exist",
         outcome,
     )
     .await;

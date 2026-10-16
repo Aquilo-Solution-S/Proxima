@@ -1,5 +1,5 @@
 //! The outbox drains: each host-provided [`DurableIntake`], registered under a
-//! consumer name, receives every captured Fact in this process (docs/18
+//! consumer name, receives every captured Fact in this process (docs/host-integration.md
 //! §Delivery, §Consumers).
 //!
 //! One loop per consumer claims a batch of that consumer's lanes, calls

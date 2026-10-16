@@ -253,8 +253,7 @@ async fn every_cited_enforcement_site_resolves() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         for site in ddl {
             let pool = pg.pool_for_tests();
             let (kind, relation, name, exists) = match site {
@@ -338,57 +337,6 @@ fn every_declared_surface_states_what_forget_does() {
     }
 }
 
-// ── Transfers announce everywhere ───────────────────────────────────────
-
-/// `proxima_core.announce` is a declared surface with a stated transfer
-/// rule, so a transfer cannot move a memory and leave its change log
-/// behind — nor take another owner's log with it.
-#[tokio::test]
-async fn transfer_is_announced_and_the_announce_surface_is_declared() {
-    let announce = FLAVOR_0
-        .all_surfaces()
-        .find(|surface| surface.table == "proxima_core.announce")
-        .expect("flavor #0 declares the announce log");
-
-    assert!(
-        matches!(announce.transfer, TransferRule::RetainAtSource { .. }),
-        "an announce row records what happened to an owner, not to a memory: \
-         it stays where it was written, so a transfer's own row survives at \
-         the source. Declared, not inferred: {:?}",
-        announce.transfer
-    );
-
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_core_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
-
-        // `transfer` is one of the four announce ops, in the enum, in this
-        // order. The guardrail asserts the order; this asserts the lane
-        // exists at all, which is what "announced everywhere" rests on.
-        let ops: Vec<String> = sqlx::query_scalar(
-            "SELECT e.enumlabel::text
-               FROM pg_enum e
-               JOIN pg_type t ON t.oid = e.enumtypid
-               JOIN pg_namespace n ON n.oid = t.typnamespace
-              WHERE n.nspname = 'proxima_core' AND t.typname = 'announce_op'
-              ORDER BY e.enumsortorder",
-        )
-        .fetch_all(pg.pool_for_tests())
-        .await?;
-        assert_eq!(ops, vec!["append", "forget", "erase", "transfer"]);
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("announce lane test failed");
-}
-
 // ── The embedding byte-parity gate ──────────────────────────────────────
 
 /// Byte-parity half: the text a recipe-resolved column yields is byte-for-byte
@@ -408,8 +356,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let owner_id = Uuid::now_v7();
@@ -660,8 +607,7 @@ async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let unenforced: Vec<(String, String)> = sqlx::query_as(
             "SELECT d.relation, d.name
                FROM unnest($1::text[], $2::text[]) AS d(relation, name)
@@ -716,9 +662,7 @@ async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
-
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         // (schema-qualified table, column, what named it) — flattened so
         // one round trip answers for the whole contract.
         let mut cited: Vec<(String, String, String)> = Vec::new();
@@ -835,8 +779,7 @@ async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         for (table, dedupe_key) in declared {
             let columns: Vec<String> = dedupe_key.iter().map(|c| (*c).to_owned()).collect();
             // Both a UNIQUE constraint and a bare unique index enforce the
@@ -905,7 +848,7 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let surfaces = pg.surfaces();
 
         // The named case: `memory` is on flavor #0's bespoke erase list, and
@@ -1009,8 +952,7 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let surfaces = pg.surfaces();
 

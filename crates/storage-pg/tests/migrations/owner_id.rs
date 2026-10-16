@@ -8,15 +8,14 @@
 use std::borrow::Cow;
 
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
+use proxima_storage_pg::{begin_migration_transaction, core_migrator};
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// A database with every migration up to 0026 applied and recorded.
-async fn database_at_0026(db_name: &str) -> TestResult<PgStorage> {
+async fn database_at_0026(db_name: &str) -> TestResult<super::MigrationFixture> {
     create_db(db_name).await?;
-    let pg = PgStorage::connect(&db_url(db_name)).await?;
     let (_, platform_url) = split_role_urls(db_name).await?;
     let platform = sqlx::PgPool::connect(&platform_url).await?;
     let mut staged = core_migrator();
@@ -33,6 +32,7 @@ async fn database_at_0026(db_name: &str) -> TestResult<PgStorage> {
     migration.commit().await?;
     drop(connection);
     platform.close().await;
+    let pg = super::connect_historical_fixture(db_name).await?;
     assert!(
         super::column_exists(&pg, "source_cursors", "owner_kind").await,
         "the fixture stands at 0026, where cursors still carry the kind"
@@ -159,7 +159,7 @@ async fn the_database_refuses_a_membership_under_a_users_id() -> TestResult {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         create_db(&db_name).await?;
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let pg = proxima_storage_pg::PgStorage::connect_for_tests(db_url(&db_name)).await?;
         super::apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let (user, member) = (Uuid::now_v7(), Uuid::now_v7());

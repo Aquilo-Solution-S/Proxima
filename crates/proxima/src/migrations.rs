@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use proxima_core::StorageError;
 use proxima_storage_pg::{
-    PgStorage, core_migrator, ensure_core_ledger_compatible,
+    PgMigrationStorage, PgStorage, core_migrator, ensure_core_ledger_compatible,
     ensure_core_ledger_compatible_on_connection, ensure_core_schema_current,
 };
 use sqlx::migrate::{MigrateError, Migration, Migrator};
@@ -34,6 +34,25 @@ const CORE_SOURCE: &str = "proxima-core";
 
 /// Core's tracking table, which a flavor still recording on it shares.
 const CORE_LEDGER: &str = "public._sqlx_migrations";
+
+/// Migration lanes need only their pool; serving storage additionally carries
+/// the validated platform authority. Keeping this boundary typed prevents a
+/// migration connection from being used as a runtime store.
+pub trait MigrationStorage {
+    fn clone_migration_pool(&self) -> PgPool;
+}
+
+impl MigrationStorage for PgStorage {
+    fn clone_migration_pool(&self) -> PgPool {
+        self.clone_pool_for_backend()
+    }
+}
+
+impl MigrationStorage for PgMigrationStorage {
+    fn clone_migration_pool(&self) -> PgPool {
+        self.clone_pool_for_backend()
+    }
+}
 
 /// One named `SQLx` migration source in a composite Proxima binary.
 #[derive(Debug)]
@@ -217,14 +236,14 @@ pub enum LedgerConflict {
     /// lane (a replaced baseline, in either direction), and applying this
     /// one would re-create what that one built.
     #[error(
-        "its first migration {root} was never applied here, but the ledger records {unknown:?}, which this binary does not ship: the database ran a different lane (a replaced baseline). Retire the release that does not match, or reset the lane's schemas and ledger before this one first boots (docs/how-to/migrations.md, Ledger lineage)"
+        "its first migration {root} was never applied here, but the ledger records {unknown:?}, which this binary does not ship: the database ran a different lane (a replaced baseline). Retire the release that does not match, or reset the lane's schemas and ledger before this one first boots (docs/contributing.md#migrations, Ledger lineage)"
     )]
     Replaced { root: i64, unknown: Vec<i64> },
     /// A pending migration is older than a recorded one this binary does
     /// not ship: a later release squashed or renumbered the lane this
     /// binary still carries.
     #[error(
-        "it would apply {pending:?} after {unknown:?}, which a release this binary does not ship already applied: a later release squashed or renumbered this lane. Retire this release rather than boot it against this database (docs/how-to/migrations.md, Ledger lineage)"
+        "it would apply {pending:?} after {unknown:?}, which a release this binary does not ship already applied: a later release squashed or renumbered this lane. Retire this release rather than boot it against this database (docs/contributing.md#migrations, Ledger lineage)"
     )]
     Diverged {
         pending: Vec<i64>,
@@ -233,7 +252,7 @@ pub enum LedgerConflict {
     /// `skip_migrations` boot found migrations that were never applied; it
     /// issues no DDL, so the lane would serve against an older schema.
     #[error(
-        "migrations {pending:?} are not applied, and a boot that skips migrations issues no DDL: run the migration step first (docs/15-deployment.md)"
+        "migrations {pending:?} are not applied, and a boot that skips migrations issues no DDL: run the migration step first (docs/operate.md)"
     )]
     Unapplied { pending: Vec<i64> },
 }
@@ -248,8 +267,8 @@ pub enum LedgerConflict {
 /// Returns `Ledger`, before that source applies anything, if a flavor's
 /// ledger records a lane its migrator does not continue ([`LedgerConflict`]).
 /// Returns `Core` or `Flavor` if `SQLx` fails while applying that source.
-pub async fn run_core_and_flavor_migrations(
-    pg: &PgStorage,
+pub async fn run_core_and_flavor_migrations<P: MigrationStorage>(
+    pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<MigrationRunReport, MigrationError> {
     run_lineup(pg, &lineup(flavors)).await
@@ -258,13 +277,13 @@ pub async fn run_core_and_flavor_migrations(
 /// [`run_core_and_flavor_migrations`] over a [`lineup`] the caller keeps: the
 /// same refusals before any query, the same run. A test template builds from
 /// the migrators it also fingerprints, without consuming them.
-pub(crate) async fn run_lineup(
-    pg: &PgStorage,
+pub(crate) async fn run_lineup<P: MigrationStorage>(
+    pg: &P,
     sources: &[NamedMigrator],
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
     let report = MigrationRunReport::from_sources(sources);
-    let pool = pg.clone_pool_for_backend();
+    let pool = pg.clone_migration_pool();
     ensure_core_ledger_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
@@ -310,7 +329,7 @@ async fn acquire_session_connection(
 /// Run the pre-boot compatibility preflight **without applying any
 /// migration DDL**.
 ///
-/// For `GitOps` / split-role deploys (see docs/15): an init container or
+/// For `GitOps` / split-role deploys (see docs/operate.md): an init container or
 /// `tools/dev-migrate` applies migrations under a DDL-capable role, and the
 /// long-running app then boots under a DML-only role that cannot issue DDL.
 /// This rejects a stale pre-v0.0.4 database and rejects duplicate
@@ -325,13 +344,13 @@ async fn acquire_session_connection(
 /// pre-v0.0.4 artifacts, `MigrationError::Ledger` if a flavor's ledger
 /// conflicts with its lane or lacks one of its migrations, or
 /// `MigrationError::Connection` if the preflight pool cannot be reached.
-pub async fn preflight_without_migrations(
-    pg: &PgStorage,
+pub async fn preflight_without_migrations<P: MigrationStorage>(
+    pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
 ) -> Result<MigrationRunReport, MigrationError> {
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
-    let pool = pg.clone_pool_for_backend();
+    let pool = pg.clone_migration_pool();
     ensure_core_ledger_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
@@ -407,7 +426,7 @@ pub struct PendingMigration {
 /// closed, not pooled, if the caller drops the future.
 ///
 /// The plan says what would apply, not whether the previous release's binary
-/// tolerates it. A coordinated cutover (docs/how-to/migrations.md, v0.0.15)
+/// tolerates it. A coordinated cutover (docs/contributing.md#migrations, v0.0.15)
 /// overrides any such reading of a migration file.
 ///
 /// # Errors
@@ -1240,7 +1259,7 @@ pub(crate) fn lineup(flavors: impl IntoIterator<Item = NamedMigrator>) -> Vec<Na
                 source = source.source,
                 "flavor records its migrations in core's public._sqlx_migrations; \
                  build it with NamedMigrator::flavor to give it its own ledger \
-                 (docs/09 §Migrations)"
+                 (docs/build-a-flavor.md §Migrations)"
             );
         }
         sources.push(source);

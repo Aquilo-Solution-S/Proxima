@@ -14,7 +14,7 @@ use crate::publication::PublicationError;
 ///   fix, and read as `invalid_argument`;
 /// - an exhausted outbox is backpressure on a legal write, and reads as
 ///   `capacity_exhausted` (MCP `-32000`, REST 503) so a caller backs off
-///   instead of opening an incident (docs/18);
+///   instead of opening an incident (docs/host-integration.md);
 /// - an unbound source is the deployment's, and reads as `internal`.
 #[must_use]
 pub(crate) fn map_publication_error(err: &PublicationError) -> ProtocolError {

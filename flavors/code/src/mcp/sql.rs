@@ -1,7 +1,7 @@
 //! Lookup helpers for code MCP tools.
 
 use proxima_core::{ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -29,7 +29,7 @@ pub async fn resolve_repo_identifier(
 
     let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     // The name arms are gated behind `claimed_id IS NULL`, so an id-shaped

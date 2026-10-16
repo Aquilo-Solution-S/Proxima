@@ -37,7 +37,6 @@ abbrev MemoryId          : Type := Id
 abbrev GoalId            : Type := Id
 /-- Series id — one real-world thing / one judgment / one goal. -/
 abbrev Handle            : Type := Id
-abbrev WakeId            : Type := Id
 abbrev BlobId            : Type := Id
 /-- Typed sidecar payload. Not an admission. Shareable within one owner. -/
 abbrev ContentId         : Type := Id
@@ -84,8 +83,7 @@ opaque SchemaRef : Type := String
 -- Lifecycle capability classes (doc 07 §Append-Only)
 -- ============================================================
 
-/-- ST-11 — no UPDATE in the cognitive lifecycle (except `wake_config`,
-    which is not a cognitive row). Marker class. -/
+/-- ST-11 — no UPDATE in the cognitive lifecycle. Marker class. -/
 class AppendOnly (α : Type) : Prop
 
 /-- Never updated in place. Facts, blobs. Forget is cool-to-S3, not UPDATE. -/

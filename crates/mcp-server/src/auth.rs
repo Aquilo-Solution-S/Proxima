@@ -1,9 +1,5 @@
 //! MCP edge authentication: typed wire-token dispatch onto the core
-//! authz contracts.
-//!
-//! The bearer string is parsed into a [`WireToken`] before any
-//! resolution: former local-token namespaces fail closed, and everything
-//! else goes to the optional host [`Authenticator`].
+//! authz contracts. Bearer credentials are interpreted by the host authenticator.
 
 use std::sync::Arc;
 
@@ -11,26 +7,6 @@ use proxima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerId,
     ToolScope, authenticate,
 };
-
-const RESERVED_PXW_PREFIX: &str = "pxw_";
-const RESERVED_PXM_PREFIX: &str = "pxm_";
-
-/// Typed wire credential parsed from the bearer string before any
-/// store/authenticator sees it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WireToken {
-    Host(String),
-    /// Reserved prefix with a malformed remainder. Fails closed:
-    /// never forwarded to host auth.
-    Malformed,
-}
-
-fn parse_wire_token(raw: &str) -> WireToken {
-    if raw.starts_with(RESERVED_PXW_PREFIX) || raw.starts_with(RESERVED_PXM_PREFIX) {
-        return WireToken::Malformed;
-    }
-    WireToken::Host(raw.to_string())
-}
 
 /// Per-request MCP auth context injected by the edge middleware.
 /// `authz` is the core authorization currency; `owner` is the
@@ -135,7 +111,7 @@ impl McpEdgeAuth {
         self
     }
 
-    /// Attach a host authenticator for non-reserved bearer material.
+    /// Attach the host authenticator for bearer credentials.
     /// Host output must carry `AuthPath::HostBearer`; owner binding is
     /// validated separately against the resolved role set.
     #[must_use]
@@ -190,10 +166,7 @@ impl McpEdgeAuth {
     /// an owner. The edge middleware retains this result across owner/session
     /// selection so host authentication happens exactly once per request.
     pub(crate) async fn resolve_unbound(&self, raw_bearer: &str) -> Option<ResolvedAuth> {
-        match parse_wire_token(raw_bearer) {
-            WireToken::Host(material) => self.resolve_host(material).await,
-            WireToken::Malformed => None,
-        }
+        self.resolve_host(raw_bearer.to_owned()).await
     }
 
     pub(crate) fn host_authenticator(&self) -> Option<Arc<dyn Authenticator>> {
@@ -222,7 +195,6 @@ mod tests {
         AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId, OwnerId,
         Relation, Role, UserId,
     };
-    use uuid::Uuid;
 
     fn fake_owner() -> OwnerId {
         OwnerId::from(fake_user())
@@ -255,41 +227,6 @@ mod tests {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
             self.result.clone()
         }
-    }
-
-    #[test]
-    fn parse_routes_reserved_prefixes_and_host_material() {
-        let id = Uuid::now_v7();
-        assert_eq!(
-            parse_wire_token(&format!("{RESERVED_PXW_PREFIX}{id}")),
-            WireToken::Malformed
-        );
-        assert_eq!(
-            parse_wire_token(&format!("{RESERVED_PXM_PREFIX}{id}")),
-            WireToken::Malformed
-        );
-        assert_eq!(parse_wire_token("pxw_not-a-uuid"), WireToken::Malformed);
-        assert_eq!(parse_wire_token("pxm_"), WireToken::Malformed);
-        assert_eq!(
-            parse_wire_token(&id.to_string()),
-            WireToken::Host(id.to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn former_local_token_prefixes_fail_closed() {
-        let auth = McpEdgeAuth::headless();
-        let owner = fake_owner();
-        assert!(
-            auth.resolve(&format!("{RESERVED_PXW_PREFIX}{}", Uuid::now_v7()), owner)
-                .await
-                .is_none()
-        );
-        assert!(
-            auth.resolve(&format!("{RESERVED_PXM_PREFIX}{}", Uuid::now_v7()), owner)
-                .await
-                .is_none()
-        );
     }
 
     #[tokio::test]
@@ -434,17 +371,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_claiming_system_or_engine_paths_is_rejected() {
+    async fn host_claiming_system_path_is_rejected() {
         let owner = fake_owner();
-        for path in [AuthPath::System, AuthPath::Wake] {
-            let authz = AuthzContext::single_owner(&owner, path);
-            let auth =
-                McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
-            assert!(
-                auth.resolve("host-token", owner).await.is_none(),
-                "{path:?} must be rejected"
-            );
-        }
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
+        assert!(auth.resolve("host-token", owner).await.is_none());
     }
 
     #[tokio::test]
@@ -528,14 +459,5 @@ mod tests {
             .expect("host resolves");
 
         assert_eq!(ctx.authz.trusted_model_id(), None);
-    }
-
-    #[tokio::test]
-    async fn malformed_reserved_prefix_is_not_forwarded_to_host() {
-        let owner = fake_owner();
-        let authz = host_owner_context(owner);
-        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth { result: Ok(authz) }));
-        assert!(auth.resolve("pxw_not-a-uuid", owner).await.is_none());
-        assert!(auth.resolve("pxm_not-a-uuid", owner).await.is_none());
     }
 }

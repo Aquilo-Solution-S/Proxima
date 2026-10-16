@@ -17,6 +17,7 @@ use proxima_core::flavor::{
 };
 use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::storage_ports::MemoryReadPort;
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
@@ -24,9 +25,9 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind, RenderBands,
 };
 use proxima_core::{OwnerId, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls_for};
 use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning};
+use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 use uuid::Uuid;
 
 /// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
@@ -221,6 +222,12 @@ async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
     )
     .execute(pool)
     .await?;
+    sqlx::query("GRANT USAGE ON SCHEMA proxima_docs TO proxima_test_runtime")
+        .execute(pool)
+        .await?;
+    sqlx::query("GRANT SELECT ON ALL TABLES IN SCHEMA proxima_docs TO proxima_test_runtime")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -362,8 +369,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -385,7 +391,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
         let page = pg
             .search_memories(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &search_req(owner, "keyword needle"),
                 &[note_projection()],
             )
@@ -411,7 +417,11 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         // substring band, from the one statement that runs over exactly
         // the schemas the ranked arm returned nothing for.
         let substring = pg
-            .search_memories(None, &search_req(owner, "eedle"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "eedle"),
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             substring.results.len(),
@@ -437,7 +447,11 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             ..note_projection()
         };
         let refused = pg
-            .search_memories(None, &search_req(owner, "eedle"), &[arm_off])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "eedle"),
+                &[arm_off],
+            )
             .await?;
         assert!(
             refused.results.is_empty(),
@@ -446,7 +460,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
         let miss = pg
             .search_memories(
-                None,
+                Some(&owner_scope_for_tests(&[owner])),
                 &search_req(owner, "no-such-lexeme-xyzzy"),
                 &[note_projection()],
             )
@@ -458,7 +472,11 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             ..note_projection()
         };
         let skipped = pg
-            .search_memories(None, &search_req(owner, "keyword needle"), &[flavor])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "keyword needle"),
+                &[flavor],
+            )
             .await?;
         assert!(
             skipped.results.is_empty(),
@@ -481,8 +499,7 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -498,7 +515,13 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
         }
         let mut req = search_req(owner, "zebra");
         req.limit = 1;
-        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                &[note_projection()],
+            )
+            .await?;
         assert_eq!(
             page.results.len(),
             1,
@@ -518,10 +541,12 @@ async fn tagged_search_scans_flavor_sidecars() {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
+    split_role_urls_for(&db_name, &["proxima_docs"])
+        .await
+        .expect("split docs roles");
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_id = owner.into_inner();
@@ -622,7 +647,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         let projection = docs_projection();
 
         let unscoped = pg
-            .search_memories(None,
+            .search_memories(Some(&owner_scope_for_tests(&[owner])),
                 &search_req(owner, "Antriebswelle"),
                 std::slice::from_ref(&projection),
             )
@@ -635,7 +660,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         let mut tagged = search_req(owner, "Antriebswelle");
         tagged.kind = Some(EntityKind::Abstraction);
         tagged.tags = vec!["proxima-docs".into()];
-        let page = pg.search_memories(None, &tagged, &[projection]).await?;
+        let page = pg.search_memories(Some(&owner_scope_for_tests(&[owner])), &tagged, &[projection]).await?;
         assert_eq!(page.results.len(), 1, "tagged search must hit flavor text");
         assert_eq!(page.results[0].memory_id.into_inner(), t);
         Ok(())
@@ -653,8 +678,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
@@ -677,7 +701,11 @@ async fn lexical_search_matches_german_via_lexical_languages() {
         assert!(registered, "insert must register the row language");
 
         let page = pg
-            .search_memories(None, &search_req(owner, "Katze"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "Katze"),
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             page.results.len(),
@@ -700,8 +728,7 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
@@ -738,7 +765,11 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
         );
 
         let page = pg
-            .search_memories(None, &search_req(owner, "checkpoint"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "checkpoint"),
+                &[note_projection()],
+            )
             .await?;
         assert!(
             page.results
@@ -747,7 +778,11 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
             "a simple-config row must remain searchable after the default becomes english"
         );
         let stopword_page = pg
-            .search_memories(None, &search_req(owner, "the"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "the"),
+                &[note_projection()],
+            )
             .await?;
         let no_ranked_terms: bool = sqlx::query_scalar(
             "SELECT numnode(websearch_to_tsquery('simple',
@@ -783,8 +818,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
@@ -853,7 +887,11 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         );
 
         let page = pg
-            .search_memories(None, &search_req(owner, "Katze"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "Katze"),
+                &[note_projection()],
+            )
             .await?;
         assert!(
             page.results
@@ -876,8 +914,7 @@ async fn semantic_search_respects_until() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
@@ -907,7 +944,11 @@ async fn semantic_search_respects_until() {
         query_vec[0] = 1.0;
         inside.semantic = Some(test_semantic(query_vec));
         let hit = pg
-            .search_memories(None, &inside, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &inside,
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(hit.results.len(), 1);
         // Snippets are hydrated from the PAGE now, not carried by the
@@ -923,7 +964,11 @@ async fn semantic_search_respects_until() {
         let mut too_old = inside.clone();
         too_old.until = Some(time::OffsetDateTime::UNIX_EPOCH);
         let missed = pg
-            .search_memories(None, &too_old, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &too_old,
+                &[note_projection()],
+            )
             .await?;
         assert!(
             missed.results.is_empty(),
@@ -949,7 +994,6 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         // One connection: the statements the searches prepare are the ones
         // `pg_prepared_statements` lists below.
@@ -957,8 +1001,23 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
             max_connections: 1,
             ..PgPoolConfig::default()
         };
-        let pg = PgStorage::connect_with_config(&url, pool_config, PgTuning::default()).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name).await?;
+        let migration = PgMigrationStorage::connect_with_config(
+            &platform_url,
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await?;
+        migration.run_migrations().await?;
+        let scope = PgPlatformScope::new(
+            sqlx::PgPool::connect(&platform_url).await?,
+            &["proxima_core"],
+        )
+        .await?;
+        let pg =
+            PgStorage::connect_with_config(&runtime_url, pool_config, PgTuning::default(), scope)
+                .await?
+                .with_admin_pool_for_tests(sqlx::PgPool::connect(&db_url(&db_name)).await?);
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let near = seed_note(pool, owner, "Near", "semantic neighbour body").await?;
@@ -975,25 +1034,41 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
                 .map(|hit| hit.memory_id.into_inner())
                 .collect::<Vec<_>>()
         };
-        let custom = ranked(pg.search_memories(None, &req, &[note_projection()]).await?);
+        let custom = ranked(
+            pg.search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                &[note_projection()],
+            )
+            .await?,
+        );
         assert_eq!(custom, vec![near, far]);
 
+        let runtime_pool = pg.clone_pool_for_backend();
         sqlx::query("SET plan_cache_mode = force_generic_plan")
-            .execute(pool)
+            .execute(&runtime_pool)
             .await?;
-        let generic = ranked(pg.search_memories(None, &req, &[note_projection()]).await?);
+        let generic = ranked(
+            pg.search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                &[note_projection()],
+            )
+            .await?,
+        );
         assert_eq!(
             generic, custom,
             "a generic plan ranks what the custom plan ranked"
         );
 
+        let runtime_pool = pg.clone_pool_for_backend();
         let (parameter_types, generic_plans): (Vec<String>, i64) = sqlx::query_as(
             "SELECT parameter_types::text[], generic_plans
                FROM pg_prepared_statements
               WHERE statement LIKE '%<=> $3::vector(1024)%'
                 AND statement NOT LIKE '%pg_prepared_statements%'",
         )
-        .fetch_one(pool)
+        .fetch_one(&runtime_pool)
         .await?;
         assert_eq!(
             parameter_types.get(2).map(String::as_str),
@@ -1024,8 +1099,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let tagged_t = seed_note_lang(
@@ -1080,7 +1154,11 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         query_vec[0] = 1.0;
         semantic.semantic = Some(test_semantic(query_vec));
         let untagged = pg
-            .search_memories(None, &semantic, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &semantic,
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             ids(&untagged),
@@ -1090,7 +1168,11 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
 
         semantic.tags = vec!["bucket-0".into()];
         let page = pg
-            .search_memories(None, &semantic, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &semantic,
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             ids(&page),
@@ -1101,7 +1183,11 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         let mut hybrid = semantic.clone();
         hybrid.mode = SearchMode::Hybrid;
         let page = pg
-            .search_memories(None, &hybrid, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &hybrid,
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             ids(&page),
@@ -1109,7 +1195,9 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             "…and so does hybrid, whose semantic arm used to leak untagged rows"
         );
 
-        let page = pg.search_memories(None, &semantic, &[]).await?;
+        let page = pg
+            .search_memories(Some(&owner_scope_for_tests(&[owner])), &semantic, &[])
+            .await?;
         assert!(
             page.results.is_empty(),
             "a tagged request no flavor participates in returns nothing, \
@@ -1135,10 +1223,12 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
+    split_role_urls_for(&db_name, &["proxima_docs"])
+        .await
+        .expect("split docs roles");
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1191,7 +1281,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         semantic.limit = 1;
         semantic.mode = SearchMode::Semantic;
         semantic.semantic = Some(test_semantic(query_vec.clone()));
-        let page = pg.search_memories(None, &semantic, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &semantic,
+                &projections,
+            )
+            .await?;
         assert_eq!(
             ids(&page),
             vec![core_t],
@@ -1200,7 +1296,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         let mut hybrid = semantic.clone();
         hybrid.mode = SearchMode::Hybrid;
-        let page = pg.search_memories(None, &hybrid, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &hybrid,
+                &projections,
+            )
+            .await?;
         assert_eq!(
             ids(&page),
             vec![core_t],
@@ -1210,7 +1312,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let mut tagged = semantic.clone();
         tagged.limit = 8;
         tagged.tags = vec!["foreign".into()];
-        let page = pg.search_memories(None, &tagged, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &tagged,
+                &projections,
+            )
+            .await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1222,7 +1330,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         tagged.tag_match = TagMatch::All;
         tagged.tags = vec!["foreign".into(), "shared".into()];
-        let page = pg.search_memories(None, &tagged, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &tagged,
+                &projections,
+            )
+            .await?;
         assert_eq!(
             ids(&page),
             vec![foreign[0]],
@@ -1231,7 +1345,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         tagged.tag_match = TagMatch::Any;
         tagged.tags = vec!["foreign".into(), "absent".into()];
-        let page = pg.search_memories(None, &tagged, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &tagged,
+                &projections,
+            )
+            .await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1242,7 +1362,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         );
 
         tagged.tags = vec!["absent".into()];
-        let page = pg.search_memories(None, &tagged, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &tagged,
+                &projections,
+            )
+            .await?;
         assert!(
             page.results.is_empty(),
             "a tag with no participating projection rows must return empty"
@@ -1251,7 +1377,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let mut hybrid = tagged;
         hybrid.tags = vec!["foreign".into()];
         hybrid.mode = SearchMode::Hybrid;
-        let page = pg.search_memories(None, &hybrid, &projections).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &hybrid,
+                &projections,
+            )
+            .await?;
         assert!(
             !page.results.is_empty()
                 && page
@@ -1263,7 +1395,13 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 
         let mut no_projection = semantic;
         no_projection.limit = 8;
-        let page = pg.search_memories(None, &no_projection, &[docs]).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &no_projection,
+                &[docs],
+            )
+            .await?;
         assert!(
             page.results.is_empty(),
             "untagged search with no participating core projection must be empty"
@@ -1304,8 +1442,7 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
@@ -1328,7 +1465,11 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         );
 
         let unbounded = pg
-            .search_memories(None, &search_req(owner, "atlas"), &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &search_req(owner, "atlas"),
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(unbounded.results.len(), 3, "all three match the query");
 
@@ -1336,7 +1477,11 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         windowed.since = Some(stamps[1]);
         windowed.until = Some(stamps[2]);
         let page = pg
-            .search_memories(None, &windowed, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &windowed,
+                &[note_projection()],
+            )
             .await?;
         let found: std::collections::BTreeSet<Uuid> = page
             .results
@@ -1362,7 +1507,11 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
         let mut early = search_req(owner, "atlas");
         early.until = Some(stamps[0]);
         let page = pg
-            .search_memories(None, &early, &[note_projection()])
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &early,
+                &[note_projection()],
+            )
             .await?;
         assert_eq!(
             page.results
@@ -1387,8 +1536,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note_lang(
@@ -1455,8 +1603,7 @@ async fn lexical_language_forget_refuses_null_and_the_default() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         let err = sqlx::query("SELECT proxima_core.lexical_language_forget(NULL)")
@@ -1490,8 +1637,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1538,8 +1684,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -1629,8 +1774,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_id = owner.into_inner();
@@ -1697,7 +1841,13 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
 
         let mut req = search_req(owner, "artograph");
         req.limit = 1;
-        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                &[note_projection()],
+            )
+            .await?;
         assert_eq!(
             page.results
                 .iter()
@@ -1719,7 +1869,13 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
         // restriction worked.
         req.supersession = SupersessionStatus::IncludeSuperseded;
         req.limit = 64;
-        let page = pg.search_memories(None, &req, &[note_projection()]).await?;
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                &[note_projection()],
+            )
+            .await?;
         assert_eq!(
             page.results.len(),
             SUBSTRING_BACKLOG + 1,

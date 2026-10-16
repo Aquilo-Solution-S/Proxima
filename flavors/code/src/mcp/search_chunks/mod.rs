@@ -17,7 +17,7 @@ use proxima_core::llm::SemanticWeight;
 use proxima_core::mcp::cursor as wire_cursor;
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -625,7 +625,7 @@ struct ChunkCandidateScan<'a> {
 /// candidate was ranked by.
 async fn collect_candidates(
     ctx: &ToolCtx,
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     engine: &proxima_core::Engine,
     scan: &ChunkCandidateScan<'_>,
 ) -> Result<(Vec<(MemoryId, CodeChunkV1)>, HashMap<Uuid, MatchScores>), ToolError> {
@@ -668,7 +668,7 @@ async fn collect_candidates(
 /// serve it. Still overfetch: the read set admits a whole group, and phase 2
 /// drops non-head ts.
 async fn scan_lexical_candidates(
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     scan: &ChunkCandidateScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
     if scan.effective_mode == ChunkSearchMode::Semantic {
@@ -705,7 +705,7 @@ async fn scan_lexical_candidates(
 /// each set from its own rank 0.
 async fn scan_semantic_candidates(
     ctx: &ToolCtx,
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     scan: &ChunkCandidateScan<'_>,
 ) -> Result<(Vec<CodeChunkVectorCandidate>, Vec<CodeChunkVectorCandidate>), ToolError> {
     let Some(query) = scan.query_embedding else {
@@ -731,19 +731,13 @@ async fn scan_semantic_candidates(
 
 async fn nearest_chunks(
     ctx: &ToolCtx,
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     query: &proxima_core::SpaceVector,
     filters: CodeChunkVectorFilters<'_>,
     limit: usize,
 ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
-    pool.nearest_code_chunk_candidates(
-        ctx.authz().owner_scope(),
-        ctx.owner(),
-        query,
-        filters,
-        limit,
-    )
-    .await
+    pool.nearest_code_chunk_candidates(pool.owner_scope(), ctx.owner(), query, filters, limit)
+        .await
 }
 
 /// How many neighbour scans an unfiltered hybrid search spends, and with
@@ -1370,7 +1364,7 @@ async fn load_call_edges(
         .iter()
         .map(|pair| pair.callee_handle)
         .collect::<Vec<_>>();
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let site_rows: Vec<CallSiteRow> = sqlx::query_as(
@@ -1480,11 +1474,11 @@ struct ChunkSidecarScan<'a> {
 /// path/text literal bonuses on the GIN hit set. `LIKE` is a separate
 /// scan, only when this GIN arm returns nothing.
 async fn scan_chunk_sidecar(
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment
@@ -1698,11 +1692,11 @@ fn chunk_substring_arm_is_declared() -> bool {
 }
 
 async fn scan_chunk_sidecar_like(
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment

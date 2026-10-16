@@ -175,15 +175,21 @@ async fn observe_reports(
     config: &S3RuntimeConfig,
     client: &Client,
 ) -> TestResult<Observed> {
-    let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(database)).await?;
     let result: TestResult<_> = async {
-        let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+        let store = CitedBlobStore::new(
+            pg.clone_pool_for_backend(),
+            config.clone(),
+            pg.platform_scope_for_host(),
+        )?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         // Prove this relation is produced by the normal prepare/HTTP PUT/
         // Engine complete path before amplifying its cardinality with SQL.
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;

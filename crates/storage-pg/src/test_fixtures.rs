@@ -1,11 +1,11 @@
 use proxima_core::StorageError;
-use proxima_storage_pg::{PgStorage, core_migrator};
+use proxima_storage_pg::{PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, core_migrator};
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 
 use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, create_named_db_from_template, db_url,
-    drop_db, ensure_template, fnv1a64_extend,
+    drop_db, ensure_template, fnv1a64_extend, split_role_urls,
 };
 
 #[must_use]
@@ -18,102 +18,26 @@ pub fn core_template_name() -> String {
     format!("proxima_tmpl_core_{hash:016x}")
 }
 
-/// Owner-RLS activation (0014), narrowed policies (0017), hardened definer
-/// search paths (0019), the coarse pin-lock mode (0022), kind-scoped policies
-/// (0023) and the per-table installer (0024). The enforced fixtures stage
-/// exactly these, in order. 0019, 0022 and 0023 rewrite 0014's routines and
-/// policies; applied before it, 0014 would undo them. 0024 redefines the
-/// installer 0023 redefined; applied before it, 0023 would undo that.
+/// Owner-RLS activation begins at migration 0014. Historical fixtures stop
+/// immediately before it; current boot fixtures then apply the full embedded
+/// migrator in production order.
 pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 6] = [14, 17, 19, 22, 23, 24];
 
 /// Core migration lane used by historical domain fixtures.
 ///
-/// Every core migration except [`OWNER_RLS_MIGRATION_VERSIONS`], which are
-/// tested by the enforced boot fixtures. Keeping them out of this lane
-/// preserves the pre-activation schema for invariant tests; later migrations
-/// still apply. No production path calls this helper.
+/// The exact migration prefix before owner-RLS activation. No production path
+/// calls this helper.
 #[must_use]
 pub fn core_migrator_before_owner_rls() -> Migrator {
     let mut migrator = core_migrator();
     migrator.migrations = Cow::Owned(
         migrator
             .iter()
-            .filter(|migration| !OWNER_RLS_MIGRATION_VERSIONS.contains(&migration.version))
+            .filter(|migration| migration.version < OWNER_RLS_MIGRATION_VERSIONS[0])
             .cloned()
             .collect(),
     );
     migrator
-}
-
-impl PgStorage {
-    /// Run the historical pre-owner-RLS core lane for domain fixtures.
-    ///
-    /// # Errors
-    /// Returns migration or database errors.
-    pub async fn run_before_owner_rls_migrations(&self) -> Result<(), StorageError> {
-        core_migrator_before_owner_rls()
-            .run(self.pool_for_tests())
-            .await
-            .map_err(|error| StorageError::Internal(error.to_string()))
-    }
-}
-
-/// Prepare a database built by [`core_migrator_before_owner_rls`] for a run of
-/// the full core migrator on top of it, which then applies the owner-RLS lane.
-///
-/// The lane's base also ran every migration after the lane's last member, so
-/// tables such as 0025's `goal_change_v1` and 0026's `publication_consumer`
-/// and `publication_delivery` exist before 0014's whole-schema
-/// census sees the schema, and 0014 refuses a table it has never classified
-/// (production applies 0014 first). This drops those tables and forgets the
-/// ledger rows after the lane, so the next run applies them after it; those
-/// migrations are idempotent and install a new table's owner-RLS themselves.
-/// A database whose lane has already run is left alone.
-///
-/// # Errors
-///
-/// Returns the database error of the statement.
-pub async fn reopen_migrations_after_owner_rls_lane(
-    pool: &sqlx::PgPool,
-) -> Result<(), sqlx::Error> {
-    let lane_end = OWNER_RLS_MIGRATION_VERSIONS
-        .iter()
-        .max()
-        .copied()
-        .unwrap_or_default();
-    // SQL-POLICY: fixed-fragment — a version number from the const above.
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "DO $reopen$
-         BEGIN
-             IF NOT EXISTS (SELECT 1 FROM public._sqlx_migrations WHERE version = {first}) THEN
-                 IF to_regclass('proxima_core.owners') IS NOT NULL THEN
-                     DROP TRIGGER IF EXISTS owner_group_kind_guard ON proxima_core.owners;
-                 END IF;
-                 DROP TABLE IF EXISTS proxima_core.group_lock_request CASCADE;
-                 DROP TABLE IF EXISTS proxima_core.group_role_projection CASCADE;
-                 DROP TABLE IF EXISTS proxima_core.group_edges CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.owner_group_kind_guard();
-                 DROP FUNCTION IF EXISTS proxima_core.group_projection_after_write() CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.group_projection_write_guard() CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.group_membership_before_write() CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.group_edge_before_write() CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.group_lock_request_trigger() CASCADE;
-                 DROP FUNCTION IF EXISTS proxima_core.rebuild_group_role_projection(uuid[]);
-                 DROP FUNCTION IF EXISTS proxima_core.lock_group_trees(uuid, uuid);
-                 DROP FUNCTION IF EXISTS proxima_core.lock_group_tree(uuid);
-                 DROP FUNCTION IF EXISTS proxima_core.group_tree_root(uuid);
-                 DROP TABLE IF EXISTS proxima_core.goal_change_v1;
-                 DROP TABLE IF EXISTS proxima_core.publication_delivery;
-                 DROP TABLE IF EXISTS proxima_core.publication_consumer;
-                 DELETE FROM public._sqlx_migrations WHERE version > {lane_end};
-             END IF;
-         END
-         $reopen$",
-        first = OWNER_RLS_MIGRATION_VERSIONS[0],
-    )))
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// Build the [`core_template_name`] template once per migration set:
@@ -136,8 +60,7 @@ pub async fn ensure_core_template() -> Result<String, sqlx::Error> {
 
 /// Create `name` already migrated through [`core_migrator_before_owner_rls`],
 /// cloned from the core template: the drop-in for `create_db` followed by
-/// [`PgStorage::run_before_owner_rls_migrations`], which then finds every
-/// migration applied. Drop it with `drop_db` like any other test database.
+/// Drop it with `drop_db` like any other test database.
 ///
 /// # Errors
 ///
@@ -164,13 +87,107 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
     let db_name = create_db_from_template(prefix, &template)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
-    let url = db_url(&db_name);
-    match PgStorage::connect(&url).await {
-        Ok(pg) => (pg, DbGuard::adopt(db_name)),
+    let (runtime_url, platform_url) = split_role_urls(&db_name)
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but role provisioning failed: {e}"));
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("PG required for tests but migration connect failed: {e}"));
+    migration
+        .run_migrations()
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but migration failed: {e}"));
+    let platform_pool = sqlx::PgPool::connect(&platform_url)
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"])
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"));
+    let storage = match PgStorage::connect_with_config(
+        &runtime_url,
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        platform_scope,
+    )
+    .await
+    {
+        Ok(pg) => pg,
         Err(err) => {
             let _ = drop_db(&db_name).await;
             panic!("PG required for tests but unavailable: {err}");
         }
+    };
+    let admin_pool = sqlx::PgPool::connect(&db_url(&db_name))
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but admin pool failed: {e}"));
+    (
+        storage.with_admin_pool_for_tests(admin_pool),
+        DbGuard::adopt(db_name),
+    )
+}
+
+/// Connect a disposable database through the real split-role boot sequence.
+///
+/// Test callers pass the administrator URL used to create the database. The
+/// database name is taken from its final path component; role provisioning,
+/// migrations, platform validation, and runtime connection then happen in
+/// the same order as production boot.
+///
+/// # Errors
+///
+/// Refuses an invalid database URL or failed role provisioning, migration,
+/// platform validation, or database connection.
+#[cfg(feature = "test-fixtures")]
+pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
+    let database = url
+        .rsplit('/')
+        .next()
+        .and_then(|path| path.split('?').next())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            StorageError::Unavailable("test database URL has no database name".into())
+        })?;
+    let (runtime_url, platform_url) = split_role_urls(database)
+        .await
+        .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await?;
+    migration.run_migrations().await?;
+    let platform_pool = sqlx::PgPool::connect(&platform_url)
+        .await
+        .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"]).await?;
+    let storage = PgStorage::connect_with_config(
+        &runtime_url,
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        platform_scope,
+    )
+    .await?;
+    let admin_pool = sqlx::PgPool::connect(&url)
+        .await
+        .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+    Ok(storage.with_admin_pool_for_tests(admin_pool))
+}
+
+impl PgStorage {
+    /// Test-only serving connection using the real split-role boot sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provisioning, migration, validation, or connection error
+    /// from [`connect_for_tests`].
+    #[cfg(feature = "test-fixtures")]
+    pub async fn connect_for_tests(url: String) -> Result<Self, StorageError> {
+        connect_for_tests(url).await
     }
 }
 

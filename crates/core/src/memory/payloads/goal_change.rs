@@ -1,10 +1,10 @@
 //! The goal-change Fact: what a goal write did, as an ordinary core Fact.
 //!
-//! A goal write is an action, and an action is a Fact (docs/05). While the
+//! A goal write is an action, and an action is a Fact (docs/host-integration.md). While the
 //! runtime has an outbox consumer, every write that inserts a goal row also
 //! writes one `core/goal-change-v1` Fact in the same transaction, and the
 //! schema is listenable, so the consumers see goal writes on the same feed as
-//! every other Fact (docs/18 §Goal changes). `GoalChangeV1::LISTENABLE` is
+//! every other Fact (docs/host-integration.md). `GoalChangeV1::LISTENABLE` is
 //! `false` because listenability is a runtime fact here, not a type one:
 //! `FlavorRegistry::publish_goal_changes` turns it on before freeze.
 //!
@@ -212,7 +212,7 @@ impl GoalChange {
 /// records, so a resume can arrive before the pause it follows. Key by
 /// `series` and apply an event only if its `revision` is greater than the
 /// last one applied for that series; the envelope carries the same pair as
-/// `subject` and `sequence` (docs/18 §Ordering). `goal` versions are
+/// `subject` and `sequence` (docs/host-integration.md). `goal` versions are
 /// identifiers, not an order: a version's `t` comes from the database clock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalChangeV1 {

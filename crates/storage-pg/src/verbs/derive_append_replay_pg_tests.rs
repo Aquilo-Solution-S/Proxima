@@ -101,10 +101,9 @@ async fn fresh_pg() -> (String, PgStorage) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 

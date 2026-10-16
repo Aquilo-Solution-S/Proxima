@@ -14,7 +14,6 @@ use uuid::Uuid;
 use crate::error::map_err;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::memory_timeseries::{ingest_fact_timeseries, ingest_unpinned_fact_at};
-use crate::verbs::wake_timeseries::{WakeConfigDraft, insert_wake_config};
 
 pub const WRITE_ACT_SCHEMA: &str = "core/write-act-v1";
 
@@ -33,7 +32,6 @@ pub struct GoalWriteCommand {
     pub assignment_t: Option<Uuid>,
     pub dependency_t: Vec<Uuid>,
     pub evidence_t: Vec<Uuid>,
-    pub wake_id: Option<Uuid>,
     pub mint_write_act: bool,
     /// Attach an already-minted write-act when `mint_write_act` is false.
     pub write_act_t: Option<Uuid>,
@@ -56,45 +54,6 @@ pub(crate) struct ReservedFactIdentity {
     pub(crate) t: Uuid,
 }
 
-/// The wake rows a Goal write will either create or carry. A carried wake is
-/// snapshotted before the lifecycle lock and re-read after it; this closes the
-/// gap in which a target could be erased while a successor was still being
-/// prepared.
-#[derive(Debug, Clone)]
-pub(crate) enum GoalWakePlan {
-    None,
-    Existing {
-        wake_id: Uuid,
-        trigger_t: Option<Uuid>,
-        hard_memory_t: Vec<Uuid>,
-    },
-    New(WakeConfigDraft),
-}
-
-impl GoalWakePlan {
-    fn target_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
-        self.trigger_t()
-            .into_iter()
-            .chain(self.hard_memory_t().iter().copied())
-    }
-
-    fn trigger_t(&self) -> Option<Uuid> {
-        match self {
-            Self::None => None,
-            Self::Existing { trigger_t, .. } => *trigger_t,
-            Self::New(draft) => draft.trigger_t,
-        }
-    }
-
-    fn hard_memory_t(&self) -> &[Uuid] {
-        match self {
-            Self::None => &[],
-            Self::Existing { hard_memory_t, .. } => hard_memory_t,
-            Self::New(draft) => &draft.hard_memory_t,
-        }
-    }
-}
-
 /// A Goal write after replay detection and before its one lifecycle lock.
 /// Decomposition prepares every child first, unions these target sets, then
 /// persists them in order without extending an already-held advisory set.
@@ -112,7 +71,6 @@ pub(crate) struct PreparedGoalWrite {
     /// re-read under `FOR UPDATE` after that lock and must still be this t.
     expected_head_t: Option<Uuid>,
     command: GoalWriteCommand,
-    wake: GoalWakePlan,
     targets: Vec<Uuid>,
     write_act_identity: Option<ReservedFactIdentity>,
     close_fact_identity: Option<ReservedFactIdentity>,
@@ -267,11 +225,7 @@ pub async fn write_goal(
             replay: true,
         });
     }
-    let wake = match draft.wake_id {
-        Some(wake_id) => load_goal_wake_plan(tx, wake_id).await?,
-        None => GoalWakePlan::None,
-    };
-    match prepare_goal_write(tx, owner, draft, wake, None).await? {
+    match prepare_goal_write(tx, owner, draft, None).await? {
         GoalWritePreparation::Replay(outcome) => Ok(outcome),
         GoalWritePreparation::New(prepared) => {
             lock_prepared_goal_write(tx, &prepared).await?;
@@ -281,13 +235,12 @@ pub async fn write_goal(
 }
 
 /// Prepare one low-level Goal write. Replay is checked before owner creation,
-/// UUID minting, wake insertion, or head mutation so a replay has no side
+/// UUID minting or head mutation so a replay has no side
 /// effects to roll back.
 pub(crate) async fn prepare_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     draft: &GoalWriteCommand,
-    wake: GoalWakePlan,
     expected_prior_t: Option<Uuid>,
 ) -> Result<GoalWritePreparation, StorageError> {
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
@@ -336,8 +289,7 @@ pub(crate) async fn prepare_goal_write(
             + usize::from(command.close_fact_t.is_some())
             + usize::from(command.write_act_t.is_some())
             + usize::from(expected_prior_t.is_some())
-            + usize::from(expected_head_t.is_some())
-            + wake.target_ids().count(),
+            + usize::from(expected_head_t.is_some()),
     );
     targets.push(t);
     targets.extend(expected_prior_t);
@@ -347,7 +299,6 @@ pub(crate) async fn prepare_goal_write(
     targets.extend(command.evidence_t.iter().copied());
     targets.extend(command.close_fact_t);
     targets.extend(command.write_act_t);
-    targets.extend(wake.target_ids());
     Ok(GoalWritePreparation::New(Box::new(PreparedGoalWrite {
         owner: *owner,
         owner_id,
@@ -356,7 +307,6 @@ pub(crate) async fn prepare_goal_write(
         expected_prior_t,
         expected_head_t,
         command,
-        wake,
         targets,
         write_act_identity,
         close_fact_identity: None,
@@ -376,7 +326,7 @@ pub(crate) async fn lock_prepared_goal_write(
 /// lifecycle -> head across the Goal and its lifecycle Facts. A named
 /// predecessor that is no longer current is a caller-fixable conflict; an
 /// unnamed snapshot drift is retryable before any write-act, close Fact,
-/// wake, sidecar, Goal, sketch, or announce row is persisted.
+/// sidecar, Goal or sketch row is persisted.
 async fn lock_and_validate_prepared_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
@@ -593,10 +543,10 @@ pub(crate) async fn persist_prepared_goal_write(
     // safe even when a caller already performed the union lock.
     lock_and_validate_prepared_goal_write(tx, prepared).await?;
     revalidate_prepared_goal_targets(tx, prepared).await?;
-    let wake_id = persist_goal_lifecycle_rows(tx, prepared).await?;
+    persist_goal_lifecycle_rows(tx, prepared).await?;
     advance_goal_head(tx, prepared).await?;
-    insert_goal_revision(tx, prepared, wake_id).await?;
-    announce_goal_revision(tx, prepared).await?;
+    insert_goal_revision(tx, prepared).await?;
+    refresh_goal_sketch(tx, prepared).await?;
     Ok(GoalWriteOutcome {
         handle: prepared.handle,
         t: prepared.t,
@@ -606,8 +556,7 @@ pub(crate) async fn persist_prepared_goal_write(
 }
 
 /// Re-check, under the held lifecycle locks, that every target the prepared
-/// write names is still live and that a carried wake still matches its
-/// snapshot.
+/// write names is still live.
 async fn revalidate_prepared_goal_targets(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
@@ -617,23 +566,14 @@ async fn revalidate_prepared_goal_targets(
         prepared.close_fact_identity.map(|identity| identity.t),
     ];
     validate_goal_targets_live(tx, &prepared.command, &reserved_lifecycle).await?;
-    if let GoalWakePlan::Existing {
-        wake_id,
-        trigger_t,
-        hard_memory_t,
-    } = &prepared.wake
-    {
-        revalidate_wake_plan(tx, *wake_id, *trigger_t, hard_memory_t).await?;
-    }
     Ok(())
 }
 
-/// Write the lifecycle Facts and the wake row the Goal revision will point at,
-/// and report the wake id to store on it.
+/// Write the lifecycle Facts for the Goal revision.
 async fn persist_goal_lifecycle_rows(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
-) -> Result<Option<Uuid>, StorageError> {
+) -> Result<(), StorageError> {
     // Lifecycle Facts use the exact reservations included in `targets`.
     // Persist them only after the caller has acquired the complete union, so
     // a blocked Goal preparation cannot leave a write-act or close Fact.
@@ -643,11 +583,7 @@ async fn persist_goal_lifecycle_rows(
     if let Some(identity) = prepared.close_fact_identity {
         ingest_write_act_at(tx, &prepared.owner, identity).await?;
     }
-    match &prepared.wake {
-        GoalWakePlan::None => Ok(None),
-        GoalWakePlan::New(draft) => Ok(Some(insert_wake_config(tx, &prepared.owner, draft).await?)),
-        GoalWakePlan::Existing { wake_id, .. } => Ok(Some(*wake_id)),
-    }
+    Ok(())
 }
 
 /// Move the series head to the prepared `t`, failing with the conflict the
@@ -719,13 +655,12 @@ fn goal_head_conflict(
 async fn insert_goal_revision(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
-    wake_id: Option<Uuid>,
 ) -> Result<(), StorageError> {
     sqlx::query(
         "INSERT INTO proxima_core.goal
             (handle, t, owner_id, title, text, state, request_id, close_fact_t,
-             assignment_t, dependency_t, evidence_t, wake_id, write_act_t)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            assignment_t, dependency_t, evidence_t, write_act_t)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -738,7 +673,6 @@ async fn insert_goal_revision(
     .bind(prepared.command.assignment_t)
     .bind(&prepared.command.dependency_t)
     .bind(&prepared.command.evidence_t)
-    .bind(wake_id)
     .bind(prepared.command.write_act_t)
     .execute(tx.as_mut())
     .await
@@ -746,8 +680,8 @@ async fn insert_goal_revision(
     Ok(())
 }
 
-/// Refresh the Goal sketch and announce the append.
-async fn announce_goal_revision(
+/// Refresh the Goal sketch.
+async fn refresh_goal_sketch(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
@@ -759,16 +693,6 @@ async fn announce_goal_revision(
         &prepared.command.title,
     )
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         VALUES ($1, 'append', 'goal', $2, $3)",
-    )
-    .bind(prepared.owner_id)
-    .bind(prepared.handle)
-    .bind(prepared.t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
     Ok(())
 }
 
@@ -817,26 +741,6 @@ async fn validate_goal_targets_live(
     Ok(())
 }
 
-async fn ensure_live_memory(
-    tx: &mut Transaction<'_, Postgres>,
-    t: Uuid,
-    label: &str,
-) -> Result<(), StorageError> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)")
-            .bind(t)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    if exists {
-        Ok(())
-    } else {
-        Err(StorageError::ConstraintViolation(format!(
-            "{label} does not exist"
-        )))
-    }
-}
-
 async fn ensure_live_memory_kind(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
@@ -862,59 +766,4 @@ async fn ensure_live_memory_kind(
             allowed.join(" or ")
         )))
     }
-}
-
-pub(crate) async fn load_goal_wake_plan(
-    tx: &mut Transaction<'_, Postgres>,
-    wake_id: Uuid,
-) -> Result<GoalWakePlan, StorageError> {
-    let row: Option<(Option<Uuid>, Vec<Uuid>)> = sqlx::query_as(
-        "SELECT trigger_t, hard_memory_t FROM proxima_core.wake_config WHERE wake_id = $1",
-    )
-    .bind(wake_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    let Some((trigger_t, hard_memory_t)) = row else {
-        return Err(StorageError::ConstraintViolation(
-            "wake configuration does not exist".into(),
-        ));
-    };
-    Ok(GoalWakePlan::Existing {
-        wake_id,
-        trigger_t,
-        hard_memory_t,
-    })
-}
-
-async fn revalidate_wake_plan(
-    tx: &mut Transaction<'_, Postgres>,
-    wake_id: Uuid,
-    trigger_t: Option<Uuid>,
-    hard_memory_t: &[Uuid],
-) -> Result<(), StorageError> {
-    // A retained Goal may carry a cooled wake config, but carrying it into a
-    // successor is fresh admission: trigger and hard context must be hot and
-    // readable after the config snapshot is revalidated. Hydrate first.
-    let current = load_goal_wake_plan(tx, wake_id).await?;
-    let GoalWakePlan::Existing {
-        trigger_t: current_trigger,
-        hard_memory_t: current_hard,
-        ..
-    } = current
-    else {
-        unreachable!()
-    };
-    if current_trigger != trigger_t || current_hard != hard_memory_t {
-        return Err(StorageError::Retryable(
-            "wake targets changed while Goal was prepared".into(),
-        ));
-    }
-    if let Some(trigger_t) = trigger_t {
-        ensure_live_memory_kind(tx, trigger_t, "wake trigger memory", &["fact"]).await?;
-    }
-    for target in hard_memory_t {
-        ensure_live_memory(tx, *target, "wake hard context memory").await?;
-    }
-    Ok(())
 }

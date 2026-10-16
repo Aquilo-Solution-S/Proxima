@@ -371,7 +371,7 @@ async fn collect_assigned_goals(
     for p in perspectives {
         let mut req = QueryRequest::readable();
         req.entity_kind = Some(EntityKind::Goal);
-        req.goal_state = Some(GoalState::Active);
+        req.goal_states.insert(GoalState::Active);
         req.assignment = Some(p);
         req.include_payloads = false;
         req.limit = limit;

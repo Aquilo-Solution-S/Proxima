@@ -4,7 +4,7 @@ use proxima_code::RepoScope;
 
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{migrated_db, owner_scope, test_owner};
 use proxima_code::testkit::{
     advance_stage, mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
 };
@@ -16,7 +16,7 @@ use uuid::Uuid;
 async fn register_test_repo(pool: &sqlx::PgPool, owner: &OwnerId, repo_id: Uuid) {
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         "/tmp/proxima-e2e",
@@ -35,10 +35,10 @@ async fn run_transitions_and_failure_persist() {
         let repo_id = Uuid::now_v7();
         register_test_repo(pg.pool_for_tests(), &owner, repo_id).await;
 
-        let run = start_run(pg.pool_for_tests(), None, &owner, repo_id).await?;
+        let run = start_run(pg.pool_for_tests(), &owner_scope(&owner), &owner, repo_id).await?;
         let r2 = advance_stage(
             pg.pool_for_tests(),
-            None,
+            &owner_scope(&owner),
             run.run_id,
             RunStage::Facts,
             &StageCounters::zeroed(),
@@ -61,7 +61,13 @@ async fn run_transitions_and_failure_persist() {
             },
             ..StageCounters::zeroed()
         };
-        let r3 = mark_succeeded(pg.pool_for_tests(), None, run.run_id, &counted).await?;
+        let r3 = mark_succeeded(
+            pg.pool_for_tests(),
+            &owner_scope(&owner),
+            run.run_id,
+            &counted,
+        )
+        .await?;
         assert_eq!(r3.status, RunStatus::Succeeded);
         assert!(r3.finished_at.is_some());
         assert_eq!(r3.files_by_class, counted.files_by_class);
@@ -70,7 +76,7 @@ async fn run_transitions_and_failure_persist() {
         let repo_id2 = Uuid::now_v7();
         register_repo(
             pg.pool_for_tests(),
-            None,
+            &owner_scope(&owner),
             &owner,
             repo_id2,
             "/tmp/proxima-e2e-2",
@@ -78,8 +84,14 @@ async fn run_transitions_and_failure_persist() {
             &RepoScope::default(),
         )
         .await?;
-        let failed = start_run(pg.pool_for_tests(), None, &owner, repo_id2).await?;
-        let failed = mark_failed(pg.pool_for_tests(), None, failed.run_id, "boom").await?;
+        let failed = start_run(pg.pool_for_tests(), &owner_scope(&owner), &owner, repo_id2).await?;
+        let failed = mark_failed(
+            pg.pool_for_tests(),
+            &owner_scope(&owner),
+            failed.run_id,
+            "boom",
+        )
+        .await?;
         assert_eq!(failed.status, RunStatus::Failed);
         assert_eq!(failed.error_message.as_deref(), Some("boom"));
         Ok(())
@@ -100,7 +112,7 @@ async fn the_orphan_sweep_retires_stale_runs_only() {
         let (live_repo, stale_repo) = (Uuid::now_v7(), Uuid::now_v7());
         register_repo(
             pool,
-            None,
+            &owner_scope(&owner),
             &owner,
             live_repo,
             "/tmp/proxima-live",
@@ -110,7 +122,7 @@ async fn the_orphan_sweep_retires_stale_runs_only() {
         .await?;
         register_repo(
             pool,
-            None,
+            &owner_scope(&owner),
             &owner,
             stale_repo,
             "/tmp/proxima-stale",
@@ -118,8 +130,8 @@ async fn the_orphan_sweep_retires_stale_runs_only() {
             &RepoScope::default(),
         )
         .await?;
-        let live = start_run(pool, None, &owner, live_repo).await?;
-        let stale = start_run(pool, None, &owner, stale_repo).await?;
+        let live = start_run(pool, &owner_scope(&owner), &owner, live_repo).await?;
+        let stale = start_run(pool, &owner_scope(&owner), &owner, stale_repo).await?;
         sqlx::query(
             "UPDATE proxima_code.repo_ingestion_runs \
                 SET updated_at = now() - interval '6 minutes' WHERE run_id = $1",
@@ -128,7 +140,7 @@ async fn the_orphan_sweep_retires_stale_runs_only() {
         .execute(pool)
         .await?;
 
-        assert_eq!(sweep_orphaned_runs(pool).await?, 1);
+        assert_eq!(sweep_orphaned_runs(&pg.platform_scope_for_host()).await?, 1);
         let status = |run_id: Uuid| {
             sqlx::query_as::<_, (String, bool)>(
                 "SELECT status::text, finished_at IS NOT NULL \

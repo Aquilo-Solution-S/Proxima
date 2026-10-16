@@ -60,7 +60,7 @@ impl<'a> SelectionScope<'a> {
 /// load-bearing rather than incidental.
 async fn begin_bulk_erase_tx(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
 ) -> Result<Tx<'static>, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     // The database-wide lifecycle fence is the first lock in this
@@ -112,7 +112,7 @@ enum EraseAttempt {
 /// transaction, so a deadlocked attempt leaves nothing behind.
 async fn erase_with_retry<'a, F, Fut>(
     pool: &'a PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     attempt: F,
 ) -> Result<OwnerEraseOutcome, StorageError>
@@ -130,7 +130,7 @@ where
 
 pub(crate) async fn erase_group_owner_with_lifecycle(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
@@ -165,20 +165,9 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
     .await
 }
 
-#[cfg(test)]
-pub async fn erase_personal_owner(
-    pool: &PgPool,
-    cold: &dyn ColdObjectStore,
-    auth: &EraseAuthorization,
-    user_id: UserId,
-    surfaces: &OwnerSurfaces,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    erase_personal_owner_with_lifecycle(pool, None, cold, auth, user_id, surfaces, None).await
-}
-
 pub(crate) async fn erase_personal_owner_with_lifecycle(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
@@ -215,7 +204,7 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
 
 pub(crate) async fn erase_group_source_scope_with_lifecycle(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     source_id: &SourceId,
@@ -256,7 +245,7 @@ pub(crate) async fn erase_group_source_scope_with_lifecycle(
 
 pub(crate) async fn erase_personal_source_scope_with_lifecycle(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     source_id: &SourceId,
@@ -314,7 +303,7 @@ async fn complete(
 
 async fn finalize_cold_purge(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
     outcome: OwnerEraseOutcome,
@@ -615,9 +604,6 @@ async fn erase_selected(
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
 
-    let change_events = delete_change_events(tx, owner).await?;
-    record_count(tx, "change_events", change_events).await?;
-
     let source_cursors = delete_source_cursors(tx, owner, scope).await?;
     record_count(tx, "source_cursors", source_cursors).await?;
 
@@ -656,8 +642,6 @@ async fn erase_selected(
     let goals = delete_selected_goals(tx, owner).await?;
     assert_selection_fully_deleted(tx, Selection::Goals, goals).await?;
     record_count(tx, "goals", goals).await?;
-    let wake_configs = delete_wake_configs(tx, owner, scope).await?;
-    record_count(tx, "wake_configs", wake_configs).await?;
     let blobs = delete_blobs(tx, owner, scope, surfaces).await?;
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
@@ -1645,23 +1629,6 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
     Ok(result.rows_affected())
 }
 
-async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerId) -> Result<u64, StorageError> {
-    let owner_id = owner.into_inner();
-    let result = sqlx::query(
-        "DELETE FROM proxima_core.announce a
-          WHERE a.owner_id = $1
-            AND (
-                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = a.t)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = a.t)
-            )",
-    )
-    .bind(owner_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(result.rows_affected())
-}
-
 /// Delegations are owner-level authority, never source-attributable data.
 /// Owner erasure removes grants for that exact owner. Dropping a personal
 /// owner additionally removes every grant issued under that subject's bearer,
@@ -1687,37 +1654,6 @@ async fn delete_delegated_authority_grants(
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-    Ok(result.rows_affected())
-}
-
-/// Destroy the owner's wake configuration. `wake_config` is owner-authored
-/// content — a free-text `prompt`, the hard-context `hard_memory_t` set, the
-/// armed `tool_ids` — and nothing else collects it: `goal.wake_id` is
-/// `ON DELETE RESTRICT` and erase never deletes the `owners` row, so a
-/// forgotten statement here leaves the prompt text behind forever.
-///
-/// Owner erase has already deleted every goal of the owner, so every wake row
-/// of that owner goes; a wake row an outside owner's goal still arms fails the
-/// RESTRICT FK and aborts the erase rather than silently surviving it.
-/// Source-scope erase selects no goals and `wake_config` has no source
-/// attribution, so every wake row remains outside that erase scope.
-async fn delete_wake_configs(
-    tx: &mut Tx<'_>,
-    owner: OwnerId,
-    scope: SelectionScope<'_>,
-) -> Result<u64, StorageError> {
-    let owner_id = owner.into_inner();
-    let result = match scope {
-        SelectionScope::Owner => sqlx::query(
-            "DELETE FROM proxima_core.wake_config
-              WHERE owner_id = $1",
-        )
-        .bind(owner_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?,
-        SelectionScope::Source(_) => return Ok(0),
-    };
     Ok(result.rows_affected())
 }
 
@@ -2090,6 +2026,7 @@ mod tests {
 
         let (pg, database) = fresh_pg("owner_erase_global_lock_timeout").await;
         let pool = pg.pool_for_tests();
+        let platform = pg.platform_scope_for_host();
         let mut blocker = pool.begin().await.expect("begin shared-fence blocker");
         crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut blocker)
             .await
@@ -2097,7 +2034,7 @@ mod tests {
 
         let attempt = tokio::time::timeout(
             Duration::from_secs(8),
-            super::begin_bulk_erase_tx(pool, None),
+            super::begin_bulk_erase_tx(pool, &platform),
         )
         .await
         .expect("the first global fence wait is bounded by lock_timeout");
@@ -2108,7 +2045,7 @@ mod tests {
         drop(attempt);
 
         blocker.rollback().await.expect("release shared fence");
-        let tx = super::begin_bulk_erase_tx(pool, None)
+        let tx = super::begin_bulk_erase_tx(pool, &platform)
             .await
             .expect("a fresh attempt acquires the fence after release");
         tx.commit().await.expect("empty retry transaction commits");

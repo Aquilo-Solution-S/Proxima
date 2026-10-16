@@ -60,7 +60,7 @@ struct EmbeddingOrphanSweepRow {
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn embedding_ann_observability(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
@@ -351,7 +351,7 @@ async fn current_embedding_ids_by_distance(
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn sweep_orphan_embedding_rows(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
 ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
 

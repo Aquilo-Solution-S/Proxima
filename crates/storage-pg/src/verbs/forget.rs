@@ -19,18 +19,8 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::tx::{TxOutcome, in_transaction};
 use crate::verbs::fact_embeddings::RouteSpaces;
 
-/// Version 6 adds the exact `memory.sidecar_tables` stamp to each object.
-/// Version 7 adds contract-declared cascaded detail declarations and their
-/// exact rows. A v6 object can only be hydrated for a schema with no such
-/// detail surfaces; accepting it for a schema that has one would silently
-/// discard rows deleted by the parent FK.
-/// Hydration refuses older records because a dump list alone cannot prove
-/// which sidecars the original Memory admission declared.
-/// Version 8 records the width of each embedding space next to its model id.
-/// Older objects restore at 1024, the only width a vector could have then.
-/// Version 9 records `memory.occurred_at`. An older object's Fact restores
-/// its write time read out of `t`, the value migration 0030 backfills hot
-/// Facts with; an older Abstraction or Perspective restores none.
+/// The only accepted cold-object format. Older and future versions return
+/// `MemoryHydrationStatus::UnsupportedColdFormat` with their version.
 pub const COLD_FORMAT_VERSION: u8 = 9;
 
 // The persisted key derivation lives in core, the lowest crate shared by
@@ -167,15 +157,9 @@ pub struct ColdRecord {
     /// Embedding spaces that had vectors. Vectors stay out of the object;
     /// hydrate enqueues embed jobs in these spaces.
     embed_spaces: Vec<proxima_core::EmbeddingSpace>,
-    /// Exact persisted one-liner. v4+; older cold objects restore from sidecar/kind.
+    /// Exact persisted one-liner.
     sketch: Option<String>,
-    /// Format version this record was decoded from, or the current version
-    /// for a record built from a live row. Hydrate consults it because a
-    /// pre-v5 object's `refs` still mixes Memory and Goal ids and has to be
-    /// separated against the Goal spine before it can be re-inserted, while
-    /// pre-v6 objects have no authenticated sidecar stamp and fail closed;
-    /// pre-v7 objects have no exact cascaded-detail declaration and fail
-    /// closed for schemas that declare one.
+    /// Format version of the record.
     format_version: u8,
 }
 
@@ -230,26 +214,12 @@ fn cold_digest(bytes: &[u8]) -> Vec<u8> {
     blake3::hash(bytes).as_bytes().to_vec()
 }
 
-/// The spaces a cold object's `t` had vectors in: the model list (v2+), then
-/// one width per model (v8+). Before v8 every vector was 1024 wide.
+/// The spaces a cold object's `t` had vectors in: one width per model.
 fn read_embed_spaces(
     bytes: &[u8],
     i: &mut usize,
-    version: u8,
 ) -> Result<Vec<proxima_core::EmbeddingSpace>, StorageError> {
-    let models = if version >= 2 {
-        read_str_list(bytes, i)?
-    } else {
-        Vec::new()
-    };
-    if version < 8 {
-        return Ok(models
-            .into_iter()
-            .map(|model_id| {
-                proxima_core::EmbeddingSpace::new(model_id, proxima_core::EmbeddingDim::D1024)
-            })
-            .collect());
-    }
+    let models = read_str_list(bytes, i)?;
     if usize::from(read_u16(bytes, i)?) != models.len() {
         return Err(StorageError::Internal(
             "cold object embedding widths do not match its models".into(),
@@ -270,9 +240,9 @@ fn read_embed_spaces(
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let mut i = 0;
     let version = read_u8(bytes, &mut i)?;
-    if !matches!(version, 1..=COLD_FORMAT_VERSION) {
+    if version != COLD_FORMAT_VERSION {
         return Err(StorageError::Internal(format!(
-            "unknown cold format {version}"
+            "unsupported cold format {version}; expected {COLD_FORMAT_VERSION}"
         )));
     }
     let mut row = HotRow {
@@ -286,65 +256,32 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         blob_id: read_opt_uuid(bytes, &mut i)?,
         origins: read_uuid_list(bytes, &mut i)?,
         refs: read_uuid_list(bytes, &mut i)?,
-        // v<=4 predates the pin split, so its `refs` is still a mixed array.
-        // It is separated on hydrate against the live Goal spine — the same
-        // predicate migration 0004 backfills hot rows with — because the
-        // object alone cannot say which ids were Goals.
-        goal_refs: if version >= 5 {
-            read_uuid_list(bytes, &mut i)?
-        } else {
-            Vec::new()
-        },
+        goal_refs: read_uuid_list(bytes, &mut i)?,
         sidecar_tables: Vec::new(),
         content_id: None,
         occurred_at: None,
     };
-    row.occurred_at = if version >= 9 {
-        read_opt_time(bytes, &mut i)?
-    } else {
-        (row.kind == "fact").then(|| proxima_core::MemoryId::new(row.t).created_at())
-    };
+    row.occurred_at = read_opt_time(bytes, &mut i)?;
     let schema_id = read_str(bytes, &mut i)?;
-    let sidecar_tables = if version >= 6 {
-        read_str_list(bytes, &mut i)?
-    } else {
-        Vec::new()
-    };
-    row.sidecar_tables = sidecar_tables;
-    let sidecar_dumps = if version >= 3 {
-        let n = usize::from(read_u16(bytes, &mut i)?);
-        let mut dumps = Vec::with_capacity(n);
-        for _ in 0..n {
-            dumps.push((read_str(bytes, &mut i)?, read_str(bytes, &mut i)?));
+    row.sidecar_tables = read_str_list(bytes, &mut i)?;
+    let n = usize::from(read_u16(bytes, &mut i)?);
+    let mut sidecar_dumps = Vec::with_capacity(n);
+    for _ in 0..n {
+        sidecar_dumps.push((read_str(bytes, &mut i)?, read_str(bytes, &mut i)?));
+    }
+    let embed_spaces = read_embed_spaces(bytes, &mut i)?;
+    let sketch = read_opt_str(bytes, &mut i)?;
+    let n = usize::from(read_u16(bytes, &mut i)?);
+    let mut detail_dumps = Vec::with_capacity(n);
+    for _ in 0..n {
+        let table = read_str(bytes, &mut i)?;
+        let rows = usize::from(read_u16(bytes, &mut i)?);
+        let mut values = Vec::with_capacity(rows);
+        for _ in 0..rows {
+            values.push(read_str(bytes, &mut i)?);
         }
-        dumps
-    } else {
-        let _kind = read_u8(bytes, &mut i)?;
-        let _sidecar = read_bytes(bytes, &mut i)?;
-        Vec::new()
-    };
-    let embed_spaces = read_embed_spaces(bytes, &mut i, version)?;
-    let sketch = if version >= 4 {
-        read_opt_str(bytes, &mut i)?
-    } else {
-        None
-    };
-    let detail_dumps = if version >= 7 {
-        let n = usize::from(read_u16(bytes, &mut i)?);
-        let mut dumps = Vec::with_capacity(n);
-        for _ in 0..n {
-            let table = read_str(bytes, &mut i)?;
-            let rows = usize::from(read_u16(bytes, &mut i)?);
-            let mut values = Vec::with_capacity(rows);
-            for _ in 0..rows {
-                values.push(read_str(bytes, &mut i)?);
-            }
-            dumps.push((table, values));
-        }
-        dumps
-    } else {
-        Vec::new()
-    };
+        detail_dumps.push((table, values));
+    }
     if i != bytes.len() {
         return Err(StorageError::Internal(
             "cold object has trailing bytes".into(),
@@ -697,9 +634,6 @@ async fn dump_cascaded_details(
 /// dumps, so they are removed from the expected list before comparison; an
 /// owner-pinned dump itself still fails the sidecar preflight below.
 fn cold_sidecar_stamp_matches(rec: &ColdRecord, sidecars: &PgSidecarRegistryFrozen) -> bool {
-    if rec.format_version < 6 {
-        return false;
-    }
     let mut seen_stamp = BTreeSet::new();
     if rec
         .row
@@ -720,9 +654,6 @@ fn cold_sidecar_stamp_matches(rec: &ColdRecord, sidecars: &PgSidecarRegistryFroz
 /// table whose parent FK deleted rows during cooling.
 fn cold_detail_stamp_matches(rec: &ColdRecord, surfaces: &OwnerSurfaces) -> bool {
     let expected = surfaces.cascaded_details_for_schema(&rec.schema_id);
-    if rec.format_version < 7 {
-        return expected.is_empty() && rec.detail_dumps.is_empty();
-    }
     expected.len() == rec.detail_dumps.len()
         && expected
             .iter()
@@ -907,16 +838,6 @@ async fn persist_cooled_after_put(
     sync_memory_head(tx, current.row.handle).await?;
     // Content stays while the cooled stub names it.
 
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         VALUES ($1, 'forget', 'memory', $2, $3)",
-    )
-    .bind(current.row.owner_id)
-    .bind(current.row.handle)
-    .bind(current.row.t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
     Ok(())
 }
 
@@ -1046,15 +967,16 @@ pub struct ColdPurgeOutcome {
 /// debts already retired by another drain before provider I/O begins.
 pub async fn purge_cold_objects_after_commit(
     pool: &PgPool,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
 ) -> ColdPurgeOutcome {
-    purge_cold_objects_after_commit_with_platform(pool, None, cold, plan).await
+    purge_cold_objects_after_commit_with_platform(pool, platform, cold, plan).await
 }
 
 pub(crate) async fn purge_cold_objects_after_commit_with_platform(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
 ) -> ColdPurgeOutcome {
@@ -1108,7 +1030,7 @@ struct ColdPurgeVersion {
 
 async fn purge_current_cold_debt(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     object_key: &str,
 ) -> Result<(), StorageError> {
@@ -1156,7 +1078,7 @@ async fn purge_current_cold_debt(
 /// writes could leave set forever.
 async fn clear_cold_purge_pending(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     object_key: &str,
     version: &ColdPurgeVersion,
 ) -> Result<bool, StorageError> {
@@ -2267,6 +2189,8 @@ pub(crate) enum ColdRejection {
     /// format or detail set this binary cannot restore. Not evidence of
     /// corrupt bytes.
     UnsupportedObject,
+    /// A witnessed object declares this unsupported format version.
+    UnsupportedFormat(u8),
     /// The record's sidecar stamp names a set this registry cannot restore.
     UnsupportedSidecar,
     /// The bytes are present and witnessed but cannot be admitted: a digest
@@ -2280,6 +2204,9 @@ impl ColdRejection {
         match self {
             Self::MissingObject => MemoryHydrationStatus::MissingColdObject,
             Self::UnsupportedObject => MemoryHydrationStatus::UnsupportedColdObject,
+            Self::UnsupportedFormat(format_version) => {
+                MemoryHydrationStatus::UnsupportedColdFormat { format_version }
+            }
             Self::UnsupportedSidecar => MemoryHydrationStatus::UnsupportedColdSidecar,
             Self::InvalidObject => MemoryHydrationStatus::InvalidColdObject,
         }
@@ -2354,24 +2281,19 @@ async fn plan_hydration(
     if expected_digest.len() != 32 || cold_digest(&bytes) != expected_digest {
         return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
     }
-    // The declared version decides supported-vs-invalid before the decoder
-    // has an opinion. A record from a newer binary is unsupported, not
-    // damaged, and the two are different answers for an operator.
-    if bytes
-        .first()
-        .is_none_or(|version| !(1..=COLD_FORMAT_VERSION).contains(version))
-    {
-        return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedObject));
+    // Format is untrusted object metadata; keep its version in the refusal
+    // before the current-format decoder interprets any field.
+    let Some(&format_version) = bytes.first() else {
+        return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
+    };
+    if format_version != COLD_FORMAT_VERSION {
+        return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedFormat(
+            format_version,
+        )));
     }
     let Ok(rec) = decode_record(&bytes) else {
         return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
     };
-    // The stamp arrived with format 6 and the exact detail declaration with
-    // format 7. An older object cannot prove which sidecars its admission
-    // declared, so no amount of validation makes it restorable.
-    if rec.format_version < 6 {
-        return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedObject));
-    }
     if rec.row.t != cooled.t
         || rec.row.handle != cooled.handle
         || rec.row.kind != cooled.kind
@@ -2537,19 +2459,6 @@ async fn apply_hydration(
 
     sync_memory_head(tx, rec.row.handle).await?;
 
-    // Likewise owner-scoped: the announce feed a client tails is its own.
-    // Announcing a hydrate to the pre-transfer owner tells the wrong party
-    // that a memory it does not have came back.
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         VALUES ($1, 'append', 'memory', $2, $3)",
-    )
-    .bind(locked.owner_id)
-    .bind(rec.row.handle)
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
     Ok(preserved_witnesses)
 }
 
@@ -3252,18 +3161,6 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         SELECT $1, 'erase', 'memory', $2, $3",
-    )
-    .bind(owner.into_inner())
-    // The series handle, not t: a ChangeHistory reader pages by handle, and a
-    // t-shaped handle matches no series.
-    .bind(handle)
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
     Ok(ColdPurgePlan::from_keys(pending))
 }
 
@@ -3290,18 +3187,8 @@ pub async fn erase_memory(
 /// answerable in one statement, which is what `gc_unreferenced_blobs`
 /// below is.
 ///
-/// What it does NOT reach: unowned `t`-references. `goal.close_fact_t`,
-/// `goal.assignment_t`, `goal.write_act_t`, `goal.dependency_t[]`,
-/// `goal.evidence_t[]`, `wake_config.trigger_t` and
-/// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
-/// erase here can leave them pointing at nothing. That is deliberate:
-/// [`erase_memory`] leaves them too, and the owner-erase source-scope arm
-/// leaves `goal` and `wake_config` untouched — they go only in the owner
-/// arm, where the whole row goes rather than one column of it. Nulling them
-/// here would make the set-erase do something the single-memory erase does
-/// not. A goal whose
-/// evidence was erased is a goal with a dangling pointer either way; the
-/// reader resolves it to nothing, which is what "erased" should look like.
+/// Goal references are not foreign keys. Erased evidence resolves as
+/// unavailable; source-scoped erasure leaves the Goal row intact.
 ///
 /// Returns the number of admissions erased and the cold objects the erase
 /// still owes the object store; see [`erase_memory`] for why the caller
@@ -4013,90 +3900,6 @@ mod tests {
         assert_eq!(decoded.format_version, super::COLD_FORMAT_VERSION);
         let sidecars = crate::core_pg_sidecars();
         assert!(super::cold_sidecar_stamp_matches(&decoded, &sidecars));
-        let mut retained = decoded.clone();
-        retained
-            .row
-            .sidecar_tables
-            .push("proxima_core.mcp_call_logged_v1".to_owned());
-        assert!(
-            super::cold_sidecar_stamp_matches(&retained, &sidecars),
-            "declared retained owner-pinned dumps are intentionally omitted"
-        );
-    }
-
-    /// Cold objects written before the split have no `goal_refs` field at
-    /// all, and their `refs` is still the mixed array. Decode must not
-    /// invent the field, and must report the version it read so hydrate
-    /// knows to separate `refs` against the live Goal spine rather than
-    /// re-inserting a Goal id into the Memory column, where the pin check
-    /// would now reject it.
-    #[test]
-    fn a_pre_split_cold_object_decodes_with_an_unsplit_refs_array() {
-        let rec = cold_row(Vec::new(), Vec::new());
-        let mixed = vec![uuid::Uuid::now_v7(), uuid::Uuid::now_v7()];
-
-        // The v4 layout, written out by hand: it is identical to v5 except
-        // that no goal_refs list follows refs.
-        let mut v4 = vec![4_u8];
-        super::write_uuid(&mut v4, rec.row.handle);
-        super::write_uuid(&mut v4, rec.row.t);
-        super::write_str(&mut v4, &rec.row.kind).expect("kind");
-        super::write_uuid(&mut v4, rec.row.owner_id);
-        super::write_opt_str(&mut v4, rec.row.source_id.as_deref()).expect("source");
-        super::write_opt_str(&mut v4, rec.row.ingest_key.as_deref()).expect("ingest key");
-        super::write_opt_uuid(&mut v4, rec.row.blob_id);
-        super::write_uuid_list(&mut v4, &rec.row.origins).expect("origins");
-        super::write_uuid_list(&mut v4, &mixed).expect("refs");
-        super::write_str(&mut v4, &rec.schema_id).expect("schema");
-        super::write_count(&mut v4, 0).expect("no sidecars");
-        super::write_str_list(&mut v4, &[]).expect("embed models");
-        super::write_opt_str(&mut v4, None).expect("sketch");
-
-        let decoded = super::decode_record(&v4).expect("v4 decodes");
-        assert_eq!(decoded.format_version, 4);
-        assert_eq!(
-            decoded.row.refs, mixed,
-            "a pre-split object's refs must survive decode untouched"
-        );
-        assert!(
-            decoded.row.goal_refs.is_empty(),
-            "decode must not guess which legacy refs were Goals"
-        );
-    }
-
-    #[test]
-    fn a_legacy_cold_object_has_no_authenticated_sidecar_stamp() {
-        let rec = cold_row(Vec::new(), Vec::new());
-        let mut v5 = vec![5_u8];
-        super::write_uuid(&mut v5, rec.row.handle);
-        super::write_uuid(&mut v5, rec.row.t);
-        super::write_str(&mut v5, &rec.row.kind).expect("kind");
-        super::write_uuid(&mut v5, rec.row.owner_id);
-        super::write_opt_str(&mut v5, rec.row.source_id.as_deref()).expect("source");
-        super::write_opt_str(&mut v5, rec.row.ingest_key.as_deref()).expect("ingest key");
-        super::write_opt_uuid(&mut v5, rec.row.blob_id);
-        super::write_uuid_list(&mut v5, &rec.row.origins).expect("origins");
-        super::write_uuid_list(&mut v5, &rec.row.refs).expect("refs");
-        super::write_uuid_list(&mut v5, &rec.row.goal_refs).expect("goal refs");
-        super::write_str(&mut v5, &rec.schema_id).expect("schema");
-        super::write_count(&mut v5, 0).expect("no sidecars");
-        super::write_str_list(&mut v5, &["legacy-model".to_owned()]).expect("embed models");
-        super::write_opt_str(&mut v5, None).expect("sketch");
-        let decoded = super::decode_record(&v5).expect("v5 decodes");
-        assert_eq!(decoded.format_version, 5);
-        assert_eq!(
-            decoded.embed_spaces,
-            vec![proxima_core::EmbeddingSpace::new(
-                "legacy-model",
-                proxima_core::EmbeddingDim::D1024
-            )],
-            "a pre-v8 object's vectors were 1024 wide"
-        );
-        assert!(decoded.row.sidecar_tables.is_empty());
-        assert!(!super::cold_sidecar_stamp_matches(
-            &decoded,
-            &crate::core_pg_sidecars()
-        ));
     }
 
     #[test]
@@ -4116,51 +3919,25 @@ mod tests {
         assert_eq!(decoded.row.occurred_at, None);
     }
 
-    /// A v8 object predates `memory.occurred_at`. Its Fact restores the write
-    /// time read out of `t`, which is what migration 0030 backfilled every
-    /// hot Fact with; an Abstraction restores none, as the CHECK requires.
-    #[test]
-    fn a_pre_occurrence_cold_object_restores_a_facts_write_time() {
-        for (kind, written) in [("fact", true), ("abstraction", false)] {
-            let mut rec = cold_row(Vec::new(), Vec::new());
-            rec.row.kind = kind.to_owned();
-            let mut v8 = vec![8_u8];
-            super::write_uuid(&mut v8, rec.row.handle);
-            super::write_uuid(&mut v8, rec.row.t);
-            super::write_str(&mut v8, &rec.row.kind).expect("kind");
-            super::write_uuid(&mut v8, rec.row.owner_id);
-            super::write_opt_str(&mut v8, rec.row.source_id.as_deref()).expect("source");
-            super::write_opt_str(&mut v8, rec.row.ingest_key.as_deref()).expect("ingest key");
-            super::write_opt_uuid(&mut v8, rec.row.blob_id);
-            super::write_uuid_list(&mut v8, &rec.row.origins).expect("origins");
-            super::write_uuid_list(&mut v8, &rec.row.refs).expect("refs");
-            super::write_uuid_list(&mut v8, &rec.row.goal_refs).expect("goal refs");
-            super::write_str(&mut v8, &rec.schema_id).expect("schema");
-            super::write_str_list(&mut v8, &[]).expect("sidecar stamp");
-            super::write_count(&mut v8, 0).expect("no sidecars");
-            super::write_str_list(&mut v8, &[]).expect("embed models");
-            super::write_count(&mut v8, 0).expect("embed widths");
-            super::write_opt_str(&mut v8, None).expect("sketch");
-            super::write_count(&mut v8, 0).expect("no details");
-
-            let decoded = super::decode_record(&v8).expect("v8 decodes");
-            assert_eq!(decoded.format_version, 8);
-            assert_eq!(
-                decoded.row.occurred_at,
-                written.then(|| proxima_core::MemoryId::new(rec.row.t).created_at()),
-                "{kind}"
-            );
-        }
-    }
-
     #[test]
     fn an_unknown_cold_format_is_refused() {
         let future = super::COLD_FORMAT_VERSION.saturating_add(1);
         let err = super::decode_record(&[future]).expect_err("future format is not shipped");
         assert!(
-            matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unknown cold format {future}"))),
+            matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unsupported cold format {future}"))),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn a_released_cold_format_is_refused_with_its_version() {
+        for version in [4_u8, 5, 6, 7, 8] {
+            let err = super::decode_record(&[version]).expect_err("released format is retired");
+            assert!(
+                matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unsupported cold format {version}"))),
+                "version {version} reported {err:?}"
+            );
+        }
     }
 
     #[test]

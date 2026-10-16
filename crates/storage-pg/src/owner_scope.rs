@@ -29,6 +29,14 @@ fn owner_ids(owners: Vec<OwnerId>) -> Vec<Uuid> {
     owners.into_iter().map(OwnerId::into_inner).collect()
 }
 
+pub(crate) fn require_owner_scope(scope: Option<&OwnerScope>) -> Result<&OwnerScope, StorageError> {
+    scope.ok_or_else(|| {
+        StorageError::ConstraintViolation(
+            "authenticated OwnerScope is required for owner-scoped storage".into(),
+        )
+    })
+}
+
 pub(crate) async fn finish_transaction<T>(
     transaction: Transaction<'static, Postgres>,
     result: Result<T, StorageError>,
@@ -81,43 +89,4 @@ pub(crate) async fn bind_owner_scope(
     .await
     .map_err(map_err)?;
     Ok(())
-}
-
-/// The compatibility release keeps legacy callers working only while the
-/// database has not activated owner RLS. This is not a fallback from failed
-/// scope binding: an authenticated witness always takes the scoped path.
-///
-/// # Errors
-///
-/// Refuses missing authority after RLS activation and expired authenticated
-/// authority, and returns database errors without running the application body.
-#[doc(hidden)]
-pub async fn begin_compatible_owner_transaction(
-    pool: &PgPool,
-    scope: Option<&OwnerScope>,
-) -> Result<Transaction<'static, Postgres>, StorageError> {
-    if let Some(scope) = scope {
-        return begin_owner_transaction(pool, scope).await;
-    }
-    let mut transaction = pool.begin().await.map_err(map_err)?;
-    let enforced: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-            SELECT 1 FROM pg_catalog.pg_class relation
-            JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
-            WHERE namespace.nspname = 'proxima_core'
-              AND (relation.relname = 'owner_rls_epoch'
-                   OR (relation.relkind IN ('r', 'p')
-                       AND (relation.relrowsecurity OR relation.relforcerowsecurity)))
-        )",
-    )
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(map_err)?;
-    if enforced {
-        transaction.rollback().await.map_err(map_err)?;
-        return Err(StorageError::ConstraintViolation(
-            "owner RLS requires an authenticated OwnerScope".into(),
-        ));
-    }
-    Ok(transaction)
 }

@@ -309,24 +309,51 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
         None => println!("  key       in memory — this token dies with this process"),
     }
     println!(
-        "\n1. Point Proxima at this issuer, in another shell:\n\
+        "\n1. Point Proxima at this issuer, in the shell holding the database URLs\n\
+         \x20  (docs/get-started.md step 1):\n\
          \n\
-         export DATABASE_URL=postgres://proxima:proxima@localhost:${{PROXIMA_DEV_POSTGRES_PORT:-5434}}/proxima\n\
          export PROXIMA_OIDC_ISSUER={issuer}\n\
          export PROXIMA_OIDC_AUDIENCE={audience}\n\
-         export PROXIMA_OIDC_SUBJECT_MAP={subject}:{user_id}\n\
+         export PROXIMA_OIDC_SUBJECT_MAP_JSON={subject_map}\n\
          export PROXIMA_PUBLIC_URL={server_url}\n\
          export PROXIMA_TOOL_PROFILE=full\n\
-         cargo run -p proxima-mcp\n"
+         cargo run -p proxima-mcp\n",
+        subject_map = shell_single_quote(
+            &serde_json::json!([{
+                "iss": issuer,
+                "sub": subject,
+                "user_id": user_id,
+            }])
+            .to_string()
+        ),
     );
     println!(
         "2. Connect your coding agent:\n\
          \n\
          claude mcp add --transport http proxima {server_url}/mcp \\\n\
          \x20 --header \"Authorization: Bearer {token}\" \\\n\
-         \x20 --header \"X-Proxima-Owner: <the user id from PROXIMA_OIDC_SUBJECT_MAP above>\"\n"
+         \x20 --header \"X-Proxima-Owner: <the user UUID printed after -> user above>\"\n"
     );
     println!("Serving. Ctrl-C to stop.");
+}
+
+/// Quote generated values for POSIX shell copy/paste guidance.
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::shell_single_quote;
+
+    #[test]
+    fn generated_json_is_shell_quoted_at_the_output_boundary() {
+        let json = r#"[{"iss":"https://issuer.test","sub":"o'b","user_id":"00000000-0000-7000-8000-000000000001"}]"#;
+        assert_eq!(
+            shell_single_quote(json),
+            "'[{\"iss\":\"https://issuer.test\",\"sub\":\"o'\\''b\",\"user_id\":\"00000000-0000-7000-8000-000000000001\"}]'"
+        );
+    }
 }
 
 #[tokio::main]

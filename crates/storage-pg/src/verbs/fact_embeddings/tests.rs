@@ -9,6 +9,7 @@ mod pg_tests {
     use proxima_core::storage_ports::{
         EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort, OwnerWritePermit,
     };
+    use proxima_core::test_fixtures::authenticated_context;
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemoryEmbedUnit;
@@ -130,7 +131,7 @@ mod pg_tests {
     async fn owner_fact_write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError> {
         let user_id = owner.as_user();
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
-        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer));
         engine
             .authorize_owner_write(&authz, owner, AccessKind::Fact)
             .await
@@ -255,6 +256,7 @@ mod pg_tests {
     async fn embedding_chunks_publish_atomically_in_text_order()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -306,7 +308,7 @@ mod pg_tests {
             );
             let coverage = super::super::embedding_coverage(
                 pool,
-                None,
+                &platform,
                 &owner,
                 std::slice::from_ref(&*STUB_SPACE),
                 &[],
@@ -322,13 +324,13 @@ mod pg_tests {
                 (1, 1, 3)
             );
             assert_eq!(
-                reconcile_embeddings(pool, missing_only(100), stale_claim_seconds())
+                reconcile_embeddings(pool, &platform, missing_only(100), stale_claim_seconds())
                     .await?
                     .enqueued,
                 0
             );
             let observability =
-                embedding_ann_observability(pool, None, stale_claim_seconds()).await?;
+                embedding_ann_observability(pool, &platform, stale_claim_seconds()).await?;
             assert_eq!(
                 (
                     observability.embedding_rows,
@@ -355,6 +357,7 @@ mod pg_tests {
     async fn invalid_later_embedding_chunk_preserves_the_complete_head()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -422,6 +425,7 @@ mod pg_tests {
     async fn later_chunk_sql_failure_rolls_back_the_version()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -491,6 +495,7 @@ mod pg_tests {
     #[tokio::test]
     async fn embedding_space_purge_limits_chunk_rows() -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -509,13 +514,15 @@ mod pg_tests {
             )
             .await?;
             tx.commit().await?;
-            let purged = super::super::purge_embedding_spaces(pool, None, &owner, &[], 2).await?;
+            let purged =
+                super::super::purge_embedding_spaces(pool, &platform, &owner, &[], 2).await?;
             assert_eq!(
                 purged.vectors, 2,
                 "the row limit counts chunks, not versions"
             );
             assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 1);
-            let purged = super::super::purge_embedding_spaces(pool, None, &owner, &[], 2).await?;
+            let purged =
+                super::super::purge_embedding_spaces(pool, &platform, &owner, &[], 2).await?;
             assert_eq!(purged.vectors, 1);
             assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 0);
             Ok(())
@@ -589,6 +596,7 @@ mod pg_tests {
     async fn insert_memory_embedding_noops_after_source_memory_deleted()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -669,6 +677,7 @@ mod pg_tests {
     #[tokio::test]
     async fn permanently_failed_job_is_never_requeued() -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -704,7 +713,8 @@ mod pg_tests {
             );
 
             let outcome =
-                reconcile_embeddings(pool, missing_only(100), stale_claim_seconds()).await?;
+                reconcile_embeddings(pool, &platform, missing_only(100), stale_claim_seconds())
+                    .await?;
             assert_eq!(outcome.enqueued, 0, "a permanent rejection is not requeued");
             assert_eq!(job_state(pool, entity_id).await?.0, "failed_permanent");
 
@@ -722,6 +732,7 @@ mod pg_tests {
     async fn permanently_failed_earlier_candidate_does_not_starve_later_missing_one()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -744,6 +755,7 @@ mod pg_tests {
 
             let reconciled = reconcile_embeddings(
                 pool,
+                &platform,
                 EmbeddingReconcileOptions {
                     space: &STUB_SPACE,
                     owners: None,
@@ -802,6 +814,7 @@ mod pg_tests {
     async fn owner_backfill_skips_permanently_failed_jobs_before_its_limit()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let observed = observe_owner_backfill_progress(&pg).await;
         eprintln!("owner backfill progress: {observed:?}");
         drop(pg);
@@ -867,7 +880,7 @@ mod pg_tests {
                 batch_widths: Arc::default(),
             }));
         let user_id = owner.as_user();
-        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer));
         let mut enqueued = Vec::new();
         for _ in 0..3 {
             enqueued.push(
@@ -943,6 +956,7 @@ mod pg_tests {
     async fn reconcile_cannot_recreate_job_after_concurrent_forget()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -963,6 +977,7 @@ mod pg_tests {
                 tokio::spawn(async move {
                     reconcile_embeddings(
                         &pool,
+                        &platform,
                         EmbeddingReconcileOptions {
                             space: &STUB_SPACE,
                             owners: None,
@@ -1021,6 +1036,7 @@ mod pg_tests {
     async fn claim_renewal_prevents_reclaim_without_changing_fence()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -1052,7 +1068,7 @@ mod pg_tests {
                 "heartbeat must retain the fencing token"
             );
             assert_eq!(
-                embedding_ann_observability(pool, None, stale_claim_seconds())
+                embedding_ann_observability(pool, &platform, stale_claim_seconds())
                     .await?
                     .stale_processing_jobs,
                 0
@@ -1075,6 +1091,7 @@ mod pg_tests {
     async fn reclaimed_claim_cannot_mutate_successor_job() -> Result<(), Box<dyn std::error::Error>>
     {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -1176,6 +1193,7 @@ mod pg_tests {
     async fn source_claim_cannot_finalize_a_job_after_owner_transfer()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let source = owner_fixture();
             let permit = owner_fact_write_permit(&source).await?;
@@ -1190,12 +1208,14 @@ mod pg_tests {
             let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
             let stale = claims[0].clone();
             let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
+            let transfer_permit =
+                OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination);
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
             let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
 
             assert!(
                 pg.transfer_to_owner(
-                    &permit,
+                    &transfer_permit,
                     EntityId::Memory(written.memory_id),
                     destination,
                     &surfaces,
@@ -1265,6 +1285,7 @@ mod pg_tests {
     #[tokio::test]
     async fn reconcile_reclaims_an_abandoned_claim() -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -1288,7 +1309,7 @@ mod pg_tests {
             .execute(pool)
             .await?;
 
-            reconcile_embeddings(pool, missing_only(100), stale_claim_seconds()).await?;
+            reconcile_embeddings(pool, &platform, missing_only(100), stale_claim_seconds()).await?;
             assert_eq!(job_state(pool, entity_id).await?.0, "pending");
             Ok(())
         }
@@ -1321,6 +1342,7 @@ mod pg_tests {
         const RENAMED_KEY: &str = "note_memory_id";
 
         let (pg, db_name) = fresh_pg("proxima_spg_embed_key").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let permit = owner_fact_write_permit(&owner).await?;
@@ -1488,7 +1510,7 @@ mod pg_tests {
                 max_chars,
                 offered: offered.clone(),
             }));
-        let authz = AuthzContext::for_subject(user_id, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer));
         Ok((engine, authz, origin.memory_id, offered))
     }
 
@@ -1512,6 +1534,7 @@ mod pg_tests {
     async fn author_derived_embeds_over_limit_text_inline() -> Result<(), Box<dyn std::error::Error>>
     {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let cap = MIN_EMBED_INPUT_CAP_CHARS;
@@ -1577,6 +1600,7 @@ mod pg_tests {
     async fn author_derived_queues_the_vector_on_request() -> Result<(), Box<dyn std::error::Error>>
     {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let cap = MIN_EMBED_INPUT_CAP_CHARS;
@@ -1647,6 +1671,7 @@ mod pg_tests {
     async fn author_derived_defers_text_refused_at_every_length()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             // Accepts the probe and nothing the bisection can produce.

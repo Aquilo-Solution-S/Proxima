@@ -1,6 +1,6 @@
 //! Storage DTOs and backend-neutral errors.
 //!
-//! Port traits live in [`crate::storage_ports`]. See docs/07-storage.md and
+//! Port traits live in [`crate::storage_ports`]. See docs/concepts.md and
 //! AGENTS.md invariants 2, 3, 5.
 
 use std::any::{Any, TypeId};
@@ -59,7 +59,7 @@ pub enum StorageError {
     ScopeMissing { kind: String, id: Uuid },
     #[error("suppressed: {0}")]
     Suppressed(String),
-    /// A listenable Fact's publication capture was refused (docs/18). The
+    /// A listenable Fact's publication capture was refused (docs/host-integration.md). The
     /// whole write is rolled back; the typed cause travels rather than a
     /// message, so the engine maps it without parsing a string.
     #[error("publication refused: {0}")]
@@ -92,10 +92,14 @@ pub enum MemoryHydrationStatus {
     AlreadyHot,
     NotFound,
     MissingColdObject,
-    /// The cold record predates the database integrity witness or uses a
-    /// format this binary does not understand. Operators must migrate or
-    /// discard the record; it is not evidence of corrupt bytes.
+    /// The cold record predates the database integrity witness or carries
+    /// unsupported detail metadata. It is not evidence of corrupt bytes.
     UnsupportedColdObject,
+    /// The witnessed bytes declare an unsupported format. The version is
+    /// preserved so the host can name the refused format to its operator.
+    UnsupportedColdFormat {
+        format_version: u8,
+    },
     /// The cold record names a sidecar declaration this registry cannot
     /// safely restore (for example, an unsupported sidecar version/stamp).
     UnsupportedColdSidecar,
@@ -316,7 +320,7 @@ impl SidecarPayload {
         self.value.downcast_ref::<T>()
     }
 
-    /// Node references this payload declares (docs/16 §The Model).
+    /// Node references this payload declares (docs/concepts.md).
     /// Empty for payload kinds that cannot reference nodes.
     #[must_use]
     pub fn references(&self) -> Vec<PayloadReference> {
@@ -324,7 +328,7 @@ impl SidecarPayload {
     }
 
     /// The flavor-owned lifecycle scope this payload declares
-    /// (docs/03 §Scope declaration), or `None` when it declares none.
+    /// (docs/build-a-flavor.md), or `None` when it declares none.
     ///
     /// The admission path reads THIS: it is the only thing between a typed
     /// payload and the fence its scope's erase holds, and it answers for
@@ -431,7 +435,7 @@ fn perspective_scope<T: PerspectivePayload>(value: &dyn Any) -> Option<ScopeRef>
 }
 
 /// A Goal is its own spine and a citation is blob-side; neither is an
-/// admission the scope fence covers. `docs/03` keeps the scope declaration
+/// admission the scope fence covers. `docs/build-a-flavor.md` keeps the scope declaration
 /// on the three memory layers for that reason.
 fn no_scope(_value: &dyn Any) -> Option<ScopeRef> {
     None

@@ -76,26 +76,6 @@ crate::pg_sidecar! {
     },
 }
 
-crate::pg_sidecar! {
-    payload: proxima_core::verbs::persist_mcp_call::McpCallLoggedV1,
-    row: McpCallLoggedPayloadRow,
-    kinds: [Fact],
-    table: "proxima_core.mcp_call_logged_v1",
-    key: t,
-    owner_pinned: true,
-    fields: {
-        tool_name => tool_name: (text),
-        actor_oid => actor_oid: (text),
-        actor_upn => actor_upn: (text),
-        ok => ok: (bool),
-        error => error: (opt_text),
-        latency_ms => latency_ms: (u32_as_i64),
-        io_byte_len => io_byte_len: (u64_as_i64),
-        io_truncated => io_truncated: (bool),
-        io_content_hash => io_content_hash: (bytea32),
-    },
-}
-
 impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     fn insert_goal_sidecar<'t>(
         &'t self,
@@ -372,7 +352,6 @@ pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_fact::<proxima_core::GoalChangeV1>();
     registry.add_fact::<proxima_core::AgentNoteV1>();
     registry.add_fact::<proxima_core::UtteranceV1>();
-    registry.add_fact::<proxima_core::verbs::persist_mcp_call::McpCallLoggedV1>();
     registry.add_abstraction::<proxima_core::AgentDerivationV1>();
     registry.add_perspective::<proxima_core::AgentDerivationV1>();
     registry.add_perspective::<proxima_core::InterpretationV1>();

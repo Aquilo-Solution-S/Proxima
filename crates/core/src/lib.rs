@@ -13,12 +13,12 @@ pub mod auth;
 pub mod authz;
 pub mod canonical_json;
 pub mod capability;
-pub mod change_event;
 pub mod citations;
 pub mod cold;
 pub mod cursor;
 pub mod edge;
 pub mod engine;
+pub mod entity;
 pub mod env;
 pub mod error;
 pub mod flavor;
@@ -56,12 +56,12 @@ pub use auth::*;
 pub use authz::*;
 pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
-pub use change_event::*;
 pub use citations::*;
 pub use cold::{ColdObjectStore, UNRECORDED_BACKEND, cold_backend_matches, cold_object_key};
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;
+pub use entity::*;
 pub use env::{env_value, process_env};
 pub use error::*;
 pub use flavor::*;
@@ -110,19 +110,17 @@ pub use verbs::fact_ingest::{
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
-    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
 };
 pub use verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
     SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
 };
-pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
 
 pub use verbs::schema::{FlavorRegistryFrozen, composed_schema_names, sidecar_tables};
 
 /// Expands to `&'static str` with the calling crate's name
-/// prefixed. Per docs/08 §Schema namespacing.
+/// prefixed. Per docs/host-integration.md
 ///
 /// `proxima_schema_id!("commit")` in a crate named
 /// `proxima-code` evaluates to `"proxima-code/commit"`.
@@ -142,7 +140,7 @@ macro_rules! proxima_schema_id {
 /// that adds each schema.
 ///
 /// There is no `relations` or `edge_schemas` arm: edge kinds are a
-/// closed core vocabulary (docs/16 §The Model) and edges carry no
+/// closed core vocabulary (docs/concepts.md) and edges carry no
 /// payload. A flavor connects nodes by declaring reference fields on its
 /// payloads, or by authoring an interpretation node.
 ///
@@ -373,17 +371,17 @@ macro_rules! proxima_flavor {
 }
 
 pub use storage_ports::{
-    ChangeEventPort, CitationPort, DelegatedAuthorityError, DelegatedAuthorityService,
-    DelegatedCommand, DelegationId, DelegationIssued, DelegationRevocation,
-    EMBEDDING_RECONCILE_DEFAULT_LIMIT, EmbeddingAnnObservability, EmbeddingJobBacklog,
-    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingPurgeOutcome, EmbeddingRecallCanary,
-    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
-    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort,
-    EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort,
+    CitationPort, DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand,
+    DelegationId, DelegationIssued, DelegationRevocation, EMBEDDING_RECONCILE_DEFAULT_LIMIT,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
+    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
+    EmbeddingPurgeOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
+    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort,
     HostStateParticipantDescriptor, HostStateParticipantId, HostStateWriteOrigin,
-    HostStateWritePermit, InboundPinQuery, McpCallReadPort, MemoryAuthoringPort, MemoryInspectPort,
-    MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort,
-    OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort,
-    SourceCursorPort, StateSurfaceName, StoragePorts,
+    HostStateWritePermit, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
+    OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, SourceCursorPort,
+    StateSurfaceName, StoragePorts,
 };

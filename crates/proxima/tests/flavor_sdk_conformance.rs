@@ -68,7 +68,7 @@ fn host_and_flavor_sdk_imports_are_separate_and_compile() {
 
 // A flavor MCP-tool author implements the tool via `proxima::flavor`
 // alone — no direct `proxima_core::mcp` reach-through. This mirrors
-// `docs/tutorials/add-first-mcp-tool.md`.
+// `docs/build-a-flavor.md`.
 mod mcp_tool_authoring {
     use futures::future::BoxFuture;
     use proxima::flavor::{Tool, ToolCtx, ToolError};

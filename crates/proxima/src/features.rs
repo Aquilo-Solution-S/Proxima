@@ -1,5 +1,5 @@
 //! Runtime features: one start rule each — IF its config is present THEN it
-//! starts (docs/10 §Runtime features).
+//! starts (docs/configuration.md §Runtime features).
 //!
 //! The runtime decides every feature once per boot, in `build()` and `run()`
 //! alike, logs one INFO line per decision, owns the tasks it started and

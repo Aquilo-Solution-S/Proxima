@@ -1,4 +1,4 @@
-//! Engine-wide error envelope per docs/14 §"Error envelope".
+//! Engine-wide error envelope per docs/protocol.md
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[error("{code:?}: {message}")]
@@ -8,12 +8,12 @@ pub struct ProtocolError {
     pub request_id: Option<String>,
 }
 
-/// Subset of docs/14's `ErrorCode` exercised so far. Additional
+/// Subset of docs/protocol.md's `ErrorCode` exercised so far. Additional
 /// variants land with the verbs that raise them.
 ///
 /// Deliberately NOT `#[non_exhaustive]`. Transport adapters map every code
 /// onto their own vocabulary — the REST surface's RFC 9457 status table
-/// (docs/17 §Status mapping) is the first — and that map is required to be
+/// (docs/protocol.md) is the first — and that map is required to be
 /// exhaustive with no wildcard arm, so adding a variant here is a compile
 /// error until someone chooses its rendering. `#[non_exhaustive]` would
 /// force exactly the wildcard that silently buckets a new code as an
@@ -86,7 +86,7 @@ impl ProtocolError {
     }
 
     /// A write named a flavor-owned lifecycle scope whose registry row is
-    /// absent for this owner (docs/03 §Scope declaration). `NotFound`
+    /// absent for this owner (docs/build-a-flavor.md). `NotFound`
     /// rather than a code of its own: the caller named a row that is not
     /// there, which is what `NotFound` means, and `ErrorCode` is
     /// deliberately exhaustive at every transport, so a new variant would

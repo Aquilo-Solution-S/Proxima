@@ -1,8 +1,7 @@
 /-
 Causa — Goals
 
-Goal is its own timeseries (UML §3). Not Memory. Wake is an optional config
-id, not columns on the row and not an inline `WakeConfig` value.
+Goal is its own timeseries (UML §3). Not Memory.
 
   series  = handle
   version = t
@@ -48,45 +47,6 @@ def goalTransitionAdmitted : GoalState → GoalState → Prop
   | _, _ => False
 
 -- ============================================================
--- Wake configuration — own reusable table (UML §3b)
--- ============================================================
-
-structure Action where
-  name      : Text
-  signature : SchemaRef
-
-inductive WakeTriggerKind where
-  | fact_schema
-  | fact_memory
-  deriving DecidableEq, Repr
-
-/-- The one mutable table. Not a graph node. N goals may share one row. -/
-structure WakeConfig where
-  wake_id         : WakeId
-  owner           : Owner
-  trigger_kind    : WakeTriggerKind
-  trigger_schema  : Option SchemaRef
-  trigger_t       : Option MemoryId
-  toolset         : Set Action
-  prompt          : Text
-  hard_memories   : List MemoryId
-  /-- fact_schema xor fact_memory (UML §3b). -/
-  trigger_xor :
-    (trigger_kind = .fact_schema ∧ trigger_schema.isSome = true ∧ trigger_t = none) ∨
-    (trigger_kind = .fact_memory ∧ trigger_t.isSome = true ∧ trigger_schema = none)
-
-def wake_id : WakeConfig → WakeId := WakeConfig.wake_id
-def wake_owner : WakeConfig → Owner := WakeConfig.owner
-def wake_toolset : WakeConfig → Set Action := WakeConfig.toolset
-
-def WakeConfigIdUnique (configs : Set WakeConfig) : Prop :=
-  ∀ c1 c2 : WakeConfig,
-    c1 ∈ configs →
-    c2 ∈ configs →
-    wake_id c1 = wake_id c2 →
-    c1 = c2
-
--- ============================================================
 -- The Goal entity
 -- ============================================================
 
@@ -112,7 +72,6 @@ structure Goal where
   assignment_t  : Option MemoryId
   dependency_t  : List GoalId
   evidence_t    : List MemoryId
-  wake_id       : Option WakeId
   write_act_t   : Option MemoryId
   tick          : Instant
   terminal_close_fact :
@@ -138,7 +97,6 @@ def goal_close_fact_t : Goal → Option MemoryId := Goal.close_fact_t
 def goal_assignment : Goal → Option MemoryId := Goal.assignment_t
 def goal_dependencies : Goal → List GoalId := Goal.dependency_t
 def goal_evidence : Goal → List MemoryId := Goal.evidence_t
-def goal_wake_id : Goal → Option WakeId := Goal.wake_id
 def goal_write_act_t : Goal → Option MemoryId := Goal.write_act_t
 def goal_tick : Goal → Instant := Goal.tick
 
@@ -159,8 +117,6 @@ theorem erased_target_not_goal
 def goalDeclaredTargetIds (g : Goal) : List Id :=
   (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
     (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList
-
-def goalArmed (g : Goal) : Prop := (goal_wake_id g).isSome = true
 
 def GoalIdUnique (goals : Set Goal) : Prop :=
   ∀ g1 g2 : Goal,

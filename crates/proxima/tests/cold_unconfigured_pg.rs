@@ -30,7 +30,6 @@ struct ForgetObservation {
 #[derive(Debug, PartialEq, Eq)]
 struct LifecycleState {
     head: Option<HeadState>,
-    announcements: Vec<AnnounceState>,
 }
 
 #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
@@ -39,16 +38,6 @@ struct HeadState {
     kind: String,
     schema_id: String,
     owner_id: Uuid,
-    t: Uuid,
-}
-
-#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
-struct AnnounceState {
-    seq: Uuid,
-    owner_id: Uuid,
-    op: String,
-    entity: String,
-    handle: Uuid,
     t: Uuid,
 }
 
@@ -77,11 +66,11 @@ async fn forget_without_s3_preserves_content_across_restart() -> TestResult<()> 
         assert_eq!(observed.rows_after_restart, (1, 0, 1));
         assert_eq!(
             observed.lifecycle_after_forget, observed.lifecycle_before_forget,
-            "refusal must not mutate the head or announce a lifecycle transition"
+            "refusal must not mutate the head"
         );
         assert_eq!(
             observed.lifecycle_after_restart, observed.lifecycle_before_forget,
-            "the unchanged head and announcements must survive restart"
+            "the unchanged head must survive restart"
         );
     }
     assert_eq!(
@@ -122,9 +111,8 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let lifecycle_before_forget = lifecycle(&admin_pool, written.handle).await?;
     if lifecycle_before_forget.head.as_ref().map(|head| head.t)
         != Some(written.memory_id.into_inner())
-        || lifecycle_before_forget.announcements.is_empty()
     {
-        return Err("fixture must have a persisted admission head and announcement".into());
+        return Err("fixture must have a persisted admission head".into());
     }
     let forget = initial
         .host()
@@ -324,17 +312,7 @@ async fn lifecycle(pool: &sqlx::PgPool, handle: Uuid) -> TestResult<LifecycleSta
     .bind(handle)
     .fetch_optional(pool)
     .await?;
-    let announcements = sqlx::query_as(
-        "SELECT seq, owner_id, op::text, entity::text, handle, t
-           FROM proxima_core.announce WHERE handle = $1 ORDER BY seq",
-    )
-    .bind(handle)
-    .fetch_all(pool)
-    .await?;
-    Ok(LifecycleState {
-        head,
-        announcements,
-    })
+    Ok(LifecycleState { head })
 }
 
 /// Register `group` as a Group, the way a host creates one before writing

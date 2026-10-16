@@ -273,7 +273,7 @@ async fn refuse_when_full(
 /// poison record costs one slot per pass instead of the whole queue. Within
 /// one attempt count the order is still `t`, so the ordinary case — every
 /// record on attempt 1 — is oldest first. That demotion is also why
-/// delivery order is not commit order (docs/18 §Ordering).
+/// delivery order is not commit order (docs/host-integration.md).
 ///
 /// `publication_delivery_pending_idx` (`consumer, attempts, t` over the
 /// undelivered lanes) serves both the predicate and the sort. `FOR UPDATE OF

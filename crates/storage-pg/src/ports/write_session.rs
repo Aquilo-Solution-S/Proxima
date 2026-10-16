@@ -40,7 +40,7 @@ struct SeriesEraseState {
     context: crate::PgHostStateEraseContext,
     owner: proxima_core::OwnerId,
     pool: sqlx::PgPool,
-    platform: Option<crate::PgPlatformScope>,
+    platform: crate::PgPlatformScope,
     ran: bool,
     cold_purge: verbs::forget::ColdPurgePlan,
 }
@@ -57,8 +57,11 @@ impl WriteSessionFactory for PgStorage {
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError> {
-        let tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         self.session_from_transaction(tx).await
     }
 
@@ -510,7 +513,7 @@ impl WriteSession for PgWriteSession {
         if let Some(state) = session.series_erase {
             let outcome = verbs::forget::purge_cold_objects_after_commit_with_platform(
                 &state.pool,
-                state.platform.as_ref(),
+                &state.platform,
                 session.cold.as_ref(),
                 &state.cold_purge,
             )

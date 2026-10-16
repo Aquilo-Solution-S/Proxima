@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dump the schema that replaying the embedded migrations from an empty
 # database produces — one file per source, so the composition boundary
-# stays visible (docs/how-to/migrations.md):
+# stays visible (docs/contributing.md#migrations):
 #
 #   schema.core.sql  what core alone provides (proxima_core, extensions)
 #   schema.code.sql  what the code flavor adds (proxima_code only; its

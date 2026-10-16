@@ -7,10 +7,7 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::goal::{
-    GoalPayloadArgs, GoalWakeArgs, encode_goal_payload, encode_wake_config,
-    system_operator_authorship,
-};
+use super::goal::{GoalPayloadArgs, encode_goal_payload, system_operator_authorship};
 use super::memory::derive::{
     self, DerivedKind, MAX_SOURCE_HANDLES, core_derive_input_contract_id, core_derive_operator_id,
     map_derive_authoring_error,
@@ -128,8 +125,6 @@ pub struct EpisodeGoalItem {
         description = "Perspective the goal is assigned to: `P:<uuid>` or this call's `stance:N`. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
-    #[serde(default)]
-    pub wake: Option<GoalWakeArgs>,
     #[serde(default)]
     #[schemars(description = "Optional replay key, 1 to 180 chars, unique within this call.")]
     pub idempotency_key: Option<String>,
@@ -554,11 +549,6 @@ impl EpisodeWrite<'_> {
             let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence)?;
             let assignment =
                 resolve_goal_assignment(ctx, &self.slots, item.target_perspective.as_deref())?;
-            let wake = item
-                .wake
-                .clone()
-                .map(|wake| encode_wake_config(ctx, wake))
-                .transpose()?;
             let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
                 .map_err(McpToolError::Protocol)?;
             let request_id =
@@ -571,7 +561,6 @@ impl EpisodeWrite<'_> {
                     GoalCreatePayloadWriteRequest {
                         owner,
                         topology,
-                        wake,
                         payload,
                         request_id,
                         authorship: system_operator_authorship(ctx, "episode_commit"),

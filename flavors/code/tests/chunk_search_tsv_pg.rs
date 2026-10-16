@@ -49,7 +49,7 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         common::apply_current_migrations(&pg).await?;
 
         let sql_language: String =
@@ -111,7 +111,7 @@ async fn the_generator_reproduces_the_reference_vector_expression() {
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         common::apply_current_migrations(&pg).await?;
 
         // The contract is the authority on WHICH columns are projected, in
@@ -211,7 +211,7 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         common::apply_current_migrations(&pg).await?;
 
         // There is no GENERATED search vector left anywhere: every stored

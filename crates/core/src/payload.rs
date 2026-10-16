@@ -1,4 +1,4 @@
-//! Payload traits per docs/03 — typing layer required for
+//! Payload traits per docs/build-a-flavor.md — typing layer required for
 //! every Memory kind.
 //!
 //! `SCHEMA_ID` is `&'static str` (not `SchemaId`) so it can be a
@@ -35,7 +35,7 @@ impl ReferenceBinding {
 /// A payload that declares these is saying: *this field points at
 /// another node, and I am the home of that statement*. Ingest turns each
 /// one into a `Reference` index entry in the node write's own
-/// transaction (docs/16 §The Model). The index answers "is there a
+/// transaction (docs/concepts.md). The index answers "is there a
 /// connection"; the payload answers "what is it" — ten call sites from
 /// chunk A to chunk B are one index row and ten payload entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -508,7 +508,7 @@ pub trait FactPayload:
     const SCHEMA_VERSION: u32;
     /// Declared metadata: whether every admitted Fact of this schema
     /// captures a publication record in its own write transaction
-    /// (docs/18 §Listen declaration).
+    /// (docs/host-integration.md).
     ///
     /// The guarantee this turns on, and its whole extent:
     ///
@@ -541,7 +541,7 @@ pub trait FactPayload:
     #[must_use]
     fn receipt_key(&self) -> Vec<u8>;
     fn render(&self) -> String;
-    /// Node references this payload's fields carry (docs/16
+    /// Node references this payload's fields carry (docs/concepts.md
     /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
@@ -551,7 +551,7 @@ pub trait FactPayload:
         Vec::new()
     }
     /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// (docs/build-a-flavor.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
@@ -596,7 +596,7 @@ pub trait FactPayload:
     /// Natural-key columns on the sidecar table for stateful Fact
     /// schemas. Default empty = stateless (every observation is a
     /// distinct head). When non-empty, the schema participates in
-    /// head-by-natural-key queries (docs/03 §Stateful Fact schemas).
+    /// head-by-natural-key queries (docs/build-a-flavor.md).
     #[must_use]
     fn natural_key_columns() -> &'static [&'static str] {
         &[]
@@ -624,7 +624,7 @@ pub trait AbstractionPayload:
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     fn sidecar_table() -> &'static str;
-    /// Node references this payload's fields carry (docs/16
+    /// Node references this payload's fields carry (docs/concepts.md
     /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
@@ -634,7 +634,7 @@ pub trait AbstractionPayload:
         Vec::new()
     }
     /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// (docs/build-a-flavor.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
@@ -685,7 +685,7 @@ pub trait PerspectivePayload:
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     fn sidecar_table() -> &'static str;
-    /// Node references this payload's fields carry (docs/16
+    /// Node references this payload's fields carry (docs/concepts.md
     /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
@@ -695,7 +695,7 @@ pub trait PerspectivePayload:
         Vec::new()
     }
     /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/03 §Scope declaration). `None` — the default — means the rows
+    /// (docs/build-a-flavor.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
@@ -743,7 +743,7 @@ pub trait PerspectivePayload:
 /// Typed payload for a Goal row in `proxima_core.goal`.
 /// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
 ///
-/// See docs/06 §Goal entity and docs/03 §Sidecar tables.
+/// See docs/concepts.md
 pub trait GoalPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
@@ -753,7 +753,7 @@ pub trait GoalPayload:
     /// checks. Title/text and authorship are compared separately.
     #[must_use]
     fn goal_key(&self) -> Vec<u8>;
-    /// Node references this payload's fields carry (docs/16
+    /// Node references this payload's fields carry (docs/concepts.md
     /// §The Model). Ingest derives one `Reference` index entry per
     /// declaration, in the node write's own transaction, so the edge set
     /// stays a function of node content and re-deriving it from payloads
@@ -783,7 +783,7 @@ pub trait GoalPayload:
 /// do not participate in F/A/P queries; the artifact body is the
 /// blob bytes, while `blob` stores ownership and a content-addressed
 /// hash. Citation schemas, typed or opaque, have no sidecar table. See
-/// docs/11 §"Trait families".
+/// docs/data-and-erasure.md
 pub trait CitedObjectPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {

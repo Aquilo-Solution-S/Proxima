@@ -17,6 +17,7 @@ use proxima_core::flavor::{
     ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
     TransferRule,
 };
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, OwnerId, PayloadKeyBuilder,
     ScopeDecl, ScopeKind, UserId,
@@ -235,8 +236,7 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
     }
     let registry = registry();
     let result = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         sqlx::raw_sql(
             "CREATE SCHEMA test_scope;
              CREATE TABLE test_scope.things (
@@ -267,6 +267,12 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
         )
         .execute(pg.pool_for_tests())
         .await?;
+        sqlx::raw_sql("GRANT USAGE ON SCHEMA test_scope TO PUBLIC;")
+            .execute(pg.pool_for_tests())
+            .await?;
+        sqlx::raw_sql("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA test_scope TO PUBLIC;")
+            .execute(pg.pool_for_tests())
+            .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
             .with_flavors(&registry);
@@ -330,18 +336,25 @@ fn spawn_scoped_ingest(
     payload: ScopedFactV1,
 ) -> tokio::task::JoinHandle<Result<Uuid, String>> {
     tokio::spawn(async move {
-        let pg = PgStorage::connect(&db_url(&db_name))
-            .await
-            .map_err(|err| err.to_string())?
-            .with_sidecars(sidecars(&registry))
-            .with_flavors(&registry);
-        let engine = engine(&pg, &registry);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        engine
-            .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
-            .await
-            .map(|outcome| outcome.memory_id.into_inner())
-            .map_err(|err| err.to_string())
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let pg = PgStorage::connect_for_tests(db_url(&db_name))
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .with_sidecars(sidecars(&registry))
+                    .with_flavors(&registry);
+                let engine = engine(&pg, &registry);
+                let authz =
+                    authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
+                engine
+                    .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
+                    .await
+                    .map(|outcome| outcome.memory_id.into_inner())
+                    .map_err(|err| err.to_string())
+            })
+        })
+        .await
+        .map_err(|err| err.to_string())?
     })
 }
 
@@ -423,21 +436,30 @@ async fn an_unscoped_payload_takes_no_scope_fence() {
         let unscoped_db = db_name.clone();
         let unscoped_registry = registry.clone();
         let write = tokio::spawn(async move {
-            let pg = PgStorage::connect(&db_url(&unscoped_db))
-                .await
-                .map_err(|err| err.to_string())?
-                .with_sidecars(sidecars(&unscoped_registry))
-                .with_flavors(&unscoped_registry);
-            let engine = engine(&pg, &unscoped_registry);
-            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-            let payload = UnscopedFactV1 {
-                logical_id: "unfenced".to_owned(),
-            };
-            engine
-                .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
-                .await
-                .map(|outcome| outcome.memory_id.into_inner())
-                .map_err(|err| err.to_string())
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let pg = PgStorage::connect_for_tests(db_url(&unscoped_db))
+                        .await
+                        .map_err(|err| err.to_string())?
+                        .with_sidecars(sidecars(&unscoped_registry))
+                        .with_flavors(&unscoped_registry);
+                    let engine = engine(&pg, &unscoped_registry);
+                    let authz = authenticated_context(AuthzContext::single_owner(
+                        &owner,
+                        AuthPath::HostBearer,
+                    ));
+                    let payload = UnscopedFactV1 {
+                        logical_id: "unfenced".to_owned(),
+                    };
+                    engine
+                        .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
+                        .await
+                        .map(|outcome| outcome.memory_id.into_inner())
+                        .map_err(|err| err.to_string())
+                })
+            })
+            .await
+            .map_err(|err| err.to_string())?
         });
         // A bound on the test, not a synchronization step: this write
         // either does not wait, in which case it finishes at once, or it
@@ -471,7 +493,7 @@ async fn an_admission_naming_an_unregistered_scope_is_refused() {
         let thing_id = Uuid::now_v7();
         // Deliberately NOT registered.
         let engine = engine(&pg, &registry);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         let payload = ScopedFactV1 {
             logical_id: "orphan".to_owned(),
             thing_id,

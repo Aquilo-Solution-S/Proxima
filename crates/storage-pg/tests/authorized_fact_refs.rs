@@ -196,8 +196,7 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
     }
     let registry = registry();
     let result = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         sqlx::raw_sql(
             "CREATE SCHEMA test_refs;
              CREATE TABLE test_refs.referenced_fact_v1 (
@@ -212,7 +211,10 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
              CREATE TRIGGER referenced_fact_v1_declared_by_memory
              BEFORE INSERT ON test_refs.referenced_fact_v1
              FOR EACH ROW
-             EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');",
+             EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');
+             GRANT USAGE ON SCHEMA test_refs TO proxima_test_runtime, proxima_test_platform;
+             GRANT SELECT, INSERT, UPDATE, DELETE ON test_refs.referenced_fact_v1
+               TO proxima_test_runtime, proxima_test_platform;",
         )
         .execute(pg.pool_for_tests())
         .await?;
@@ -367,7 +369,6 @@ async fn create_goal(
                     sidecar_payload: None,
                     state: GoalState::Active,
                     topology,
-                    wake: None,
                     supersedes_goal_id: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new(format!(
@@ -397,7 +398,10 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let fact_id = seed_fact(&pg, owner).await?;
         let perspective = seed_perspective(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, perspective).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
         let uow_payload = payload("uow-one", fact_id.into_inner(), goal.into_inner());
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -544,7 +548,10 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         let fact_id = seed_fact(&pg, owner).await?;
         let perspective = seed_perspective(&pg, owner).await?;
         let goal_id = create_goal(&pg, &registry, owner, perspective).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
 
         let inline_payload = payload(
@@ -634,7 +641,9 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
             foreign_fact.into_inner(),
             foreign_goal.into_inner(),
         );
-        let foreign_authz = AuthzContext::single_owner(&foreign_owner, AuthPath::HostBearer);
+        let foreign_authz = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&foreign_owner, AuthPath::HostBearer),
+        );
         let authorized = engine
             .authorize_fact_with_citation(
                 &foreign_authz,
@@ -652,7 +661,10 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
         let fact_id = seed_fact(&pg, owner).await?;
         let goal_id =
             create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let mut refusals = Vec::new();
         for (label, cited_object_id) in [("missing", Uuid::now_v7()), ("foreign", foreign_blob)] {
             let payload = payload(
@@ -709,7 +721,10 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
         let payload = payload("raw-disagreement", fact_a.into_inner(), goal.into_inner());
         let error = engine
@@ -737,7 +752,10 @@ async fn storage_uses_sidecars_bound_during_authorization() {
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let admitted = payload("bound-sidecar", first.into_inner(), goal.into_inner());
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
         let authorized = engine
             .authorize_fact_ingest(&authz, custom_draft(&admitted), &admitted_sidecars)
@@ -778,7 +796,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let abstraction = seed_abstraction(&pg, owner, fact).await?;
         let foreign_fact = seed_fact(&pg, foreign_owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         let engine = engine(&pg, &registry);
 
         let wrong_kind = payload("wrong-kind", fact.into_inner(), goal.into_inner());
@@ -860,7 +878,10 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
         let owner = owner();
         let target = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
 
         let mut non_fact = direct_draft("non-fact-source", Vec::new());
@@ -896,7 +917,10 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
         let owner = owner();
         let anchor = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
         let mut uow = engine.unit_of_work(&authz).await?;
         let derived = uow
@@ -1292,7 +1316,10 @@ async fn storage_persists_authorized_links_not_draft_refs() {
 
         // The engine keeps the storage conflict's caller-fixable class when
         // routing the same replay through the public FactIngest verb.
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let engine = engine(&pg, &registry);
         engine
             .fact_ingest(

@@ -6,14 +6,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-
 use crate::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalReplayOutcome,
     GoalReplayRequest, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
 use crate::*;
 
@@ -83,17 +80,6 @@ impl FactIngestPort for MembershipStorage {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
         ))
-    }
-}
-
-#[async_trait::async_trait]
-impl McpCallReadPort for MembershipStorage {
-    async fn read_mcp_call_history(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _req: &McpCallHistoryRequest,
-    ) -> Result<McpCallHistoryResponse, StorageError> {
-        Ok(McpCallHistoryResponse { calls: Vec::new() })
     }
 }
 
@@ -168,7 +154,6 @@ impl MemoryReadPort for MembershipStorage {
             goals: Vec::new(),
             edges: Vec::new(),
             next_cursor: None,
-            seq_high_water: None,
         })
     }
 
@@ -500,7 +485,6 @@ impl GoalWritePort for MembershipStorage {
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
         let replay = |ordinal: u128| GoalWriteOutcome {
             goal_id: GoalId::new(uuid::Uuid::from_u128(ordinal)),
-            change_event_seq: uuid::Uuid::from_u128(ordinal),
             edge_count: 3,
             idempotent_replay: true,
         };
@@ -620,15 +604,6 @@ impl GoalReadPort for MembershipStorage {
         Ok(Vec::new())
     }
 
-    async fn load_goal_wake_configs(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _goal_ids: &[crate::GoalId],
-    ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
     async fn load_goal_evidence(
         &self,
         _scope: Option<&crate::OwnerScope>,
@@ -636,42 +611,6 @@ impl GoalReadPort for MembershipStorage {
         _goal_id: crate::GoalId,
     ) -> Result<Option<Vec<MemoryId>>, StorageError> {
         Ok(self.goal_evidence.clone())
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::storage_ports::GoalWakeCandidatePort for MembershipStorage {
-    async fn list_goal_wake_candidates(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _req: &GoalWakeCandidateRequest<'_>,
-    ) -> Result<Vec<GoalWakeCandidate>, StorageError> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl ChangeEventPort for MembershipStorage {
-    async fn change_history(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _req: &ChangeHistoryRequest,
-    ) -> Result<ChangeHistoryResponse, StorageError> {
-        Ok(ChangeHistoryResponse {
-            events: Vec::new(),
-            seq_high_water: None,
-        })
-    }
-
-    async fn list_change_events_after(
-        &self,
-        _scope: Option<&crate::OwnerScope>,
-        _read_owners: &[OwnerId],
-        _after: uuid::Uuid,
-        _limit: usize,
-    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-        Ok(Vec::new())
     }
 }
 
@@ -938,7 +877,6 @@ impl MembershipStorage {
         let storage = Arc::new(self);
         StoragePorts::builder()
             .fact_ingest(storage.clone())
-            .mcp_call_read(storage.clone())
             .memory_authoring(storage.clone())
             .memory_read(storage.clone())
             .memory_inspect(storage.clone())
@@ -948,8 +886,6 @@ impl MembershipStorage {
             .embedding_maintenance(storage.clone())
             .goal_write(storage.clone())
             .goal_read(storage.clone())
-            .goal_wake_candidate(storage.clone())
-            .change_event(storage.clone())
             .citation(storage.clone())
             .owner_access_read(storage.clone())
             .owner_membership_admin(storage.clone())

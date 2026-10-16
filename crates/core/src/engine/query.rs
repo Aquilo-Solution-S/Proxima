@@ -4,12 +4,6 @@ use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::read_models::MemorySchemaSpec;
 use crate::storage_ports::QueryStoragePorts;
-use crate::verbs::change_history::{
-    ChangeHistoryRequest, ChangeHistoryResponse, MAX_CHANGE_HISTORY_LIMIT,
-};
-use crate::verbs::mcp_call_history::{
-    MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse,
-};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, MemoryLineageRequest,
     MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse, SidecarAtom,
@@ -18,14 +12,14 @@ use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 use crate::{OwnerId, OwnerScope, SchemaId};
 
 impl Engine {
-    /// docs/14 §"Schema" — binary-scoped, unauthenticated by
+    /// docs/protocol.md
     /// default. Owner is not consulted.
     #[must_use]
     pub fn schema(&self, req: &SchemaRequest) -> SchemaResponse {
         self.registry.handle(req)
     }
 
-    /// docs/14 §"Query" — scoped to the authorization context's read access
+    /// docs/protocol.md
     /// set (`S_read`). Caller passes the transport-extracted authorization
     /// context; the engine resolves the readable owners from it and filters
     /// results to `row owner ∈ S_read`.
@@ -35,7 +29,7 @@ impl Engine {
     /// Heads-only requests need no per-schema natural-key filter: a head
     /// is the latest `t` on a `handle`, and `FactPayload`
     /// natural-key columns already decide which `handle` an ingest lands
-    /// on (docs/03 §Stateful Fact schemas).
+    /// on (docs/build-a-flavor.md).
     ///
     /// # Errors
     ///
@@ -136,47 +130,6 @@ impl Engine {
             .await
     }
 
-    /// docs/14 §"`ChangeHistory`" — bounded change-event read scoped to the
-    /// authorization context's read access set (`S_read`), matching `Query` and
-    /// `read_edges`. A client-supplied [`ChangeHistoryRequest::owner`] is not
-    /// an access vector and cannot widen what the caller sees. Server clamps
-    /// `limit` to `MAX_CHANGE_HISTORY_LIMIT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the authorization context resolves to an empty
-    /// read set, `InvalidArgument` when `req.limit == 0`, or `Internal` when the
-    /// storage read fails.
-    pub async fn change_history(
-        &self,
-        authz: &AuthzContext,
-        req: &ChangeHistoryRequest,
-    ) -> Result<ChangeHistoryResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
-        change_history_authorized(&self.storage.query, authz.owner_scope(), &read_owners, req).await
-    }
-
-    /// docs/14-protocol-surface.md — bounded MCP-call activity read for ONE
-    /// owner the caller selects via `req.owner` and the context can access
-    /// (gated by `authorize_owner_read`; single-owner, not `S_read`-spanning
-    /// like `Query`). Server clamps `limit` to `MAX_MCP_CALL_HISTORY_LIMIT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot read Facts on `req.owner`,
-    /// `InvalidArgument` when `req.limit == 0`, or
-    /// `Internal` when the storage read fails.
-    pub async fn read_mcp_call_history(
-        &self,
-        authz: &AuthzContext,
-        req: &McpCallHistoryRequest,
-    ) -> Result<McpCallHistoryResponse, ProtocolError> {
-        let owner = self
-            .authorize_owner_read(authz, &req.owner, AccessKind::Fact)
-            .await?;
-        read_mcp_call_history_authorized(&self.storage.query, authz.owner_scope(), owner, req).await
-    }
-
     /// Current owned series handle whose sidecar matches `columns`.
     ///
     /// Owner-only. A transferred series is a miss for the prior
@@ -228,6 +181,7 @@ pub(in crate::engine) async fn query_authorized(
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     validate_query_cursor(req)?;
+    validate_goal_selectors(req)?;
     ports
         .memory_read
         .query_memories(owner_scope, read_owners, req, schemas)
@@ -256,6 +210,24 @@ fn validate_query_cursor(req: &QueryRequest) -> Result<(), ProtocolError> {
             "cursor kind does not match entity_kind",
         )),
     }
+}
+
+/// A Goal selector filters one stream. Anywhere else the store would ignore
+/// it and return a page wider than the caller asked for.
+fn validate_goal_selectors(req: &QueryRequest) -> Result<(), ProtocolError> {
+    if !req.goal_handles.is_empty() && req.entity_kind != Some(crate::EntityKind::Goal) {
+        return Err(ProtocolError::invalid_argument(
+            "goal_handles",
+            "requires entity_kind Goal",
+        ));
+    }
+    if !req.referenced_goal_handles.is_empty() && req.entity_kind != Some(crate::EntityKind::Fact) {
+        return Err(ProtocolError::invalid_argument(
+            "referenced_goal_handles",
+            "requires entity_kind Fact",
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::engine) async fn read_edges_authorized(
@@ -292,43 +264,62 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }
 
-pub(in crate::engine) async fn change_history_authorized(
-    ports: &QueryStoragePorts,
-    owner_scope: Option<&OwnerScope>,
-    read_owners: &[OwnerId],
-    req: &ChangeHistoryRequest,
-) -> Result<ChangeHistoryResponse, ProtocolError> {
-    if req.limit == 0 {
-        return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
-    }
-    let mut effective = req.clone();
-    if effective.limit > MAX_CHANGE_HISTORY_LIMIT {
-        effective.limit = MAX_CHANGE_HISTORY_LIMIT;
-    }
-    ports
-        .change_event
-        .change_history(owner_scope, read_owners, &effective)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
-}
+#[cfg(test)]
+mod tests {
+    use super::validate_goal_selectors;
+    use crate::verbs::query::QueryRequest;
+    use crate::{EntityKind, ErrorCode};
 
-pub(in crate::engine) async fn read_mcp_call_history_authorized(
-    ports: &QueryStoragePorts,
-    owner_scope: Option<&OwnerScope>,
-    owner: OwnerId,
-    req: &McpCallHistoryRequest,
-) -> Result<McpCallHistoryResponse, ProtocolError> {
-    if req.limit == 0 {
-        return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
+    fn request(entity_kind: Option<EntityKind>) -> QueryRequest {
+        let mut req = QueryRequest::readable();
+        req.entity_kind = entity_kind;
+        req
     }
-    let mut effective = req.clone();
-    effective.owner = owner;
-    if effective.limit > MAX_MCP_CALL_HISTORY_LIMIT {
-        effective.limit = MAX_MCP_CALL_HISTORY_LIMIT;
+
+    #[test]
+    fn goal_handles_select_only_the_goal_stream() {
+        for kind in [
+            None,
+            Some(EntityKind::Fact),
+            Some(EntityKind::Abstraction),
+            Some(EntityKind::Perspective),
+        ] {
+            let mut req = request(kind);
+            req.goal_handles = vec![uuid::Uuid::now_v7()];
+            let err = validate_goal_selectors(&req).expect_err("refused outside Goal");
+            assert_eq!(err.code, ErrorCode::InvalidArgument, "{kind:?}");
+            assert!(err.message.contains("goal_handles"), "{}", err.message);
+        }
+        let mut req = request(Some(EntityKind::Goal));
+        req.goal_handles = vec![uuid::Uuid::now_v7()];
+        validate_goal_selectors(&req).expect("accepted on the Goal stream");
     }
-    ports
-        .mcp_call_read
-        .read_mcp_call_history(owner_scope, &effective)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
+
+    #[test]
+    fn referenced_goal_handles_select_only_the_fact_stream() {
+        for kind in [
+            None,
+            Some(EntityKind::Goal),
+            Some(EntityKind::Abstraction),
+            Some(EntityKind::Perspective),
+        ] {
+            let mut req = request(kind);
+            req.referenced_goal_handles = vec![uuid::Uuid::now_v7()];
+            let err = validate_goal_selectors(&req).expect_err("refused outside Fact");
+            assert_eq!(err.code, ErrorCode::InvalidArgument, "{kind:?}");
+            assert!(
+                err.message.contains("referenced_goal_handles"),
+                "{}",
+                err.message
+            );
+        }
+        let mut req = request(Some(EntityKind::Fact));
+        req.referenced_goal_handles = vec![uuid::Uuid::now_v7()];
+        validate_goal_selectors(&req).expect("accepted on the Fact stream");
+    }
+
+    #[test]
+    fn requests_without_goal_selectors_pass() {
+        validate_goal_selectors(&request(None)).expect("no selector, no constraint");
+    }
 }

@@ -11,7 +11,8 @@ use proxima_core::{
     Credentials, Engine, FlavorRegistry, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
 use proxima_storage_pg::{
-    PgPlatformScope, PgStorage, begin_owner_transaction, group_role, roles_for_subject,
+    PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, begin_owner_transaction, group_role,
+    roles_for_subject,
 };
 use uuid::Uuid;
 
@@ -136,9 +137,17 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     seed(&admin, group, manager, &[Relation::Admin]).await;
     seed(&admin, group, member, &[Relation::Admin, Relation::Ingest]).await;
 
-    let pg = PgStorage::connect(&role_url(&database, &runtime_role, &password))
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
         .await
-        .expect("runtime storage");
+        .expect("platform scope");
+    let pg = PgStorage::connect_with_config(
+        &role_url(&database, &runtime_role, &password),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        scope,
+    )
+    .await
+    .expect("runtime storage");
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     let verifier = super::SyntheticVerifier {
@@ -186,6 +195,43 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     assert_eq!(
         relations(&admin, group, member).await,
         vec![Relation::Viewer]
+    );
+
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}
+
+/// Serving storage checks its runtime role over every schema the platform
+/// authority was validated over, not only `proxima_core`: a runtime role that
+/// may CREATE in a flavor schema is refused by the constructor itself.
+#[tokio::test]
+async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, password) =
+        super::setup_full_schema().await;
+    super::execute(
+        &admin,
+        &format!(
+            "GRANT CREATE ON SCHEMA proxima_code TO {}",
+            super::quoted_identifier(&runtime_role)
+        ),
+    )
+    .await;
+
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
+        .await
+        .expect("platform scope");
+    let refused = PgStorage::connect_with_config(
+        &role_url(&database, &runtime_role, &password),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        scope,
+    )
+    .await
+    .expect_err("a runtime role unsafe on a composed schema is refused");
+    assert!(
+        refused.to_string().contains("CREATE in proxima_code"),
+        "{refused}"
     );
 
     runtime.close().await;

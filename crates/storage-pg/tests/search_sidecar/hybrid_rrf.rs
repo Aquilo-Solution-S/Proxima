@@ -49,7 +49,11 @@ async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult
     let projection = note_projection();
     let mut req = hybrid_request(owner, "quartz nebula");
     let hybrid = pg
-        .search_memories(None, &req, std::slice::from_ref(&projection))
+        .search_memories(
+            Some(&owner_scope_for_tests(&[owner])),
+            &req,
+            std::slice::from_ref(&projection),
+        )
         .await?;
     let hits = hits_by_id(&hybrid);
     assert_eq!(hits.len(), 4);
@@ -70,7 +74,11 @@ async fn hybrid_uses_rescue_and_ranks_real_single_leg_membership() -> TestResult
     for mode in [SearchMode::Lexical, SearchMode::Semantic] {
         req.mode = mode;
         let pure = pg
-            .search_memories(None, &req, std::slice::from_ref(&projection))
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                std::slice::from_ref(&projection),
+            )
             .await?;
         for hit in pure.results {
             let fused = hits[&hit.memory_id.into_inner()];
@@ -121,7 +129,13 @@ async fn hybrid_min_score_keeps_either_raw_leg_and_drops_both_below_floor() -> T
     .await?;
     let mut req = hybrid_request(owner, "quartz nebula");
     req.min_score = Some(0.5);
-    let page = pg.search_memories(None, &req, &[note_projection()]).await?;
+    let page = pg
+        .search_memories(
+            Some(&owner_scope_for_tests(&[owner])),
+            &req,
+            &[note_projection()],
+        )
+        .await?;
     let hits = hits_by_id(&page);
     assert_eq!(hits.len(), 3);
     assert!(!hits.contains_key(&both_low));
@@ -206,7 +220,11 @@ async fn hybrid_cursor_pages_end_at_fixed_window_in_both_orders() -> TestResult 
         let mut seen = BTreeSet::new();
         loop {
             let page = pg
-                .search_memories(None, &req, std::slice::from_ref(&projection))
+                .search_memories(
+                    Some(&owner_scope_for_tests(&[owner])),
+                    &req,
+                    std::slice::from_ref(&projection),
+                )
                 .await?;
             assert!(!page.results.is_empty());
             for hit in &page.results {
@@ -240,7 +258,11 @@ async fn hybrid_cursor_pages_end_at_fixed_window_in_both_orders() -> TestResult 
             "the fixed window is complete and excludes its 1,001st hit"
         );
         let exhausted = pg
-            .search_memories(None, &req, std::slice::from_ref(&projection))
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                std::slice::from_ref(&projection),
+            )
             .await?;
         assert!(exhausted.results.is_empty());
         assert!(!exhausted.has_more);

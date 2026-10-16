@@ -85,10 +85,6 @@ name = "host_template_pg"
 required-features = ["testkit"]
 
 [[test]]
-name = "mcp_call_log_pg"
-required-features = ["testkit"]
-
-[[test]]
 name = "pending_migrations_pg"
 required-features = ["testkit"]
 

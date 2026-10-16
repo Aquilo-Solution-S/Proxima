@@ -200,9 +200,9 @@ pub(crate) async fn ingest_authorized_fact_atomic(
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
-        let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+        let mut tx = crate::owner_scope::begin_owner_transaction(
             pool,
-            authorized.owner_write_permit().owner_scope(),
+            crate::owner_scope::require_owner_scope(authorized.owner_write_permit().owner_scope())?,
         )
         .await?;
         let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_spaces).await?;

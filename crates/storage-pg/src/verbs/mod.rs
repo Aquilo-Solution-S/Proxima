@@ -5,7 +5,6 @@
 //! impls in `lib.rs` are thin delegation layers over these.
 
 pub(crate) mod active_goals;
-pub(crate) mod change_history;
 pub mod consolidate;
 pub(crate) mod content;
 // Nothing in here is API any more: the derive verb is the body of the
@@ -16,10 +15,8 @@ pub mod fact_ingest;
 pub mod forget;
 pub(crate) mod goal_reads;
 pub mod goal_timeseries;
-pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;
 pub mod maintenance;
-pub(crate) mod mcp_call_history;
 pub mod memory_timeseries;
 pub(crate) mod owner_erase;
 pub(crate) mod owner_export;
@@ -29,4 +26,3 @@ pub mod query_timeseries;
 pub(crate) mod series_erase;
 pub(crate) mod sketch;
 pub mod source_cursors;
-pub mod wake_timeseries;

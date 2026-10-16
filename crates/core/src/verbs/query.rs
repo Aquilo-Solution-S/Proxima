@@ -1,19 +1,21 @@
 //! Query verb — owner-scoped snapshot read of memories.
 //!
-//! See docs/14-protocol-surface.md §"Query" and
-//! docs/02-memory.md.
+//! See docs/protocol.md §"Query" and
+//! docs/concepts.md.
+
+use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::change_event::EntityRef;
 pub use crate::edge::EdgeTargetProjection;
 use crate::edge::{Edge, EdgeKind};
+use crate::entity::EntityRef;
 use crate::verbs::goal_write::GoalState;
 use crate::{GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload};
 
-/// Re-export the canonical `EntityKind` from `change_event` so query
+/// Re-export the canonical `EntityKind` from `entity` so query
 /// callers don't need a second import path.
-pub use crate::change_event::EntityKind;
+pub use crate::entity::EntityKind;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -351,7 +353,8 @@ pub enum QueryCursor {
         memory_id: MemoryId,
     },
     Goal {
-        created_at: time::OffsetDateTime,
+        /// Stable series position; lifecycle writes cannot move it.
+        handle: Uuid,
         goal_id: GoalId,
     },
 }
@@ -363,17 +366,27 @@ pub struct QueryPage {
 }
 
 /// One core-generic Query request. Flavor-typed filters
-/// per docs/14 §"Query" land when the first flavor crate
+/// per docs/protocol.md
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
-    /// Goal-stream state filter. Only meaningful with
-    /// `entity_kind == Some(EntityKind::Goal)`; other streams ignore it.
+    /// Goal-stream state union. Empty selects all states; other streams ignore it.
     #[serde(default)]
-    pub goal_state: Option<GoalState>,
+    pub goal_states: BTreeSet<GoalState>,
+    /// Goal series filter. Heads-only returns each selected series' latest
+    /// version; include-superseded returns its history. Selectors confer no access.
+    /// Refused unless `entity_kind` is `Goal`.
+    #[serde(default)]
+    pub goal_handles: Vec<Uuid>,
+    /// Fact-stream filter: references to any readable version of any selected
+    /// Goal series. Unreadable and nonexistent series both match nothing.
+    /// Conjunctive with `schema_id` and the other memory filters. Refused
+    /// unless `entity_kind` is `Fact`.
+    #[serde(default)]
+    pub referenced_goal_handles: Vec<Uuid>,
     /// Goal-stream assignment filter (`goal.assignment_t`). Only
     /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
     #[serde(default)]
@@ -405,7 +418,9 @@ impl QueryRequest {
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
+            goal_states: BTreeSet::new(),
+            goal_handles: Vec::new(),
+            referenced_goal_handles: Vec::new(),
             assignment: None,
             evidence_contains: None,
             limit: 100,
@@ -618,8 +633,6 @@ pub struct QueryResponse {
     pub goals: Vec<GoalRow>,
     pub edges: Vec<Edge>,
     pub next_cursor: Option<QueryCursor>,
-    /// docs/14 §Query.
-    pub seq_high_water: Option<Uuid>,
 }
 
 #[cfg(test)]

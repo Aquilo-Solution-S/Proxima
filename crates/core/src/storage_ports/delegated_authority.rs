@@ -21,12 +21,68 @@ use uuid::Uuid;
 
 use crate::authz::DelegationRuntimeBinding;
 use crate::text_bounds::check_trimmed_len;
-use crate::verbs::goal_write::{MAX_WAKE_TOOL_ID_CHARS, registered_tool_key};
+
+const MAX_TOOL_ID_CHARS: usize = 200;
 use crate::{
     AccessError, ActionName, AuthPath, Authenticator, AuthzContext, DelegatedPhase,
     DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerId, OwnerRoles,
     ProtocolError, Role, ScopeKey, ScopeKeyError, StorageError, ToolName, ToolScope, UserId,
 };
+
+/// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
+/// for a flat tool, a [`ScopeKey::Action`] for a declared action.
+///
+/// # Errors
+///
+/// `InvalidArgument` on `tool_id` when `value` is no scope key, names a
+/// resource, is not registered, is a dispatcher without its action, or names
+/// an action the tool does not declare.
+fn registered_tool_key(
+    value: &str,
+    registry: &FlavorRegistryFrozen,
+) -> Result<ScopeKey, ProtocolError> {
+    const NOT_CANONICAL: &str = "tool id must be provider-safe canonical id";
+    const LEAF_REGISTERED: &str = "leaf action scope required and must be registered";
+    let invalid = |reason| ProtocolError::invalid_argument("tool_id", reason);
+    if value.contains('/') {
+        return Err(invalid(NOT_CANONICAL));
+    }
+    let Ok(key) = ScopeKey::parse(value) else {
+        // Text that is no key: the colon says which message the caller gets.
+        return Err(invalid(if value.contains(':') {
+            LEAF_REGISTERED
+        } else {
+            NOT_CANONICAL
+        }));
+    };
+    match &key {
+        // Both halves resolve through the descriptor's own `action_arg_specs`
+        // rather than the substrate `CoreActionMeta` tables, so a flavor
+        // dispatcher's leaf is nameable in a delegated command.
+        ScopeKey::Action { tool, action } => {
+            let declared = registry.mcp_tool(tool.as_str()).is_some_and(|descriptor| {
+                descriptor
+                    .action_arg_specs
+                    .iter()
+                    .any(|spec| spec.action == action.as_str())
+            });
+            if declared {
+                Ok(key)
+            } else {
+                Err(invalid(LEAF_REGISTERED))
+            }
+        }
+        ScopeKey::Tool(tool) => match registry.mcp_tool(tool.as_str()) {
+            Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
+                Err(invalid("leaf action scope required for grouped tools"))
+            }
+            Some(_) => Ok(key),
+            None => Err(invalid("tool id is not registered")),
+        },
+        // `resource:name` is a read, not a tool or a leaf.
+        ScopeKey::Resource(_) => Err(invalid(LEAF_REGISTERED)),
+    }
+}
 
 /// Opaque `UUIDv7` handle persisted by a queued job.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -70,7 +126,7 @@ pub struct DelegatedCommand {
 }
 
 impl DelegatedCommand {
-    /// Parse through the same registry-aware resolution as Goal wake tool ids.
+    /// Parse through the shared registry-aware tool resolution.
     ///
     /// # Errors
     ///
@@ -81,7 +137,7 @@ impl DelegatedCommand {
         registry: &FlavorRegistryFrozen,
     ) -> Result<Self, ProtocolError> {
         let raw = raw.into();
-        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS).map_err(|violation| {
+        let value = check_trimmed_len(&raw, MAX_TOOL_ID_CHARS).map_err(|violation| {
             ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
         })?;
         Self::from_key(registered_tool_key(value, registry)?).ok_or_else(|| {
@@ -127,7 +183,7 @@ impl DelegatedCommand {
             }
         };
         let command = Self::from_key(key).ok_or_else(not_canonical)?;
-        if command.to_string().chars().count() > MAX_WAKE_TOOL_ID_CHARS {
+        if command.to_string().chars().count() > MAX_TOOL_ID_CHARS {
             return Err(not_canonical());
         }
         Ok(command)
@@ -1035,11 +1091,6 @@ mod tests {
             .await
             .expect_err("raw delegated context must be denied before owner lookup");
         assert_eq!(transfer_err.code, ErrorCode::Forbidden);
-        let wake_err = engine
-            .read_goal_wake_configs(&raw, &[])
-            .await
-            .expect_err("empty reads still reject raw delegated context");
-        assert_eq!(wake_err.code, ErrorCode::Forbidden);
         let backfill_err = engine
             .backfill_missing_embeddings(&raw, &owner, 1)
             .await
@@ -1257,13 +1308,16 @@ mod tests {
             authenticator,
             ToolScope::All,
         );
-        let wake =
-            AuthzContext::for_subject_with_role(subject, [(owner, Role::editor())], AuthPath::Wake)
-                .with_expires_at(Some(SystemTime::now() + Duration::from_secs(30)))
-                .with_tool_scope(ToolScope::All);
+        let system = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::editor())],
+            AuthPath::System,
+        )
+        .with_expires_at(Some(SystemTime::now() + Duration::from_secs(30)))
+        .with_tool_scope(ToolScope::All);
 
         assert!(matches!(
-            service.issue(&wake, owner, command, Role::editor()).await,
+            service.issue(&system, owner, command, Role::editor()).await,
             Err(DelegatedAuthorityError::HostBearerRequired)
         ));
         assert_eq!(store.inserts.load(Ordering::SeqCst), 0);
@@ -1343,7 +1397,7 @@ mod tests {
                 "{tool:?} {action:?} is not a stored command"
             );
         }
-        let too_long = "a".repeat(MAX_WAKE_TOOL_ID_CHARS + 1);
+        let too_long = "a".repeat(MAX_TOOL_ID_CHARS + 1);
         assert!(DelegatedCommand::from_storage_parts(&too_long, None).is_err());
     }
 

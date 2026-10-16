@@ -14,7 +14,8 @@ use proxima_core::{
     ColdObjectStore, Engine, EngineHandle, FlavorRegistry, StorageError, composed_schema_names,
 };
 use proxima_storage_pg::{
-    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+    PgMigrationStorage, PgPlatformScope, PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage,
+    register_core_pg_sidecars,
 };
 use sqlx::PgPool;
 
@@ -34,7 +35,7 @@ pub(crate) struct Booted {
     pub(crate) delegation_runtime_authority: proxima_core::DelegationRuntimeAuthority,
     pub(crate) handle: EngineHandle,
     pub(crate) pool: PgPool,
-    pub(crate) platform_scope: Option<proxima_storage_pg::PgPlatformScope>,
+    pub(crate) platform_scope: proxima_storage_pg::PgPlatformScope,
     pub(crate) registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub(crate) erase_context: proxima_storage_pg::PgHostStateEraseContext,
@@ -87,7 +88,7 @@ impl std::fmt::Debug for Booted {
 /// [`ProximaError::Storage`] for connection, migration or runtime-grant
 /// failures, [`ProximaError::Config`] for a refused grant plan or embedding
 /// client, [`ProximaError::SchemaResetRequired`] when the target database does
-/// not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
+/// not match `0001_v008.sql` (see `docs/contributing.md#migrations`), and
 /// [`ProximaError::Engine`] when engine startup fails.
 pub(crate) async fn boot<A: FlavorBundle>(
     config: &RuntimeConfig,
@@ -100,7 +101,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
         .then(|| {
             RuntimeGrants::plan(
                 &config.database_url,
-                config.platform_database_url.as_deref(),
+                &config.platform_database_url,
                 composed_schema_names(&registry),
                 runtime_grants::ledger_names(&migrators),
             )
@@ -109,11 +110,13 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let embedding_router =
         embedding_router_for(parts.embed_client.clone(), parts.embedding_router.clone())?;
 
-    let mut pg = connect_and_migrate(config, migrators, grants.as_ref()).await?;
-    if let Some(participant) = parts.host_state_participant.clone() {
-        pg = pg.with_host_state_participant(participant);
-    }
-    let pg = admit_owner_rls(pg, &registry, config.platform_database_url.as_deref()).await?;
+    drop(connect_and_migrate(config, migrators, grants.as_ref()).await?);
+    let pg = connect_serving_storage(config, &registry).await?;
+    let pg = if let Some(participant) = parts.host_state_participant.clone() {
+        pg.with_host_state_participant(participant)
+    } else {
+        pg
+    };
     let pg_sidecars = compose_pg_sidecars::<A>(&pg, &registry).await?;
     let pg = pg
         .with_sidecars(pg_sidecars.as_ref().clone())
@@ -186,6 +189,30 @@ pub(crate) async fn boot<A: FlavorBundle>(
     })
 }
 
+/// Serving authority is constructed only after all migrations have completed.
+async fn connect_serving_storage(
+    config: &RuntimeConfig,
+    registry: &proxima_core::FlavorRegistryFrozen,
+) -> Result<PgStorage, ProximaError> {
+    let schema_names = composed_schema_names(registry);
+    let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
+    let platform_pool = sqlx::PgPool::connect(&config.platform_database_url)
+        .await
+        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+    let platform_scope = PgPlatformScope::new(platform_pool, &schema_refs)
+        .await
+        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+    let pg = PgStorage::connect_with_config(
+        &config.database_url,
+        config.pg_pool_config,
+        config.pg_tuning,
+        platform_scope,
+    )
+    .await
+    .map_err(storage_error)?;
+    Ok(pg)
+}
+
 /// Register every configured outbox consumer, before any capture of this
 /// process can fan out, so a record written from here on owes each of them a
 /// delivery.
@@ -251,13 +278,9 @@ async fn connect_and_migrate(
     config: &RuntimeConfig,
     migrators: Vec<NamedMigrator>,
     runtime_grants: Option<&RuntimeGrants>,
-) -> Result<PgStorage, ProximaError> {
-    let migration_url = config
-        .platform_database_url
-        .as_deref()
-        .unwrap_or(&config.database_url);
-    let migration_pg = PgStorage::connect_for_migrations_with_config(
-        migration_url,
+) -> Result<PgMigrationStorage, ProximaError> {
+    let migration_pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &config.platform_database_url,
         config.pg_pool_config,
         config.pg_tuning,
     )
@@ -277,20 +300,7 @@ async fn connect_and_migrate(
     if let Some(grants) = runtime_grants {
         grants.apply(&migration_pg.clone_pool_for_backend()).await?;
     }
-    drop(migration_pg);
-    let pg = PgStorage::connect_with_config(
-        &config.database_url,
-        config.pg_pool_config,
-        config.pg_tuning,
-    )
-    .await
-    .map_err(storage_error)?;
-    // Semantic search sends pgvector 0.8 session settings (iterative scan);
-    // refuse an older or refusing extension at boot, not on every search.
-    pg.ensure_pgvector_compatible()
-        .await
-        .map_err(storage_error)?;
-    Ok(pg)
+    Ok(migration_pg)
 }
 
 /// Run every linked flavor's registration callback and freeze the result.
@@ -309,39 +319,6 @@ fn compose_registry<A: FlavorBundle>(
         registry.publish_goal_changes();
     }
     Ok(registry.try_freeze()?)
-}
-
-async fn admit_owner_rls(
-    mut pg: PgStorage,
-    registry: &proxima_core::FlavorRegistryFrozen,
-    platform_database_url: Option<&str>,
-) -> Result<PgStorage, ProximaError> {
-    let schema_names = composed_schema_names(registry);
-    let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
-    let runtime_pool = pg.clone_pool_for_backend();
-    let enforcing = proxima_storage_pg::owner_rls_enforced(&runtime_pool, &schema_refs)
-        .await
-        .map_err(|error| ProximaError::Storage(error.to_string()))?;
-    if enforcing {
-        if platform_database_url.is_none() {
-            return Err(ProximaError::Storage(
-                "owner RLS requires PROXIMA_PLATFORM_DATABASE_URL".into(),
-            ));
-        }
-        proxima_storage_pg::assert_runtime_rls(&runtime_pool, &schema_refs)
-            .await
-            .map_err(|error| ProximaError::Storage(error.to_string()))?;
-    }
-    if let Some(platform_url) = platform_database_url {
-        let platform_pool = sqlx::PgPool::connect(platform_url)
-            .await
-            .map_err(|error| ProximaError::Storage(error.to_string()))?;
-        let platform = proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs)
-            .await
-            .map_err(|error| ProximaError::Storage(error.to_string()))?;
-        pg = pg.with_platform_scope(platform);
-    }
-    Ok(pg)
 }
 
 /// Freeze the PG sidecar registry against the composed contracts, then
@@ -420,12 +397,11 @@ fn compose_blob_stores(
     let configured_bucket = s3.as_ref().map(|s3| s3.bucket.clone());
     let blobs = s3
         .map(|s3| {
-            CitedBlobStore::new(pg.clone_pool_for_backend(), s3).map(|store| {
-                match pg.platform_scope_for_host() {
-                    Some(scope) => store.with_platform_scope(scope),
-                    None => store,
-                }
-            })
+            CitedBlobStore::new(
+                pg.clone_pool_for_backend(),
+                s3,
+                pg.platform_scope_for_host(),
+            )
         })
         .transpose()
         .map_err(|error| ProximaError::Config(error.to_string()))?;
@@ -484,8 +460,7 @@ fn compose_engine(
         .with_storage_ports(storage_ports.build())
         .with_embedding_runtime_policy(config.embedding_runtime_policy)
         .try_with_publication_config(config.publication.clone())
-        .map_err(|error| ProximaError::Config(error.to_string()))?
-        .with_deployment_tool_scope(config.tool_scope.clone());
+        .map_err(|error| ProximaError::Config(error.to_string()))?;
     if let Some(router) = embedding_router {
         engine = engine.with_embedding_router(router);
     }

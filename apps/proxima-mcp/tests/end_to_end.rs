@@ -17,7 +17,6 @@ use proxima_core::{
     FlavorRegistry, OwnerAccessPort, OwnerId, ToolScope, UserId, provider_safe_tool_name,
 };
 use proxima_mcp::ProximaMcpApp;
-use proxima_storage_pg::PgOwnerAccessResolver;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -142,11 +141,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),

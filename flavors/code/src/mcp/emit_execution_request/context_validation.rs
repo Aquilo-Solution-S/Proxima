@@ -1,7 +1,7 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use uuid::Uuid;
 
 use super::super::sql::map_storage;
@@ -19,7 +19,7 @@ use super::super::{code_store, engine};
 pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), ToolError> {
     let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let exists: bool = sqlx::query_scalar(
@@ -69,7 +69,7 @@ pub(super) async fn validate_goal_activated_fact(
         .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
-    req.goal_state = Some(GoalState::Active);
+    req.goal_states.insert(GoalState::Active);
     req.assignment = Some(planner);
     req.limit = 1;
     let response = engine.query(ctx.authz(), &req).await?;

@@ -15,35 +15,24 @@ pub(super) async fn query_goals_on_connection(
     connection: &mut PgConnection,
     req: &QueryRequest,
     owner_ids: &[uuid::Uuid],
-    schema_id_filter: Option<&str>,
 ) -> Result<(Vec<GoalRow>, Option<QueryCursor>), StorageError> {
-    let goal_ids: Vec<uuid::Uuid> = req.goal_ids.iter().map(|id| id.into_inner()).collect();
     let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
-    if id_hydration && goal_ids.is_empty() {
+    if id_hydration && req.goal_ids.is_empty() {
         return Ok((Vec::new(), None));
     }
-    let cursor = match &req.page.after {
-        Some(QueryCursor::Goal { goal_id, .. }) => Some(goal_id.into_inner()),
-        _ => None,
-    };
     let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
-    let sql = goal_page_sql(req, schema_id_filter.is_some());
+    let filters = goal_filters(req);
+    let sql = goal_page_sql(req, &filters);
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, GoalRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
-    if let Some(sid) = schema_id_filter {
-        q = q.bind(sid.to_string());
-    }
-    if let Some(assignment) = req.assignment {
-        q = q.bind(assignment.into_inner());
-    }
-    if let Some(evidence) = req.evidence_contains {
-        q = q.bind(evidence.into_inner());
-    }
-    if !goal_ids.is_empty() {
-        q = q.bind(goal_ids);
-    }
-    if let Some(goal_id) = cursor {
-        q = q.bind(goal_id);
+    for filter in filters {
+        q = match filter {
+            GoalFilter::Schema(value) => q.bind(value),
+            GoalFilter::States(value) => q.bind(value),
+            GoalFilter::Assignment(value) | GoalFilter::Evidence(value) => q.bind(value),
+            GoalFilter::Ids(value) | GoalFilter::Handles(value) => q.bind(value),
+            GoalFilter::Cursor(handle, goal_id) => q.bind(handle).bind(goal_id),
+        };
     }
     let mut rows = q.fetch_all(&mut *connection).await.map_err(map_err)?;
     let limit = usize::try_from(req.limit)
@@ -51,7 +40,7 @@ pub(super) async fn query_goals_on_connection(
     let next_cursor = if single_goal_stream && rows.len() > limit {
         rows.truncate(limit);
         rows.last().map(|row| QueryCursor::Goal {
-            created_at: row.created_at,
+            handle: row.handle,
             goal_id: proxima_core::GoalId::new(row.goal_id),
         })
     } else {
@@ -70,9 +59,8 @@ fn t_timestamp_sql(t: &str) -> String {
     format!("COALESCE(uuid_extract_timestamp({t}), TIMESTAMPTZ '1970-01-01')")
 }
 
-fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
+fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
     let has_goal_ids = !req.goal_ids.is_empty();
-    let has_cursor = matches!(&req.page.after, Some(QueryCursor::Goal { .. }));
     let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
     let fetch_limit = if single_goal_stream {
         u64::from(req.limit) + 1
@@ -86,8 +74,8 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
         "FROM proxima_core.goal g \
          JOIN proxima_core.goal_head h ON h.handle = g.handle"
     };
-    // `created_at` is this version's time (the keyset position and
-    // `changed_at`); `set_at` is the time of the series' first version, the
+    // `created_at` is this version's time (`changed_at`); `set_at` is
+    // the time of the series' first version, the
     // least `t` among its rows. Both come from the same `t` derivation.
     let created_at = t_timestamp_sql("g.t");
     let set_at = t_timestamp_sql(
@@ -107,37 +95,90 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
          JOIN proxima_core.owners o ON o.owner_id = g.owner_id \
          WHERE g.owner_id = ANY($1::uuid[])"
     );
+    let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly) && !has_goal_ids;
     let mut next = 2_u32;
-    if has_schema_filter {
-        let _ = write!(sql, " AND h.schema_id = ${next}");
-        next += 1;
+    for filter in filters {
+        // SQL-POLICY: fixed-fragment — GoalFilter predicates contain only
+        // literals and numbered placeholders; outside values are binds below.
+        sql.push_str(&filter.predicate(next, heads_only));
+        next += filter.bind_count();
     }
-    if let Some(state) = req.goal_state {
-        // SQL-POLICY: fixed-fragment
-        sql.push_str(match state {
-            GoalState::Active => " AND g.state = 'Active'",
-            GoalState::Paused => " AND g.state = 'Paused'",
-            GoalState::Achieved => " AND g.state = 'Achieved'",
-            GoalState::Abandoned => " AND g.state = 'Abandoned'",
-        });
-    }
-    if req.assignment.is_some() {
-        let _ = write!(sql, " AND g.assignment_t = ${next}");
-        next += 1;
-    }
-    if req.evidence_contains.is_some() {
-        let _ = write!(sql, " AND ${next} = ANY(g.evidence_t)");
-        next += 1;
-    }
-    if has_goal_ids {
-        let _ = write!(sql, " AND g.t = ANY(${next}::uuid[])");
-        next += 1;
-    }
-    if has_cursor {
-        let _ = write!(sql, " AND g.t < ${next}");
-    }
-    let _ = write!(sql, " ORDER BY g.t DESC LIMIT {fetch_limit}");
+    let _ = write!(sql, " ORDER BY g.handle DESC, g.t DESC LIMIT {fetch_limit}");
     sql
+}
+
+enum GoalFilter {
+    Schema(String),
+    States(Vec<GoalState>),
+    Assignment(uuid::Uuid),
+    Evidence(uuid::Uuid),
+    Ids(Vec<uuid::Uuid>),
+    Handles(Vec<uuid::Uuid>),
+    Cursor(uuid::Uuid, uuid::Uuid),
+}
+
+impl GoalFilter {
+    fn bind_count(&self) -> u32 {
+        match self {
+            Self::Cursor(..) => 2,
+            Self::Schema(_)
+            | Self::States(_)
+            | Self::Assignment(_)
+            | Self::Evidence(_)
+            | Self::Ids(_)
+            | Self::Handles(_) => 1,
+        }
+    }
+
+    fn predicate(&self, placeholder: u32, heads_only: bool) -> String {
+        match self {
+            Self::Schema(_) => format!(" AND h.schema_id = ${placeholder}"),
+            Self::States(_) => {
+                format!(" AND g.state = ANY(${placeholder}::proxima_core.goal_state[])")
+            }
+            Self::Assignment(_) => format!(" AND g.assignment_t = ${placeholder}"),
+            Self::Evidence(_) => format!(" AND ${placeholder} = ANY(g.evidence_t)"),
+            Self::Ids(_) => format!(" AND g.t = ANY(${placeholder}::uuid[])"),
+            Self::Handles(_) => format!(
+                " AND {}.handle = ANY(${placeholder}::uuid[])",
+                if heads_only { "h" } else { "g" }
+            ),
+            Self::Cursor(_, _) => format!(
+                " AND (g.handle, g.t) < (${placeholder}, ${})",
+                placeholder + 1
+            ),
+        }
+    }
+}
+
+fn goal_filters(req: &QueryRequest) -> Vec<GoalFilter> {
+    let mut filters = Vec::new();
+    if let Some(schema) = &req.schema_id {
+        filters.push(GoalFilter::Schema(schema.as_str().to_owned()));
+    }
+    if !req.goal_states.is_empty() {
+        filters.push(GoalFilter::States(
+            req.goal_states.iter().copied().collect(),
+        ));
+    }
+    if let Some(assignment) = req.assignment {
+        filters.push(GoalFilter::Assignment(assignment.into_inner()));
+    }
+    if let Some(evidence) = req.evidence_contains {
+        filters.push(GoalFilter::Evidence(evidence.into_inner()));
+    }
+    if !req.goal_ids.is_empty() {
+        filters.push(GoalFilter::Ids(
+            req.goal_ids.iter().map(|id| id.into_inner()).collect(),
+        ));
+    }
+    if !req.goal_handles.is_empty() {
+        filters.push(GoalFilter::Handles(req.goal_handles.clone()));
+    }
+    if let Some(QueryCursor::Goal { handle, goal_id }) = &req.page.after {
+        filters.push(GoalFilter::Cursor(*handle, goal_id.into_inner()));
+    }
+    filters
 }
 
 /// One Active head per matching Goal for the given memory `t`s.

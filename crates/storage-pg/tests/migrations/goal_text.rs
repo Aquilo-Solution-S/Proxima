@@ -8,17 +8,16 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls};
+use proxima_storage_pg::{begin_migration_transaction, core_migrator};
 use serde_json::json;
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// A database with every migration up to 0024 applied and recorded.
-async fn database_at_0024(db_name: &str) -> TestResult<PgStorage> {
+async fn database_at_0024(db_name: &str) -> TestResult<super::MigrationFixture> {
     create_db(db_name).await?;
-    let pg = PgStorage::connect(&db_url(db_name)).await?;
     let (_, platform_url) = split_role_urls(db_name).await?;
     let platform = sqlx::PgPool::connect(&platform_url).await?;
     let mut staged = core_migrator();
@@ -35,6 +34,7 @@ async fn database_at_0024(db_name: &str) -> TestResult<PgStorage> {
     migration.commit().await?;
     drop(connection);
     platform.close().await;
+    let pg = super::connect_historical_fixture(db_name).await?;
     assert!(
         !super::column_exists(&pg, "goal", "text").await,
         "the fixture stands at 0024, before the column exists"

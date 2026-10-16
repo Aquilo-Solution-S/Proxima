@@ -43,22 +43,8 @@ pub trait OwnerTransferPort: Send + Sync {
     /// its owner through it.
     ///
     /// An OWNER-PINNED sidecar carries its own `owner_id`, stamped at write
-    /// time with the owner that acted, and does not move. `mcp_call_logged_v1`
-    /// is the one core example: it holds `actor_upn`/`actor_oid` and records
-    /// who made a tool call rather than what the memory says. This transfer
-    /// leaves those rows exactly where they are, and every surface that
-    /// reaches them keys on that column rather than on `memory.owner_id`:
-    /// the payload hydrate joins the memory's owner to the row's, so
-    /// `get_memory`/`get_memories`/`query_memories` at the destination see
-    /// nothing; `read_mcp_call_history`, the owner export and the owner erase
-    /// all select by the row's own owner, so the source keeps both the history
-    /// and the ability to destroy it.
-    ///
-    /// The rows stay put rather than being deleted. Deleting would keep the
-    /// destination out, but it would also destroy history the source could
-    /// still be asked to produce and leave nothing for the source's own
-    /// erase to reach: rows a host cannot export are an inconvenience, rows
-    /// a host cannot destroy are a promise it cannot keep.
+    /// time with the owner that acted, and does not move. The registry-resolved
+    /// transfer leg determines how such a sidecar is retained and erased.
     ///
     /// `surfaces` carries the registry-resolved [`TransferLeg`] per table.
     /// The verb READS those answers; it does not re-derive them and holds no

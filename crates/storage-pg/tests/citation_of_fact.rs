@@ -38,8 +38,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -59,8 +58,9 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
         cited.blob_id = Some(blob_id);
         let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
 
+        let owner_scope = proxima_core::test_fixtures::owner_scope_for_tests(&[owner]);
         let readback = pg
-            .citation_of_fact(None, &[owner], written.memory_id)
+            .citation_of_fact(Some(&owner_scope), &[owner], written.memory_id)
             .await?
             .expect("cited fact");
         assert_eq!(readback.cited_object_id, blob_id);

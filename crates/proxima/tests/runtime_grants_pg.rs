@@ -289,14 +289,9 @@ async fn assert_runtime_serves(fixture: &Fixture, booted: &proxima::BuiltProxima
             .any(|memory| memory.id == outcome.memory_id)
     );
     let runtime_pool = role_pool(fixture, &fixture.runtime).await;
-    assert!(
-        proxima_storage_pg::owner_rls_enforced(&runtime_pool, &SCHEMAS)
-            .await
-            .expect("RLS epoch probe")
-    );
     proxima_storage_pg::assert_runtime_rls(&runtime_pool, &SCHEMAS)
         .await
-        .expect("granted runtime role passes the runtime RLS guard");
+        .expect("composed runtime RLS guard");
     runtime_pool.close().await;
 }
 
@@ -383,6 +378,36 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
     }
     assert_default_privileges(&fixture, &platform_pool).await;
     platform_pool.close().await;
+    cleanup(fixture).await;
+}
+
+#[tokio::test]
+async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_flavor_schema() {
+    let fixture = setup().await;
+    let owner = company_owner(Uuid::now_v7());
+    build(&fixture, owner, true, false)
+        .await
+        .expect("safe composed boot")
+        .shutdown()
+        .await;
+
+    // SQL-POLICY: fixed-fragment — the generated fixture role is identifier-quoted.
+    exec(
+        &fixture.admin,
+        format!(
+            "GRANT TRUNCATE ON proxima_code.repos TO {}",
+            ident(&fixture.runtime)
+        ),
+    )
+    .await;
+    let error = build(&fixture, owner, false, true)
+        .await
+        .expect_err("runtime safety covers linked flavor schemas as well as core");
+    assert!(
+        matches!(error, ProximaError::Storage(ref message)
+            if message.contains("proxima_code.repos") && message.contains("TRUNCATE")),
+        "{error}"
+    );
     cleanup(fixture).await;
 }
 

@@ -30,7 +30,6 @@ use proxima_core::{
     OwnerAccessPort, OwnerId, Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
-use proxima_storage_pg::PgOwnerAccessResolver;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -95,11 +94,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
@@ -550,11 +545,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "rest-operator-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
@@ -770,11 +761,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "group-member-sub", subject)?;
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
 
     let authn = OidcAuthenticator::new(
         OidcAuthConfig {

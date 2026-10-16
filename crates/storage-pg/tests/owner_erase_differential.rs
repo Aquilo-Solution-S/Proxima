@@ -114,7 +114,6 @@ use proxima_core::publication::{
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
-use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::{
     AccessKind, AgentNoteV1, ColdObjectStore, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     StorageError, UserId,
@@ -180,9 +179,6 @@ fn draft(
         kind: "fact".into(),
     }
 }
-
-const TARGET_UPN: &str = "target@example.test";
-const NEIGHBOUR_UPN: &str = "neighbour@example.test";
 
 // Keep these direct-SQL goals after the runtime Memory UUIDv7 values: a
 // PostgreSQL/Rust same-millisecond ordering can otherwise flake the golden
@@ -251,22 +247,6 @@ fn note(title: &str) -> SidecarPayload {
         body: "body".to_owned(),
         tags: Vec::new(),
         idempotency_key: None,
-    })
-}
-
-/// The owner-pinned sidecar row: it carries its own `owner_id`, which the
-/// port takes from the writing permit rather than from an argument.
-fn call(actor_upn: &str) -> SidecarPayload {
-    SidecarPayload::fact(McpCallLoggedV1 {
-        tool_name: "core_remember".to_owned(),
-        actor_oid: "oid".to_owned(),
-        actor_upn: actor_upn.to_owned(),
-        ok: true,
-        error: None,
-        latency_ms: 7,
-        io_byte_len: 11,
-        io_truncated: false,
-        io_content_hash: [41u8; 32],
     })
 }
 
@@ -387,7 +367,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                 authorized_with_sidecars(
                     owner,
                     draft(Some(("src-a", "k1")), None, None),
-                    &[note("one"), call(TARGET_UPN)],
+                    &[note("one")],
                 ),
             ),
             &[],
@@ -409,7 +389,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
             &authorized_with_sidecars(
                 owner,
                 draft(Some(("src-b", "k3")), None, None),
-                &[note("three"), call(TARGET_UPN)],
+                &[note("three")],
             ),
             &[],
         )
@@ -422,7 +402,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
                 authorized_with_sidecars(
                     other,
                     draft(Some(("src-a", "n1")), None, None),
-                    &[note("neighbour"), call(NEIGHBOUR_UPN)],
+                    &[note("neighbour")],
                 ),
             ),
             &[],
@@ -576,8 +556,8 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .await?;
     }
 
-    // Goals, goal heads, wake configs.
-    for ((owner_ref, request, prompt), goal_handle) in [
+    // Goals and goal heads.
+    for ((owner_ref, request, _prompt), goal_handle) in [
         (owner, "req-1", "target prompt"),
         (owner, "req-2", "target prompt two"),
         (other, "req-n", "neighbour prompt"),
@@ -585,16 +565,6 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .into_iter()
     .zip(FIXTURE_GOAL_HANDLES)
     {
-        let wake_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.wake_config
-                 (owner_id, trigger_kind, trigger_schema_id, tool_ids, prompt)
-             VALUES ($1, 'fact_schema', 'core/test-fact-v1', ARRAY['core.remember'], $2)
-             RETURNING wake_id",
-        )
-        .bind(owner_ref.into_inner())
-        .bind(prompt)
-        .fetch_one(pool)
-        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/task-goal-v1', $2, $1)",
@@ -605,13 +575,12 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .await?;
         let goal_t: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id, wake_id)
-             VALUES ($1, $1, $2, 'a goal', 'Active', $3, $4) RETURNING t",
+                 (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $1, $2, 'a goal', 'Active', $3) RETURNING t",
         )
         .bind(goal_handle)
         .bind(owner_ref.into_inner())
         .bind(request)
-        .bind(wake_id)
         .fetch_one(pool)
         .await?;
         sqlx::query(
@@ -888,10 +857,9 @@ pub async fn fresh_db(prefix: &str) -> (String, String) {
 }
 
 pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
-    let pg = PgStorage::connect(url)
+    let pg = PgStorage::connect_for_tests(url.to_owned())
         .await?
         .with_cold(Arc::new(CorpusColdStore::default()));
-    pg.run_before_owner_rls_migrations().await?;
     // The corpus writes its sidecar rows through the port, which routes each
     // payload by its own `(kind, schema_id, version)` through this registry.
     // Erase and export are unaffected: both are driven by `OwnerSurfaces`

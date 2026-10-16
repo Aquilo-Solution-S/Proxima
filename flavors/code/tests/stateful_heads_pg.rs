@@ -15,7 +15,7 @@ use std::time::Duration;
 
 mod common;
 
-use common::{migrated_db, seed_memory_with_sidecars_in_tx};
+use common::{authenticated_owner, migrated_db, seed_memory_with_sidecars_in_tx};
 use proxima_code::{FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
@@ -218,24 +218,10 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
+        let resp = engine.query(&authenticated_owner(&owner), &req).await?;
 
         // Two heads: latest of NK_a (=r3) + sole row of NK_b (=r_b).
         assert_eq!(
@@ -262,24 +248,10 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
-        let resp_all = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req_all,
-            )
-            .await?;
+        let resp_all = engine.query(&authenticated_owner(&owner), &req_all).await?;
         assert_eq!(
             resp_all.memories.len(),
             4,
@@ -311,13 +283,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         for payload in [b"c1" as &[u8], b"c2"] {
             let draft = fresh_draft(owner, StatelessFactV1::SCHEMA_ID, payload);
             engine
-                .fact_ingest(
-                    &proxima_core::AuthzContext::single_owner(
-                        &owner,
-                        proxima_core::AuthPath::HostBearer,
-                    ),
-                    draft,
-                )
+                .fact_ingest(&authenticated_owner(&owner), draft)
                 .await?;
         }
 
@@ -325,24 +291,10 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(StatelessFactV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
+        let resp = engine.query(&authenticated_owner(&owner), &req).await?;
         assert_eq!(
             resp.memories.len(),
             2,
@@ -394,24 +346,10 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
+        let resp = engine.query(&authenticated_owner(&owner), &req).await?;
         let ids = resp
             .memories
             .iter()
@@ -468,15 +406,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
         .await?;
         let mut req = QueryRequest::readable();
         req.limit = 100;
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
+        let resp = engine.query(&authenticated_owner(&owner), &req).await?;
         let ids = resp
             .memories
             .iter()

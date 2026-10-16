@@ -125,7 +125,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
     /// For a writer reporting CURRENT state. A writer replaying history keeps
     /// the default, so re-reading old observations replays them instead of
     /// moving the head back. A retry still replays: the re-admission claims
-    /// its own replay key (docs/07 §Identity Rules). No effect without a
+    /// its own replay key (docs/concepts.md). No effect without a
     /// natural key.
     #[must_use]
     pub const fn reobserve_if_displaced(mut self) -> Self {
@@ -1058,7 +1058,6 @@ impl<'a> UnitOfWork<'a> {
             *permit.owner(),
             req.payload.clone(),
             req.topology.clone(),
-            req.wake.clone(),
             req.authorship.clone(),
             req.request_id.clone(),
         );
@@ -1105,9 +1104,6 @@ impl<'a> UnitOfWork<'a> {
                 .author_self_perspective_authorized(self.authz()?, req.author_self_perspective_id)
                 .await?;
         }
-        self.engine
-            .validate_wake_config_for_write(self.authz()?, req.wake.as_ref())
-            .await?;
         let outcome = self
             .ensure_session()
             .await?
@@ -1199,7 +1195,7 @@ impl<'a> UnitOfWork<'a> {
     }
 
     /// Hard-erase whole series of `flavor_id`'s own memory schemas under
-    /// `owner` (docs/13 §Flavor-scoped erase).
+    /// `owner` (docs/data-and-erasure.md).
     ///
     /// Every selected admission is expanded to its whole series, hot and
     /// cooled, and every series with a row referencing the set through a

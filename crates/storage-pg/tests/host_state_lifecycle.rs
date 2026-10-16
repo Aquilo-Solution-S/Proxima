@@ -22,6 +22,7 @@ use proxima_core::storage_ports::{
     MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, StateSurfaceName,
     WriteSessionFactory,
 };
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AccessKind, EntityId, GroupId, MemoryId, OwnerId, SchemaId, SchemaVersion, SourceId,
@@ -30,7 +31,7 @@ use proxima_core::{
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::{
-    PgHostStateLifecyclePort, PgHostStateParticipant, PgPoolConfig, PgStorage, PgTuning,
+    PgHostStateLifecyclePort, PgHostStateParticipant, PgPoolConfig, PgStorage,
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -725,13 +726,13 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
     create_core_db(&db_name)
         .await
         .expect("PG required for host lifecycle tests");
-    let config = PgPoolConfig {
+    let _config = PgPoolConfig {
         max_connections,
         ..PgPoolConfig::default()
     };
     let lifecycle = Arc::new(Lifecycle::new());
     let registry = frozen_registry();
-    let pg = PgStorage::connect_with_config(&db_url(&db_name), config, PgTuning::default())
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
         .with_host_state_participant(Arc::new(HostParticipant {
@@ -740,7 +741,6 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
         }))
         .try_with_flavors(&registry)
         .expect("managed descriptor and callback are exact");
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     let pool = pg.pool_for_tests();
     sqlx::raw_sql(
         "CREATE TABLE proxima_core.test_host_lifecycle_facts (
@@ -767,6 +767,43 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
     .execute(pool)
     .await
     .expect("test host tables created");
+    sqlx::raw_sql(
+        "GRANT USAGE ON SCHEMA proxima_core TO proxima_test_runtime, proxima_test_platform;
+         GRANT SELECT, INSERT, UPDATE, DELETE ON
+           proxima_core.test_host_lifecycle_facts,
+           proxima_core.test_host_lifecycle_metadata,
+           proxima_core.test_host_lifecycle_generic_rows
+           TO proxima_test_runtime, proxima_test_platform;",
+    )
+    .execute(pool)
+    .await
+    .expect("runtime role can inspect host lifecycle tables");
+    sqlx::raw_sql(
+        "ALTER TABLE proxima_core.test_host_lifecycle_facts OWNER TO proxima_test_platform;
+         ALTER TABLE proxima_core.test_host_lifecycle_metadata OWNER TO proxima_test_platform;
+         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows OWNER TO proxima_test_platform;",
+    )
+    .execute(pool)
+    .await
+    .expect("platform role owns host lifecycle tables");
+    sqlx::raw_sql(
+        "ALTER TABLE proxima_core.test_host_lifecycle_facts ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxima_core.test_host_lifecycle_facts FORCE ROW LEVEL SECURITY;
+         ALTER TABLE proxima_core.test_host_lifecycle_metadata ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxima_core.test_host_lifecycle_metadata FORCE ROW LEVEL SECURITY;
+         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows FORCE ROW LEVEL SECURITY;
+         DO $$ DECLARE table_name text; BEGIN
+           FOREACH table_name IN ARRAY ARRAY['test_host_lifecycle_facts', 'test_host_lifecycle_metadata', 'test_host_lifecycle_generic_rows'] LOOP
+             EXECUTE format('CREATE POLICY proxima_owner_read ON proxima_core.%I FOR SELECT TO proxima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true))', table_name);
+             EXECUTE format('CREATE POLICY proxima_owner_write ON proxima_core.%I FOR ALL TO proxima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true)) WITH CHECK (owner_id::text = current_setting(''app.owner'', true))', table_name);
+             EXECUTE format('CREATE POLICY proxima_platform ON proxima_core.%I FOR ALL TO proxima_test_platform USING (current_setting(''app.proxima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxima_scope'', true) = ''platform'')', table_name);
+           END LOOP;
+         END $$;",
+    )
+    .execute(pool)
+    .await
+    .expect("host lifecycle tables enforce RLS");
     (db_name, Arc::new(pg), lifecycle)
 }
 
@@ -1043,7 +1080,11 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
         let unrelated = ingest(&pg, unrelated_owner, source.as_str(), "neither-selected").await;
         assert!(
             pg.transfer_to_owner(
-                &OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact),
+                &OwnerWritePermit::transfer_for_tests(
+                    original_owner,
+                    AccessKind::Fact,
+                    transferred_owner,
+                ),
                 EntityId::Memory(original_only),
                 transferred_owner,
                 pg.surfaces(),
@@ -1605,7 +1646,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
     let (db_name, _pg, lifecycle) = fresh_pg(2).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let registry = frozen_registry();
-        let missing = PgStorage::connect(&db_url(&db_name))
+        let missing = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .with_host_state_participant(Arc::new(HostParticipant {
                 lifecycle: lifecycle.clone(),
@@ -1617,7 +1658,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
             "managed surfaces need an erase/export port"
         );
 
-        let mismatch = PgStorage::connect(&db_url(&db_name))
+        let mismatch = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .with_host_state_participant(Arc::new(TableParticipant {
                 lifecycle: lifecycle.clone(),
@@ -1632,7 +1673,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
         let wrong_port = Arc::new(Lifecycle::with_participant_id(HostStateParticipantId::new(
             "other_participant",
         )));
-        let wrong_id = PgStorage::connect(&db_url(&db_name))
+        let wrong_id = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .with_host_state_participant(Arc::new(HostParticipant {
                 lifecycle: wrong_port,
@@ -1645,7 +1686,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
         );
 
         let wrong_port = Arc::new(Lifecycle::with_declared_tables(WRONG_PARTICIPANT_TABLES));
-        let wrong_port_tables = PgStorage::connect(&db_url(&db_name))
+        let wrong_port_tables = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .with_host_state_participant(Arc::new(HostParticipant {
                 lifecycle: wrong_port,
@@ -1657,7 +1698,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
             "callback tables must exactly cover managed policies"
         );
 
-        let missing_participant = PgStorage::connect(&db_url(&db_name))
+        let missing_participant = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .try_with_flavors(&registry);
         assert!(
@@ -1665,7 +1706,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
             "managed policies require the actual participant"
         );
 
-        let undeclared = PgStorage::connect(&db_url(&db_name))
+        let undeclared = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
             .with_host_state_participant(Arc::new(TableParticipant {
                 lifecycle: lifecycle.clone(),
@@ -1679,7 +1720,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
 
         for extra in [&DUPLICATE_CONTRACT, &OVERLAP_CONTRACT] {
             let invalid_registry = frozen_registry_with(Some(extra));
-            let invalid = PgStorage::connect(&db_url(&db_name))
+            let invalid = PgStorage::connect_for_tests(db_url(&db_name))
                 .await?
                 .with_host_state_participant(Arc::new(HostParticipant {
                     lifecycle: lifecycle.clone(),
@@ -1692,7 +1733,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
             );
         }
 
-        let direct = PgStorage::connect(&db_url(&db_name)).await?;
+        let direct = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         let direct_surfaces =
             OwnerSurfaces::try_from_surfaces(vec![FACTS_SURFACE, METADATA_SURFACE])?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -1839,8 +1880,10 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
         gate.entered.notified().await;
 
         let writer_pg = pg.clone();
-        let writer =
-            tokio::spawn(async move { WriteSessionFactory::begin(writer_pg.as_ref(), None).await });
+        let writer = tokio::spawn(async move {
+            let scope = owner_scope_for_tests(&[owner]);
+            WriteSessionFactory::begin(writer_pg.as_ref(), Some(&scope)).await
+        });
         assert!(
             wait_for_advisory_waiters(pool, 1).await,
             "host-capable UoW waits at global entry fence"
@@ -1929,7 +1972,8 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
             &[2, 4, 6],
         )
         .await;
-        let mut session = WriteSessionFactory::begin(pg.as_ref(), None).await?;
+        let scope = owner_scope_for_tests(&[owner]);
+        let mut session = WriteSessionFactory::begin(pg.as_ref(), Some(&scope)).await?;
         session.advisory_xact_lock(55_019).await?;
         let reverse_gate = Arc::new(CallbackGate::default());
         lifecycle.set_erase_gate(Some(reverse_gate.clone()));
@@ -2211,7 +2255,7 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
 
         let session = tokio::time::timeout(
             Duration::from_secs(5),
-            WriteSessionFactory::begin(pg.as_ref(), None),
+            WriteSessionFactory::begin(pg.as_ref(), Some(&owner_scope_for_tests(&[owner]))),
         )
         .await??;
         session.commit().await?;

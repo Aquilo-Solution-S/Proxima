@@ -237,7 +237,6 @@ pub enum AuthPath {
     HostBearer,
     /// A durable, narrowly scoped grant redeemed by a background worker.
     Delegated,
-    Wake,
     System,
     /// Fail-closed sentinel for a context that carries no real
     /// credentials (see [`AuthzContext::denied_for_owner`]).

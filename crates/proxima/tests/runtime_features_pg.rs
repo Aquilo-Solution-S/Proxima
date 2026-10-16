@@ -1,4 +1,4 @@
-//! Runtime features (docs/10 §Runtime features): IF a feature's config is
+//! Runtime features (docs/configuration.md §Runtime features): IF a feature's config is
 //! present THEN it starts. Each rule both ways — configured is started,
 //! absent is off with its boot-report line — `build()` and `run()` start the
 //! same features, and `shutdown()` stops and joins every one of them.

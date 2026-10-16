@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use proxima_core::storage_ports::publication::{ConsumerName, PublicationConsumerPort};
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls};
 use proxima_storage_pg::{PgPlatformScope, PgStorage, begin_migration_transaction, core_migrator};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -13,7 +13,6 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 async fn database_at_0027(db_name: &str) -> TestResult<PgStorage> {
     create_db(db_name).await?;
-    let pg = PgStorage::connect(&db_url(db_name)).await?;
     let (_, platform_url) = split_role_urls(db_name).await?;
     let platform = PgPool::connect(&platform_url).await?;
     let mut staged = core_migrator();
@@ -30,7 +29,15 @@ async fn database_at_0027(db_name: &str) -> TestResult<PgStorage> {
     migration.commit().await?;
     drop(connection);
     let scope = PgPlatformScope::new(platform, &["proxima_core"]).await?;
-    Ok(pg.with_platform_scope(scope))
+    let (runtime_url, _) = split_role_urls(db_name).await?;
+    Ok(PgStorage::connect_with_config(
+        &runtime_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+        scope,
+    )
+    .await?
+    .with_admin_pool_for_tests(PgPool::connect(&proxima_pg_testkit::db_url(db_name)).await?))
 }
 
 async fn run_current_migrations(pg: &PgStorage) -> TestResult<()> {

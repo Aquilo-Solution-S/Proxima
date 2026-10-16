@@ -1,17 +1,14 @@
 use super::Engine;
 use crate::SchemaVersion;
 use crate::access::AccessKind;
-use crate::authz::{AuthzContext, EngineAuthority};
+use crate::authz::EngineAuthority;
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingSpace;
 use crate::verbs::fact_ingest::{
     AuthorizedFactCore, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
-    AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, CitationSpec,
-    FactIngestOutcome, FactWriteCommand, InlineCitedObjectDraft, check_occurred_at,
-};
-use crate::verbs::persist_mcp_call::{
-    MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID, McpCallLogInput, McpCallLogOutcome,
+    AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome,
+    FactWriteCommand, InlineCitedObjectDraft, check_occurred_at,
 };
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
 use crate::{EntityKind, MemoryId, OwnerId, SidecarPayload};
@@ -74,7 +71,7 @@ fn normalize_fact_draft(draft: &mut FactWriteCommand) -> Result<(), ProtocolErro
 }
 
 impl Engine {
-    /// docs/14 §"`FactIngest`" — Owner-scoped write. Validates
+    /// docs/protocol.md
     /// schemas and delegates to storage.
     ///
     /// # Errors
@@ -830,7 +827,7 @@ impl Engine {
     /// Every engine-authorized Fact write names its schema here, so this is
     /// where `core/goal-change-v1` is refused: a scheduler acts on a goal
     /// change, so only a goal write may record one, in storage and under the
-    /// goal's own authority (docs/18 §Goal changes on the feed).
+    /// goal's own authority (docs/host-integration.md).
     fn fact_schema_info(
         &self,
         schema_id: &crate::SchemaId,
@@ -872,79 +869,6 @@ impl Engine {
             .map_err(|e| ProtocolError::invalid_argument(field, e))?;
         Ok((info, payload))
     }
-
-    /// Owner-scoped write of a host-observed MCP activity log.
-    ///
-    /// Authorizes the caller against the log's Owner and derives that
-    /// Owner from the authenticated identity — never trusting a
-    /// caller-supplied Owner — mirroring [`Self::fact_ingest`]. The
-    /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
-    /// data; the graph Owner is what gets authorized here.
-    ///
-    /// The write itself is the ordinary governed typed-Fact path —
-    /// [`Self::authorize_fact_ingest`] then
-    /// [`Self::ingest_fact_with_typed_sidecar`] — and deliberately not a
-    /// verb of its own. The admission row therefore declares
-    /// `proxima_core.mcp_call_logged_v1` in `sidecar_tables` and the typed
-    /// row lands through the frozen sidecar registry; that row is the ONLY
-    /// thing [`Self::read_mcp_call_history`] reads, so a second write path
-    /// that skipped it would log calls into an unreadable history.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when `authz` cannot access the log Owner or lacks
-    /// Fact write on the owner;
-    /// or `Internal` when the atomic write fails.
-    pub async fn persist_mcp_call(
-        &self,
-        authz: &AuthzContext,
-        mut input: McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, ProtocolError> {
-        let owner = authz.scoped_owner(input.owner);
-        let permit = self
-            .authorize_write(authz, &owner, AccessKind::Fact)
-            .await?;
-        input.owner = *permit.owner();
-        // The gate above is what rejects a foreign log Owner. The Fact path
-        // below resolves the owner from the context instead of taking one,
-        // so it is handed a context narrowed to the owner just authorized —
-        // the same shape the core `record_utterance` tool writes through.
-        let scoped = authz
-            .clone()
-            .narrowed_to_owner(input.owner)
-            .ok_or_else(|| {
-                ProtocolError::forbidden("mcp call log owner is not writable by this context")
-            })?;
-
-        let receipt_id = input.receipt_id();
-        let payload = input.payload();
-        let mut draft = FactWriteCommand::from_payload(MCP_CALL_SOURCE_ID, &payload)
-            .occurred_at(input.occurred_at)
-            // Content-addressed I/O citation: the same request/response bytes
-            // under one Owner share one cited object, whatever else differs.
-            .with_citation(CitationSpec::v1(
-                MCP_CALL_IO_SCHEMA,
-                input.io_content_hash(),
-            ));
-        // Whole-verb replay key. `from_payload` digests the payload alone,
-        // which would collapse two identical calls made at different times
-        // into one Fact; `McpCallLogInput::receipt_id` folds the timestamps
-        // as well, which is the documented idempotency of this verb.
-        draft.ingest_key = Some(hex::encode(receipt_id.into_inner()));
-
-        let sidecars = [SidecarPayload::fact(payload)];
-        let authorized = self
-            .authorize_fact_ingest(&scoped, draft, &sidecars)
-            .await?;
-        let outcome = self.ingest_fact_with_typed_sidecar(&authorized).await?;
-        Ok(McpCallLogOutcome {
-            receipt_id,
-            fact_memory_id: outcome.memory_id,
-            cited_object_id: outcome.cited_object_id,
-            change_event_seq: outcome.change_event_seq,
-            idempotent_replay: outcome.idempotent_replay,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -953,6 +877,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::AuthzContext;
     use crate::engine::MembershipStorage;
     use crate::error::ErrorCode;
     use crate::ids::UserId;

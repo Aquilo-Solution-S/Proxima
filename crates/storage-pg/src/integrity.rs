@@ -50,7 +50,7 @@
 //! row trigger at all, or with `session_replication_role = replica`. Nothing
 //! here finds any of them — [`IntegrityFinding::MissingStampedSidecarRows`]
 //! is the read-back that does, and running it once after an upgrade or a
-//! restore is the operator's job (`docs/how-to/operate.md`).
+//! restore is the operator's job (`docs/operate.md`).
 //!
 //! Why the database and not the port. Forget, owner erase and owner export
 //! all walk `memory.sidecar_tables`; a row nobody stamped is reachable by
@@ -81,13 +81,13 @@
 //!    v0.0.8 baselines, and the declaration lane is not edited either: both
 //!    are applied, and editing one would change the checksum of a version live
 //!    databases have already applied, turning an additive release into a
-//!    forced reset (docs/how-to/migrations.md).
+//!    forced reset (docs/contributing.md).
 //! 2. **The boot guardrail** ([`ensure_declaration_triggers`]), which re-runs
 //!    all four generators against the frozen registry and compares the whole
 //!    definition `pg_get_triggerdef` renders back for each. The whole
 //!    definition and not a fragment: a `WHEN` clause that never matches
 //!    disarms a presence trigger completely, and neither that nor a lost
-//!    `DEFERRABLE` shows up in the argument list. It issues no DDL: in the split-role topology (docs/15) an
+//!    `DEFERRABLE` shows up in the argument list. It issues no DDL: in the split-role topology (docs/operate.md) an
 //!    init container or `tools/dev-migrate` migrates under a DDL role and the
 //!    app boots under a DML-only role that could not create a trigger if it
 //!    tried. A flavor whose migrations have not been applied therefore fails
@@ -549,10 +549,8 @@ CREATE CONSTRAINT TRIGGER {trigger}
 /// open: re-point an existing sidecar row's memory-key column at a memory
 /// that does not stamp the table, and nothing fires. The row's foreign key
 /// is satisfied — the new memory exists — and the row is now invisible to
-/// forget, owner erase and owner export. Four of the six core sidecars are
-/// closed to this by an append-only `UPDATE` trigger of their own;
-/// `write_act_v1` and `mcp_call_logged_v1` are not, and no flavor sidecar is
-/// obliged to be.
+/// forget, owner erase and owner export. Sidecars without their own
+/// append-only trigger need this declaration guard on key updates.
 ///
 /// It runs [`DECLARATION_TRIGGER_FUNCTION`] unchanged: that function reads
 /// `NEW`, which an `UPDATE` trigger has, and asks the one question this arm

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{migrated_db, test_owner};
+use common::{authenticated_owner, migrated_db, owner_scope, test_owner};
 use proxima::flavor::{EraseMode, SeriesSelection};
 use proxima_code::testkit::{build_engine, erase_repo, register_repo};
 use proxima_code::{CodeFlavorStore, CommitV1, RepoEraseReceipt, RepoRegistryError, RepoScope};
@@ -17,7 +17,7 @@ async fn erase_repo_as_owner(
     repo_id: Uuid,
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let engine = build_engine(pg.clone());
-    let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(owner);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     erase_repo(&engine, &authz, &store, owner, repo_id).await
 }
@@ -134,7 +134,7 @@ async fn exercise_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
     let repo_path = format!("/tmp/proxima-erase-repo-{repo_id}");
     register_repo(
         pool,
-        None,
+        &owner_scope(&owner),
         &owner,
         repo_id,
         &repo_path,
@@ -144,7 +144,7 @@ async fn exercise_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::error::E
     .await?;
     register_repo(
         pool,
-        None,
+        &owner_scope(&owner),
         &owner,
         other_repo_id,
         &format!("/tmp/proxima-erase-repo-keep-{other_repo_id}"),
@@ -284,7 +284,7 @@ async fn assert_repo_rebuild_allowed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         repo_path,
@@ -332,7 +332,7 @@ async fn an_ingest_only_principal_cannot_erase_a_repository() {
         for repo_id in [with_rows, empty] {
             register_repo(
                 pool,
-                None,
+                &owner_scope(&group),
                 &group,
                 repo_id,
                 &format!("/tmp/proxima-erase-ingest-only-{repo_id}"),
@@ -347,10 +347,12 @@ async fn an_ingest_only_principal_cannot_erase_a_repository() {
         let engine = build_engine(pg.clone());
         let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
         for role in [proxima_core::Role::ingest(), proxima_core::Role::editor()] {
-            let below_admin = AuthzContext::for_subject_with_role(
-                proxima_core::UserId::new(Uuid::now_v7()),
-                [(group, role)],
-                AuthPath::HostBearer,
+            let below_admin = proxima_core::test_fixtures::authenticated_context(
+                AuthzContext::for_subject_with_role(
+                    proxima_core::UserId::new(Uuid::now_v7()),
+                    [(group, role)],
+                    AuthPath::HostBearer,
+                ),
             );
             for repo_id in [with_rows, empty] {
                 let err = erase_repo(&engine, &below_admin, &store, &group, repo_id)
@@ -380,10 +382,12 @@ async fn an_ingest_only_principal_cannot_erase_a_repository() {
             "a refused erase erases nothing, registrations included"
         );
 
-        let admin = AuthzContext::for_subject_with_role(
-            proxima_core::UserId::new(Uuid::now_v7()),
-            [(group, proxima_core::Role::admin())],
-            AuthPath::HostBearer,
+        let admin = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::for_subject_with_role(
+                proxima_core::UserId::new(Uuid::now_v7()),
+                [(group, proxima_core::Role::admin())],
+                AuthPath::HostBearer,
+            ),
         );
         for repo_id in [with_rows, empty] {
             let receipt = erase_repo(&engine, &admin, &store, &group, repo_id).await?;
@@ -669,7 +673,7 @@ async fn seed_work_item_fixture(
 ) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         &format!("/tmp/proxima-erase-work-item-{repo_id}"),
@@ -863,7 +867,7 @@ async fn exercise_cross_repo_erase(pg: &PgStorage) -> Result<(), Box<dyn std::er
         seed_work_item_fixture(pool, &owner, erased_repo).await?;
     register_repo(
         pool,
-        None,
+        &owner_scope(&owner),
         &owner,
         other_repo,
         &format!("/tmp/proxima-erase-cross-{other_repo}"),
@@ -1282,7 +1286,7 @@ async fn seed_superseded_series(
     for (repo_id, label) in [(erased_repo, "erased"), (other_repo, "other")] {
         register_repo(
             pool,
-            None,
+            &owner_scope(&owner),
             &owner,
             repo_id,
             &format!("/tmp/proxima-erase-series-{repo_id}"),
@@ -1544,7 +1548,7 @@ async fn a_reference_from_another_owner_stops_the_erase_and_names_it() {
         let stranger_repo = Uuid::now_v7();
         register_repo(
             pool,
-            None,
+            &owner_scope(&stranger),
             &stranger,
             stranger_repo,
             &format!("/tmp/proxima-erase-stranger-{stranger_repo}"),
@@ -1693,7 +1697,7 @@ async fn the_footprint_is_locked_against_a_concurrent_reference() {
             .expect("with no erase in flight the reference is an ordinary write");
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let mut unit = engine.unit_of_work(&authz).await?;
         let receipt = unit
             .erase_own_series(
@@ -1905,7 +1909,11 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
         .bind(stranger.into_inner())
         .execute(pool)
         .await?;
-        let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
+        let permit = proxima_core::storage_ports::OwnerWritePermit::transfer_for_tests(
+            owner,
+            proxima_core::AccessKind::Fact,
+            stranger,
+        );
         let moved = proxima_core::storage_ports::OwnerTransferPort::transfer_to_owner(
             &pg,
             &permit,
@@ -1982,10 +1990,14 @@ async fn an_erase_unit_holds_the_owner_boundary_against_transfer() {
         let WorkItemFixture { work_item, .. } =
             seed_work_item_fixture(pool, &owner, repo_id).await?;
         let destination = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
-        let permit = common::owner_write_permit(&owner, proxima_core::AccessKind::Fact).await?;
+        let permit = proxima_core::storage_ports::OwnerWritePermit::transfer_for_tests(
+            owner,
+            proxima_core::AccessKind::Fact,
+            destination,
+        );
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let mut unit = engine.unit_of_work(&authz).await?;
         let receipt = unit
             .erase_own_series(

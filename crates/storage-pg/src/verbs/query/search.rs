@@ -30,7 +30,7 @@
 //! 5. **pins** — engine neighbor load, only if the caller asked
 //!
 //! Unscoped search (no tags) scans only flavor #0's schemas. A tag filter
-//! is the documented flavor scope (`docs/09-developing-flavors.md`): those
+//! is the documented flavor scope (`docs/build-a-flavor.md`): those
 //! queries also scan flavor schemas that declare a `tag_column`, and only
 //! flavors that declare `BandComparability::CoreBands` and
 //! `RankSource::Projection` — a score this merge cannot compare and a shape
@@ -322,7 +322,7 @@ fn core_search_flavors<'a>(
         // picked the same schema.
         let is_core = proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table);
         // Unscoped search stays on flavor #0's sidecars. A tag filter is
-        // how a flavor scopes `core_search_memories` (docs/09); those
+        // how a flavor scopes `core_search_memories` (docs/build-a-flavor.md); those
         // queries must reach the flavor sidecar that declared `tag_column`.
         if !is_core && req.tags.is_empty() {
             continue;

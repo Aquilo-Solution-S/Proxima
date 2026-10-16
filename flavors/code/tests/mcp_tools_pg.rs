@@ -8,7 +8,7 @@ mod common;
 #[path = "mcp_tools_pg/embedding_chunks.rs"]
 mod embedding_chunks;
 
-use common::{TestDb, test_owner as owner_fixture};
+use common::{TestDb, authenticated_owner, owner_scope, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeEraseRepoTool,
     CodeGetIngestRunTool, CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool,
@@ -23,8 +23,8 @@ use proxima_code::{
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    FlavorServices, MemoryId, OwnerId, schema_only_key,
+    AbstractionPayload, FactPayload, FlavorRegistry, FlavorRegistryFrozen, FlavorServices,
+    MemoryId, OwnerId, schema_only_key,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -1835,7 +1835,7 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     let repo_id = Uuid::now_v7();
     register_repo(
         fixture.pg.pool_for_tests(),
-        None,
+        &owner_scope(&owner),
         &owner,
         repo_id,
         "/tmp/proxima-criteria",
@@ -1958,7 +1958,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let repo_id = Uuid::now_v7();
     register_repo(
         fixture.pg.pool_for_tests(),
-        None,
+        &owner_scope(&owner),
         &owner,
         repo_id,
         "/tmp/proxima-plan-proof",
@@ -2199,7 +2199,7 @@ async fn run_tool<T: McpTool>(
 }
 
 fn ctx(pg: PgStorage, owner: OwnerId, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(&owner);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
@@ -2227,7 +2227,7 @@ fn shell_ctx(
     registry: Arc<FlavorRegistryFrozen>,
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(&owner);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
     McpToolCtx {
@@ -2588,7 +2588,7 @@ fn embedding_ctx(
     registry: Arc<FlavorRegistryFrozen>,
     router: Arc<dyn proxima_core::llm::EmbeddingRouter>,
 ) -> McpToolCtx {
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(&owner);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg).with_embedding_router(router));
     McpToolCtx {
@@ -2678,7 +2678,7 @@ async fn ingest_embedded_repo(
     // claims those jobs; backfill is residue for heads written without a
     // model. Between ingest and this drain the repo is lexical-only.
     let engine = engine_for_test(fixture.pg.clone()).with_embedding_router(router);
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(&owner);
     let _ = engine
         .backfill_missing_embeddings(&authz, &owner, 1_000)
         .await;
@@ -3679,7 +3679,8 @@ async fn a_head_ingest_is_a_run_started_polled_and_recovered()
     // While a run is active, a start returns it and the synchronous tool
     // refuses, naming it.
     let pool = fixture.pg.pool_for_tests();
-    let active = proxima_code::testkit::start_run(pool, None, &owner, repo_id).await?;
+    let active =
+        proxima_code::testkit::start_run(pool, &owner_scope(&owner), &owner, repo_id).await?;
     let again = run_tool::<CodeStartIngestHeadSnapshotTool>(
         call_ctx(),
         json!({ "repo_handle": repo_handle }),

@@ -13,10 +13,8 @@ pub mod get_memories;
 pub mod get_memory;
 pub mod goal;
 pub mod goal_reads;
-pub mod list_change_events;
 pub mod list_schemas;
 pub mod list_substrate_tools;
-pub mod list_wake_candidates;
 pub mod membership;
 pub mod memory;
 pub mod memory_counts;
@@ -40,10 +38,7 @@ pub use transfer::CoreTransferTool;
 pub use upload::CoreUploadTool;
 
 /// Shared page bounds for the keyset-paginated read surfaces (edges,
-/// goals, citations, membership, lineage, wake candidates). One pair of
-/// constants so six tools cannot drift apart on the same contract;
-/// `core_list_change_events` deliberately keeps its own larger bounds
-/// (pull-log semantics, default 100 / max 1000).
+/// goals, citations, membership, lineage).
 pub(crate) const DEFAULT_PAGE_LIMIT: u32 = 50;
 pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
 

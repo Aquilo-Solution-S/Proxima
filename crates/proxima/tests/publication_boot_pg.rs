@@ -1,4 +1,4 @@
-//! The facade's half of the publication contract (issue #305, docs/18).
+//! The facade's half of the publication contract (issue #305, docs/host-integration.md).
 //!
 //! Three properties, all of them about the SAME configuration reaching the
 //! place that enforces it:
@@ -173,7 +173,7 @@ fn probe_migrator() -> Migrator {
     }
 }
 
-/// Host/example lane (`docs/09` §Migrations: timestamp versions ending
+/// Host/example lane (`docs/build-a-flavor.md` §Migrations: timestamp versions ending
 /// `00..=19`), so this fixture cannot collide with a first-party flavor.
 const PROBE_MIGRATION_VERSION: i64 = 20_260_824_000_011;
 

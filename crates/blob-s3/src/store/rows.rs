@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::BlobError;
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 
 use super::live_upload::with_live_blob_upload;
 
@@ -68,9 +68,12 @@ pub(super) async fn load_upload_optional(
     owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<Option<UploadRow>, BlobError> {
-    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
+    let mut tx = begin_owner_transaction(
+        pool,
+        owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+    )
+    .await
+    .map_err(|err| BlobError::State(err.to_string()))?;
     let result = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id).await;
     if result.is_ok() {
         tx.commit().await.map_err(BlobError::Db)?;

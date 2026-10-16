@@ -13,62 +13,29 @@ theme:
 markdown_extensions:
   - admonition
   - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - toc:
       permalink: true
 validation:
   links:
     not_found: ignore
     anchors: ignore
+exclude_docs: |
+  superpowers/
 nav:
-  - Home: README.md
-  - Getting Started:
-      - Overview: getting-started/overview.md
-      - Local Development: getting-started/local-dev.md
-      - Connect an Agent: getting-started/connect-agent.md
-  - Tutorials:
-      - Run MCP Server: tutorials/run-mcp-server.md
-      - Build First Flavor: tutorials/build-first-flavor.md
-      - Add First Fact Schema: tutorials/add-first-fact-schema.md
-      - Add First MCP Tool: tutorials/add-first-mcp-tool.md
-  - How-to:
-      - Operate (Day-2): how-to/operate.md
-      - Troubleshooting: how-to/troubleshoot.md
-      - Migration Policy: how-to/migrations.md
-      - Rust SDK Upgrade: how-to/migrate-flavor-sdk.md
-      - Publish Facts (Outbox): how-to/fact-outbox.md
-  - Reference:
-      - Architecture: reference/architecture.md
-      - Public API: reference/public-api.md
-      - Environment Variables: reference/env-vars.md
-      - MCP Tools: reference/mcp-tools.md
-      - Compliance Status: reference/compliance-status.md
-  - Agent:
-      - Quickstart: agent/quickstart.md
-      - Proxima Memory Skill: skills/proxima-memory/SKILL.md
-      - Recall Before Work: agent/prompts/recall-before-work.md
-      - Consolidate at End: agent/prompts/consolidate-at-end.md
-      - Remember vs Derive: agent/prompts/remember-vs-derive.md
-  - Design:
-      - Universe: universe.md
-      - Event Source: 01-event-source.md
-      - Memory: 02-memory.md
-      - Schema Registry: 03-schema-registry.md
-      - Consolidation: 04-consolidation.md
-      - Actions: 05-actions.md
-      - Goals and Self: 06-goals-and-self.md
-      - Storage: 07-storage.md
-      - Core and Flavors: 08-core-and-flavors.md
-      - Developing Flavors: 09-developing-flavors.md
-      - Configuration: 10-configuration.md
-      - Citations: 11-citations.md
-      - Tool Manifest: 12-tool-manifest.md
-      - Inverses of Storing: 13-compliance.md
-      - Protocol Surface: 14-protocol-surface.md
-      - Deployment: 15-deployment.md
-      - Edges: 16-edges.md
-      - REST Surface: 17-rest-surface.md
-      - Fact Outbox: 18-fact-outbox.md
-      - Host-State Maintenance: 19-host-state-maintenance.md
-  - Kernel:
-      - Lean Kernel: lean/README.md
-      - Coverage: lean/COVERAGE.md
+  - Home: index.md
+  - Concepts: concepts.md
+  - Decisions: decisions.md
+  - Get started: get-started.md
+  - Agents: agents.md
+  - Build a flavor: build-a-flavor.md
+  - Host integration: host-integration.md
+  - Protocol: protocol.md
+  - Operate: operate.md
+  - Configuration: configuration.md
+  - Data and erasure: data-and-erasure.md
+  - Contributing: contributing.md

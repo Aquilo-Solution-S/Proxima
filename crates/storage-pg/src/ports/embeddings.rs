@@ -36,8 +36,11 @@ impl EmbeddingTextPort for PgStorage {
         memory_id: MemoryId,
         non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::fact_embeddings::load_embedding_text_on_connection(
             tx.as_mut(),
             owner,
@@ -57,8 +60,11 @@ impl EmbeddingTextPort for PgStorage {
         items: &[(proxima_core::OwnerId, proxima_core::EntityKind, MemoryId)],
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<Option<String>>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::fact_embeddings::load_embedding_texts_on_connection(
             tx.as_mut(),
             items,
@@ -78,7 +84,11 @@ impl EmbeddingTextPort for PgStorage {
         limit: usize,
         non_embeddable_schemas: &[String],
     ) -> Result<Vec<MemoryId>, StorageError> {
-        let mut tx = crate::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::fact_embeddings::list_facts_missing_embedding(
             tx.as_mut(),
             owner,
@@ -207,7 +217,11 @@ impl EmbeddingJobPort for PgStorage {
         owner_scope: Option<&proxima_core::OwnerScope>,
         owner: &OwnerId,
     ) -> Result<EmbeddingJobStatusCounts, StorageError> {
-        let mut tx = crate::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::fact_embeddings::count_embedding_job_status(tx.as_mut(), owner).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
@@ -222,7 +236,7 @@ impl EmbeddingMaintenancePort for PgStorage {
     ) -> Result<EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             policy.stale_claim_timeout_seconds(),
         )
         .await
@@ -232,11 +246,7 @@ impl EmbeddingMaintenancePort for PgStorage {
         &self,
         _proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
-        verbs::fact_embeddings::sweep_orphan_embedding_rows(
-            &self.pool,
-            self.platform_scope.as_ref(),
-        )
-        .await
+        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope).await
     }
 
     async fn reconcile_embeddings(
@@ -247,7 +257,7 @@ impl EmbeddingMaintenancePort for PgStorage {
     ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
         verbs::fact_embeddings::reconcile_embeddings_with_platform(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             options,
             policy.stale_claim_timeout_seconds(),
         )
@@ -260,13 +270,8 @@ impl EmbeddingMaintenancePort for PgStorage {
         limit: i64,
         _proof: OperatorMaintenanceProof,
     ) -> Result<Vec<OwnerId>, StorageError> {
-        verbs::fact_embeddings::embedding_owner_page(
-            &self.pool,
-            self.platform_scope.as_ref(),
-            after,
-            limit,
-        )
-        .await
+        verbs::fact_embeddings::embedding_owner_page(&self.pool, &self.platform_scope, after, limit)
+            .await
     }
 
     async fn embedding_coverage(
@@ -284,7 +289,7 @@ impl EmbeddingMaintenancePort for PgStorage {
     > {
         verbs::fact_embeddings::embedding_coverage(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             owner,
             spaces,
             non_embeddable_schemas,
@@ -301,7 +306,7 @@ impl EmbeddingMaintenancePort for PgStorage {
     ) -> Result<proxima_core::EmbeddingPurgeOutcome, StorageError> {
         verbs::fact_embeddings::purge_embedding_spaces(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             owner,
             keep,
             limit,

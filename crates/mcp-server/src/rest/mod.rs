@@ -12,7 +12,7 @@
 //! cannot call `core_transfer` over MCP cannot call it over REST, because
 //! the gate runs below the seam — not beside it.
 //!
-//! See `docs/17-rest-surface.md`.
+//! See `docs/protocol.md`.
 
 pub mod context;
 pub mod error;

@@ -1,4 +1,4 @@
-//! Quiesce and resume of the embedding worker (docs/10 §Quiesce and resume)
+//! Quiesce and resume of the embedding worker (docs/configuration.md §Quiesce and resume)
 //! against a real Postgres: the worker stops claiming and holds nothing
 //! while serving continues, and resume drains what queued meanwhile.
 //!

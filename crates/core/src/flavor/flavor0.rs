@@ -87,7 +87,7 @@ const CORE_PROJECTION: ProjectionSpec = ProjectionSpec {
 /// no CHECK constraint to name, so the DDL leg is a trigger that freezes
 /// `goal_head.owner_id`.
 const GOAL_NOT_TRANSFERABLE: TransferRule = TransferRule::NotTransferable {
-    why: "a goal series cannot change owner: an armed goal's wake_config, \
+    why: "a goal series cannot change owner: goal intent remains with its owner, \
           hard-context memory set and tool grants are the receiving owner's \
           authority, not the goal's",
     enforced_by: &[
@@ -152,7 +152,7 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
 };
 
 /// Written by every goal write, in the goal's own transaction, when the
-/// schema is listenable (docs/05 §Actions, docs/18 §Goal changes). It
+/// schema is listenable (docs/host-integration.md). It
 /// follows `core/write-act-v1` row for row: a protocol lifecycle Fact keyed
 /// on `memory.t`, with nothing to search, embed or re-home.
 const GOAL_CHANGE_V1: SchemaContract = SchemaContract {
@@ -221,7 +221,7 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
 
 /// Utterances ARE searchable in this tree, with their own band set. What is
 /// testable here is that [`SearchProjectionDecl::None`] is a *value* — see
-/// `WRITE_ACT_V1` and `MCP_CALL_LOGGED_V1`, which declare it.
+/// `WRITE_ACT_V1`, which declares it.
 const UTTERANCE_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(FLAVOR_ID, "utterance", 1),
     kind: PayloadKind::Fact,
@@ -266,52 +266,6 @@ const UPLOAD_V1: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[],
-    natural_key_columns: &[],
-};
-
-/// The one owner-pinned sidecar. Its `owner_id` is the owner that MADE the
-/// call and is never rewritten, so the row answers "what did my agents do"
-/// for the source owner after the Memory it describes has been transferred
-/// away — and the destination never sees it.
-const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
-    id: SchemaRef::new(FLAVOR_ID, "mcp-call-logged", 1),
-    kind: PayloadKind::Fact,
-    sidecar_table: Some("proxima_core.mcp_call_logged_v1"),
-    search: SearchProjectionDecl::None {
-        why: "call telemetry is not retrievable content; the table carries no search_tsv",
-    },
-    embedding: EmbeddingRecipe::Never {
-        why: "call telemetry is not retrievable content",
-    },
-    transfer: TransferRule::RetainAtSource {
-        why: "the row is about the actor, not the memory. Deleting or moving it on \
-              transfer destroys history that both the acting owner's erase and its own \
-              export are entitled to reach, and would disclose actor_upn to the destination",
-    },
-    provenance: Provenance::None,
-    surfaces: &[Surface {
-        table: "proxima_core.mcp_call_logged_v1",
-        key: KeyShape::MemoryT { column: "t" },
-        owner_column: Some("owner_id"),
-        transfer: TransferRule::RetainAtSource {
-            why: "see the schema declaration",
-        },
-        erase: EraseRule::ByOwner,
-        export: ExportRule::Rows,
-        forget: ForgetRule::Keep {
-            why: "forgetting a Memory must not dump or destroy the acting owner's \
-                  audit trail; the row holds no foreign key into memory, so it can \
-                  simply stay in the hot table",
-        },
-        lexical_language_column: None,
-        counter: CounterRule::Counted("mcp_call_rows"),
-        // Deliberately NO FK to memory: the row must outlive the Memory.
-        // Completeness rests on owner_id -> owners instead.
-        completeness: Some(DbConstraint {
-            relation: "proxima_core.mcp_call_logged_v1",
-            name: "mcp_call_logged_v1_owner_id_fkey",
-        }),
-    }],
     natural_key_columns: &[],
 };
 
@@ -487,10 +441,6 @@ const UPLOADED_BLOB_V1: SchemaContract = citation_schema(
     "uploaded-blob",
     "a cited object is not a memory; it carries no embed or search surface",
 );
-const MCP_CALL_IO_V1: SchemaContract = citation_schema(
-    "mcp-call-io",
-    "call payload bytes are evidence, not retrievable content",
-);
 
 // ── Flavor-#0 state surfaces (not memory sidecars) ──────────────────────
 
@@ -546,24 +496,6 @@ const STATE_SURFACES: &[Surface] = &[
             why: "the head is a POINTER into `goal`, not a row of its own: \
                   counting it would report every goal twice on one receipt",
         },
-        completeness: None,
-    },
-    Surface {
-        table: "proxima_core.wake_config",
-        key: KeyShape::Custom(&["wake_id"]),
-        owner_column: Some("owner_id"),
-        transfer: GOAL_NOT_TRANSFERABLE,
-        erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
-            why: "DECLARED GAP — an owner erase destroys these rows and no export \
-                  emits them, so a portability bundle omits the owner's own prompt \
-                  text. Stated rather than left to be discovered",
-        },
-        forget: ForgetRule::Keep {
-            why: "the goal lifecycle owns it",
-        },
-        lexical_language_column: None,
-        counter: CounterRule::Counted("wake_configs"),
         completeness: None,
     },
 ];
@@ -745,33 +677,6 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
-        table: "proxima_core.announce",
-        key: KeyShape::Custom(&["seq"]),
-        owner_column: Some("owner_id"),
-        // The log is append-only (`announce_append_only`), so no existing
-        // row is ever re-homed: what the transfer does is APPEND two rows
-        // in the same transaction, one under the prior owner's lane and one
-        // under the destination's, so the source's projectors learn the
-        // series left and the destination's pull consumers learn it
-        // arrived. That is the transfers-announce-everywhere invariant, and
-        // the rows already written stay where they were written.
-        transfer: TransferRule::RetainAtSource {
-            why: "an announce row records what happened to an owner's view, not to \
-                  the memory; a transfer appends to both lanes rather than moving \
-                  the log",
-        },
-        erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
-            why: "the pull log is projector state, not owner content",
-        },
-        forget: ForgetRule::Keep {
-            why: "forget APPENDS an announce row; it never removes one",
-        },
-        lexical_language_column: None,
-        counter: CounterRule::Counted("change_events"),
-        completeness: None,
-    },
-    Surface {
         table: "proxima_core.publication_outbox",
         key: KeyShape::MemoryT { column: "t" },
         owner_column: Some("owner_id"),
@@ -803,7 +708,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         counter: CounterRule::Counted("publications"),
         // Deliberately NO FK to memory: the row must outlive `forget`'s
         // delete of the hot row. Completeness rests on owner_id -> owners,
-        // exactly as `mcp_call_logged_v1` does for the same reason.
+        // exactly as the other owner-pinned surfaces do for the same reason.
         completeness: Some(DbConstraint {
             relation: "proxima_core.publication_outbox",
             name: "publication_outbox_owner_id_fkey",
@@ -1253,42 +1158,11 @@ const RESOURCES: &[ResourceContract] = &[
         reads: &["proxima_core.memory"],
     },
     ResourceContract {
-        uri_template: "proxima://change-events{?since,limit}",
-        path: "change-events",
-        name: "proxima-change-events",
-        title: "Proxima Change Events",
-        description: "Owner-scoped change-event pull log.",
-        scope_key: scope::CHANGE_EVENTS,
-        is_template: true,
-        read_only: true,
-        reads: &[
-            "proxima_core.announce",
-            "proxima_core.memory",
-            "proxima_core.blob",
-        ],
-    },
-    ResourceContract {
-        uri_template: "proxima://wake-candidates{?fact,limit}",
-        path: "wake-candidates",
-        name: "proxima-wake-candidates",
-        title: "Proxima Wake Candidates",
-        description: "Armed Active Goals admitted for wake planning by a trigger Fact.",
-        scope_key: scope::WAKE_CANDIDATES,
-        is_template: true,
-        read_only: true,
-        reads: &[
-            "proxima_core.goal",
-            "proxima_core.goal_head",
-            "proxima_core.wake_config",
-            "proxima_core.memory",
-        ],
-    },
-    ResourceContract {
         uri_template: "proxima://goals{?state,limit,cursor}",
         path: "goals",
         name: "proxima-goals",
         title: "Proxima Goals",
-        description: "Owner-scoped goal listing with state filter, keyset cursor, and wake-config read-back.",
+        description: "Owner-scoped goal listing with an optional comma-separated state union (omit for all states), stable series handles, and keyset cursor.",
         scope_key: scope::GOALS,
         is_template: true,
         read_only: true,
@@ -1296,7 +1170,6 @@ const RESOURCES: &[ResourceContract] = &[
             "proxima_core.goal",
             "proxima_core.goal_head",
             "proxima_core.owners",
-            "proxima_core.wake_config",
         ],
     },
     ResourceContract {
@@ -1304,7 +1177,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "goal",
         name: "proxima-goal",
         title: "Proxima Goal",
-        description: "Single-goal read by G:<uuid> reference, including stored wake configuration.",
+        description: "Single-goal read by series handle or any version reference G:<uuid>; returns the series' current head.",
         scope_key: scope::GOAL,
         is_template: true,
         read_only: true,
@@ -1312,7 +1185,6 @@ const RESOURCES: &[ResourceContract] = &[
             "proxima_core.goal",
             "proxima_core.goal_head",
             "proxima_core.owners",
-            "proxima_core.wake_config",
         ],
     },
     ResourceContract {
@@ -1342,7 +1214,7 @@ const RESOURCES: &[ResourceContract] = &[
 /// something a generated `DELETE ... USING <selection set>` cannot express:
 /// a refcount anti-join before a shared object may go (`blob`,
 /// `blob_uploads`, `content`), a cold-purge row enqueued in the same
-/// transaction as the delete (`cooled`, `wake_config`), a head table
+/// transaction as the delete (`cooled`), a head table
 /// resynchronised rather than emptied (`memory_head`, `goal_head`), an
 /// ordering the embedding tables have to be taken in, an immutable
 /// publication-origin inverse selected by physical Fact ids OR original
@@ -1357,7 +1229,6 @@ const RESOURCES: &[ResourceContract] = &[
 ///
 /// [`FlavorRegistryError::UndeletableSurface`]: crate::flavor::FlavorRegistryError::UndeletableSurface
 const BESPOKE_ERASE_LEGS: &[&str] = &[
-    "proxima_core.announce",
     "proxima_core.blob",
     "proxima_core.blob_uploads",
     "proxima_core.content",
@@ -1373,7 +1244,6 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
     "proxima_core.publication_origin",
     "proxima_core.sketch",
     "proxima_core.source_cursors",
-    "proxima_core.wake_config",
 ];
 
 /// The kernel surfaces a transfer moves with a hand-written statement
@@ -1420,14 +1290,12 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
         AGENT_NOTE_V1,
         UTTERANCE_V1,
         UPLOAD_V1,
-        MCP_CALL_LOGGED_V1,
         AGENT_DERIVATION_V1_A,
         AGENT_DERIVATION_V1_P,
         INTERPRETATION_V1,
         SIMPLE_TEXT_GOAL_V1,
         TASK_GOAL_V1,
         UPLOADED_BLOB_V1,
-        MCP_CALL_IO_V1,
     ],
     state_surfaces: STATE_SURFACES,
     scopes: &[],

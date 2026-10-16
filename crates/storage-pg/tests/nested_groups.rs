@@ -249,9 +249,13 @@ async fn projection_equals_reference_after_seeded_person_and_group_write_sequenc
     let scope =
         proxima_storage_pg::PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
     let (runtime_url, _) = split_role_urls(h.database.name()).await?;
-    let storage = PgStorage::connect(&runtime_url)
-        .await?
-        .with_platform_scope(scope);
+    let storage = PgStorage::connect_with_config(
+        &runtime_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+        scope,
+    )
+    .await?;
     for person in people {
         sqlx::query("INSERT INTO proxima_core.owners(owner_id,kind) VALUES($1,'personal') ON CONFLICT DO NOTHING")
             .bind(person.into_inner()).execute(&h.pool).await?;

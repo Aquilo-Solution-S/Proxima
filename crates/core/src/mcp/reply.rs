@@ -103,7 +103,7 @@ pub enum ToolReply {
     /// The tool ran and failed with details a program reads: `structured` is
     /// sent as `structuredContent` beside the content blocks, with
     /// `isError: true`. Only from a tool that declares no output schema
-    /// (docs/12 §Tool Replies). Proxima does not redact either; the host owns
+    /// (docs/protocol.md). Proxima does not redact either; the host owns
     /// what it puts here.
     StructuredFailure {
         structured: serde_json::Map<String, serde_json::Value>,

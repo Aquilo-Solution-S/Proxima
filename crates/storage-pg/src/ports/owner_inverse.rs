@@ -23,7 +23,7 @@ impl OwnerInversePort for PgStorage {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_erase::erase_group_owner_with_lifecycle(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.cold.as_ref(),
             auth,
             group_id,
@@ -48,7 +48,7 @@ impl OwnerInversePort for PgStorage {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_erase::erase_personal_owner_with_lifecycle(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.cold.as_ref(),
             auth,
             user_id,
@@ -74,7 +74,7 @@ impl OwnerInversePort for PgStorage {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_erase::erase_group_source_scope_with_lifecycle(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.cold.as_ref(),
             auth,
             source_id,
@@ -100,7 +100,7 @@ impl OwnerInversePort for PgStorage {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_erase::erase_personal_source_scope_with_lifecycle(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.cold.as_ref(),
             auth,
             source_id,
@@ -118,7 +118,7 @@ impl OwnerInversePort for PgStorage {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_export::export_owner_bundle(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             auth,
             tables,
             lifecycle,

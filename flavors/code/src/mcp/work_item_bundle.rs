@@ -5,7 +5,7 @@ use proxima_core::{
     PerspectivePayload,
 };
 use proxima_core::{Tool, ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -287,7 +287,7 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
 async fn load_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<RepoBundle, ToolError> {
     let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
@@ -459,7 +459,7 @@ async fn load_target_perspectives(
         return Ok(Vec::new());
     }
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let engine = super::engine(ctx)?;
@@ -546,7 +546,7 @@ async fn load_results(
           ORDER BY t ASC"
     );
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     // SQL-POLICY: fixed-fragment — the only interpolation is `fk`, chosen
@@ -616,7 +616,7 @@ async fn load_acceptance_verifications(
     memory_id: MemoryId,
 ) -> Result<Vec<AcceptanceVerificationBundle>, ToolError> {
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let rows: Vec<AcceptanceVerificationSqlRow> = sqlx::query_as(
@@ -718,7 +718,7 @@ async fn load_acceptance_summaries(
     memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(

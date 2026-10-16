@@ -19,18 +19,13 @@ pub struct FlavorDescriptor {
     /// convention, trimmed). `None` when the crate's `authors` field
     /// is empty.
     pub author: Option<String>,
-    /// How this flavor was loaded into the binary. v1 is always
-    /// `Builtin`; the other variants are inert forward-compat
-    /// placeholders, not a runtime registration contract.
+    /// How this flavor was loaded into the binary.
     pub provenance: FlavorProvenance,
 }
 
-/// Where the flavor came from. Reserved cases are out-of-scope for
-/// v1 and do not imply dynamic flavor loading.
+/// The build-time flavor provenance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlavorProvenance {
     Builtin,
-    Marketplace { source_url: String },
-    Local { workspace_path: String },
 }

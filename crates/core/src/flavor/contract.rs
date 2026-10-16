@@ -875,7 +875,7 @@ impl EraseLeg {
                     // OWN owner_id, and asked which source the memory
                     // belonged to when the scope is a source. Everything
                     // else owned is owner-scope only, exactly as
-                    // `wake_config` and the grants are: a source scope is a
+                    // the grants are: a source scope is a
                     // partial owner, and a row with no source attribution
                     // belongs to neither half of it.
                     _ => Self::Owned {
@@ -1237,7 +1237,7 @@ pub struct Surface {
 /// declare [`Self::Projection`] and be believed. The consumer that reads
 /// this is core's renderer deciding whether it can serve the flavor at all,
 /// so a false claim costs that flavor a statement shape it cannot use — not
-/// a leak — but it is a declaration on trust, and `docs/08` §Contract Reach
+/// a leak — but it is a declaration on trust, and `docs/host-integration.md` §Contract Reach
 /// records it as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RankSource {
@@ -1560,7 +1560,7 @@ pub struct FlavorContract {
     pub state_surfaces: &'static [Surface],
     /// The flavor-owned lifecycle scopes this flavor owns, one
     /// [`ScopeDecl`] per [`crate::ScopeKind`] any of its payloads names
-    /// (docs/03 §Scope declaration).
+    /// (docs/build-a-flavor.md).
     ///
     /// Separate from `state_surfaces` because it answers a different
     /// question. A `Surface` says what erase, export, transfer and forget

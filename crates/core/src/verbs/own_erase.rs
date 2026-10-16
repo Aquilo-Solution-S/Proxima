@@ -1,7 +1,7 @@
 //! Flavor-scoped erase — typed surface only.
 //!
 //! [`crate::UnitOfWork::erase_own_series`] hard-erases whole series of ONE
-//! flavor's own memory schemas under ONE owner (docs/13 §Flavor-scoped
+//! flavor's own memory schemas under ONE owner (docs/data-and-erasure.md
 //! erase). The storage body lives in `proxima-storage-pg`.
 
 use crate::error::ProtocolError;

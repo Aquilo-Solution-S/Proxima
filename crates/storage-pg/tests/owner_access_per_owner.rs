@@ -40,8 +40,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         panic!("PG required for tests but admin connect failed: {error}");
     }
     let result = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect(&db_url(&db_name))
@@ -63,7 +62,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         // Someone else's membership in the unmapped group must not leak in.
         seed_membership(&pool, unmapped_group, stranger, Relation::Admin).await;
 
-        let port = PgOwnerAccessResolver::new(pool);
+        let port = PgOwnerAccessResolver::new(pool, pg.platform_scope_for_host());
         let eager = port.resolve_roles_for_subject(forwarder).await?;
 
         for group in [editor_group, layered_group, promoted_group, unmapped_group] {

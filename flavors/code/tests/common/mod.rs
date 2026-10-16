@@ -9,12 +9,12 @@ use proxima_core::{
     Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{
-    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template,
-    fnv1a64_extend,
+    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, drop_db, ensure_template, fnv1a64_extend,
 };
 use proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls;
 use proxima_storage_pg::{
-    PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage, register_core_pg_sidecars,
+    PgPlatformScope, PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage,
+    register_core_pg_sidecars,
 };
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
@@ -25,10 +25,21 @@ pub async fn migrated_db() -> (String, PgStorage) {
     ensure_code_template(
         &template,
         core_migrator_before_owner_rls(),
-        pre_owner_rls_code_migrator(),
+        code_migrator_before_v015(),
     )
     .await;
-    open_migrated_db(&template).await
+    open_migrated_db(&template, true).await
+}
+
+pub fn owner_scope(owner: &OwnerId) -> proxima_core::OwnerScope {
+    proxima_core::test_fixtures::owner_scope_for_tests(&[*owner])
+}
+
+pub fn authenticated_owner(owner: &OwnerId) -> AuthzContext {
+    proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        owner,
+        AuthPath::HostBearer,
+    ))
 }
 
 /// Build the owner-RLS installer fixture in production order: core stops
@@ -44,7 +55,26 @@ pub async fn migrated_db_before_owner_rls() -> (String, PgStorage) {
             .collect(),
     );
     ensure_code_template(&template, core, code_migrator_before_v015()).await;
-    open_migrated_db(&template).await
+    open_migrated_db(&template, false).await
+}
+
+pub async fn historical_db_before_owner_rls() -> (String, sqlx::PgPool) {
+    let template = code_template_before_owner_rls_name();
+    let mut core = proxima_storage_pg::core_migrator();
+    core.migrations = Cow::Owned(
+        core.iter()
+            .filter(|migration| migration.version < 14)
+            .cloned()
+            .collect(),
+    );
+    ensure_code_template(&template, core, code_migrator_before_v015()).await;
+    let db_name = create_db_from_template("proxima_code_test", &template)
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
+    let pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&db_name))
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
+    (db_name, pool)
 }
 
 async fn ensure_code_template(template: &str, core_lane: Migrator, flavor_lane: Migrator) {
@@ -56,11 +86,39 @@ async fn ensure_code_template(template: &str, core_lane: Migrator, flavor_lane: 
     .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
 }
 
-async fn open_migrated_db(template: &str) -> (String, PgStorage) {
+async fn open_migrated_db(template: &str, validate_runtime: bool) -> (String, PgStorage) {
     let db_name = create_db_from_template("proxima_code_test", template)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
-    let pg = match PgStorage::connect(&db_url(&db_name)).await {
+    let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but role setup failed: {e}"));
+    if validate_runtime {
+        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &platform_url,
+            proxima_storage_pg::PgPoolConfig::default(),
+            proxima_storage_pg::PgTuning::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but migration connect failed: {e}"));
+        proxima::run_core_and_flavor_migrations(
+            &migration,
+            <proxima_code::CodeFlavor as proxima::flavor::FlavorBundle>::migrators(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("PG required for tests but migrations failed: {e}"));
+    }
+    let platform_scope = if validate_runtime {
+        let platform_pool = sqlx::PgPool::connect(&platform_url)
+            .await
+            .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
+        PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_code"])
+            .await
+            .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"))
+    } else {
+        PgPlatformScope::for_tests()
+    };
+    let pg = match PgStorage::connect(&runtime_url, platform_scope).await {
         Ok(pg) => pg,
         Err(err) => {
             let _ = drop_db(&db_name).await;
@@ -68,7 +126,12 @@ async fn open_migrated_db(template: &str) -> (String, PgStorage) {
         }
     }
     .with_sidecars(code_pg_sidecars())
-    .with_flavors(&proxima_code::schema_registry());
+    .with_flavors(&proxima_code::schema_registry())
+    .with_admin_pool_for_tests(
+        sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&db_name))
+            .await
+            .unwrap_or_else(|e| panic!("PG required for tests but admin pool failed: {e}")),
+    );
     (db_name, pg)
 }
 
@@ -168,11 +231,12 @@ pub async fn owner_write_permit(
     owner: &OwnerId,
     kind: AccessKind,
 ) -> Result<OwnerWritePermit, Box<dyn std::error::Error>> {
-    let authz = AuthzContext::for_subject_with_role(
-        UserId::new(Uuid::now_v7()),
-        [(*owner, Role::admin())],
-        AuthPath::HostBearer,
-    );
+    let authz =
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(*owner, Role::admin())],
+            AuthPath::HostBearer,
+        ));
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     Ok(engine.authorize_owner_write(&authz, owner, kind).await?)
 }
@@ -400,6 +464,12 @@ pub struct TestDb {
     pub pg: PgStorage,
 }
 
+pub struct HistoricalDb {
+    _guard: DbGuard,
+    pub name: String,
+    pub pool: sqlx::PgPool,
+}
+
 impl TestDb {
     pub async fn fresh() -> Self {
         let (name, pg) = migrated_db().await;
@@ -410,29 +480,31 @@ impl TestDb {
             pg,
         }
     }
+}
 
+impl HistoricalDb {
     pub async fn fresh_before_owner_rls() -> Self {
-        let (name, pg) = migrated_db_before_owner_rls().await;
+        let (name, pool) = historical_db_before_owner_rls().await;
         let guard = DbGuard::adopt(name.clone());
         Self {
             _guard: guard,
             name,
-            pg,
+            pool,
         }
     }
 }
 
 fn code_template_name() -> String {
     let mut hash = FNV_OFFSET_BASIS;
-    for migration in core_migrator_before_owner_rls().iter() {
+    for migration in proxima_storage_pg::core_migrator().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
-    for migration in pre_owner_rls_code_migrator().iter() {
+    for migration in proxima_code::migrator().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
-    format!("proxima_tmpl_code_{hash:016x}")
+    format!("proxima_tmpl_code_{hash:016x}_preowner")
 }
 
 fn code_template_before_owner_rls_name() -> String {
@@ -463,9 +535,10 @@ fn code_template_before_owner_rls_name() -> String {
 ///
 /// Panics when the registration fails.
 pub async fn register_fixture_repo(pool: &sqlx::PgPool, owner: &OwnerId, repo_id: Uuid) {
+    let scope = owner_scope(owner);
     proxima_code::testkit::register_repo(
         pool,
-        None,
+        &scope,
         owner,
         repo_id,
         &format!("/tmp/proxima-code-fixture-{repo_id}"),
@@ -491,13 +564,17 @@ pub fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
 /// Current production migrations, with the caller's admin pool retained only
 /// for independently seeding and checking fixture data.
 pub async fn apply_current_migrations(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    apply_current_migrations_pool(pg.pool_for_tests()).await
+}
+
+pub async fn apply_current_migrations_pool(
+    pool: &sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let database: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pg.pool_for_tests())
+        .fetch_one(pool)
         .await?;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database).await?;
-    proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(pg.pool_for_tests())
-        .await?;
-    let platform = PgStorage::connect_for_migrations_with_config(
+    let platform = proxima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         proxima_storage_pg::PgPoolConfig::default(),
         proxima_storage_pg::PgTuning::default(),
