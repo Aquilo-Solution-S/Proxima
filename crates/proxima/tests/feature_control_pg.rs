@@ -344,19 +344,21 @@ async fn configuration_fault_health_tracks_the_worker_and_clears_after_rebinding
     assert_eq!(refused.calls.load(Ordering::SeqCst), 0);
     assert_eq!(control.resume(), Ok(()));
     within(async {
-        loop {
-            let ready = http.get(format!("{base}/readyz")).send().await.unwrap();
-            if ready.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                assert_eq!(
-                    ready.text().await.unwrap(),
-                    "embedding configuration fault: HTTP 401"
-                );
-                break;
-            }
+        while engine.embedding_configuration_faults().is_empty() {
             tokio::task::yield_now().await;
         }
     })
     .await;
+    assert_eq!(
+        engine.embedding_configuration_faults(),
+        vec![proxima_core::EmbeddingConfigurationFault::Unauthorized]
+    );
+    let ready = http.get(format!("{base}/readyz")).send().await.unwrap();
+    assert_eq!(ready.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        ready.text().await.unwrap(),
+        "degraded: embedding configuration fault: HTTP 401"
+    );
     assert_eq!(
         http.get(format!("{base}/healthz"))
             .send()

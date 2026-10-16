@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Process liveness.
 pub const HEALTHZ_PATH: &str = "/healthz";
-/// Readiness: database available, runtime active, and no observed embedding
-/// client paused for a configuration fault.
+/// Readiness: database available and runtime active. A paused embedding client
+/// retains HTTP 200 with a sanitized degraded status.
 pub const READYZ_PATH: &str = "/readyz";
 
 /// Longest a readiness probe waits on the database. Below the usual probe
@@ -59,8 +59,8 @@ async fn ready(State(probe): State<Probe>) -> (StatusCode, String) {
                     .collect::<Vec<_>>()
                     .join(", ");
                 (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("embedding configuration fault: HTTP {statuses}"),
+                    StatusCode::OK,
+                    format!("degraded: embedding configuration fault: HTTP {statuses}"),
                 )
             }
         }
@@ -68,5 +68,35 @@ async fn ready(State(probe): State<Probe>) -> (StatusCode, String) {
             StatusCode::SERVICE_UNAVAILABLE,
             "database unavailable".into(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn database_failure_and_shutdown_remain_unavailable() {
+        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        pool.close().await;
+        let probe = Probe {
+            pool,
+            cancel: CancellationToken::new(),
+            engine: Arc::new(Engine::new(
+                proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            )),
+        };
+        assert_eq!(
+            ready(State(probe.clone())).await,
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database unavailable".into()
+            )
+        );
+        probe.cancel.cancel();
+        assert_eq!(
+            ready(State(probe)).await,
+            (StatusCode::SERVICE_UNAVAILABLE, "shutting down".into())
+        );
     }
 }

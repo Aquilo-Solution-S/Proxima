@@ -74,9 +74,12 @@ request headers.
 
 With health endpoints enabled, anonymous `/healthz` is liveness and `/readyz`
 checks database reachability, shutdown state and observed embedding-client
-configuration faults. A paused client makes readiness return 503 with only its
-sanitized HTTP status code; liveness continues to answer. These routes sit outside
-bearer and Host guards; expose them according to deployment policy.
+configuration faults. A paused client keeps readiness at HTTP 200 with a named
+degraded body, such as `degraded: embedding configuration fault: HTTP 401`,
+containing only sanitized status codes. Readiness returns 503 only when the
+database is unavailable or shutdown has started; liveness continues to answer.
+These routes sit outside bearer and Host guards; expose them according to
+deployment policy.
 An authenticated graph-resource read checks the served owner path.
 
 Accepted memory writes enqueue embedding work atomically without calling the
