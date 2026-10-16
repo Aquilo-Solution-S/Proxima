@@ -13,6 +13,11 @@ connections use separate roles with `NOBYPASSRLS`. Serving requests enter an
 owner-scoped transaction; platform maintenance enters the separately authorized
 platform scope. Owner RLS is always enforced.
 
+The boot RLS guard covers composed schemas and schemas recorded in
+`proxima_core.flavor_surface`, including stored flavors absent from the binary.
+The platform connection reads that catalog; the runtime connection is checked
+against the combined inventory.
+
 `DATABASE_URL` and `PROXIMA_PLATFORM_DATABASE_URL` are both required for the
 canonical host. Provision the platform role as the schema/migration owner and
 the runtime role for serving grants. Development provisioning is executable in

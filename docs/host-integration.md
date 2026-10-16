@@ -61,6 +61,13 @@ policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor
 or add a caller-controlled ACL/share set.
 
+Attaching a subgroup or changing its relation requires manage authority on
+both groups. Detaching it requires manage authority on either endpoint;
+removing a person requires manage authority on the parent group. PostgreSQL
+write policies enforce these boundaries. Lock requests retain both endpoints
+for tree serialization; their read and write policies require manage authority
+on either endpoint.
+
 ## Other stores and HTTP
 
 Use `FlavorApp::services` to expose a typed service, and

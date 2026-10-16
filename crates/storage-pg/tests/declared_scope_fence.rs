@@ -253,6 +253,10 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
                  t uuid PRIMARY KEY REFERENCES proxima_core.memory(t) ON DELETE CASCADE,
                  logical_id text NOT NULL
              );
+             ALTER SCHEMA test_scope OWNER TO proxima_test_platform;
+             ALTER TABLE test_scope.things OWNER TO proxima_test_platform;
+             ALTER TABLE test_scope.scoped_fact_v1 OWNER TO proxima_test_platform;
+             ALTER TABLE test_scope.unscoped_fact_v1 OWNER TO proxima_test_platform;
              INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
              VALUES ('test_scope.scoped_fact_v1', 'test-scope'),
                     ('test_scope.unscoped_fact_v1', 'test-scope');
@@ -267,12 +271,19 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
         )
         .execute(pg.pool_for_tests())
         .await?;
-        sqlx::raw_sql("GRANT USAGE ON SCHEMA test_scope TO PUBLIC;")
-            .execute(pg.pool_for_tests())
-            .await?;
-        sqlx::raw_sql("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA test_scope TO PUBLIC;")
-            .execute(pg.pool_for_tests())
-            .await?;
+        sqlx::raw_sql(
+            "SELECT proxima_core.install_owner_rls(
+                 'test_scope',
+                 ARRAY['things']::text[],
+                 ARRAY['scoped_fact_v1', 'unscoped_fact_v1']::text[],
+                 ARRAY[]::text[]
+             );
+             GRANT USAGE ON SCHEMA test_scope TO PUBLIC;
+             REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA test_scope FROM PUBLIC;
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA test_scope TO PUBLIC;",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
             .with_flavors(&registry);

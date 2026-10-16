@@ -26,6 +26,9 @@ const RELATIONS: [Relation; 4] = [
     Relation::Ingest,
 ];
 
+#[path = "nested_groups/write_policies.rs"]
+mod write_policies;
+
 struct Harness {
     pool: PgPool,
     platform: PgPool,
