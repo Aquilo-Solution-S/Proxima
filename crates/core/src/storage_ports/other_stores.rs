@@ -155,6 +155,13 @@ pub struct RemoteSearch {
 }
 
 /// One store's answer, including lexical fallback even when it found no hits.
+///
+/// The fallback fact is required for an empty answer too.
+///
+/// ```compile_fail,E0063
+/// use proxima_core::storage_ports::other_stores::RemoteSearchResult;
+/// let _ = RemoteSearchResult { hits: Vec::new() };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteSearchResult {
     pub hits: Vec<RemoteHit>,
