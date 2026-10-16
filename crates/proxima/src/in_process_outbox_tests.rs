@@ -657,8 +657,8 @@ impl World {
     /// outlives: expiry happens only when a test forces it in SQL.
     fn manual_drain(&self, intake: Arc<dyn DurableIntake>) -> Arc<Drain> {
         let settings = Settings {
-            lease: Duration::from_secs(3600),
-            accept_timeout: Duration::from_secs(3600),
+            lease: Duration::from_hours(1),
+            accept_timeout: Duration::from_hours(1),
             ..Settings::new()
         };
         Arc::new(Drain::new(
@@ -697,29 +697,35 @@ impl World {
     /// deletes itself rather than the verb.
     async fn mark_erased(&self, t: Uuid) {
         let mut tx = self.pool.begin().await.expect("begin erase");
-        let dependents: Vec<(String, String)> = sqlx::query_as(
-            "SELECT con.conrelid::regclass::text, att.attname::text
-               FROM pg_constraint con
-               JOIN pg_attribute att
-                 ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
-              WHERE con.contype = 'f'
-                AND con.confrelid = 'proxima_core.memory'::regclass",
+        // The dependents come from the catalog: every foreign key onto
+        // `memory`. A session-local function deletes them, so the Rust side
+        // sends only fixed text.
+        sqlx::query(
+            "CREATE FUNCTION pg_temp.delete_fact_dependents(fact uuid) RETURNS void
+             LANGUAGE plpgsql AS $fn$
+             DECLARE dep record;
+             BEGIN
+               FOR dep IN
+                 SELECT con.conrelid::regclass AS tbl, att.attname AS col
+                   FROM pg_constraint con
+                   JOIN pg_attribute att
+                     ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+                  WHERE con.contype = 'f'
+                    AND con.confrelid = 'proxima_core.memory'::regclass
+               LOOP
+                 EXECUTE format('DELETE FROM %s WHERE %I = $1', dep.tbl, dep.col)
+                   USING fact;
+               END LOOP;
+             END $fn$",
         )
-        .fetch_all(&mut *tx)
+        .execute(&mut *tx)
         .await
-        .expect("memory dependents");
-        for (table, column) in dependents {
-            // SQL-POLICY: generated — table and column come from pg_constraint
-            // and pg_attribute for foreign keys onto proxima_core.memory; no
-            // caller input reaches the text.
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DELETE FROM {table} WHERE {column} = $1"
-            )))
+        .expect("create the dependent-delete helper");
+        sqlx::query("SELECT pg_temp.delete_fact_dependents($1)")
             .bind(t)
             .execute(&mut *tx)
             .await
             .expect("delete dependent rows");
-        }
         sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
             .bind(t)
             .execute(&mut *tx)

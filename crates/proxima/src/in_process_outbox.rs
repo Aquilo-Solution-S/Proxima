@@ -294,21 +294,18 @@ impl Drain {
         // while this pass was busy may belong to another drain now, and the
         // record may have been erased since the claim. Either way it is not
         // ours to deliver; it is neither marked nor released.
-        match self
+        let still_ours = self
             .outbox
             .renew_claim(&self.consumer, record.id, record.claim, self.settings.lease)
             .await
-            .map_err(|_| Failure::Storage)?
-        {
-            true => {}
-            false => {
-                tracing::info!(
-                    consumer = %self.consumer,
-                    skipped = 1u32,
-                    "a claimed record is no longer deliverable under this claim; skipped"
-                );
-                return Ok(Flow::Stale);
-            }
+            .map_err(|_| Failure::Storage)?;
+        if !still_ours {
+            tracing::info!(
+                consumer = %self.consumer,
+                skipped = 1u32,
+                "a claimed record is no longer deliverable under this claim; skipped"
+            );
+            return Ok(Flow::Stale);
         }
         let accepted = tokio::select! {
             () = cancel.cancelled() => return Ok(Flow::HandBack),
