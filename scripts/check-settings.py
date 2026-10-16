@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
-import io
 import re
 import sys
 import tempfile
@@ -120,7 +118,6 @@ def string_spans(text: str) -> list[tuple[int, int]]:
     quote: str | None = None
     escaped = False
     for index, char in enumerate(text):
-        previous = text[index - 1] if index else ""
         next_char = text[index + 1] if index + 1 < len(text) else ""
         if quote is None:
             if char == '"' or (char == "'" and not (next_char.isalpha() or next_char == "_")):
