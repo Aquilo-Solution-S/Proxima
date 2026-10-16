@@ -112,7 +112,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_OUTBOX_MAX_PENDING` | Unpublished-record ceiling. Default `100000`. At the ceiling a listenable write fails `CapacityExhausted` — explicit backpressure, never silent eviction. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Largest serialized typed export accepted for capture. Default `524288`. Over-cap writes fail `PayloadTooLarge`. |
 | `PROXIMA_OUTBOX_HTTP_URL` | Registers the built-in HTTP sink as the outbox consumer `http`: one `POST` per event, raw CloudEvent body. Unset ⇒ no sink ([18 §Built-in HTTP sink](18-fact-outbox.md#built-in-http-sink)). |
-| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Bearer token file for the HTTP sink, re-read on every delivery. Requires an `https://` URL. |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Bearer token file for the HTTP sink, re-read on every delivery. Requires an `https://` URL, or `http://` to loopback or a host named in `PROXIMA_PLAINTEXT_HOSTS`. |
 | `PROXIMA_OUTBOX_HTTP_CA_FILE` | PEM trust root for the HTTP sink; when set, the only one. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Delete already-`published` outbox records older than this many seconds, in bounded batches, while the outbox publisher runs (an outbox consumer is configured). Unset or `0` ⇒ keep forever. Minimum `60`; a smaller value is a boot error. Never removes a record some consumer has not received, whatever its age. |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
@@ -120,7 +120,7 @@ async fn main() -> Result<(), proxima::ProximaError> {
 | `PROXIMA_S3_ACCESS_KEY_ID` | Required static access key id when the bucket is set. |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | Required static secret access key when the bucket is set; redacted in debug output. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. `https://`, or `http://` to loopback or a host named in `PROXIMA_PLAINTEXT_HOSTS`. |
-| `PROXIMA_PLAINTEXT_HOSTS` | Comma-separated exact host names that may use plaintext `http://` besides loopback, for the S3 endpoint and the embeddings base URL ([§ Plaintext hosts](#plaintext-hosts)). Unset ⇒ loopback only. |
+| `PROXIMA_PLAINTEXT_HOSTS` | Comma-separated exact host names that may use plaintext `http://` besides loopback, for the S3 endpoint, the embeddings base URL and the HTTP outbox sink's token ([§ Plaintext hosts](#plaintext-hosts)). Unset ⇒ loopback only. |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | S3 path-style addressing flag. |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | Presigned upload URL TTL. |
 | `PROXIMA_S3_READ_TTL_SECONDS` | Presigned read URL TTL. |
@@ -858,10 +858,11 @@ service name on a network with no route out, `http://gateway:9090`).
 | Rule | Fact |
 |---|---|
 | Value | comma-separated exact host names; ASCII-case-insensitive; no scheme, port or path |
-| Default | unset or blank ⇒ no host named; every endpoint validates as before |
+| Default | unset or blank ⇒ no host named; loopback is the only plaintext exception |
 | Refused at boot | `*` wildcards, ranges (`/`), IP literals, all-digit labels (`10.0.0.1-9`), empty entries, any non-host-name character |
-| Lanes | `PROXIMA_S3_ENDPOINT_URL` and `PROXIMA_EMBED_BASE_URL`, through `proxima_core::validate_endpoint_url_for_hosts`; an embeddings redirect hop is checked the same way |
-| Not widened | HTTPS-only lanes (outbox HTTP sink, OIDC JWKS of a non-loopback issuer); OIDC issuer/JWKS loopback exception |
+| Lanes | every lane that sends a credential over HTTP: `PROXIMA_S3_ENDPOINT_URL`, `PROXIMA_EMBED_BASE_URL` (and each redirect hop) and `PROXIMA_OUTBOX_HTTP_URL` with a token file, through `proxima_core::validate_endpoint_url_for_hosts` |
+| Outbox sink | with a token file, `http://` to loopback or a named host (before v0.0.35: `https://` only); without one, `http://` to any host, as before |
+| Not widened | OIDC issuer and JWKS: they decide whose token is trusted, so a plaintext hop there would let anyone on it mint identities; loopback stays their only plaintext exception |
 | Library host | `S3RuntimeConfig::plaintext_hosts`, `OpenAiCompatConfig::with_plaintext_hosts`; both take `PlaintextHosts::parse` / `from_lookup` |
 
 <a id="large-artefact-s3"></a>

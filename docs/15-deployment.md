@@ -179,7 +179,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_OUTBOX_MAX_PENDING` | no | `100000` | Unpublished-record ceiling; at the ceiling listenable writes fail `CapacityExhausted`. |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | no | `524288` | Largest captured export; over-cap writes fail `PayloadTooLarge`. |
 | `PROXIMA_OUTBOX_HTTP_URL` | no | `https://receiver.example.com/events` | Registers the built-in HTTP sink as the outbox consumer `http` ([18 §Built-in HTTP sink](18-fact-outbox.md#built-in-http-sink)). Unset ⇒ no sink. |
-| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | no | `/run/secrets/outbox-token` | Bearer token file, re-read on every delivery. Requires an `https://` URL. |
+| `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | no | `/run/secrets/outbox-token` | Bearer token file, re-read on every delivery. Requires an `https://` URL, or `http://` to loopback or a `PROXIMA_PLAINTEXT_HOSTS` host. |
 | `PROXIMA_OUTBOX_HTTP_CA_FILE` | no | `/etc/proxima/receiver-ca.pem` | PEM trust root for the receiver; when set, the only one. |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | no | `604800` | Delete already-`published` records older than this. Unset or `0` ⇒ keep forever. Minimum `60`; below that, boot fails. Never touches a `pending` or `claimed` record. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
@@ -187,7 +187,7 @@ silently unguarded table (see [09](09-developing-flavors.md)).
 | `PROXIMA_S3_ACCESS_KEY_ID` | with bucket | `proxima` | Static S3 access key id. |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | with bucket | `proxima-dev` | Static S3 secret access key; never logged. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
-| `PROXIMA_PLAINTEXT_HOSTS` | no | `gateway` | exact host names that may use plaintext `http://` besides loopback (S3 endpoint, embeddings base URL). Wildcards, ranges and IP literals fail boot ([10 §Plaintext hosts](10-configuration.md#plaintext-hosts)). |
+| `PROXIMA_PLAINTEXT_HOSTS` | no | `gateway` | exact host names that may use plaintext `http://` besides loopback (S3 endpoint, embeddings base URL, HTTP outbox sink with a token). Wildcards, ranges and IP literals fail boot ([10 §Plaintext hosts](10-configuration.md#plaintext-hosts)). |
 | `PROXIMA_PG_*` | no | see [env-vars](reference/env-vars.md) | Pool and search tuning (`MAX_CONNECTIONS`, `HNSW_*`, `SEMANTIC_*`). Defaults are the shipped path. |
 
 ## No standing bypass

@@ -4,7 +4,10 @@
 //! Configured from the environment only, and registered as the consumer
 //! `http` only when `PROXIMA_OUTBOX_HTTP_URL` is set:
 //!
-//! - `PROXIMA_OUTBOX_HTTP_URL`: `https://…` (or `http://…` without a token).
+//! - `PROXIMA_OUTBOX_HTTP_URL`: `https://…`, or `http://…` without a token.
+//!   With a token, `http://` only to loopback or a host named in
+//!   `PROXIMA_PLAINTEXT_HOSTS`, the rule every credential lane shares
+//!   ([`validate_endpoint_url_for_hosts`]).
 //! - `PROXIMA_OUTBOX_HTTP_TOKEN_FILE`: re-read on every delivery and sent as
 //!   `Authorization: Bearer <token>`, so a rotated token is picked up without
 //!   a restart. Never cached, never logged.
@@ -18,6 +21,9 @@ use std::time::Duration;
 
 use proxima_core::publication::intake::{DurableIntake, Intake, IntakeError, ReceivedEvent};
 use proxima_core::storage_ports::publication::ConsumerName;
+use proxima_core::{
+    EndpointUrlPolicy, PROXIMA_PLAINTEXT_HOSTS, PlaintextHosts, validate_endpoint_url_for_hosts,
+};
 
 use crate::ProximaError;
 
@@ -79,18 +85,27 @@ impl HttpIntake {
         url: &str,
         token_file: Option<PathBuf>,
         ca_file: Option<&Path>,
+        plaintext_hosts: &PlaintextHosts,
     ) -> Result<Self, ProximaError> {
         let url = reqwest::Url::parse(url)
             .map_err(|err| ProximaError::Config(format!("{ENV_URL} is not a URL: {err}")))?;
         match url.scheme() {
             "https" => {}
             "http" if token_file.is_none() => {}
-            "http" => {
-                return Err(ProximaError::Config(format!(
-                    "{ENV_URL} must be https:// when {ENV_TOKEN_FILE} is set: the bearer \
-                     token is never sent in clear text"
-                )));
-            }
+            // A bearer goes over plaintext only where every other credential
+            // lane may: loopback, or a host the operator named.
+            "http" => validate_endpoint_url_for_hosts(
+                url.as_str(),
+                EndpointUrlPolicy::AllowLoopbackHttp,
+                plaintext_hosts,
+            )
+            .map_err(|_| {
+                ProximaError::Config(format!(
+                    "{ENV_URL} must be https:// when {ENV_TOKEN_FILE} is set, unless its host \
+                     is loopback or named in {PROXIMA_PLAINTEXT_HOSTS}: the bearer token never \
+                     crosses a network in clear text"
+                ))
+            })?,
             other => {
                 return Err(ProximaError::Config(format!(
                     "{ENV_URL} must be an http(s) URL, got scheme {other:?}"
@@ -132,16 +147,19 @@ impl HttpIntake {
     ///
     /// # Errors
     ///
-    /// As [`Self::new`].
+    /// As [`Self::new`], and a [`PROXIMA_PLAINTEXT_HOSTS`] value that is not
+    /// a list of exact host names, even while the URL is unset.
     pub(crate) fn from_lookup(
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, ProximaError> {
+        let plaintext_hosts = PlaintextHosts::from_lookup(lookup)
+            .map_err(|err| ProximaError::Config(err.to_string()))?;
         let Some(url) = lookup(ENV_URL) else {
             return Ok(None);
         };
         let token_file = lookup(ENV_TOKEN_FILE).map(PathBuf::from);
         let ca_file = lookup(ENV_CA_FILE).map(PathBuf::from);
-        Self::new(&url, token_file, ca_file.as_deref()).map(Some)
+        Self::new(&url, token_file, ca_file.as_deref(), &plaintext_hosts).map(Some)
     }
 
     async fn bearer(&self) -> Result<Option<String>, IntakeError> {

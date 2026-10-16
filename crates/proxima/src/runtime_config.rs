@@ -1655,6 +1655,21 @@ mod tests {
             clear_text_token.to_string().contains("https"),
             "{clear_text_token}"
         );
+        let (plaintext, _) = base()
+            .apply_lookup(lookup(&[
+                ("PROXIMA_OUTBOX_HTTP_URL", "http://receiver.example/"),
+                ("PROXIMA_OUTBOX_HTTP_TOKEN_FILE", "/nonexistent"),
+                ("PROXIMA_PLAINTEXT_HOSTS", "receiver.example"),
+            ]))
+            .expect("a named host takes a token over http://")
+            .resolve()
+            .expect("resolves");
+        assert_eq!(names(&plaintext), ["http"]);
+        for hosts in ["*", "10.0.0.0/8"] {
+            base()
+                .apply_lookup(lookup(&[("PROXIMA_PLAINTEXT_HOSTS", hosts)]))
+                .expect_err("a bad plaintext host fails boot without a sink");
+        }
         base()
             .apply_lookup(lookup(&[
                 ("PROXIMA_OUTBOX_HTTP_URL", "https://receiver.example/"),

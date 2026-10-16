@@ -640,7 +640,7 @@ whose `accept` makes one HTTP request per event. Unset, nothing is registered.
 
 | Variable | Meaning |
 |---|---|
-| `PROXIMA_OUTBOX_HTTP_URL` | Receiver URL. `https://`, or `http://` only without a token file. A malformed URL fails boot |
+| `PROXIMA_OUTBOX_HTTP_URL` | Receiver URL. `https://`; `http://` without a token file, or with one only to loopback or a host named in `PROXIMA_PLAINTEXT_HOSTS` ([10 §Plaintext hosts](10-configuration.md#plaintext-hosts)). A malformed URL fails boot |
 | `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Optional. Read **on every delivery** (never cached, never logged) and sent as `Authorization: Bearer <token>`, so a rotated token takes effect without a restart. Missing, unreadable or empty at delivery time ⇒ `IntakeError` and no request |
 | `PROXIMA_OUTBOX_HTTP_CA_FILE` | Optional PEM bundle. When set it is the **only** trust root (built-in roots are not consulted). Unreadable or not PEM ⇒ boot fails |
 
