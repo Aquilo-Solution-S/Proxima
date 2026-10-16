@@ -53,6 +53,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_EMBED_BATCH_SIZE | provider batch size | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_WORKER_INTERVAL_SECONDS | worker poll interval | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS | stale claim timeout | embedding worker recovery | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
+| PROXIMA_MISSING_MIGRATION_POLICY | missing-version policy (`reject` or `allow`) | releases intentionally share a database | `missing_migration_policy_from_lookup` |
 | PROXIMA_SKIP_MIGRATIONS | migration boot switch | split-role deployment | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_RUNTIME_GRANTS | runtime grant boot switch | owner-RLS deployment | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_PG_MAX_CONNECTIONS | pool size | pool tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |

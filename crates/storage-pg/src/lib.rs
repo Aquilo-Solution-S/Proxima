@@ -118,13 +118,24 @@ pub use tuning::{HnswIterativeScan, PgTuning};
 /// docs/contributing.md).
 pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 
+/// Whether a host permits ledger versions absent from its migration sources.
+///
+/// Forgiveness is an explicit deployment choice, for example while two
+/// releases share a database. It never relaxes checksums or schema checks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingMigrationPolicy {
+    /// Refuse any recorded version that no composed source ships.
+    #[default]
+    Reject,
+    /// Permit recorded versions absent from the composed sources.
+    Allow,
+}
+
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
-/// `ignore_missing = true` forgives ledger rows the embedded set does not
-/// account for: flavor rows in the shared `public._sqlx_migrations` table,
-/// and the orphaned draft rows the squash workflow
-/// (docs/contributing.md) leaves behind. Both are forgiven rather than
-/// enumerated.
+/// `SQLx` ignores versions outside this source because composed host sources
+/// can share its ledger. The migration facade validates their union; direct
+/// backend migration runs validate the core ledger before applying anything.
 #[must_use]
 pub fn core_migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
@@ -168,8 +179,23 @@ fn embedded_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
 /// retired versions and post-baseline checksum drift, and for catalog query
 /// failures.
 pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageError> {
+    ensure_core_ledger_compatible_with_policy(pool, MissingMigrationPolicy::Reject).await
+}
+
+/// [`ensure_core_ledger_compatible`] with an explicit missing-version policy.
+///
+/// Known checksums and the core baseline remain mandatory under both policies.
+///
+/// # Errors
+///
+/// The errors of [`ensure_core_ledger_compatible`], except that
+/// [`MissingMigrationPolicy::Allow`] permits unknown versions.
+pub async fn ensure_core_ledger_compatible_with_policy(
+    pool: &PgPool,
+    policy: MissingMigrationPolicy,
+) -> Result<(), StorageError> {
     let mut connection = pool.acquire().await.map_err(internal)?;
-    ensure_core_ledger_compatible_on_connection(&mut connection).await
+    ensure_core_ledger_compatible_on_connection_with_policy(&mut connection, policy).await
 }
 
 /// [`ensure_core_ledger_compatible`] on a connection the caller holds, so the
@@ -182,6 +208,24 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
 /// The errors of [`ensure_core_ledger_compatible`].
 pub async fn ensure_core_ledger_compatible_on_connection(
     connection: &mut PgConnection,
+) -> Result<(), StorageError> {
+    ensure_core_ledger_compatible_on_connection_with_policy(
+        connection,
+        MissingMigrationPolicy::Reject,
+    )
+    .await
+}
+
+/// [`ensure_core_ledger_compatible_with_policy`] on the caller's connection.
+///
+/// Issues only `SELECT`s, including inside a caller's read-only snapshot.
+///
+/// # Errors
+///
+/// The errors of [`ensure_core_ledger_compatible_with_policy`].
+pub async fn ensure_core_ledger_compatible_on_connection_with_policy(
+    connection: &mut PgConnection,
+    policy: MissingMigrationPolicy,
 ) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -263,6 +307,10 @@ pub async fn ensure_core_ledger_compatible_on_connection(
         });
     }
 
+    let unknown_versions = match policy {
+        MissingMigrationPolicy::Reject => unknown_versions,
+        MissingMigrationPolicy::Allow => Vec::new(),
+    };
     if unknown_versions.is_empty() && amended_versions.is_empty() {
         return Ok(());
     }

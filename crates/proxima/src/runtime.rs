@@ -233,6 +233,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// See [`RuntimeBuilder::missing_migration_policy`].
+    #[must_use]
+    pub fn missing_migration_policy(mut self, policy: crate::MissingMigrationPolicy) -> Self {
+        self.overlay = self.overlay.missing_migration_policy(policy);
+        self
+    }
+
     /// See [`RuntimeBuilder::request_headers`].
     #[must_use]
     pub fn request_headers(mut self, request_headers: Vec<String>) -> Self {

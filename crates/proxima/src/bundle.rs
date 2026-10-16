@@ -15,8 +15,8 @@ pub trait FlavorBundle {
     /// Returns a registry error when a linked flavor registration is invalid.
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>;
     fn register_pg_sidecars(_registry: &mut PgSidecarRegistry) {}
-    /// By-value, order-preserving. The facade force-sets
-    /// `ignore_missing(true)` on every returned migrator at boot.
+    /// By-value, order-preserving. The facade validates ledger versions
+    /// against all composed sources at boot.
     fn migrators() -> Vec<NamedMigrator>;
 
     /// Spawn this flavor's background workers. Default: none.

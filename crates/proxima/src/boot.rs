@@ -23,7 +23,7 @@ use crate::bundle::FlavorBundle;
 use crate::runtime_grants::{self, RuntimeGrants};
 use crate::{
     CitedBlobStore, MigrationError, NamedMigrator, ProximaError, RuntimeConfig, RuntimeParts,
-    preflight_without_migrations, run_core_and_flavor_migrations,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy,
 };
 
 /// A started engine plus the handles the runtime keeps from its boot.
@@ -289,13 +289,21 @@ async fn connect_and_migrate(
     if config.skip_migrations {
         // GitOps split-role deploy: schema is migrated out-of-band under a
         // DDL role; here we only run the preflight and issue no DDL.
-        preflight_without_migrations(&migration_pg, migrators)
-            .await
-            .map_err(migration_error)?;
+        preflight_without_migrations_with_policy(
+            &migration_pg,
+            migrators,
+            config.missing_migration_policy,
+        )
+        .await
+        .map_err(migration_error)?;
     } else {
-        run_core_and_flavor_migrations(&migration_pg, migrators)
-            .await
-            .map_err(migration_error)?;
+        run_core_and_flavor_migrations_with_policy(
+            &migration_pg,
+            migrators,
+            config.missing_migration_policy,
+        )
+        .await
+        .map_err(migration_error)?;
     }
     if let Some(grants) = runtime_grants {
         grants.apply(&migration_pg.clone_pool_for_backend()).await?;

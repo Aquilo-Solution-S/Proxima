@@ -2,8 +2,8 @@
 //! runner's order, from a consistent snapshot, and writes nothing.
 //!
 //! The measure is the run itself: each shape plans, runs, and compares the
-//! plan with the ledger rows the run then wrote (a flavor's cutover copies
-//! excluded, in the order their transactions wrote them). Each refusal
+//! plan with the ledger rows the run then wrote, in the order their
+//! transactions wrote them. Each refusal
 //! compares the plan's error with the run's, as `Debug` text and as a variant.
 
 #[path = "fixtures/split_core_db.rs"]
@@ -373,8 +373,7 @@ fn coordinates(plan: &[PendingMigration]) -> Vec<(&str, i64)> {
 }
 
 /// The migrations a run wrote between two readings of the ledgers, in write
-/// order: by transaction, then by place in the heap. A row on a flavor's own ledger whose version core's ledger also
-/// holds is the cutover's copy, not an applied migration.
+/// order: by transaction, then by place in the heap.
 fn applied_between(before: &[Row], after: &[Row]) -> Vec<Triple> {
     let mut fresh: Vec<&Row> = after
         .iter()
@@ -382,12 +381,6 @@ fn applied_between(before: &[Row], after: &[Row]) -> Vec<Triple> {
             !before
                 .iter()
                 .any(|old| old.ledger == row.ledger && old.version == row.version)
-        })
-        .filter(|row| {
-            row.ledger == CORE
-                || !after
-                    .iter()
-                    .any(|other| other.ledger == CORE && other.version == row.version)
         })
         .collect();
     fresh.sort_by_key(|row| (row.xid, row.slot));
@@ -536,69 +529,51 @@ async fn a_flavor_behind_lists_the_rest_and_a_current_database_lists_nothing() {
 }
 
 #[tokio::test]
-async fn a_flavor_whose_rows_sit_on_the_shared_ledger_has_nothing_pending() {
+async fn a_flavor_cannot_move_its_history_from_the_shared_ledger() {
     let db = Db::core_current().await;
-    // `NamedMigrator::new` records on core's ledger: the shape of a database
-    // from before the flavor had a ledger of its own.
     db.run(vec![NamedMigrator::new("forge", migrator(&[F1, F2]))])
         .await;
     assert!(
         !db.ledger_exists(FORGE).await,
-        "the flavor never had its own ledger"
+        "the source has no private ledger"
     );
     let before = db.world().await;
-
-    let plan = db.plan(&[forge(&[F1, F2])]).await.expect("the plan");
-    assert_eq!(
-        coordinates(&plan),
-        [],
-        "the cutover would copy both rows: nothing is pending"
+    let refused = db.same_refusal(|| vec![forge(&[F1, F2])]).await;
+    assert!(
+        matches!(
+            refused,
+            MigrationError::Ledger { source: "forge", ref ledger, conflict: LedgerConflict::RecordedElsewhere { version: F1, ledger: ref recorded } } if ledger == FORGE && recorded == CORE
+        ),
+        "{refused:?}"
     );
-    assert_eq!(db.world().await, before, "the plan changed nothing");
+    assert_eq!(
+        db.world().await,
+        before,
+        "refused run copied or applied nothing"
+    );
     assert!(
         !db.ledger_exists(FORGE).await,
-        "the plan did not create the own ledger"
+        "refused run created no ledger"
     );
-
-    let plan = db.plan_then_run(|| vec![forge(&[F1, F2, F3])]).await;
-    assert_eq!(
-        coordinates(&plan),
-        [(FORGE, F3)],
-        "the copied rows count; the run's own ledger gets F3"
-    );
-    assert!(db.ledger_exists(FORGE).await, "the run created it");
 }
 
 #[tokio::test]
-async fn a_lane_that_does_not_continue_its_ledger_is_refused_as_the_run_refuses_it() {
+async fn a_lane_with_unknown_versions_is_refused_as_the_run_refuses_it() {
     let db = Db::core_current().await;
     db.run(vec![forge(&[F1, F2, F4])]).await;
-
-    let replaced = db.same_refusal(|| vec![forge(&[F5])]).await;
-    assert!(
-        matches!(
-            replaced,
-            MigrationError::Ledger {
-                source: "forge",
-                conflict: LedgerConflict::Replaced { root: F5, .. },
-                ..
-            }
-        ),
-        "{replaced:?}"
-    );
-
-    let diverged = db.same_refusal(|| vec![forge(&[F1, F2, F3])]).await;
-    assert!(
-        matches!(
-            diverged,
-            MigrationError::Ledger {
-                source: "forge",
-                ref ledger,
-                conflict: LedgerConflict::Diverged { .. },
-            } if ledger == FORGE
-        ),
-        "{diverged:?}"
-    );
+    for versions in [&[F5][..], &[F1, F2, F3][..]] {
+        let refused = db.same_refusal(|| vec![forge(versions)]).await;
+        assert!(
+            matches!(
+                refused,
+                MigrationError::Flavor {
+                    source: "forge",
+                    err: MigrateError::VersionMissing(_)
+                }
+            ),
+            "{refused:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -615,7 +590,9 @@ async fn a_dirty_ledger_row_is_refused_as_the_run_refuses_it() {
     .execute(&db.admin)
     .await
     .expect("dirty row");
-    let own = db.same_refusal(|| vec![forge(&[F1, F2, F3, F4])]).await;
+    let own = db
+        .same_refusal(|| vec![forge(&[F1, F2, F3, F4]), shared(&[S1, S2])])
+        .await;
     assert!(
         matches!(
             own,
@@ -636,7 +613,9 @@ async fn a_dirty_ledger_row_is_refused_as_the_run_refuses_it() {
     .execute(&db.admin)
     .await
     .expect("dirty row");
-    let core = db.same_refusal(|| vec![forge(&[F1, F2, F3, F4])]).await;
+    let core = db
+        .same_refusal(|| vec![forge(&[F1, F2, F3, F4]), shared(&[S1, S2])])
+        .await;
     assert!(
         matches!(core, MigrationError::Core(MigrateError::Dirty(S2))),
         "core's run reads the whole shared ledger first: {core:?}"
@@ -653,7 +632,9 @@ async fn a_changed_checksum_is_refused_as_the_run_refuses_it() {
         .execute(&db.admin)
         .await
         .expect("amend");
-    let own = db.same_refusal(|| vec![forge(&[F1, F2, F3])]).await;
+    let own = db
+        .same_refusal(|| vec![forge(&[F1, F2, F3]), shared(&[S1, S2])])
+        .await;
     assert!(
         matches!(
             own,
@@ -697,7 +678,10 @@ async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it(
     .expect("unknown core version");
     let unknown = db.same_refusal(Vec::new).await;
     assert!(
-        matches!(unknown, MigrationError::CorePreflight(_)),
+        matches!(
+            unknown,
+            MigrationError::Core(MigrateError::VersionMissing(9000))
+        ),
         "{unknown:?}"
     );
     sqlx::query("DELETE FROM public._sqlx_migrations WHERE version = 9000")

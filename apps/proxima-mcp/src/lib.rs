@@ -19,7 +19,7 @@ use proxima::flavor::FlavorBundle;
 use proxima::{
     AppContext, AppInfo, EmbeddingRuntimePolicy, FlavorApp, FlavorServiceError, FlavorServices,
     Proxima, ProximaError, RunningProxima, RuntimeBuilder, embedding_runtime_policy_from_lookup,
-    run_core_and_flavor_migrations,
+    missing_migration_policy_from_lookup, run_core_and_flavor_migrations_with_policy,
 };
 use proxima_core::llm::{
     BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SemanticWeight,
@@ -446,6 +446,8 @@ async fn maintenance_storage(
     database_url: &str,
     embedding_policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<PgStorage, CliError> {
+    let missing_policy =
+        missing_migration_policy_from_lookup(&proxima_core::process_env)?.unwrap_or_default();
     let platform_url = maintenance_platform_url()?;
     let config = proxima_storage_pg::PgPoolConfig::from_env()
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
@@ -455,9 +457,13 @@ async fn maintenance_storage(
         proxima_storage_pg::PgMigrationStorage::connect_with_config(&platform_url, config, tuning)
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    run_core_and_flavor_migrations(&migration_pg, ProximaMcpApp::migrators())
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    run_core_and_flavor_migrations_with_policy(
+        &migration_pg,
+        ProximaMcpApp::migrators(),
+        missing_policy,
+    )
+    .await
+    .map_err(|err| ProximaError::Storage(err.to_string()))?;
     #[cfg(feature = "code")]
     let schemas = ["proxima_core", "proxima_code"];
     #[cfg(not(feature = "code"))]

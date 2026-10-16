@@ -17,6 +17,7 @@ use proxima_mcp_server::{
 };
 use proxima_storage_pg::{PgHostStateParticipant, PgPlatformScope, PgPoolConfig, PgTuning};
 
+use crate::MissingMigrationPolicy;
 use crate::config::{
     parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup,
     publication_config_from_lookup, s3_from_lookup,
@@ -66,6 +67,7 @@ pub struct RuntimeBuilder {
     insecure_single_owner: bool,
     rest_enabled: Option<bool>,
     skip_migrations: Option<bool>,
+    missing_migration_policy: Option<MissingMigrationPolicy>,
     pg_pool_config: Option<PgPoolConfig>,
     pg_tuning: Option<PgTuning>,
     authenticator: Option<Arc<dyn Authenticator>>,
@@ -124,6 +126,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
+            .field("missing_migration_policy", &self.missing_migration_policy)
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("has_authenticator", &self.authenticator.is_some())
@@ -187,6 +190,9 @@ impl RuntimeBuilder {
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             rest_enabled: self.rest_enabled.or(base.rest_enabled),
             skip_migrations: self.skip_migrations.or(base.skip_migrations),
+            missing_migration_policy: self
+                .missing_migration_policy
+                .or(base.missing_migration_policy),
             pg_pool_config: self.pg_pool_config.or(base.pg_pool_config),
             pg_tuning: self.pg_tuning.or(base.pg_tuning),
             authenticator,
@@ -445,6 +451,18 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Choose whether migration ledgers may contain versions absent from the
+    /// composed binary. The default is [`MissingMigrationPolicy::Reject`].
+    /// Explicitly choose [`MissingMigrationPolicy::Allow`] when releases
+    /// share a database during a rolling deployment. Checksums, dirty rows,
+    /// and divergent migration lanes are still checked. Environment equivalent:
+    /// `PROXIMA_MISSING_MIGRATION_POLICY` (`reject` or `allow`).
+    #[must_use]
+    pub fn missing_migration_policy(mut self, policy: MissingMigrationPolicy) -> Self {
+        self.missing_migration_policy = Some(policy);
+        self
+    }
+
     /// Grant the runtime role its DML privileges at boot, after migrating
     /// and before the runtime pool connects. Opt-in; off by default. Env
     /// equivalent: `PROXIMA_RUNTIME_GRANTS`.
@@ -696,6 +714,9 @@ impl RuntimeBuilder {
             self.skip_migrations = lookup("PROXIMA_SKIP_MIGRATIONS")
                 .map(|raw| parse_bool_value("PROXIMA_SKIP_MIGRATIONS", &raw))
                 .transpose()?;
+        }
+        if self.missing_migration_policy.is_none() {
+            self.missing_migration_policy = missing_migration_policy_from_lookup(&lookup)?;
         }
         if self.runtime_grants.is_none() {
             self.runtime_grants = lookup("PROXIMA_RUNTIME_GRANTS")
@@ -998,6 +1019,7 @@ impl RuntimeBuilder {
             insecure_single_owner: self.insecure_single_owner,
             rest_enabled: self.rest_enabled.unwrap_or(false),
             skip_migrations: self.skip_migrations.unwrap_or(false),
+            missing_migration_policy: self.missing_migration_policy.unwrap_or_default(),
             runtime_grants: self.runtime_grants.unwrap_or(false),
             request_headers,
             forwarder: self.forwarder,
@@ -1061,6 +1083,8 @@ pub struct RuntimeConfig {
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
+    /// Missing-version handling for normal boot and read-only preflight.
+    pub missing_migration_policy: MissingMigrationPolicy,
     /// Grant the runtime role its DML privileges at boot
     /// (`PROXIMA_RUNTIME_GRANTS`), after migrating and before the runtime
     /// pool connects. Off by default: a DBA-managed deployment grants
@@ -1170,6 +1194,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
+            .field("missing_migration_policy", &self.missing_migration_policy)
             .field("runtime_grants", &self.runtime_grants)
             .field("request_headers", &self.request_headers)
             .field("forwarder", &self.forwarder)
@@ -1381,6 +1406,29 @@ fn parse_allowed_hosts(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse an explicitly configured missing-version policy.
+///
+/// `PROXIMA_MISSING_MIGRATION_POLICY` accepts `reject` or `allow`. An unset
+/// value returns `None` so configuration layers preserve the host's choice;
+/// callers without layers use [`MissingMigrationPolicy::default`].
+///
+/// # Errors
+///
+/// Returns [`ProximaError::Config`] for any other nonempty value.
+pub fn missing_migration_policy_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<MissingMigrationPolicy>, ProximaError> {
+    proxima_core::env_value(lookup, "PROXIMA_MISSING_MIGRATION_POLICY")
+        .map(|raw| match raw.as_str() {
+            "reject" => Ok(MissingMigrationPolicy::Reject),
+            "allow" => Ok(MissingMigrationPolicy::Allow),
+            _ => Err(ProximaError::Config(
+                "PROXIMA_MISSING_MIGRATION_POLICY must be reject or allow".into(),
+            )),
+        })
+        .transpose()
+}
+
 /// Extract the bare, lowercased host from a URL or origin — scheme,
 /// userinfo, port, and path stripped; IPv6 brackets removed. Returns
 /// `None` for input with no host part.
@@ -1524,6 +1572,76 @@ mod tests {
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
 
     use super::*;
+
+    #[test]
+    fn missing_migrations_require_an_explicit_host_policy() {
+        let resolve = |builder: RuntimeBuilder| {
+            builder
+                .database_url("postgres://runtime/proxima")
+                .platform_database_url("postgres://platform/proxima")
+                .tool_scope(ToolScope::All)
+                .resolve()
+                .expect("host config")
+                .0
+        };
+        assert_eq!(
+            resolve(RuntimeBuilder::default()).missing_migration_policy,
+            MissingMigrationPolicy::Reject
+        );
+        let rolling =
+            || RuntimeBuilder::default().missing_migration_policy(MissingMigrationPolicy::Allow);
+        assert_eq!(
+            resolve(rolling()).missing_migration_policy,
+            MissingMigrationPolicy::Allow
+        );
+        assert_eq!(
+            resolve(RuntimeBuilder::default().merge_over(rolling())).missing_migration_policy,
+            MissingMigrationPolicy::Allow
+        );
+        assert_eq!(
+            resolve(
+                RuntimeBuilder::default()
+                    .missing_migration_policy(MissingMigrationPolicy::Reject)
+                    .merge_over(rolling())
+            )
+            .missing_migration_policy,
+            MissingMigrationPolicy::Reject
+        );
+    }
+
+    #[test]
+    fn missing_migration_policy_is_parsed_once_at_the_configuration_boundary() {
+        for (raw, expected) in [
+            ("allow", Some(MissingMigrationPolicy::Allow)),
+            (" reject ", Some(MissingMigrationPolicy::Reject)),
+            (" ", None),
+        ] {
+            let configured = [("PROXIMA_MISSING_MIGRATION_POLICY", raw)];
+            let from = lookup(&configured);
+            assert_eq!(
+                missing_migration_policy_from_lookup(&from).expect("valid policy"),
+                expected
+            );
+            assert_eq!(
+                RuntimeBuilder::default()
+                    .apply_lookup(&from)
+                    .expect("valid configuration")
+                    .missing_migration_policy,
+                expected
+            );
+        }
+        let invalid = lookup(&[("PROXIMA_MISSING_MIGRATION_POLICY", "sometimes")]);
+        assert!(missing_migration_policy_from_lookup(&invalid).is_err());
+        assert!(RuntimeBuilder::default().apply_lookup(&invalid).is_err());
+        assert_eq!(
+            RuntimeBuilder::default()
+                .missing_migration_policy(MissingMigrationPolicy::Reject)
+                .apply_lookup(&invalid)
+                .expect("explicit host choice wins")
+                .missing_migration_policy,
+            Some(MissingMigrationPolicy::Reject)
+        );
+    }
 
     #[test]
     fn platform_database_url_is_required_at_resolve() {
@@ -1760,6 +1878,7 @@ mod tests {
             insecure_single_owner: false,
             rest_enabled: false,
             skip_migrations: false,
+            missing_migration_policy: MissingMigrationPolicy::default(),
             runtime_grants: false,
             request_headers: RequestHeaderAllowlist::default(),
             forwarder: None,
