@@ -3632,28 +3632,26 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     drop_db(&db_name).await.expect("drop db");
 }
 
-/// An erase that commits AFTER the canonical PUT leaves bytes nothing
-/// references — so the stage that published them owes them, durably.
-///
-/// The old contract kept the canonical object on the reasoning that a mounted
-/// or in-place-transferred row might still own it. That reasoning is only
-/// sound when it is CHECKED. Here nothing owns them: the erase enqueued the
-/// key the row named at the time (`pending/<id>`), never the canonical key
-/// this stage went on to write, so before this change the object survived
-/// every erase and every drain with no record that it existed. The refcount
-/// under the object key is what turns "may still be owned" into an answer.
-///
-/// Enqueue, not delete: the debt is a queue row, so a crash between the CAS
-/// and the provider call cannot lose it. The drain is the second half, and
-/// this test runs it — a debt nothing ever discharges is not a fix.
-#[tokio::test]
-#[allow(clippy::too_many_lines)] // the barrier fixture proves an erased-row race end to end
-async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
-    if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
-        return;
-    }
+/// A stage held at its locator write after its canonical PUT landed: the
+/// barrier blocks the `object_key` update until the test decides what became
+/// of the upload row.
+struct StageHeldAfterCanonicalPut {
+    pg: PgStorage,
+    pool: sqlx::PgPool,
+    store: CitedBlobStore,
+    config: S3RuntimeConfig,
+    client: Client,
+    owner: OwnerId,
+    upload_uuid: Uuid,
+    pending_key: String,
+    canonical_key: String,
+    barrier: sqlx::Transaction<'static, sqlx::Postgres>,
+    stage_task: tokio::task::JoinHandle<Result<CitedBlobStaged, BlobError>>,
+    db_name: String,
+}
 
+#[allow(clippy::too_many_lines)] // the barrier fixture pins one race window end to end
+async fn hold_stage_after_canonical_put(body: &'static [u8]) -> StageHeldAfterCanonicalPut {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let base = s3_config_for_dev();
@@ -3686,7 +3684,6 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         &owner,
         AuthPath::HostBearer,
     ));
-    let body: &'static [u8] = b"missing-owner-row-canonical-bytes";
     let (upload_id, pending_key) = prepare_and_put_upload(
         &pool,
         &store,
@@ -3750,6 +3747,71 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    StageHeldAfterCanonicalPut {
+        pg,
+        pool,
+        store,
+        config,
+        client,
+        owner,
+        upload_uuid,
+        pending_key,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+    }
+}
+
+async fn drop_locator_barrier_and_db(pool: sqlx::PgPool, db_name: &str) {
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier trigger");
+    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .execute(&pool)
+        .await
+        .expect("drop locator barrier function");
+    drop(pool);
+    drop_db(db_name).await.expect("drop db");
+}
+
+/// An erase that commits AFTER the canonical PUT leaves bytes nothing
+/// references — so the stage that published them owes them, durably.
+///
+/// The old contract kept the canonical object on the reasoning that a mounted
+/// or in-place-transferred row might still own it. That reasoning is only
+/// sound when it is CHECKED. Here nothing owns them: the erase enqueued the
+/// key the row named at the time (`pending/<id>`), never the canonical key
+/// this stage went on to write, so before this change the object survived
+/// every erase and every drain with no record that it existed. The refcount
+/// under the object key is what turns "may still be owned" into an answer.
+///
+/// Enqueue, not delete: the debt is a queue row, so a crash between the CAS
+/// and the provider call cannot lose it. The drain is the second half, and
+/// this test runs it — a debt nothing ever discharges is not a fix.
+#[tokio::test]
+async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let body: &'static [u8] = b"missing-owner-row-canonical-bytes";
+    let StageHeldAfterCanonicalPut {
+        pg,
+        pool,
+        store,
+        config,
+        client,
+        owner,
+        upload_uuid,
+        pending_key,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+    } = hold_stage_after_canonical_put(body).await;
     // Leave multiple transfer versions and a marker for the missing-row
     // cleanup path to prove it is version-aware.
     put_object_via_sdk(&config, &pending_key, body).await;
@@ -3829,16 +3891,76 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         "the drain destroys the object the stage orphaned"
     );
 
-    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+    drop_locator_barrier_and_db(pool, &db_name).await;
+}
+
+/// The other answer to the same refcount: a transfer moved the upload row to
+/// another owner while the stage was in flight. That row is invisible under
+/// the staging owner's scope, so the refcount must be a platform question or
+/// the drain would delete bytes the other owner still names.
+#[tokio::test]
+async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let body: &'static [u8] = b"transferred-row-canonical-bytes";
+    let StageHeldAfterCanonicalPut {
+        pool,
+        config,
+        client,
+        upload_uuid,
+        canonical_key,
+        barrier,
+        stage_task,
+        db_name,
+        ..
+    } = hold_stage_after_canonical_put(body).await;
+    let other_owner = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(other_owner)
         .execute(&pool)
         .await
-        .expect("drop locator barrier trigger");
-    sqlx::query("DROP FUNCTION upload_locator_barrier()")
+        .expect("other owner");
+    sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $1 WHERE upload_id = $2")
+        .bind(other_owner)
+        .bind(upload_uuid)
         .execute(&pool)
         .await
-        .expect("drop locator barrier function");
-    drop(pool);
-    drop_db(&db_name).await.expect("drop db");
+        .expect("move upload row while stage is paused");
+    drop(barrier);
+
+    let error = stage_task
+        .await
+        .expect("stage task join")
+        .expect_err("a row moved away is not this owner's stage");
+    assert!(
+        matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
+    );
+    let owed: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&canonical_key)
+    .fetch_one(&pool)
+    .await
+    .expect("count debts");
+    assert_eq!(owed, 0, "bytes another owner's row names are not owed");
+    let retained = client
+        .get_object()
+        .bucket(&config.bucket)
+        .key(&canonical_key)
+        .send()
+        .await
+        .expect("canonical bytes remain")
+        .body
+        .collect()
+        .await
+        .expect("read canonical bytes")
+        .into_bytes();
+    assert_eq!(retained.as_ref(), body);
+
+    drop_locator_barrier_and_db(pool, &db_name).await;
 }
 
 /// An already-expired upload is lifecycle-only: neither completion nor abort

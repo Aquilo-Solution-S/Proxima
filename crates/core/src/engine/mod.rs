@@ -63,7 +63,6 @@ pub struct Engine {
     system_authority_binding: crate::authz::SystemAuthorityBinding,
     delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,
-    deployment_tool_scope: crate::authz::ToolScope,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     /// Owners whose route or provider failed recently; the drain skips

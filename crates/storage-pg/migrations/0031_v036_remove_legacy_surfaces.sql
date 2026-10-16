@@ -3,6 +3,12 @@
 -- are erased; ordinary admissions, Goals, and publications are retained.
 -- External object deletion is durable debt for the existing purge drain.
 
+-- Every table below is FORCE RLS, and only the platform scope sees every
+-- owner's rows. The migration runner binds it; binding it here too means a
+-- run without it erases what it should rather than matching nothing and
+-- dropping the sidecar table anyway. Transaction-local, like the runner's.
+SELECT set_config('app.proxima_scope', 'platform', true);
+
 ALTER TABLE proxima_core.goal
     DROP CONSTRAINT goal_wake_id_fkey,
     DROP COLUMN wake_id;
@@ -12,6 +18,21 @@ DROP FUNCTION proxima_core.wake_pin_target_checks();
 DROP TYPE proxima_core.wake_trigger_kind;
 DROP TYPE proxima_core.announce_op;
 DROP TYPE proxima_core.announce_entity;
+
+-- A Goal command's stored declaration still names the retired `wake` field:
+-- at the top level for modify and decompose children, under `draft` for
+-- create. Replay compares a retry's declaration exactly, so a retry of such a
+-- write would conflict instead of replaying. The table is append-only; this
+-- one statement runs with that guard off, under the ACCESS EXCLUSIVE lock
+-- DISABLE TRIGGER takes.
+ALTER TABLE proxima_core.goal_replay_declaration
+    DISABLE TRIGGER goal_replay_declaration_append_only;
+UPDATE proxima_core.goal_replay_declaration
+   SET declaration = (declaration - 'wake') #- '{draft,wake}'
+ WHERE declaration ? 'wake'
+    OR (declaration -> 'draft') ? 'wake';
+ALTER TABLE proxima_core.goal_replay_declaration
+    ENABLE TRIGGER goal_replay_declaration_append_only;
 
 -- Owner-pinned call sidecars survive cooling and transfer, so their t values
 -- also find fully cooled records whose memory_head no longer exists.

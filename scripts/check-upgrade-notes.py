@@ -63,13 +63,13 @@ def self_test() -> None:
 
 
 def main() -> int:
+    # Fixtures are the only mode: whether a breaking commit's Upgrade footer
+    # is usable is review judgment (AGENTS.md), not something this script reads
+    # from history. The flag is required so no caller mistakes it for a gate.
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--self-test", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--self-test", action="store_true", required=True)
+    parser.parse_args()
     try:
-        if args.self_test:
-            self_test()
-            return 0
         self_test()
         return 0
     except (OSError, subprocess.CalledProcessError, ValueError) as error:

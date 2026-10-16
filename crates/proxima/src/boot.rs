@@ -210,9 +210,6 @@ async fn connect_serving_storage(
     )
     .await
     .map_err(storage_error)?;
-    proxima_storage_pg::assert_runtime_rls(&pg.clone_pool_for_backend(), &schema_refs)
-        .await
-        .map_err(storage_error)?;
     Ok(pg)
 }
 
@@ -463,8 +460,7 @@ fn compose_engine(
         .with_storage_ports(storage_ports.build())
         .with_embedding_runtime_policy(config.embedding_runtime_policy)
         .try_with_publication_config(config.publication.clone())
-        .map_err(|error| ProximaError::Config(error.to_string()))?
-        .with_deployment_tool_scope(config.tool_scope.clone());
+        .map_err(|error| ProximaError::Config(error.to_string()))?;
     if let Some(router) = embedding_router {
         engine = engine.with_embedding_router(router);
     }

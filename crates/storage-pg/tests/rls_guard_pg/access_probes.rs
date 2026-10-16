@@ -201,3 +201,41 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     platform.close().await;
     super::cleanup(&database, admin, &platform_role, &runtime_role).await;
 }
+
+/// Serving storage checks its runtime role over every schema the platform
+/// authority was validated over, not only `proxima_core`: a runtime role that
+/// may CREATE in a flavor schema is refused by the constructor itself.
+#[tokio::test]
+async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, password) =
+        super::setup_full_schema().await;
+    super::execute(
+        &admin,
+        &format!(
+            "GRANT CREATE ON SCHEMA proxima_code TO {}",
+            super::quoted_identifier(&runtime_role)
+        ),
+    )
+    .await;
+
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
+        .await
+        .expect("platform scope");
+    let refused = PgStorage::connect_with_config(
+        &role_url(&database, &runtime_role, &password),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        scope,
+    )
+    .await
+    .err()
+    .expect("a runtime role unsafe on a composed schema is refused");
+    assert!(
+        refused.to_string().contains("CREATE in proxima_code"),
+        "{refused}"
+    );
+
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}

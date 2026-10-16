@@ -490,8 +490,8 @@ fn maintenance_platform_url() -> Result<String, CliError> {
     )
 }
 
-/// One storage-maintenance pass: the cold-object purge drain and/or
-/// change-log rotation, per the explicit action flags. Serialized across
+/// One storage-maintenance pass: the cold-object purge drain, when
+/// `--retry-cold-object-purges` asks for it. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
 /// with exit 0, like `maintain-embeddings`.
 async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), CliError> {

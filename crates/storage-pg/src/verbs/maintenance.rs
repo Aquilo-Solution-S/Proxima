@@ -2,10 +2,9 @@
 //!
 //! This is an operator surface for the `proxima-mcp maintain-storage` CLI
 //! (holding the database credentials is the authority, like the embedding
-//! maintenance verbs). Neither is a promise to a user: the drain finishes
-//! destruction a committed erase already owes the object store, and the
-//! What a host promises its users about retention, holds or erasure lives in
-//! the host.
+//! maintenance verbs). It is not a promise to a user: the drain finishes
+//! destruction a committed erase already owes the object store. What a host
+//! promises its users about retention, holds or erasure lives in the host.
 
 use crate::platform_scope::PgPlatformScope;
 use proxima_core::ColdObjectStore;

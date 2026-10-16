@@ -204,7 +204,6 @@ impl McpToolHost {
             platform,
         )
         .await?;
-        proxima_storage_pg::assert_runtime_rls(&pg.clone_pool_for_backend(), &schema_refs).await?;
         let engine =
             Arc::new(Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg).storage_ports()));
         Ok(Self::from_engine(engine, FlavorServices::default()))

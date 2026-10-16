@@ -376,24 +376,6 @@ mod tests {
         }
     }
 
-    /// The two subject-map spellings disagree about which owner a subject
-    /// resolves to, so preferring one would settle an access-control
-    /// question by the order of an `if`.
-    #[tokio::test]
-    async fn both_subject_map_spellings_at_once_is_refused() {
-        let both = env(&[
-            ("PROXIMA_OIDC_ISSUER", "https://idp.test"),
-            ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
-            ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
-            (
-                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
-                r#"[{"iss":"https://idp.test","sub":"sub","user_id":"0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"}]"#,
-            ),
-            ("PROXIMA_OIDC_SUBJECT_MAP_JSON", "{}"),
-        ]);
-        assert!(oidc_from_lookup(&both, owner_access()).is_err());
-    }
-
     /// A plaintext issuer is refused before anything else is parsed, so the
     /// error names the insecure URL rather than whatever came after it.
     #[tokio::test]

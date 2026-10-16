@@ -2116,7 +2116,10 @@ impl PgStorage {
     /// # Errors
     ///
     /// Returns `StorageError::Unavailable` on invalid policy, connection, or
-    /// query failure.
+    /// query failure, or when the installed pgvector is missing, below 0.8.0,
+    /// or refuses this deployment's HNSW search settings. Refuses a runtime
+    /// role that does not obey RLS on every schema `platform_scope` was
+    /// validated over.
     pub async fn connect_with_config(
         url: &str,
         pool_config: PgPoolConfig,
@@ -2153,7 +2156,12 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        assert_runtime_rls(&pool, &["proxima_core"]).await?;
+        // Serving storage exists only over a runtime role that obeys RLS on
+        // every composed schema and a pgvector that accepts this deployment's
+        // search settings: the schemas are the ones the platform authority was
+        // validated over, so no caller has a second check to remember.
+        assert_runtime_rls(&pool, &platform_scope.schemas()).await?;
+        ensure_pgvector_runtime_compatible(&pool, &tuning).await?;
 
         Ok(Self {
             pool,
@@ -2540,20 +2548,6 @@ impl PgStorage {
             options,
         )
         .await
-    }
-
-    /// Refuse a pgvector that cannot serve this deployment's semantic
-    /// search: below 0.8.0, or rejecting its HNSW session settings.
-    ///
-    /// [`PgMigrationStorage::run_migrations`] runs this itself; a host that
-    /// migrates through another path calls it once at boot.
-    ///
-    /// # Errors
-    ///
-    /// `StorageError::Unavailable` when the extension is missing, too old,
-    /// or refuses the settings.
-    pub async fn ensure_pgvector_compatible(&self) -> Result<(), StorageError> {
-        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
     }
 }
 

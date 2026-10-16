@@ -21,7 +21,6 @@ impl Engine {
             system_authority_binding: SystemAuthorityBinding::fresh(),
             delegation_runtime_binding: DelegationRuntimeBinding::fresh(),
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
-            deployment_tool_scope: crate::authz::ToolScope::All,
             embedding_router: None,
             embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
             embedding_backoff: super::embeddings::EmbeddingBackoff::default(),
@@ -105,24 +104,6 @@ impl Engine {
     pub fn with_storage_ports(mut self, storage: StoragePorts) -> Self {
         self.storage = EngineStoragePorts::from(storage);
         self
-    }
-
-    /// Deployment tool-surface profile enforced at engine chokepoints that
-    /// consume tool scope, including delegated command authority. Transport
-    /// hosts additionally intersect this into per-caller `AuthzContext`
-    /// scope; setting it here keeps Host-API callers inside the same
-    /// deployment surface even when their `AuthzContext` carries
-    /// `ToolScope::All`. Defaults to `ToolScope::All`.
-    #[must_use]
-    pub fn with_deployment_tool_scope(mut self, scope: crate::authz::ToolScope) -> Self {
-        self.deployment_tool_scope = scope;
-        self
-    }
-
-    /// The composed deployment tool-surface profile.
-    #[must_use]
-    pub fn deployment_tool_scope(&self) -> &crate::authz::ToolScope {
-        &self.deployment_tool_scope
     }
 
     /// Install the host's embedding router: every write, drain and search

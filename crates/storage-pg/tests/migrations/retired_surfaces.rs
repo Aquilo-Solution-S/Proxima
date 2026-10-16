@@ -178,6 +178,98 @@ async fn migration_0031_erases_call_records_and_retains_ordinary_rows() {
     result.expect("retired call migration failed");
 }
 
+/// A retry of a Goal write made before the upgrade must still replay. The
+/// stored declarations lose the retired `wake` field (nested under `draft` for
+/// create, top level for modify) and nothing else. The upgrade runs without the
+/// platform scope bound: the migration binds it itself, or the update and the
+/// call erasure would both match nothing.
+#[tokio::test]
+async fn migration_0031_drops_wake_from_replay_declarations_under_its_own_scope() {
+    let name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (pool, _) = staged_database(&name).await?;
+        let (owner, _, call) = seed_rows(&pool).await?;
+        let (handle, created): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT handle, t FROM proxima_core.goal WHERE request_id = 'retained-goal'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        let modified = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+             (handle, t, owner_id, title, state, request_id, text)
+             VALUES ($1, $2, $3, 'modified goal', 'Active', 'modified-goal', 'modified text')",
+        )
+        .bind(handle)
+        .bind(modified)
+        .bind(owner)
+        .execute(&pool)
+        .await?;
+        let stored_create = serde_json::json!({
+            "version": 1, "verb": "create",
+            "draft": {"title": "retained goal", "wake": null, "state": "Active"},
+        });
+        let stored_modify = serde_json::json!({
+            "version": 1, "verb": "modify", "prior_goal_id": created,
+            "replacement": {"title": "modified goal"}, "wake": {"mode": "carry"},
+        });
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, $2, 0), ($3, $4, 0)",
+        )
+        .bind(created)
+        .bind(&stored_create)
+        .bind(modified)
+        .bind(&stored_modify)
+        .execute(&pool)
+        .await?;
+
+        sqlx::query("SELECT set_config('app.proxima_scope', '', false)")
+            .execute(&pool)
+            .await?;
+        upgrade(&pool).await?;
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+            .execute(&pool)
+            .await?;
+
+        let declaration = |goal_t: Uuid| {
+            sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT declaration FROM proxima_core.goal_replay_declaration WHERE goal_t = $1",
+            )
+            .bind(goal_t)
+            .fetch_one(&pool)
+        };
+        assert_eq!(
+            declaration(created).await?,
+            serde_json::json!({
+                "version": 1, "verb": "create",
+                "draft": {"title": "retained goal", "state": "Active"},
+            })
+        );
+        assert_eq!(
+            declaration(modified).await?,
+            serde_json::json!({
+                "version": 1, "verb": "modify", "prior_goal_id": created,
+                "replacement": {"title": "modified goal"},
+            })
+        );
+        let call_count: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(call)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            call_count, 0,
+            "call records are erased without a caller-bound scope"
+        );
+        pool.close().await;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&name).await;
+    result.expect("replay declaration migration failed");
+}
+
 #[tokio::test]
 async fn migration_0031_refuses_retained_retired_io_atomically() {
     let name = format!("proxima_test_{}", Uuid::now_v7().simple());

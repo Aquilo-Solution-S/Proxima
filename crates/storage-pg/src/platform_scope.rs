@@ -13,6 +13,7 @@ pub struct PgPlatformScope {
     pool: PgPool,
     database_oid: i64,
     role_oid: i64,
+    schemas: std::sync::Arc<[String]>,
 }
 
 impl std::fmt::Debug for PgPlatformScope {
@@ -21,6 +22,7 @@ impl std::fmt::Debug for PgPlatformScope {
             .debug_struct("PgPlatformScope")
             .field("database_oid", &self.database_oid)
             .field("role_oid", &self.role_oid)
+            .field("schemas", &self.schemas)
             .finish_non_exhaustive()
     }
 }
@@ -40,6 +42,7 @@ impl PgPlatformScope {
                 .expect("test platform pool URL is syntactically valid"),
             database_oid: 0,
             role_oid: 0,
+            schemas: std::sync::Arc::from([String::from("proxima_core")]),
         }
     }
 
@@ -73,7 +76,14 @@ impl PgPlatformScope {
             pool,
             database_oid,
             role_oid,
+            schemas: schemas.iter().map(|schema| (*schema).to_owned()).collect(),
         })
+    }
+
+    /// The composed schema inventory this authority was validated over. The
+    /// serving storage checks its runtime role's RLS over the same list.
+    pub(crate) fn schemas(&self) -> Vec<&str> {
+        self.schemas.iter().map(String::as_str).collect()
     }
 
     /// Begin a platform transaction under its explicit policy, including on

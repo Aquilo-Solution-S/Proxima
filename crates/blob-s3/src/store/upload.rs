@@ -702,7 +702,7 @@ impl CitedBlobStore {
             {
                 stage_locator_decision(observed.status, observed.blob_id, rows_affected)?
             } else {
-                self.resolve_erased_owner_row(&mut tx, upload_id, canonical_key, &row.bucket)
+                self.resolve_erased_owner_row(upload_id, canonical_key, &row.bucket)
                     .await?;
                 tx.commit().await.map_err(BlobError::Db)?;
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -751,13 +751,23 @@ impl CitedBlobStore {
     /// another owner. This stage's snapshot still says "pending", its update
     /// matches nothing, and the row it is looking for is alive elsewhere. The
     /// bytes are owed to that owner, so nothing is enqueued.
+    ///
+    /// Both the refcount and the debt run under the platform scope: a row a
+    /// transfer moved to another owner is invisible under this owner's scope,
+    /// and the debt row has no owner to scope it by. The caller's transaction
+    /// still holds the canonical key's lock, so no erase can decide this key
+    /// between the read and the write.
     async fn resolve_erased_owner_row(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         upload_id: Uuid,
         canonical_key: &str,
         bucket: &str,
     ) -> Result<(), BlobError> {
+        let mut platform_tx = self
+            .platform_scope
+            .begin()
+            .await
+            .map_err(|error| BlobError::State(error.to_string()))?;
         let still_referenced: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1
@@ -769,7 +779,7 @@ impl CitedBlobStore {
         )
         .bind(canonical_key)
         .bind(upload_id)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *platform_tx)
         .await
         .map_err(BlobError::Db)?;
         if still_referenced {
@@ -781,11 +791,6 @@ impl CitedBlobStore {
         // incurred it is metadata, and unavailable metadata is not a reason to
         // drop a debt on the floor. The backend is not: it is the bucket this
         // stage published to, so the drain deletes against the right store.
-        let mut platform_tx = self
-            .platform_scope
-            .begin()
-            .await
-            .map_err(|error| BlobError::State(error.to_string()))?;
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
              VALUES ($1, NULL, $2)
