@@ -93,6 +93,11 @@ owner. An absent owner header uses the claim. A present `X-Proxima-Owner`
 header and any live session must agree with it before the target is resolved.
 An unknown owner grants no role. Ordinary subjects ignore the claim.
 
+With the PostgreSQL registry, a personal owner is registered by its first
+ordinary authenticated write. Complete that write before forwarding to a new
+person, or supply an authoritative `OwnerRegistry` for provisioned owners.
+Forwarding does not register an unknown owner.
+
 Forwarding never unions ordinary memberships into the request, grants group
 management, or permits delegation. `ForwarderRole` is the closed choice
 `Viewer`, `Ingest`, or `Editor`; none writes Goals or manages groups.
