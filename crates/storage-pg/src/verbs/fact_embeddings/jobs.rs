@@ -685,7 +685,8 @@ mod tests {
             "the DB must admit at most one job per entity and space"
         );
         assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("ANY("));
-        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$3"));
+        assert!(CLAIM_EMBEDDING_JOBS_SQL.contains("AS blocked(owner_id, model_id, dim)"));
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("blocked.entity_id"));
     }
 
     #[test]

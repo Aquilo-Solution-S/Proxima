@@ -105,15 +105,26 @@ struct ClientControl {
 impl ClientControl {
     async fn call<T>(
         &self,
-        base: Duration,
+        policy: EmbeddingRuntimePolicy,
         call: impl std::future::Future<Output = Result<T, LlmError>>,
     ) -> Result<T, LlmError> {
-        let _dispatch = self.dispatch.lock().await;
+        let deadline = Instant::now() + policy.request_timeout();
+        let timed_out = || {
+            LlmError::retryable(format!(
+                "request timed out after {} seconds",
+                policy.request_timeout().as_secs()
+            ))
+        };
+        let _dispatch = tokio::time::timeout_at(deadline, self.dispatch.lock())
+            .await
+            .map_err(|_| timed_out())?;
         if let Some(error) = lock(&self.state).refusal(Instant::now()) {
             return Err(error);
         }
-        let result = call.await;
-        lock(&self.state).settle(&result, base, Instant::now());
+        let result = tokio::time::timeout_at(deadline, call)
+            .await
+            .unwrap_or_else(|_| Err(timed_out()));
+        lock(&self.state).settle(&result, policy.worker_interval(), Instant::now());
         result
     }
 }
@@ -295,21 +306,16 @@ impl ControlledClient {
 impl EmbeddingClient for ControlledClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         self.control
-            .call(self.policy.worker_interval(), async {
-                let vector = crate::llm::embed_with_timeout(
-                    self.inner.as_ref(),
-                    text,
-                    self.policy.request_timeout(),
-                )
-                .await?;
+            .call(self.policy, async {
+                let vector = self.inner.embed(text).await?;
                 self.validate(vector)
             })
             .await
     }
 
     async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
-        self.control.call(self.policy.worker_interval(), async {
-            let vectors = crate::llm::embed_many_with_timeout(self.inner.as_ref(), texts, self.policy.request_timeout()).await?;
+        self.control.call(self.policy, async {
+            let vectors = self.inner.embed_many(texts).await?;
             if vectors.len() != texts.len() {
                 return Err(LlmError::retryable(format!("embedding batch cardinality mismatch: sent {} texts but received {} vectors", texts.len(), vectors.len())));
             }
@@ -785,5 +791,149 @@ mod tests {
             1,
             "gate publishes pause before admitting the next call"
         );
+    }
+
+    fn admission_timeout_policy() -> EmbeddingRuntimePolicy {
+        EmbeddingRuntimePolicy::new(
+            Duration::from_secs(30),
+            1,
+            Duration::from_secs(5),
+            Duration::from_mins(1),
+        )
+        .expect("bounded test policy")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_deadline_does_not_poll_provider_or_settle_in_flight_state() {
+        let control = Arc::new(ClientControl::default());
+        let dispatch = control.dispatch.lock().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let policy = admission_timeout_policy();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let queued_control = Arc::clone(&control);
+        let queued_calls = Arc::clone(&calls);
+        let entered = Instant::now();
+        let queued = tokio::spawn(async move {
+            started.send(()).expect("queued request marker");
+            queued_control
+                .call(policy, async {
+                    queued_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .expect("request entered")
+            .expect("start marker");
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!queued.is_finished(), "queue keeps its remaining budget");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(*lock(&control.state), ClientState::Ready));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = tokio::time::timeout(PATIENCE, queued)
+            .await
+            .expect("queue timeout finishes")
+            .expect("queued task")
+            .expect_err("admission deadline");
+        assert!(matches!(
+            error,
+            LlmError::Retryable {
+                status: None,
+                retry_after: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            Instant::now().saturating_duration_since(entered),
+            policy.request_timeout()
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "expired work never reaches the provider"
+        );
+        assert!(
+            matches!(*lock(&control.state), ClientState::Ready),
+            "queue expiry cannot overwrite the in-flight request's state"
+        );
+        drop(dispatch);
+        control
+            .call(policy, async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .expect("queue-only expiry did not back off the client");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_receives_only_the_request_budget_remaining_after_admission() {
+        let control = Arc::new(ClientControl::default());
+        let dispatch = control.dispatch.lock().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let policy = admission_timeout_policy();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (provider_entered, provider_started) = tokio::sync::oneshot::channel();
+        let queued_control = Arc::clone(&control);
+        let queued_calls = Arc::clone(&calls);
+        let entered = Instant::now();
+        let request = tokio::spawn(async move {
+            started.send(()).expect("queued request marker");
+            queued_control
+                .call(policy, async {
+                    queued_calls.fetch_add(1, Ordering::SeqCst);
+                    provider_entered
+                        .send(())
+                        .expect("provider admission marker");
+                    std::future::pending::<Result<(), LlmError>>().await
+                })
+                .await
+        });
+        tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .expect("request entered")
+            .expect("start marker");
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "provider is not polled while queued"
+        );
+        assert!(matches!(*lock(&control.state), ClientState::Ready));
+        drop(dispatch);
+        tokio::time::timeout(PATIENCE, provider_started)
+            .await
+            .expect("provider admitted before deadline")
+            .expect("provider marker");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(!request.is_finished(), "provider still has one second");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = tokio::time::timeout(PATIENCE, request)
+            .await
+            .expect("shared deadline finishes")
+            .expect("request task")
+            .expect_err("provider deadline");
+        assert!(matches!(
+            error,
+            LlmError::Retryable {
+                status: None,
+                retry_after: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            Instant::now().saturating_duration_since(entered),
+            policy.request_timeout(),
+            "admission must not restart the provider's timeout"
+        );
+        let state = lock(&control.state);
+        let ClientState::Waiting(wait) = *state else {
+            panic!("an admitted provider timeout must publish backoff: {state:?}");
+        };
+        assert_eq!(wait.delay, policy.worker_interval());
+        assert_eq!(wait.since, Instant::now());
     }
 }

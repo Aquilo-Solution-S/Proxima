@@ -87,6 +87,8 @@ pending and wait for backoff and any longer `Retry-After`. Configuration faults
 binding with a new client when configuration changes; mutating the same client
 does not reset the pause. Drains observe changed routes and clear faults once
 their old bindings are no longer active. Healthy clients continue draining.
+Calls through one original client serialize; the request deadline includes
+waiting for its dispatch slot and the provider call together.
 
 `proxima::serve` and `RunningProxima::until_shutdown_signal` drain on
 SIGTERM/SIGINT: readiness fails, listeners stop accepting, requests and streams

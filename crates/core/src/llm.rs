@@ -117,9 +117,10 @@ pub const MAX_EMBED_STALE_CLAIM_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// Generic host policy for durable embedding work.
 ///
-/// The engine and maintenance boundaries apply the request timeout to every
-/// installed client call. The shipped OpenAI-compatible adapter also applies
-/// it at the HTTP layer. Claims are renewed on a separate task every third of
+/// The engine and maintenance boundaries apply one request deadline across
+/// waiting for the shared client's dispatch slot and the provider call. The
+/// shipped OpenAI-compatible adapter also applies its timeout at the HTTP layer.
+/// Claims are renewed on a separate task every third of
 /// `stale_claim_timeout`, so poison isolation and chunk rescue may make
 /// several bounded provider calls without looking abandoned to a concurrent
 /// reconciler.
@@ -444,6 +445,15 @@ pub async fn embed_in_chunks_with_timeout(
 }
 
 /// Rescue a known input refusal without submitting the full input again.
+///
+/// A retryable failure cannot authorize input splitting.
+///
+/// ```compile_fail
+/// # use proxima_core::llm::{EmbeddingClient, LlmError, embed_in_chunks_after_failure};
+/// # fn rescue(client: &dyn EmbeddingClient) {
+/// let _ = embed_in_chunks_after_failure(client, "text", LlmError::retryable("busy"));
+/// # }
+/// ```
 ///
 /// # Errors
 ///
