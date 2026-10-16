@@ -228,8 +228,7 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
         scope,
     )
     .await
-    .err()
-    .expect("a runtime role unsafe on a composed schema is refused");
+    .expect_err("a runtime role unsafe on a composed schema is refused");
     assert!(
         refused.to_string().contains("CREATE in proxima_code"),
         "{refused}"
