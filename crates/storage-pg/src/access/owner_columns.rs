@@ -928,6 +928,55 @@ async fn add_group_member_on_connection_authorized(
     Ok(())
 }
 
+/// Under the group-tree lock: the caller the engine authorized must still
+/// manage `group`. A role revoked between the engine check and this lock
+/// refuses the write. A write without a named caller is the host's own.
+async fn recheck_caller_manages(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+    caller: Option<UserId>,
+) -> Result<(), StorageError> {
+    let Some(caller) = caller else {
+        return Ok(());
+    };
+    let manages: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.group_role_projection
+              WHERE group_id = $1 AND member_user_id = $2 AND manage)",
+    )
+    .bind(group_id.into_inner())
+    .bind(caller.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    if !manages {
+        return Err(StorageError::MembershipForbidden(
+            "the caller no longer manages this group".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `group` has a stored manager. Groups whose roles the host resolves
+/// on demand have none; storage then has no role to re-read, and the change
+/// rests on the engine's check alone. Once a group has a stored manager, a
+/// change a caller makes under the group-tree lock must not leave it with
+/// none. The host's own writes name no caller and may revoke the last one.
+async fn group_has_manager(
+    conn: &mut PgConnection,
+    group_id: GroupId,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.group_role_projection
+              WHERE group_id = $1 AND manage)",
+    )
+    .bind(group_id.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
@@ -938,6 +987,7 @@ pub(crate) async fn remove_group_member(
     member: OwnerId,
     member_authority: MembershipMemberAuthority,
     endpoint_authority: MembershipEndpointAuthority,
+    caller: Option<UserId>,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -945,13 +995,27 @@ pub(crate) async fn remove_group_member(
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        let result = remove_group_member_on_connection_authorized(
-            &mut tx,
-            group_id,
-            member,
-            member_authority,
-            endpoint_authority,
-        )
+        let result = async {
+            lock_group_membership_write_tx(&mut tx, group_id, member).await?;
+            let had_manager = group_has_manager(&mut tx, group_id).await?;
+            if had_manager {
+                recheck_caller_manages(&mut tx, group_id, caller).await?;
+            }
+            remove_group_member_on_connection_authorized(
+                &mut *tx,
+                group_id,
+                member,
+                member_authority,
+                endpoint_authority,
+            )
+            .await?;
+            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+                return Err(StorageError::Conflict(
+                    "the change would leave the group without a manager".into(),
+                ));
+            }
+            Ok(())
+        }
         .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
@@ -1046,6 +1110,7 @@ pub(crate) async fn remove_group_member_relation(
     relation: Relation,
     member_authority: MembershipMemberAuthority,
     endpoint_authority: MembershipEndpointAuthority,
+    caller: Option<UserId>,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -1053,14 +1118,28 @@ pub(crate) async fn remove_group_member_relation(
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        let result = remove_group_member_relation_on_connection_authorized(
-            &mut tx,
-            group_id,
-            member,
-            relation,
-            member_authority,
-            endpoint_authority,
-        )
+        let result = async {
+            lock_group_membership_write_tx(&mut tx, group_id, member).await?;
+            let had_manager = group_has_manager(&mut tx, group_id).await?;
+            if had_manager {
+                recheck_caller_manages(&mut tx, group_id, caller).await?;
+            }
+            remove_group_member_relation_on_connection_authorized(
+                &mut *tx,
+                group_id,
+                member,
+                relation,
+                member_authority,
+                endpoint_authority,
+            )
+            .await?;
+            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+                return Err(StorageError::Conflict(
+                    "the change would leave the group without a manager".into(),
+                ));
+            }
+            Ok(())
+        }
         .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
@@ -1166,6 +1245,7 @@ pub(crate) async fn replace_group_member_relation(
     from: Relation,
     to: Relation,
     _granted_by: uuid::Uuid,
+    caller: Option<UserId>,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -1173,8 +1253,22 @@ pub(crate) async fn replace_group_member_relation(
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        let result =
-            replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to).await;
+        let result = async {
+            lock_group_membership_write_tx(&mut tx, group_id, member).await?;
+            let had_manager = group_has_manager(&mut tx, group_id).await?;
+            if had_manager {
+                recheck_caller_manages(&mut tx, group_id, caller).await?;
+            }
+            replace_group_member_relation_on_connection(&mut *tx, group_id, member, from, to)
+                .await?;
+            if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
+                return Err(StorageError::Conflict(
+                    "the change would leave the group without a manager".into(),
+                ));
+            }
+            Ok(())
+        }
+        .await;
         crate::owner_scope::finish_transaction(tx, result).await
     })
     .await

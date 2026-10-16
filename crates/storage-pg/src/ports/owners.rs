@@ -164,6 +164,7 @@ impl OwnerMembershipAdminPort for PgStorage {
             member,
             permit.member_authority(),
             permit.endpoint_authority(),
+            permit.caller(),
         )
         .await
     }
@@ -184,6 +185,7 @@ impl OwnerMembershipAdminPort for PgStorage {
             relation,
             permit.member_authority(),
             permit.endpoint_authority(),
+            permit.caller(),
         )
         .await
     }
@@ -206,6 +208,7 @@ impl OwnerMembershipAdminPort for PgStorage {
             from,
             to,
             granted_by,
+            permit.caller(),
         )
         .await
     }

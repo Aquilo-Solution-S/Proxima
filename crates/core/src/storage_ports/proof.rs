@@ -51,6 +51,7 @@ pub struct MembershipWritePermit<'a> {
     parent: OwnerId,
     member_authority: MembershipMemberAuthority,
     endpoint_authority: MembershipEndpointAuthority,
+    caller: Option<crate::UserId>,
 }
 
 impl<'a> MembershipWritePermit<'a> {
@@ -78,6 +79,7 @@ impl<'a> MembershipWritePermit<'a> {
                 Some(authority) => authority,
                 None => MembershipEndpointAuthority::Parent,
             },
+            caller: None,
         }
     }
 
@@ -98,7 +100,24 @@ impl<'a> MembershipWritePermit<'a> {
             parent,
             member_authority,
             endpoint_authority,
+            caller: None,
         }
+    }
+
+    /// Name the person whose authority this write runs on. Storage then
+    /// re-reads that person's manage role on the parent under the group-tree
+    /// lock, so a role revoked after the engine checked it refuses the write.
+    /// It only narrows: a permit without a caller is the host's own write.
+    #[must_use]
+    pub const fn with_caller(mut self, caller: crate::UserId) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+
+    /// The person this write runs on, when the engine named one.
+    #[must_use]
+    pub const fn caller(&self) -> Option<crate::UserId> {
+        self.caller
     }
 
     #[must_use]

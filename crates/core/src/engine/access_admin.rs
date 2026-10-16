@@ -158,11 +158,14 @@ impl Engine {
                 },
             )?;
         }
-        let membership_permit = MembershipWritePermit::new(
-            permit.owner_write_permit(),
-            group_owner,
-            member_manage_authority(authz, member),
-            endpoint_authority,
+        let membership_permit = with_parent_caller(
+            MembershipWritePermit::new(
+                permit.owner_write_permit(),
+                group_owner,
+                member_manage_authority(authz, member),
+                endpoint_authority,
+            ),
+            authz,
         );
         self.storage()
             .access_admin
@@ -206,11 +209,14 @@ impl Engine {
                 relation,
             },
         )?;
-        let membership_permit = MembershipWritePermit::new(
-            permit.owner_write_permit(),
-            group_owner,
-            member_manage_authority(authz, member),
-            endpoint_authority,
+        let membership_permit = with_parent_caller(
+            MembershipWritePermit::new(
+                permit.owner_write_permit(),
+                group_owner,
+                member_manage_authority(authz, member),
+                endpoint_authority,
+            ),
+            authz,
         );
         self.storage()
             .access_admin
@@ -267,11 +273,14 @@ impl Engine {
                 },
             )?;
         }
-        let membership_permit = MembershipWritePermit::new(
-            permit.owner_write_permit(),
-            group_owner,
-            member_manage_authority(authz, member),
-            MembershipEndpointAuthority::Parent,
+        let membership_permit = with_parent_caller(
+            MembershipWritePermit::new(
+                permit.owner_write_permit(),
+                group_owner,
+                member_manage_authority(authz, member),
+                MembershipEndpointAuthority::Parent,
+            ),
+            authz,
         );
         self.storage()
             .access_admin
@@ -1498,5 +1507,19 @@ mod tests {
             .await
             .expect_err("a forwarded context cannot transfer a memory");
         assert_eq!(refusal.code, ErrorCode::Forbidden);
+    }
+}
+
+/// Name the caller on a removal or demotion that runs on parent authority, so
+/// storage re-reads the caller's manage role under the group-tree lock. A
+/// detach on member authority is checked against the member group instead,
+/// which the engine already did; it carries no caller.
+fn with_parent_caller<'a>(
+    permit: MembershipWritePermit<'a>,
+    authz: &AuthzContext,
+) -> MembershipWritePermit<'a> {
+    match (permit.endpoint_authority(), authz.subject()) {
+        (MembershipEndpointAuthority::Parent, Some(caller)) => permit.with_caller(caller),
+        _ => permit,
     }
 }
