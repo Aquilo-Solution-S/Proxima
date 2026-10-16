@@ -661,7 +661,7 @@ pub async fn dump_database(
         // transfer moves the record they hang off, which the outbox section
         // compares, and `publication_outbox_pg_tests` pins the lanes. 0029's
         // other-store origins are keyed on a memory `t` with no owner
-        // column, so they follow the memory a transfer moves. 0032's
+        // column, so they follow the memory a transfer moves. 0034's
         // publication counter moves with the series head;
         // `publication_outbox_pg_tests` pins it.
         if matches!(
@@ -992,6 +992,32 @@ async fn assert_upload_content_identities(pool: &PgPool) -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// The counter moves with its series head: no counter row names an owner
+/// other than its head's, and the moved series' counters name the destination.
+async fn assert_counter_follows_transfer(
+    pool: &PgPool,
+    destination: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (moved, mismatched): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE c.owner_id = $1)::bigint,
+                count(*) FILTER (WHERE c.owner_id IS DISTINCT FROM h.owner_id)::bigint
+           FROM proxima_core.publication_counter c
+           JOIN proxima_core.memory_head h ON h.handle = c.handle",
+    )
+    .bind(destination)
+    .fetch_one(pool)
+    .await?;
+    assert!(
+        moved > 0,
+        "a transferred series' counter names the destination"
+    );
+    assert_eq!(
+        mismatched, 0,
+        "every publication_counter owner_id follows its series head"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn transfer_differential() {
     let (db_name, url) = fresh_db("proxima_xfer_diff").await;
@@ -999,7 +1025,22 @@ async fn transfer_differential() {
         let pg = boot(&url).await?;
         let pool = pg.pool_for_tests();
         let corpus = seed(pool).await?;
+        // Every source series carries a publication position before the
+        // transfer. The dump skips the counter, so the golden file holds.
+        let source = Uuid::from(corpus.source);
+        let destination = Uuid::from(corpus.destination);
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_counter (handle, owner_id, sequence)
+             SELECT h.handle, h.owner_id, 1
+               FROM proxima_core.memory_head h
+              WHERE h.owner_id = $1
+             ON CONFLICT (handle) DO NOTHING",
+        )
+        .bind(source)
+        .execute(pool)
+        .await?;
         let mut text = run_transfers(&pg, &corpus).await?;
+        assert_counter_follows_transfer(pool, destination).await?;
         assert_upload_content_identities(pool).await?;
         text.push_str(&dump_database(pool, &corpus.object_key_labels).await?);
         let actual = normalize(&text);

@@ -185,6 +185,13 @@ the event id. `Ok(Accepted)` and `Ok(Rejected)` mark a record published, while
 an intake error releases it for retry. No consumer means Facts are still
 captured until the configured pending bound is reached.
 
+Erase and lease takeover are checked twice: just before `accept`, and again
+when the record is marked published, under the lane lock and in the marking
+transaction. A record erased or reclaimed by another process before `accept`
+is not handed over. If that happens while `accept` is running, your intake
+already has the event: Proxima cannot take it back, and it does not record the
+record as published. Treat that as at-least-once delivery.
+
 ```rust
 let builder = RuntimeBuilder::default()
     .outbox_intake(std::sync::Arc::new(MyIntake::new()))

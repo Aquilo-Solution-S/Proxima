@@ -389,6 +389,47 @@ impl PublicationOutboxPort for PgStorage {
         claim: ClaimToken,
     ) -> Result<AckOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
+        // Re-check deliverability in the marking transaction, under the lane
+        // lock: the claim and an unexpired lease are still ours, and the
+        // record is still what CLAIM_SQL would hand out (origin present, not
+        // erased). A record erased or taken over after the pre-accept renew is
+        // not recorded as delivered. The consumer may already hold it; that
+        // window is at-least-once delivery and no mark can close it.
+        let deliverable: Option<Uuid> = sqlx::query_scalar(
+            "SELECT lane.t
+               FROM proxima_core.publication_delivery lane
+               JOIN proxima_core.publication_outbox record ON record.t = lane.t
+              WHERE lane.t = $1
+                AND lane.consumer = $2
+                AND lane.state = 'claimed'
+                AND lane.claim_token = $3
+                AND lane.lease_expires_at > now()
+                AND EXISTS (
+                    SELECT 1 FROM proxima_core.publication_origin origin
+                    JOIN proxima_core.owners original_owner
+                      ON original_owner.owner_id = origin.original_owner_id
+                   WHERE origin.t = record.t
+                     AND origin.original_owner_id = record.owner_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.erased_pin_target erased
+                     WHERE erased.t = record.t
+                )
+              FOR UPDATE OF lane",
+        )
+        .bind(id)
+        .bind(consumer.as_str())
+        .bind(claim.into_inner())
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        if deliverable.is_none() {
+            let outcome = match current_lane_state(tx.as_mut(), id, consumer).await? {
+                Some(state) if state == "published" => AckOutcome::AlreadyPublished,
+                _ => AckOutcome::StaleClaim,
+            };
+            return crate::owner_scope::finish_transaction(tx, Ok(outcome)).await;
+        }
         let result = sqlx::query(
             "UPDATE proxima_core.publication_delivery
                 SET state = 'published',

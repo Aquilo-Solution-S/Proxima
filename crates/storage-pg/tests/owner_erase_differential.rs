@@ -669,7 +669,7 @@ pub const DROPPED_TABLES: &[&str] = &[
     // memory, keyed on its `t` and deleted with it by a named erase leg.
     // `other_stores` tests in core_mcp_pg pin the rows.
     "memory_external_origin",
-    // Added after the baseline by 0032: a series' publication position,
+    // Added after the baseline by 0034: a series' publication position,
     // deleted by owner erase once nothing of its series is left.
     // `publication_outbox_pg_tests` pins it.
     "publication_counter",
@@ -937,6 +937,22 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
         let mut text = export_dump(&pg, corpus.target).await?;
         match source_scope {
             None => {
+                // Every target series carries a publication position, so the
+                // erase has counter rows to remove. The dump skips the table,
+                // which keeps the golden file as pinned.
+                let target_owner = Uuid::from(OwnerId::from(corpus.target));
+                sqlx::query(
+                    "INSERT INTO proxima_core.publication_counter (handle, owner_id, sequence)
+                     SELECT h.handle, h.owner_id, 1
+                       FROM proxima_core.memory_head h
+                      WHERE h.owner_id = $1
+                     ON CONFLICT (handle) DO NOTHING",
+                )
+                .bind(target_owner)
+                .execute(pool)
+                .await?;
+                let before = counter_rows(pool, target_owner).await?;
+                assert!(before > 0, "the corpus seeds counter rows for the target");
                 let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
                     user_id: corpus.target,
                     drop_event_id: "diff".into(),
@@ -945,6 +961,11 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
                     .erase_personal_owner(&auth, corpus.target, &tables())
                     .await?;
                 text.push_str(&format!("## outcome {}\n", outcome_shape(&outcome)));
+                assert_eq!(
+                    counter_rows(pool, target_owner).await?,
+                    0,
+                    "owner erase leaves no publication_counter row for the erased owner"
+                );
             }
             Some(source) => {
                 let source_id = proxima_core::SourceId::new(source.to_owned());
@@ -979,6 +1000,13 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
     .await;
     teardown(&db_name).await;
     result.expect("differential scenario failed");
+}
+
+async fn counter_rows(pool: &PgPool, owner: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_counter WHERE owner_id = $1")
+        .bind(owner)
+        .fetch_one(pool)
+        .await
 }
 
 fn outcome_shape(outcome: &proxima_core::owner_inverse::OwnerEraseOutcome) -> String {

@@ -781,6 +781,47 @@ async fn erase_between_claim_and_accept_is_not_delivered() {
     world.finish(outcome).await;
 }
 
+/// The record is erased after the pre-accept re-check passed, while the
+/// consumer is accepting it. The consumer has the event already (at-least-once
+/// cannot take that back), but the outbox must not record the erased record
+/// as delivered: the mark re-checks deliverability under the lane lock.
+#[tokio::test]
+async fn erase_between_renew_and_accept_is_not_marked_delivered() {
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let fact = capture(&world.built, world.owner, "erased during accept").await;
+        let accepted = Arc::new(Mutex::new(Vec::new()));
+        // The gate sits inside `accept`, so the pre-accept renew has passed.
+        let intake = Arc::new(GatedIntake::new(true, accepted.clone()));
+        let drain = world.manual_drain(intake.clone());
+
+        let pass = World::pass(&drain);
+        intake.reached.wait().await;
+        world.mark_erased(fact).await;
+        intake.resume.wait().await;
+        assert_eq!(pass.await.expect("pass joins"), 1, "one record claimed");
+
+        let state: String = sqlx::query_scalar(
+            "SELECT lane.state::text
+               FROM proxima_core.publication_delivery lane
+              WHERE lane.t = $1",
+        )
+        .bind(fact)
+        .fetch_one(&world.pool)
+        .await
+        .expect("lane state");
+        assert!(
+            state != "published",
+            "an erased record is not marked delivered (lane state {state})"
+        );
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
 /// A claim whose lease expired while its drain was busy is taken over by a
 /// second drain. When the first drain gets to the record, its claim is no
 /// longer current and it must not deliver the record again.

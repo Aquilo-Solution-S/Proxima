@@ -300,7 +300,7 @@ impl Drain {
             .await
             .map_err(|_| Failure::Storage)?;
         if !still_ours {
-            tracing::info!(
+            tracing::debug!(
                 consumer = %self.consumer,
                 skipped = 1u32,
                 "a claimed record is no longer deliverable under this claim; skipped"
