@@ -244,6 +244,7 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
             .expect("S3 target required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
         region: std::env::var("PROXIMA_S3_REGION").expect("PROXIMA_S3_REGION"),
         endpoint_url: std::env::var("PROXIMA_S3_ENDPOINT_URL").ok(),
+        plaintext_hosts: proxima_core::PlaintextHosts::none(),
         key_pair: proxima_blob_s3::S3KeyPair::new(
             std::env::var("PROXIMA_S3_ACCESS_KEY_ID").expect("PROXIMA_S3_ACCESS_KEY_ID"),
             std::env::var("PROXIMA_S3_SECRET_ACCESS_KEY").expect("PROXIMA_S3_SECRET_ACCESS_KEY"),

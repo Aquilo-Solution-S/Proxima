@@ -990,6 +990,7 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
         region: "us-east-1".to_owned(),
         key_pair: proxima::S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
         endpoint_url: Some("http://localhost:9000".to_owned()),
+        plaintext_hosts: proxima::host::PlaintextHosts::none(),
         force_path_style: true,
         upload_ttl_seconds: 900,
         read_ttl_seconds: 300,
@@ -1602,4 +1603,28 @@ fn storage_backend_exposes_no_public_transaction_taking_fn() {
             );
         }
     }
+}
+
+#[test]
+fn flavor_api_names_plaintext_hosts_and_the_host_tier_carries_them() {
+    use proxima::flavor::{
+        EndpointUrlError, EndpointUrlPolicy, PlaintextHosts, validate_endpoint_url_for_hosts,
+    };
+
+    let named = PlaintextHosts::parse("gateway").expect("exact host name");
+    validate_endpoint_url_for_hosts(
+        "http://gateway:9090",
+        EndpointUrlPolicy::AllowLoopbackHttp,
+        &named,
+    )
+    .expect("the named host may use plaintext");
+    for endpoint in ["http://other:9090", "http://gateway@evil.example"] {
+        assert_eq!(
+            validate_endpoint_url_for_hosts(endpoint, EndpointUrlPolicy::AllowLoopbackHttp, &named),
+            Err(EndpointUrlError::InsecureTransport),
+            "{endpoint}",
+        );
+    }
+    assert!(PlaintextHosts::parse("*").is_err());
+    let _: proxima::host::PlaintextHosts = PlaintextHosts::none();
 }

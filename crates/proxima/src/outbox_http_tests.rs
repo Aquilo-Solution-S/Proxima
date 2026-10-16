@@ -13,6 +13,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls;
 
+use proxima_core::PlaintextHosts;
+
 use super::{CONTENT_TYPE, DELIVERY_COUNT_HEADER, HttpIntake, MAX_REASON_CHARS, classify};
 
 /// An intake that is never called: a registration-only fixture.
@@ -242,7 +244,47 @@ impl Files {
 }
 
 pub(crate) fn intake(receiver: &Receiver, files: &Files) -> HttpIntake {
-    HttpIntake::new(&receiver.url, Some(files.token()), Some(&files.ca())).expect("sink builds")
+    HttpIntake::new(
+        &receiver.url,
+        Some(files.token()),
+        Some(&files.ca()),
+        &PlaintextHosts::none(),
+    )
+    .expect("sink builds")
+}
+
+/// A token goes over `http://` only where every credential lane allows it:
+/// loopback, or a host `PROXIMA_PLAINTEXT_HOSTS` names exactly.
+#[test]
+fn a_token_goes_over_http_only_to_loopback_or_a_named_host() {
+    let token = || Some(PathBuf::from("/nonexistent/token"));
+    let none = PlaintextHosts::none();
+    let named = PlaintextHosts::parse("gateway").expect("a host name");
+    for (url, hosts) in [
+        ("http://gateway:9090/events", &named),
+        ("http://GATEWAY:9090/events", &named),
+        ("http://127.0.0.1:9090/events", &none),
+        ("http://localhost/events", &named),
+    ] {
+        HttpIntake::new(url, token(), None, hosts)
+            .unwrap_or_else(|error| panic!("{url} with {hosts:?}: {error}"));
+    }
+    for (url, hosts) in [
+        ("http://gateway:9090/events", &none),
+        ("http://other:9090/events", &named),
+        ("http://gateway.example:9090/events", &named),
+        ("http://gateway@other:9090/events", &named),
+    ] {
+        let error =
+            HttpIntake::new(url, token(), None, hosts).expect_err(&format!("{url} with {hosts:?}"));
+        assert!(
+            error.to_string().contains("PROXIMA_PLAINTEXT_HOSTS"),
+            "{url}: {error}"
+        );
+    }
+    // Without a token the rule is unchanged: plaintext to any host.
+    HttpIntake::new("http://other:9090/events", None, None, &none)
+        .expect("no token, no credential on the wire");
 }
 
 fn event(delivered_count: u64) -> ReceivedEvent {

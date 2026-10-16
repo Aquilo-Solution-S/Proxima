@@ -1,5 +1,17 @@
 # Migrate the Flavor SDK
 
+## v0.0.35
+
+Pin all Proxima dependencies to the same `v0.0.35` tag. No migration.
+
+| Change | Host action |
+|---|---|
+| `PROXIMA_PLAINTEXT_HOSTS` | Optional: exact host names that may use plaintext `http://` besides loopback, for the S3 endpoint, the embeddings base URL and the HTTP outbox sink with a token ([10 §Plaintext hosts](../10-configuration.md#plaintext-hosts)). Unset ⇒ loopback only. A wildcard, range or IP literal fails boot, even when no lane is configured |
+| `S3RuntimeConfig` | **Breaking:** gains `plaintext_hosts: PlaintextHosts`. `from_env` and `from_lookup` read it; a struct literal adds `plaintext_hosts: PlaintextHosts::none()` or a parsed list |
+| `OpenAiCompatConfig` | **Breaking:** gains `plaintext_hosts`; `new` sets none. A host that builds its embedding client itself and wants a named host calls `.with_plaintext_hosts(PlaintextHosts::from_lookup(&lookup)?)`; a struct literal adds the field |
+| HTTP outbox sink | **Behaviour change:** with `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` set, `PROXIMA_OUTBOX_HTTP_URL` may now be `http://` to loopback or a named host; before, a token required `https://` everywhere |
+| Endpoint validation | `PlaintextHosts`, `PlaintextHostsError` and `validate_endpoint_url_for_hosts` are on the flavor tier, `PlaintextHosts` on the host tier. `validate_endpoint_url` is unchanged: it names no host |
+
 ## v0.0.34
 
 Pin all Proxima dependencies to the same `v0.0.34` tag. One forward core

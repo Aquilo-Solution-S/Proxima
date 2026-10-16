@@ -1,6 +1,9 @@
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use proxima_core::{EndpointUrlError, EndpointUrlPolicy, env_value, process_env};
+use proxima_core::{
+    EndpointUrlError, EndpointUrlPolicy, PlaintextHosts, env_value, process_env,
+    validate_endpoint_url_for_hosts,
+};
 
 use crate::BlobError;
 
@@ -72,6 +75,10 @@ pub struct S3RuntimeConfig {
     pub region: String,
     pub key_pair: S3KeyPair,
     pub endpoint_url: Option<String>,
+    /// Hosts, besides loopback, that may be named in `endpoint_url` over
+    /// plaintext `http://`. Empty by default ([`PlaintextHosts::none`]).
+    /// `from_lookup` reads it from `PROXIMA_PLAINTEXT_HOSTS`.
+    pub plaintext_hosts: PlaintextHosts,
     pub force_path_style: bool,
     pub upload_ttl_seconds: u64,
     pub read_ttl_seconds: u64,
@@ -115,6 +122,10 @@ impl S3RuntimeConfig {
     pub fn from_lookup(
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, BlobError> {
+        // Parsed before the bucket check so a malformed setting fails boot
+        // whether or not this lane is configured.
+        let plaintext_hosts = PlaintextHosts::from_lookup(lookup)
+            .map_err(|error| BlobError::Config(error.to_string()))?;
         let Some(bucket) = env_value(lookup, "PROXIMA_S3_BUCKET") else {
             return Ok(None);
         };
@@ -129,13 +140,14 @@ impl S3RuntimeConfig {
         );
         let endpoint_url = env_value(lookup, "PROXIMA_S3_ENDPOINT_URL");
         if let Some(endpoint_url) = &endpoint_url {
-            validate_endpoint_url(endpoint_url)?;
+            validate_endpoint_url(endpoint_url, &plaintext_hosts)?;
         }
         Ok(Some(Self {
             bucket,
             region,
             key_pair,
             endpoint_url,
+            plaintext_hosts,
             force_path_style: parse_bool_env(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_presign_ttl_env(
                 lookup,
@@ -241,19 +253,28 @@ fn parse_optional_u64_env(
 
 /// Reject an S3 endpoint that would carry presigned URLs (and the credentials
 /// signed into them) over plaintext HTTP. HTTPS is always accepted; plaintext
-/// HTTP is accepted only for a loopback host (local object store/dev), unlike
-/// production S3 endpoints which must be TLS.
-pub(crate) fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
-    proxima_core::validate_endpoint_url(raw, EndpointUrlPolicy::AllowLoopbackHttp).map_err(
-        |error| match error {
+/// HTTP is accepted only for a loopback host or a host named in
+/// `plaintext_hosts` (local object store/dev, or a sidecar on a network with
+/// no route out), unlike production S3 endpoints which must be TLS.
+pub(crate) fn validate_endpoint_url(
+    raw: &str,
+    plaintext_hosts: &PlaintextHosts,
+) -> Result<(), BlobError> {
+    validate_endpoint_url_for_hosts(raw, EndpointUrlPolicy::AllowLoopbackHttp, plaintext_hosts)
+        .map_err(|error| match error {
             EndpointUrlError::InvalidUrl(reason) => BlobError::Config(format!(
                 "PROXIMA_S3_ENDPOINT_URL is not a valid URL: {reason}"
             )),
+            // With no host named the message is the one this lane always gave.
+            EndpointUrlError::InsecureTransport if plaintext_hosts.is_empty() => {
+                BlobError::Config(format!(
+                    "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
+                ))
+            }
             EndpointUrlError::InsecureTransport => BlobError::Config(format!(
-                "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
+                "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback or a host named in PROXIMA_PLAINTEXT_HOSTS): {raw}"
             )),
-        },
-    )
+        })
 }
 
 #[cfg(test)]
@@ -447,7 +468,8 @@ mod tests {
 
     #[test]
     fn non_loopback_http_endpoint_is_rejected() {
-        let err = validate_endpoint_url("http://s3.example.com").unwrap_err();
+        let err =
+            validate_endpoint_url("http://s3.example.com", &PlaintextHosts::none()).unwrap_err();
         let BlobError::Config(msg) = err else {
             panic!("wrong variant");
         };
@@ -456,7 +478,77 @@ mod tests {
 
     #[test]
     fn schemeless_endpoint_is_rejected() {
-        let err = validate_endpoint_url("s3.example.com").unwrap_err();
+        let err = validate_endpoint_url("s3.example.com", &PlaintextHosts::none()).unwrap_err();
         assert!(matches!(err, BlobError::Config(_)));
+    }
+
+    fn with_endpoint<'a>(
+        endpoint: &'a str,
+        hosts: Option<&'a str>,
+    ) -> Result<Option<S3RuntimeConfig>, BlobError> {
+        let mut extra = vec![("PROXIMA_S3_ENDPOINT_URL", endpoint)];
+        if let Some(hosts) = hosts {
+            extra.push(("PROXIMA_PLAINTEXT_HOSTS", hosts));
+        }
+        let pairs = bucketed(&extra);
+        S3RuntimeConfig::from_lookup(&env(&pairs))
+    }
+
+    #[test]
+    fn a_named_host_may_be_the_plaintext_s3_endpoint() {
+        let config = with_endpoint("http://gateway:9090", Some("gateway"))
+            .unwrap()
+            .expect("bucket is set");
+        assert_eq!(config.endpoint_url.as_deref(), Some("http://gateway:9090"));
+        assert!(config.plaintext_hosts.contains("gateway"));
+    }
+
+    #[test]
+    fn an_unnamed_host_stays_refused_as_the_s3_endpoint() {
+        for (endpoint, hosts) in [
+            ("http://gateway:9090", None),
+            ("http://gateway:9090", Some("   ")),
+            ("http://other:9090", Some("gateway")),
+        ] {
+            let error = with_endpoint(endpoint, hosts).unwrap_err();
+            assert!(
+                matches!(&error, BlobError::Config(message) if message.contains("must use https")),
+                "{endpoint} with {hosts:?}: {error}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_wildcard_or_range_in_the_setting_fails_boot_even_without_a_bucket() {
+        for hosts in ["*", "*.internal", "10.0.0.0/8", "10.0.0.1"] {
+            let error = with_endpoint("https://s3.example.com", Some(hosts)).unwrap_err();
+            assert!(
+                matches!(&error, BlobError::Config(message) if message.contains("PROXIMA_PLAINTEXT_HOSTS")),
+                "{hosts}: {error}",
+            );
+            let no_bucket = [("PROXIMA_PLAINTEXT_HOSTS", hosts)];
+            assert!(
+                S3RuntimeConfig::from_lookup(&env(&no_bucket)).is_err(),
+                "{hosts}"
+            );
+        }
+    }
+
+    #[test]
+    fn unset_setting_leaves_s3_config_as_before() {
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[])))
+            .unwrap()
+            .expect("bucket is set");
+        assert!(config.plaintext_hosts.is_empty());
+        assert!(S3RuntimeConfig::from_lookup(&env(&[])).unwrap().is_none());
+        assert!(with_endpoint("http://127.0.0.1:9000", None).is_ok());
+        let BlobError::Config(message) = with_endpoint("http://s3.example.com", None).unwrap_err()
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!(
+            message,
+            "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): http://s3.example.com"
+        );
     }
 }

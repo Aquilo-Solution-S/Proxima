@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use proxima_core::PlaintextHosts;
 use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,10 @@ pub struct OpenAiCompatConfig {
     pub base_url: String,
     pub timeout: Duration,
     pub bearer_token: Option<String>,
+    /// Hosts, besides loopback, that `base_url` (and any redirect hop) may
+    /// name over plaintext `http://`. Empty by default; a host reads it from
+    /// `PROXIMA_PLAINTEXT_HOSTS` with [`PlaintextHosts::from_lookup`].
+    pub plaintext_hosts: PlaintextHosts,
 }
 
 // Manual Debug: the bearer token is a secret and must never surface in logs
@@ -36,6 +41,7 @@ impl std::fmt::Debug for OpenAiCompatConfig {
         f.debug_struct("OpenAiCompatConfig")
             .field("base_url", &self.base_url)
             .field("timeout", &self.timeout)
+            .field("plaintext_hosts", &self.plaintext_hosts)
             .field(
                 "bearer_token",
                 &self.bearer_token.as_ref().map(|_| "<redacted>"),
@@ -51,7 +57,16 @@ impl OpenAiCompatConfig {
             base_url: base_url.into(),
             timeout: DEFAULT_EMBED_TIMEOUT,
             bearer_token,
+            plaintext_hosts: PlaintextHosts::none(),
         }
+    }
+
+    /// Name the hosts, besides loopback, that may use plaintext `http://`.
+    /// Defaults to none.
+    #[must_use]
+    pub fn with_plaintext_hosts(mut self, plaintext_hosts: PlaintextHosts) -> Self {
+        self.plaintext_hosts = plaintext_hosts;
+        self
     }
 
     /// Override the per-request timeout (e.g. bump it for an unusually slow
@@ -88,8 +103,9 @@ impl OpenAiCompatEmbeddingClient {
     ///
     /// # Errors
     /// Returns `LlmError::Internal` if the HTTP client cannot be built, if
-    /// `config.base_url` is invalid, contains a fragment, or is a non-loopback
-    /// plaintext `http://` endpoint (which would leak the bearer token in
+    /// `config.base_url` is invalid, contains a fragment, or is a plaintext
+    /// `http://` endpoint on a host that is neither loopback nor named in
+    /// `config.plaintext_hosts` (which would leak the bearer token in
     /// transit), or if
     /// [`EmbedCaps::max_input_chars`] is set below
     /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
@@ -98,7 +114,7 @@ impl OpenAiCompatEmbeddingClient {
         caps: EmbedCaps,
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
-        let endpoint = embedding_endpoint(&config.base_url)?;
+        let endpoint = embedding_endpoint(&config.base_url, &config.plaintext_hosts)?;
         // Rejected at construction rather than tolerated at call time: a cap
         // under the floor makes over-long input terminal instead of chunked,
         // and it does so invisibly — every component behaves as documented
@@ -113,7 +129,7 @@ impl OpenAiCompatEmbeddingClient {
                 )));
             }
         }
-        let client = build_client(config.timeout)?;
+        let client = build_client(config.timeout, &config.plaintext_hosts)?;
         Ok(Self {
             config,
             client,
@@ -336,6 +352,7 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
 mod tests {
     use std::num::NonZeroU32;
 
+    use proxima_core::PlaintextHosts;
     use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
     use proxima_core::models::EmbedCaps;
 
@@ -691,6 +708,28 @@ mod tests {
     }
 
     #[test]
+    fn a_named_host_is_accepted_as_the_plaintext_base_url_and_others_are_not() {
+        let build = |base: &str, hosts: Option<&str>| {
+            let mut cfg = super::OpenAiCompatConfig::new(base, Some("t".into()));
+            if let Some(hosts) = hosts {
+                cfg = cfg.with_plaintext_hosts(PlaintextHosts::parse(hosts).unwrap());
+            }
+            super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg)
+        };
+        build("http://gateway:9090/v1", Some("gateway")).expect("named host accepted");
+        for (base, hosts) in [
+            ("http://gateway:9090/v1", None),
+            ("http://other:9090/v1", Some("gateway")),
+            ("http://gateway.evil.example:9090/v1", Some("gateway")),
+        ] {
+            let err = build(base, hosts).expect_err("unnamed plaintext host refused");
+            assert!(matches!(err, LlmError::Internal(_)), "{base} {hosts:?}");
+        }
+        build("http://127.0.0.1:9/v1", None).expect("loopback unchanged");
+        build("https://api.example.com/v1", None).expect("https unchanged");
+    }
+
+    #[test]
     fn client_rejects_base_url_fragments_at_construction() {
         for base in ["http://127.0.0.1:9/v1#anchor", "https://api.example/v1#"] {
             let result = super::OpenAiCompatEmbeddingClient::new(
@@ -778,6 +817,7 @@ mod redirect_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use proxima_core::PlaintextHosts;
     use proxima_core::llm::{EmbeddingClient, LlmError};
     use proxima_core::models::EmbedCaps;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -881,6 +921,13 @@ mod redirect_tests {
     }
 
     fn client_for(server: &RedirectServer) -> OpenAiCompatEmbeddingClient {
+        client_for_hosts(server, &PlaintextHosts::none())
+    }
+
+    fn client_for_hosts(
+        server: &RedirectServer,
+        hosts: &PlaintextHosts,
+    ) -> OpenAiCompatEmbeddingClient {
         let mut client = OpenAiCompatEmbeddingClient::new(
             "test-embed",
             EmbedCaps::new(2, false),
@@ -892,6 +939,7 @@ mod redirect_tests {
                 .timeout(Duration::from_secs(5))
                 .no_proxy()
                 .resolve("redirect.example", server.addr),
+            hosts,
         )
         .expect("build test client with production redirect policy");
         client
@@ -974,6 +1022,7 @@ mod redirect_tests {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .no_proxy(),
+            &PlaintextHosts::none(),
         )
         .expect("test client with production response handling");
         let result = client.embed("test text").await;
@@ -993,6 +1042,28 @@ mod redirect_tests {
             let result = client_for(&server).embed("private memory text").await;
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
             assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+            assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_a_named_plaintext_host_is_followed_and_to_another_is_not() {
+        for status in [307, 308] {
+            let server = spawn_redirect_server(status, Target::RemoteHttp).await;
+            let named = PlaintextHosts::parse("redirect.example").unwrap();
+            let vector = client_for_hosts(&server, &named)
+                .embed("private memory text")
+                .await
+                .expect("redirect to the named host");
+            assert_eq!(vector, vec![1.0, 0.0]);
+            assert_eq!(server.target_requests.load(Ordering::SeqCst), 1);
+
+            let server = spawn_redirect_server(status, Target::RemoteHttp).await;
+            let other = PlaintextHosts::parse("gateway").unwrap();
+            let result = client_for_hosts(&server, &other)
+                .embed("private memory text")
+                .await;
+            assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
             assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
         }
     }

@@ -54,7 +54,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface, or narrowing to code search | `full` is opt-in and adds `core_membership`/`core_transfer`; `code` is the code flavor's search and read tools, no memory writes; every profile admits reads for every audience |
 | `PROXIMA_TOOL_ALLOW` | MCP tool surface | unset | profile extension | comma-separated canonical scope keys unioned into profile |
 | `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow; a read for every audience is refused at boot |
-| `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | required with `PROXIMA_EMBED_MODEL` to enable embeddings; loopback needs no key |
+| `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | required with `PROXIMA_EMBED_MODEL` to enable embeddings; loopback needs no key; `http://` only to loopback or a `PROXIMA_PLAINTEXT_HOSTS` host |
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
 | `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield `PROXIMA_EMBED_DIM`-wide vectors |
 | `PROXIMA_EMBED_DIM` | embeddings | `1024` | model of another width | one of 384, 768, 1024, 1536, 2048, 3072; anything else fails boot |
@@ -81,7 +81,7 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_PUBLICATION_SOURCE` | Fact outbox | unset | ≥1 listenable Fact type is registered | producer identity URI stamped into every CloudEvent `source`; boot fails without it ([18](../18-fact-outbox.md)) |
 | `PROXIMA_OUTBOX_MAX_PENDING` | Fact outbox | `100000` | tuning capture backpressure | unpublished-record ceiling; at the ceiling a listenable write fails `CapacityExhausted` |
 | `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` | Fact outbox | `524288` | tuning export size | largest captured export; over-cap writes fail `PayloadTooLarge` |
-| `PROXIMA_OUTBOX_HTTP_URL` | Fact outbox | unset (no sink) | draining to an HTTP receiver | registers the built-in sink as consumer `http`; `https://`, or `http://` without a token file; malformed ⇒ boot error ([18](../18-fact-outbox.md#built-in-http-sink)) |
+| `PROXIMA_OUTBOX_HTTP_URL` | Fact outbox | unset (no sink) | draining to an HTTP receiver | registers the built-in sink as consumer `http`; `https://`; `http://` without a token file, or with one to loopback or a `PROXIMA_PLAINTEXT_HOSTS` host; malformed ⇒ boot error ([18](../18-fact-outbox.md#built-in-http-sink)) |
 | `PROXIMA_OUTBOX_HTTP_TOKEN_FILE` | Fact outbox | unset | authenticating to the receiver | re-read on every delivery, sent as `Authorization: Bearer`; unreadable at delivery ⇒ retry, no request |
 | `PROXIMA_OUTBOX_HTTP_CA_FILE` | Fact outbox | unset (built-in roots) | a private receiver CA | PEM bundle; when set, the only trust root; unreadable ⇒ boot error |
 | `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` | Fact outbox | unset (keep forever) | reclaiming storage from delivered records | deletes only `published` records older than the horizon, in bounded batches; runs only while the outbox publisher runs (an outbox consumer is configured); minimum `60` and a smaller value is a boot error; never touches a record some consumer has not received |
@@ -90,7 +90,8 @@ set a valid non-whitespace host port such as `55432` instead.
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
 | `PROXIMA_S3_ACCESS_KEY_ID` | cited blobs | unset | S3 bucket configured | static access key id |
 | `PROXIMA_S3_SECRET_ACCESS_KEY` | cited blobs | unset | S3 bucket configured | static secret access key; never logged |
-| `PROXIMA_S3_ENDPOINT_URL` | cited blobs | AWS region endpoint | S3-compatible endpoint | optional |
+| `PROXIMA_S3_ENDPOINT_URL` | cited blobs | AWS region endpoint | S3-compatible endpoint | optional; `http://` only to loopback or a `PROXIMA_PLAINTEXT_HOSTS` host |
+| `PROXIMA_PLAINTEXT_HOSTS` | cited blobs, embeddings, Fact outbox | unset | an internal sidecar is reached over plaintext by name | comma-separated exact host names; unset ⇒ loopback only; wildcard, range or IP literal fails boot ([10 §Plaintext hosts](../10-configuration.md#plaintext-hosts)) |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | cited blobs | `false` | path-style S3 endpoint | optional |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | cited blobs | `900` | non-default upload TTL | presigned upload URL TTL |
 | `PROXIMA_S3_READ_TTL_SECONDS` | cited blobs | `300` | non-default read TTL | presigned read URL TTL |
