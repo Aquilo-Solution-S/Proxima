@@ -4,8 +4,8 @@ use std::time::Duration;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GetMemoriesReadRequest,
-    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ToolScope,
-    UserId,
+    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role,
+    ServedSurface, UserId,
 };
 use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
@@ -237,7 +237,7 @@ async fn boot(database: &str, owner: OwnerId) -> TestResult<BuiltProxima> {
         .database_url(runtime_url)
         .platform_database_url(platform_url)
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await?)
 }

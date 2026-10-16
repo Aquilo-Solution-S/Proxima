@@ -14,7 +14,7 @@ use futures::FutureExt;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, Feature, FeatureControl, FeatureControlError, FeatureStatus, FlavorApp, Proxima,
-    ToolScope, company_owner,
+    ServedSurface, company_owner,
 };
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
@@ -189,7 +189,7 @@ impl World {
                 subject: self.subject,
                 owner: self.owner,
             }))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .embedding_runtime_policy(
                 proxima::EmbeddingRuntimePolicy::new(
                     Duration::from_mins(2),

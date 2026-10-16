@@ -54,7 +54,7 @@ pub use proxima_core::flavor::{
 /// Resolve dependencies with `ctx.service::<T>()` and model labels with
 /// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
 pub use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpPresentationExt, Replay, ToolEffect,
+    KeyDeclaration, McpActionArgSpec, McpAuthorContext, McpPresentationExt, Replay, ToolEffect,
 };
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete
@@ -109,7 +109,7 @@ pub use proxima_core::verbs::schema::PayloadKind;
 /// identify which hot-head payload value represents a deletion observation.
 /// Core Query does not filter tombstone heads.
 pub use proxima_core::{
-    AbstractionPayload, CapabilitySet, CitedObjectPayload, DelegatedAuthorityError,
+    AbstractionPayload, ActionName, CapabilitySet, CitedObjectPayload, DelegatedAuthorityError,
     DelegatedAuthorityService, DelegatedCommand, DelegatedPhase, DelegationId, DelegationIssued,
     DelegationRevocation, EndpointUrlError, EndpointUrlPolicy, EngineAuthority, FactPayload,
     FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
@@ -117,8 +117,9 @@ pub use proxima_core::{
     GoalPayload, GroupId, InputContractId, MAX_MEMORY_HYDRATION_BATCH, MemoryHydrationBatchOutcome,
     MemoryHydrationOutcome, MemoryHydrationStatus, MemoryId, ModelId, OperatorId, OwnerId,
     PayloadKeyBuilder, PerspectivePayload, PlaintextHosts, PlaintextHostsError, PromptVersion,
-    RequestHeaders, SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload, Tool,
-    ToolCaller, ToolCtx, ToolError, ToolId, ToolServices, TrustedModelIdError, UserId,
+    RequestHeaders, ResourceKey, SchemaId, SchemaVersion, ScopeKey, ScopeKeyError,
+    SearchProjectionColumnKind, ServedSurface, SidecarPayload, Tool, ToolCaller, ToolCtx,
+    ToolError, ToolId, ToolName, ToolScope, ToolServices, TrustedModelIdError, UserId,
     is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
     validate_endpoint_url, validate_endpoint_url_for_hosts,
 };

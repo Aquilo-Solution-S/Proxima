@@ -9,7 +9,7 @@ use proxima_core::storage_ports::OwnerDropProofHandle;
 use proxima_core::storage_ports::publication::ConsumerName;
 use proxima_core::{
     Authenticator, EmbeddingClient, EmbeddingRouter, EmbeddingRuntimePolicy, FlavorServiceError,
-    FlavorServices, OwnerAccessPort, OwnerId, RequestHeaders, RevalidationConfig, ToolScope,
+    FlavorServices, OwnerAccessPort, OwnerId, RequestHeaders, RevalidationConfig, ServedSurface,
     is_loopback_host,
 };
 use proxima_mcp_server::{
@@ -61,7 +61,7 @@ pub struct RuntimeBuilder {
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
     allowed_hosts: Option<Vec<String>>,
-    tool_scope: Option<ToolScope>,
+    served_surface: Option<ServedSurface>,
     stream_max_lifetime: Option<Duration>,
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
@@ -120,7 +120,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
             .field("allowed_hosts", &self.allowed_hosts)
-            .field("tool_scope", &self.tool_scope)
+            .field("served_surface", &self.served_surface)
             .field("stream_max_lifetime", &self.stream_max_lifetime)
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
@@ -184,7 +184,7 @@ impl RuntimeBuilder {
             expose_network: self.expose_network.or(base.expose_network),
             allowed_origins: self.allowed_origins.or(base.allowed_origins),
             allowed_hosts: self.allowed_hosts.or(base.allowed_hosts),
-            tool_scope: self.tool_scope.or(base.tool_scope),
+            served_surface: self.served_surface.or(base.served_surface),
             stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
@@ -395,10 +395,11 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the deployment-wide MCP tool surface.
+    /// Set the deployment's served commands. Declared reads remain served;
+    /// caller authorization independently requires each exact scope key.
     #[must_use]
-    pub fn tool_scope(mut self, tool_scope: ToolScope) -> Self {
-        self.tool_scope = Some(tool_scope);
+    pub fn served_surface(mut self, served_surface: ServedSurface) -> Self {
+        self.served_surface = Some(served_surface);
         self
     }
 
@@ -984,11 +985,11 @@ impl RuntimeBuilder {
                 crate::config::MIN_PUBLISHED_RETENTION.as_secs(),
             )));
         }
-        let tool_scope = self.tool_scope.ok_or_else(|| {
+        let served_surface = self.served_surface.ok_or_else(|| {
             ProximaError::Config(
-                "tool_scope is required: pass ToolScope::All to expose the full tool surface \
-                 (previous implicit default) or ToolScope::Palette([...]) for a restricted \
-                 keep-set; agent-facing hosts should prefer a narrow palette"
+                "served_surface is required: pass ServedSurface::All to serve all registered commands \
+                 or ServedSurface::Palette([...]) to restrict configured commands; declared reads \
+                 remain served and each caller needs its exact scope keys"
                     .into(),
             )
         })?;
@@ -1016,7 +1017,7 @@ impl RuntimeBuilder {
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
             allowed_hosts: self.allowed_hosts.unwrap_or_default(),
-            tool_scope,
+            served_surface,
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             rest_enabled: self.rest_enabled.unwrap_or(false),
@@ -1073,7 +1074,7 @@ pub struct RuntimeConfig {
     /// Bare hostnames or `host:port`; the listener always adds loopback and
     /// shares the resulting non-empty allowlist with rmcp's inner guard.
     pub allowed_hosts: Vec<String>,
-    pub tool_scope: ToolScope,
+    pub served_surface: ServedSurface,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     /// Serve `/v1` beside `/mcp` on the same listener, inside the same Host,
@@ -1191,7 +1192,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
             .field("allowed_hosts", &self.allowed_hosts)
-            .field("tool_scope", &self.tool_scope)
+            .field("served_surface", &self.served_surface)
             .field("stream_revalidation", &self.stream_revalidation)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
@@ -1581,7 +1582,7 @@ mod tests {
             builder
                 .database_url("postgres://runtime/proxima")
                 .platform_database_url("postgres://platform/proxima")
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
                 .resolve()
                 .expect("host config")
                 .0
@@ -1649,7 +1650,7 @@ mod tests {
     fn platform_database_url_is_required_at_resolve() {
         let error = RuntimeBuilder::default()
             .database_url("postgres://runtime/proxima")
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .expect_err("owner-RLS boot must require the platform URL");
         assert!(
@@ -1703,7 +1704,7 @@ mod tests {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
                 .platform_database_url("postgres://localhost/platform")
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
         };
 
         let (_, parts) = with(base()).resolve().expect("one participant resolves");
@@ -1734,7 +1735,7 @@ mod tests {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
                 .platform_database_url("postgres://localhost/platform")
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
         };
         let names = |config: &RuntimeConfig| {
             config
@@ -1820,7 +1821,7 @@ mod tests {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
                 .platform_database_url("postgres://localhost/platform")
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
                 .authenticator(Arc::new(TestAuthenticator))
         };
         let (off, _) = base().resolve().expect("no bind resolves");
@@ -1875,7 +1876,7 @@ mod tests {
             expose_network: false,
             allowed_origins: Vec::new(),
             allowed_hosts: Vec::new(),
-            tool_scope: ToolScope::All,
+            served_surface: ServedSurface::All,
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             rest_enabled: false,
@@ -2077,7 +2078,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .apply_lookup(lookup(&[
                 ("PROXIMA_STREAM_MAX_LIFETIME", "7"),
                 ("PROXIMA_STREAM_EPOCH_INTERVAL", "2"),
@@ -2115,7 +2116,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .unwrap();
 
@@ -2167,7 +2168,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .embedding_runtime_policy(explicit)
             .resolve()
             .expect("programmatic policy resolves")
@@ -2207,7 +2208,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .apply_lookup(lookup(&[
                 ("PROXIMA_PG_MAX_CONNECTIONS", "4"),
                 ("PROXIMA_PG_ACQUIRE_TIMEOUT_SECS", "9"),
@@ -2238,7 +2239,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .pg_pool_config(PgPoolConfig {
                 max_connections: 0,
                 ..PgPoolConfig::default()
@@ -2280,7 +2281,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .pg_pool_config(configured);
 
         let (config, _) = injected
@@ -2344,9 +2345,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_without_tool_scope_fails_closed_with_actionable_message() {
+    fn resolve_without_served_surface_fails_closed_with_actionable_message() {
         // No embedding host may silently advertise the full tool surface
-        // (core_transfer/core_membership included) by omitting `.tool_scope(...)`.
+        // (core_transfer/core_membership included) by omitting `.served_surface(...)`.
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
@@ -2355,22 +2356,22 @@ mod tests {
             .unwrap_err();
 
         let message = err.to_string();
-        assert!(message.contains("tool_scope is required"));
-        assert!(message.contains("ToolScope::All"));
-        assert!(message.contains("ToolScope::Palette"));
+        assert!(message.contains("served_surface is required"));
+        assert!(message.contains("ServedSurface::All"));
+        assert!(message.contains("ServedSurface::Palette"));
     }
 
     #[test]
-    fn resolve_with_explicit_tool_scope_all_builds_as_before() {
+    fn resolve_with_explicit_served_surface_all_builds_as_before() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .unwrap();
 
-        assert_eq!(config.tool_scope, ToolScope::All);
+        assert_eq!(config.served_surface, ServedSurface::All);
     }
 
     /// The one-minute floor guards BOTH doors. The environment path refuses
@@ -2383,7 +2384,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .published_retention(Duration::from_secs(59))
             .resolve()
             .expect_err("a sub-minute horizon must be refused");
@@ -2396,7 +2397,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .published_retention(Duration::from_mins(1))
             .resolve()
             .expect("the floor itself is acceptable");
@@ -2406,7 +2407,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .expect("no horizon is the default");
         assert_eq!(
@@ -2421,7 +2422,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind(addr([127, 0, 0, 1]))
             .authenticator(Arc::new(TestAuthenticator))
             .resolve()
@@ -2453,7 +2454,7 @@ mod tests {
             .authenticator(Arc::new(TestAuthenticator))
             .database_url("postgres://unused/proxima")
             .platform_database_url("postgres://unused/platform")
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .expect_err("both in one layer");
         assert!(refused.to_string().contains("not both"), "{refused}");
@@ -2463,7 +2464,7 @@ mod tests {
         RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .platform_database_url("postgres://localhost/platform")
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
     }
 
     #[test]

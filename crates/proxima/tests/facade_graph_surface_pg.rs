@@ -11,7 +11,7 @@ use proxima::flavor::{
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, FlavorApp, GetMemoriesReadRequest, Proxima, QueryRequest,
-    StorageError, ToolScope, company_owner,
+    ServedSurface, StorageError, company_owner,
 };
 use proxima_core::flavor::{
     BandComparability, CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
@@ -82,7 +82,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
@@ -238,7 +238,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let authz = authenticated(built.single_owner_authz().expect("one owner"));
@@ -364,7 +364,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let engine = built.host().engine();
@@ -550,7 +550,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let engine = built.host().engine();
@@ -656,7 +656,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let engine = built.host().engine();
@@ -1149,7 +1149,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
             .database_url(db_url)
             .platform_database_url(platform_url)
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let authz = authenticated(AuthzContext::for_subject_with_role(
@@ -1479,7 +1479,7 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
             .platform_database_url(platform_url)
             .owner(owners[0])
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let engine = built.host().engine();

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerId,
-    ToolScope, authenticate,
+    ServedSurface, authenticate,
 };
 
 /// Per-request MCP auth context injected by the edge middleware.
@@ -83,7 +83,7 @@ impl ResolvedAuth {
 pub struct McpEdgeAuth {
     host: Option<Arc<dyn Authenticator>>,
     owner_access: Option<Arc<dyn OwnerAccessPort>>,
-    tool_scope: ToolScope,
+    served_surface: ServedSurface,
 }
 
 impl std::fmt::Debug for McpEdgeAuth {
@@ -102,17 +102,18 @@ impl McpEdgeAuth {
         Self {
             host: None,
             owner_access: None,
-            tool_scope: ToolScope::All,
+            served_surface: ServedSurface::All,
         }
     }
 
-    /// Layer a deployment-wide MCP tool surface over every resolved request.
-    /// The deployment scope is INTERSECTED with each caller's own scope (see
-    /// [`ToolScope::intersect`]), so it can only ever narrow a caller, never
-    /// widen one — a future per-actor palette stays respected.
+    /// Restrict the deployment surface independently of each caller's exact
+    /// scope. Registered reads remain served without granting caller keys.
     #[must_use]
-    pub fn with_tool_scope(mut self, tool_scope: ToolScope) -> Self {
-        self.tool_scope = tool_scope;
+    pub fn with_served_surface(mut self, served_surface: ServedSurface) -> Self {
+        self.served_surface = match self.served_surface {
+            ServedSurface::All => served_surface,
+            current @ ServedSurface::Palette(_) => current.intersect(&served_surface),
+        };
         self
     }
 
@@ -195,8 +196,7 @@ impl McpEdgeAuth {
         if authz.auth_path() != AuthPath::HostBearer {
             return None;
         }
-        let tool_scope = authz.tool_scope().intersect(&self.tool_scope);
-        authz = authz.with_tool_scope(tool_scope);
+        authz = authz.with_served_surface(self.served_surface.clone());
         Some(ResolvedAuth { authz })
     }
 }
@@ -210,7 +210,8 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::{
         AccessError, AccessKind, AuthError, Engine, ErrorCode, FlavorRegistry, ForwarderRole,
-        GetGraphReadRequest, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
+        GetGraphReadRequest, GroupId, OwnerId, OwnerRoles, Relation, Role, ScopeKey, ToolScope,
+        UserId,
     };
 
     fn fake_owner() -> OwnerId {
@@ -403,6 +404,35 @@ mod tests {
                 .with_owner_access(Arc::new(access));
             assert!(auth.resolve("host-token", owner).await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn edge_keeps_exact_caller_keys_separate_from_the_served_surface() {
+        let owner = fake_owner();
+        let caller_scope = ToolScope::Palette(vec![ScopeKey::parse("host_write").unwrap()]);
+        let served = ServedSurface::Palette(Vec::new());
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(StubHostAuth {
+                result: Ok(host_owner_context(owner).with_tool_scope(caller_scope.clone())),
+            }))
+            .with_served_surface(served.clone())
+            .with_served_surface(ServedSurface::All);
+        let ctx = auth.resolve("host-token", owner).await.unwrap();
+        assert_eq!(ctx.authz.tool_scope(), &caller_scope);
+        assert_eq!(ctx.authz.served_surface(), &served);
+        assert!(ctx.authz.can_access_owner(&owner));
+    }
+
+    #[tokio::test]
+    async fn edge_cannot_widen_a_hosts_existing_served_restriction() {
+        let owner = fake_owner();
+        let served = ServedSurface::Palette(vec![ScopeKey::parse("host_write").unwrap()]);
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth {
+            result: Ok(host_owner_context(owner).with_served_surface(served.clone())),
+        }));
+        let ctx = auth.resolve("host-token", owner).await.unwrap();
+        assert_eq!(ctx.authz.served_surface(), &served);
+        assert_eq!(ctx.authz.tool_scope(), &ToolScope::All);
     }
 
     #[tokio::test]

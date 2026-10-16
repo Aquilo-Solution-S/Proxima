@@ -17,7 +17,7 @@ use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{
     AppInfo, AuthzContext, BuiltProxima, CoreMcpTools, FactWrite, FlavorApp,
     GetMemoriesReadRequest, GetMemoryReadRequest, MemoryLineageDirection, MemoryLineageRequest,
-    Proxima, QueryRequest, S3RuntimeConfig, ToolScope,
+    Proxima, QueryRequest, S3RuntimeConfig, ServedSurface, ToolScope,
 };
 use proxima_blob_s3::CitedBlobUploadPrepareTs;
 use proxima_core::error::{ErrorCode, ProtocolError};
@@ -886,7 +886,7 @@ async fn boot(
         .database_url(runtime_url)
         .platform_database_url(platform_url)
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .embedding_router(router);
     if let Some(s3) = s3 {
         app = app.s3(s3);

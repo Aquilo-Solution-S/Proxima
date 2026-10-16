@@ -24,9 +24,10 @@ use crate::text_bounds::check_trimmed_len;
 
 const MAX_TOOL_ID_CHARS: usize = 200;
 use crate::{
-    AccessError, ActionName, AuthPath, Authenticator, AuthzContext, DelegatedPhase,
+    AccessError, ActionName, AuthPath, Authenticator, AuthzContext, CapabilitySet, DelegatedPhase,
     DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerId, OwnerRoles,
-    ProtocolError, Role, ScopeKey, ScopeKeyError, StorageError, ToolName, ToolScope, UserId,
+    ProtocolError, Role, ScopeKey, ScopeKeyError, ServedSurface, StorageError, ToolName, ToolScope,
+    UserId,
 };
 
 /// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
@@ -62,9 +63,8 @@ fn registered_tool_key(
         ScopeKey::Action { tool, action } => {
             let declared = registry.mcp_tool(tool.as_str()).is_some_and(|descriptor| {
                 descriptor
-                    .action_arg_specs
-                    .iter()
-                    .any(|spec| spec.action == action.as_str())
+                    .actions()
+                    .any(|(known, _)| known == action.as_str())
             });
             if declared {
                 Ok(key)
@@ -73,7 +73,10 @@ fn registered_tool_key(
             }
         }
         ScopeKey::Tool(tool) => match registry.mcp_tool(tool.as_str()) {
-            Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
+            Some(descriptor)
+                if !descriptor.action_arg_specs.is_empty()
+                    || !descriptor.argv_action_specs.is_empty() =>
+            {
                 Err(invalid("leaf action scope required for grouped tools"))
             }
             Some(_) => Ok(key),
@@ -190,12 +193,15 @@ impl DelegatedCommand {
     }
 
     /// The scope a redeemed phase runs under: exactly this command's key.
+    fn scope_key(&self) -> Result<ScopeKey, ScopeKeyError> {
+        match &self.action {
+            None => Ok(ScopeKey::Tool(self.tool.clone())),
+            Some(action) => ScopeKey::action(self.tool.clone(), action.clone()),
+        }
+    }
+
     fn tool_scope(&self) -> Result<ToolScope, ScopeKeyError> {
-        let key = match &self.action {
-            None => ScopeKey::Tool(self.tool.clone()),
-            Some(action) => ScopeKey::action(self.tool.clone(), action.clone())?,
-        };
-        Ok(ToolScope::Palette(vec![key]))
+        Ok(ToolScope::Palette(vec![self.scope_key()?]))
     }
 }
 
@@ -476,7 +482,7 @@ pub struct DelegatedAuthorityService {
     owner_access: Arc<dyn OwnerAccessPort>,
     authenticator: Arc<dyn Authenticator>,
     registry: Arc<FlavorRegistryFrozen>,
-    deployment_tool_scope: ToolScope,
+    served_surface: ServedSurface,
     runtime_binding: DelegationRuntimeBinding,
 }
 
@@ -498,7 +504,7 @@ impl DelegatedAuthorityService {
         owner_access: Arc<dyn OwnerAccessPort>,
         authenticator: Arc<dyn Authenticator>,
         registry: Arc<FlavorRegistryFrozen>,
-        deployment_tool_scope: ToolScope,
+        served_surface: ServedSurface,
         runtime_authority: &DelegationRuntimeAuthority,
     ) -> Self {
         Self {
@@ -507,7 +513,7 @@ impl DelegatedAuthorityService {
             owner_access,
             authenticator,
             registry,
-            deployment_tool_scope,
+            served_surface,
             runtime_binding: runtime_authority.binding(),
         }
     }
@@ -551,7 +557,7 @@ impl DelegatedAuthorityService {
             return Err(DelegatedAuthorityError::RoleCeilingExceeded);
         }
         self.validate_current_command(&command)?;
-        self.validate_scopes(source.tool_scope(), &command)?;
+        self.validate_scopes(source.capabilities(), &command)?;
 
         let grant = DelegationGrant::issued(
             subject,
@@ -601,7 +607,7 @@ impl DelegatedAuthorityService {
             return Err(DelegatedAuthorityError::Expired);
         }
         self.validate_current_command(grant.command())?;
-        self.validate_scopes(&ToolScope::All, grant.command())?;
+        self.validate_scopes(&CapabilitySet::all(), grant.command())?;
         self.revalidate_epoch(grant.subject(), grant.auth_epoch())
             .await?;
         let current_roles = self.current_roles(grant.subject()).await?;
@@ -623,6 +629,7 @@ impl DelegatedAuthorityService {
         .with_expires_at(Some(grant.expires_at()))
         .with_auth_epoch(grant.auth_epoch())
         .with_tool_scope(tool_scope)
+        .with_served_surface(self.served_surface.clone())
         // The durable grant was issued from a verified bearer. Redemption
         // rechecks identity epoch, expiry, current membership and ceiling above.
         // Seal only after those checks; never reconstruct from a queued owner.
@@ -752,11 +759,18 @@ impl DelegatedAuthorityService {
 
     fn validate_scopes(
         &self,
-        caller_scope: &ToolScope,
+        capabilities: &CapabilitySet,
         command: &DelegatedCommand,
     ) -> Result<(), DelegatedAuthorityError> {
-        let covers = |scope: &ToolScope| scope.covers_command(command.tool(), command.action());
-        if !covers(caller_scope) || !covers(&self.deployment_tool_scope) {
+        let descriptor = self
+            .registry
+            .mcp_tool(command.tool().as_str())
+            .ok_or_else(|| DelegatedAuthorityError::CommandUnavailable(command.to_string()))?;
+        let declared = descriptor.declaration(command.action().map(ActionName::as_str));
+        let key = command
+            .scope_key()
+            .map_err(|_| DelegatedAuthorityError::CommandUnavailable(command.to_string()))?;
+        if !capabilities.admits(&key, declared) || !self.served_surface.admits(&key, declared) {
             return Err(DelegatedAuthorityError::ToolScopeDenied(
                 command.to_string(),
             ));
@@ -996,7 +1010,7 @@ mod tests {
         store: Arc<MemoryStore>,
         owner_access: Arc<TestOwnerAccess>,
         authenticator: Arc<EpochAuthenticator>,
-        deployment_scope: ToolScope,
+        deployment_scope: ServedSurface,
     ) -> (crate::Engine, DelegatedAuthorityService, DelegatedCommand) {
         let (engine, _system, delegation_runtime) =
             crate::Engine::new(frozen).into_runtime_authorities();
@@ -1047,8 +1061,13 @@ mod tests {
     #[tokio::test]
     async fn phase_allows_bounded_fact_authorization_and_raw_delegated_is_denied() {
         let (subject, owner, store, access, authenticator) = fixtures();
-        let (engine, service, command) =
-            runtime(registry(true), store, access, authenticator, ToolScope::All);
+        let (engine, service, command) = runtime(
+            registry(true),
+            store,
+            access,
+            authenticator,
+            ServedSurface::All,
+        );
         let caller = source(
             subject,
             owner,
@@ -1102,8 +1121,13 @@ mod tests {
     #[tokio::test]
     async fn split_fact_witness_rechecks_expiry_before_commit() {
         let (subject, owner, store, access, authenticator) = fixtures();
-        let (engine, service, command) =
-            runtime(registry(true), store, access, authenticator, ToolScope::All);
+        let (engine, service, command) = runtime(
+            registry(true),
+            store,
+            access,
+            authenticator,
+            ServedSurface::All,
+        );
         let caller = source(
             subject,
             owner,
@@ -1139,8 +1163,13 @@ mod tests {
     #[tokio::test]
     async fn foreign_runtime_phase_is_denied_before_engine_work() {
         let (subject, owner, store, access, authenticator) = fixtures();
-        let (foreign_engine, service, command) =
-            runtime(registry(true), store, access, authenticator, ToolScope::All);
+        let (foreign_engine, service, command) = runtime(
+            registry(true),
+            store,
+            access,
+            authenticator,
+            ServedSurface::All,
+        );
         let target_engine = crate::Engine::new(foreign_engine.registry().clone());
         let caller = source(
             subject,
@@ -1171,7 +1200,7 @@ mod tests {
             store.clone(),
             access.clone(),
             authenticator.clone(),
-            ToolScope::All,
+            ServedSurface::All,
         );
         let caller = source(
             subject,
@@ -1190,6 +1219,16 @@ mod tests {
         assert_eq!(store.inserts.load(Ordering::SeqCst), 0);
 
         authenticator.0.store(0, Ordering::SeqCst);
+        let restricted = caller
+            .clone()
+            .with_served_surface(ServedSurface::Palette(Vec::new()));
+        assert!(matches!(
+            service
+                .issue(&restricted, owner, command.clone(), Role::editor())
+                .await,
+            Err(DelegatedAuthorityError::ToolScopeDenied(_))
+        ));
+        assert_eq!(store.inserts.load(Ordering::SeqCst), 0);
         *access.returned_subject.lock().expect("subject mutex") = UserId::new(Uuid::now_v7());
         assert!(matches!(
             service.issue(&caller, owner, command, Role::editor()).await,
@@ -1206,7 +1245,7 @@ mod tests {
             store.clone(),
             access.clone(),
             authenticator.clone(),
-            ToolScope::All,
+            ServedSurface::All,
         );
         let caller = source(
             subject,
@@ -1237,7 +1276,7 @@ mod tests {
             store.clone(),
             access.clone(),
             authenticator.clone(),
-            ToolScope::Palette(Vec::new()),
+            ServedSurface::Palette(Vec::new()),
         );
         assert!(matches!(
             contracted.redeem_phase(issued.id, owner, &command).await,
@@ -1251,7 +1290,7 @@ mod tests {
             access.clone(),
             authenticator,
             Arc::new(no_tool_engine.registry().clone()),
-            ToolScope::All,
+            ServedSurface::All,
             &no_tool_runtime,
         );
         assert!(matches!(
@@ -1281,7 +1320,7 @@ mod tests {
             store.clone(),
             access,
             authenticator,
-            ToolScope::All,
+            ServedSurface::All,
         );
         let expired = source(
             subject,
@@ -1307,7 +1346,7 @@ mod tests {
             store.clone(),
             access,
             authenticator,
-            ToolScope::All,
+            ServedSurface::All,
         );
         let system = AuthzContext::for_subject_with_role(
             subject,
@@ -1370,7 +1409,7 @@ mod tests {
             store.clone(),
             access,
             authenticator,
-            ToolScope::All,
+            ServedSurface::All,
         );
         assert!(matches!(
             service
@@ -1460,7 +1499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatcher_command_accepts_whole_or_exact_leaf_scope_only() {
+    async fn dispatcher_command_requires_an_exact_leaf_for_caller_and_deployment() {
         let (subject, owner, store, access, authenticator) = fixtures();
         let frozen = dispatcher_registry();
         let (engine, _system, runtime_authority) =
@@ -1470,32 +1509,41 @@ mod tests {
             DelegatedCommand::parse(format!("{DISPATCHER_TOOL_NAME}:run"), registry.as_ref())
                 .expect("registered dispatcher action");
 
-        for scope in [
-            palette(&[DISPATCHER_TOOL_NAME]),
-            palette(&[&format!("{DISPATCHER_TOOL_NAME}:run")]),
+        let leaf = format!("{DISPATCHER_TOOL_NAME}:run");
+        for (caller_key, served_key, allowed) in [
+            (DISPATCHER_TOOL_NAME, leaf.as_str(), false),
+            (leaf.as_str(), DISPATCHER_TOOL_NAME, false),
+            (leaf.as_str(), leaf.as_str(), true),
         ] {
             let service = DelegatedAuthorityService::new(
                 store.clone(),
                 access.clone(),
                 authenticator.clone(),
                 registry.clone(),
-                scope.clone(),
+                ServedSurface::Palette(vec![ScopeKey::parse(served_key).expect("a scope key")]),
                 &runtime_authority,
             );
             let caller = source(
                 subject,
                 owner,
                 SystemTime::now() + Duration::from_secs(30),
-                scope,
+                palette(&[caller_key]),
             );
             let issued = service
                 .issue(&caller, owner, command.clone(), Role::editor())
-                .await
-                .expect("whole dispatcher and exact leaf palettes permit issuance");
-            let _phase = service
-                .redeem_phase(issued.id, owner, &command)
-                .await
-                .expect("current dispatcher scope permits redemption");
+                .await;
+            if allowed {
+                let issued = issued.expect("the exact leaf permits issuance");
+                let _phase = service
+                    .redeem_phase(issued.id, owner, &command)
+                    .await
+                    .expect("the exact leaf permits redemption");
+            } else {
+                assert!(
+                    matches!(issued, Err(DelegatedAuthorityError::ToolScopeDenied(_))),
+                    "{caller_key} / {served_key}"
+                );
+            }
         }
 
         assert!(
@@ -1507,7 +1555,7 @@ mod tests {
             access,
             authenticator,
             registry,
-            ToolScope::All,
+            ServedSurface::All,
             &runtime_authority,
         );
         let other_action = source(
@@ -1521,6 +1569,53 @@ mod tests {
                 .issue(&other_action, owner, command, Role::editor())
                 .await,
             Err(DelegatedAuthorityError::ToolScopeDenied(_))
+        ));
+    }
+    #[tokio::test]
+    async fn a_delegated_read_needs_its_exact_caller_key_and_keeps_only_that_key() {
+        let (subject, owner, store, access, authenticator) = fixtures();
+        let (engine, _system, authority) =
+            crate::Engine::new(registry(true)).into_runtime_authorities();
+        let registry = Arc::new(engine.registry().clone());
+        let read = crate::protocol::tool::CORE_SEARCH_MEMORIES;
+        let command = DelegatedCommand::parse(read, &registry).expect("registered read");
+        let surface = ServedSurface::Palette(Vec::new());
+        let service = DelegatedAuthorityService::new(
+            store,
+            access,
+            authenticator,
+            registry,
+            surface.clone(),
+            &authority,
+        );
+        let caller = source(
+            subject,
+            owner,
+            SystemTime::now() + Duration::from_secs(30),
+            palette(&[read]),
+        );
+        let omitted = caller.clone().with_tool_scope(palette(&[TOOL_NAME]));
+        assert!(matches!(
+            service
+                .issue(&omitted, owner, command.clone(), Role::viewer())
+                .await,
+            Err(DelegatedAuthorityError::ToolScopeDenied(_))
+        ));
+        let issued = service
+            .issue(&caller, owner, command.clone(), Role::viewer())
+            .await
+            .expect("deployment always serves a declared read");
+        let phase = service
+            .redeem_phase(issued.id, owner, &command)
+            .await
+            .expect("read remains served");
+        let authority =
+            crate::authz::context_for_engine_operation(&phase).expect("a redeemed phase");
+        assert_eq!(authority.authz().tool_scope(), &palette(&[read]));
+        assert_eq!(authority.authz().served_surface(), &surface);
+        assert!(!authority.authz().capabilities().admits(
+            &ScopeKey::parse(crate::protocol::resource::MEMORY).expect("resource key"),
+            crate::mcp::KeyDeclaration::shared(Some(ToolEffect::ReadOnly))
         ));
     }
 }

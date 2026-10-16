@@ -334,7 +334,7 @@ impl proxima::FlavorApp for PolicyHost {
 
 #[tokio::test]
 async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot() {
-    use proxima::{Proxima, ToolScope};
+    use proxima::{Proxima, ServedSurface};
 
     let db = SplitRoleDb::create("proxima_policy_runtime", &[])
         .await
@@ -352,7 +352,7 @@ async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot(
             .platform_database_url(db.platform_url())
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
     };
     for skip in [false, true] {
         let strict = if skip {

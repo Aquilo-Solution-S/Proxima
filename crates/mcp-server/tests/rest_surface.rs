@@ -23,7 +23,9 @@ use proxima_core::mcp::{Replay, ToolEffect};
 use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ToolScope, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ServedSurface, ToolScope, UserId,
+};
 use proxima_core::{GroupId, access::Role};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use tower::ServiceExt;
@@ -258,6 +260,12 @@ fn auth(scope: ToolScope) -> McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
     }
+}
+
+fn served_auth(surface: ServedSurface) -> McpAuthContext {
+    let mut ctx = auth(ToolScope::All);
+    ctx.authz = ctx.authz.with_served_surface(surface);
+    ctx
 }
 
 fn viewer_auth(scope: ToolScope) -> McpAuthContext {
@@ -579,8 +587,7 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
 async fn visible_true_never_lists_outside_the_palette_or_role() {
     let router = app(host_with(OpinionlessBehavior));
 
-    // Reads are listed under every palette (#462); a write the palette
-    // does not hold stays unlisted.
+    // Caller keys stay exact even when every visibility hook returns true.
     let palette = auth(palette_of(&[protocol_tool::CORE_SEARCH_MEMORIES]));
     let ids = catalog_ids(&get(&router, "/v1/tools", &palette).await);
     assert!(ids.contains(protocol_tool::CORE_SEARCH_MEMORIES), "{ids:?}");
@@ -808,22 +815,28 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
         assert_eq!(actual, expected, "surface drift for {scope:?}");
     }
 
-    // The narrow end of the range: an empty palette advertises reads only
-    // (#462) on either surface, rather than REST falling open to the full
-    // registry's writes.
-    let empty = auth(ToolScope::Palette(Vec::new()));
+    // An empty deployment surface still serves reads to a caller with All.
+    let empty = served_auth(ServedSurface::Palette(Vec::new()));
     assert!(
         host.read_resource("proxima://tools", author(), Some(empty.clone()))
             .await
             .is_ok(),
-        "the MCP catalog is a read, admitted under an empty palette"
+        "the MCP catalog is a read, admitted under an empty served palette"
     );
     let answer = get(&router, "/v1/tools", &empty).await;
     let listed = catalog_ids(&answer);
     assert!(
         !listed.is_empty() && !listed.contains(protocol_tool::CORE_REMEMBER),
-        "an empty palette lists reads and no write: {listed:?}"
+        "an empty served palette lists reads and no write: {listed:?}"
     );
+
+    let empty_caller = auth(ToolScope::Palette(Vec::new()));
+    assert!(matches!(
+        host.read_resource("proxima://tools", author(), Some(empty_caller.clone()))
+            .await,
+        Err(proxima_mcp_server::ToolInvocationError::NotAuthorized(_))
+    ));
+    assert!(catalog_ids(&get(&router, "/v1/tools", &empty_caller).await).is_empty());
 }
 
 /// The narrowing reaches per-action too: a palette holding one leaf of a
@@ -853,7 +866,7 @@ async fn a_palette_narrows_the_advertised_dispatcher_actions() {
 #[tokio::test]
 async fn a_bogus_leaf_never_advertises_a_flat_tool() {
     let router = app(host());
-    // A write: a read would be admitted under every palette (#462).
+    // A flat key cannot be granted through a made-up action suffix.
     let flat = protocol_tool::CORE_REMEMBER;
     let ctx = auth(palette_of(&[&format!("{flat}:bogus")]));
 
@@ -1224,6 +1237,198 @@ async fn a_denied_flavor_dispatcher_action_is_403() {
     )
     .await;
     assert_eq!(granted.status, StatusCode::OK);
+}
+
+struct DispatcherCase {
+    host: McpToolHost,
+    tool: &'static str,
+    read: &'static str,
+    write: &'static str,
+    read_args: serde_json::Value,
+    write_args: serde_json::Value,
+}
+
+fn dispatcher_cases() -> [DispatcherCase; 2] {
+    [
+        DispatcherCase {
+            host: flavor_host(),
+            tool: FLAVOR_DISPATCH,
+            read: "look",
+            write: "touch",
+            read_args: serde_json::json!({"action": "look", "id": "x"}),
+            write_args: serde_json::json!({"action": "touch", "id": "x"}),
+        },
+        DispatcherCase {
+            host: argv_host(),
+            tool: FLAVOR_ARGV,
+            read: "approval",
+            write: "approval-decide",
+            read_args: serde_json::json!({"argv": ["approval"]}),
+            write_args: serde_json::json!({"argv": ["approval", "decide"]}),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read() {
+    for DispatcherCase {
+        host,
+        tool,
+        read,
+        write,
+        read_args,
+        write_args,
+    } in dispatcher_cases()
+    {
+        let router = app(host.clone());
+        let ctx = auth(palette_of(&[
+            &format!("{tool}:{write}"),
+            protocol_resource::TOOLS,
+        ]));
+        let listed = get(&router, "/v1/tools", &ctx).await;
+        let descriptor = listed.json()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor["id"] == tool)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            descriptor["annotations"]["read_only"], false,
+            "{descriptor}"
+        );
+        if tool == FLAVOR_DISPATCH {
+            assert_eq!(
+                descriptor["args_schema"]["properties"]["action"]["enum"],
+                serde_json::json!([write])
+            );
+        }
+        let document = get(&router, "/v1/openapi.json", &ctx).await.json();
+        assert!(
+            document["paths"]
+                .get(format!("/v1/tools/{tool}/{read}"))
+                .is_none(),
+            "{document}"
+        );
+        assert_eq!(
+            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxima-read-only"],
+            false
+        );
+        if tool == FLAVOR_DISPATCH {
+            assert!(
+                document["paths"]
+                    .get(format!("/v1/tools/{tool}/{write}"))
+                    .is_some(),
+                "{document}"
+            );
+        }
+        let catalog = host
+            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .await
+            .unwrap();
+        let described = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor["tool_id"] == tool)
+            .unwrap();
+        if tool == FLAVOR_DISPATCH {
+            assert_eq!(
+                described["actions"].as_array().unwrap().len(),
+                1,
+                "{described}"
+            );
+            assert_eq!(described["actions"][0]["action"], write);
+        }
+        assert!(matches!(
+            host.call_tool(tool, read_args.clone(), author(), Some(ctx.clone()))
+                .await,
+            Err(proxima_mcp_server::ToolInvocationError::NotAuthorized(_))
+        ));
+        assert_eq!(
+            call(
+                &router,
+                Method::POST,
+                &format!("/v1/tools/{tool}"),
+                &ctx,
+                Some(read_args)
+            )
+            .await
+            .status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(
+                &router,
+                Method::POST,
+                &format!("/v1/tools/{tool}"),
+                &ctx,
+                Some(write_args)
+            )
+            .await
+            .status,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_empty_served_surface_retains_both_dispatcher_formats_read_leaves() {
+    for DispatcherCase {
+        host,
+        tool,
+        read,
+        write,
+        read_args,
+        ..
+    } in dispatcher_cases()
+    {
+        let router = app(host);
+        let ctx = served_auth(ServedSurface::Palette(Vec::new()));
+        let listed = get(&router, "/v1/tools", &ctx).await.json();
+        let descriptor = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor["id"] == tool)
+            .unwrap();
+        assert_eq!(descriptor["annotations"]["read_only"], true, "{descriptor}");
+        if tool == FLAVOR_DISPATCH {
+            assert_eq!(
+                descriptor["args_schema"]["properties"]["action"]["enum"],
+                serde_json::json!([read])
+            );
+        }
+        let document = get(&router, "/v1/openapi.json", &ctx).await.json();
+        assert_eq!(
+            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxima-read-only"],
+            true
+        );
+        if tool == FLAVOR_DISPATCH {
+            assert!(
+                document["paths"]
+                    .get(format!("/v1/tools/{tool}/{read}"))
+                    .is_some()
+            );
+        }
+        assert!(
+            document["paths"]
+                .get(format!("/v1/tools/{tool}/{write}"))
+                .is_none()
+        );
+        assert_eq!(
+            call(
+                &router,
+                Method::POST,
+                &format!("/v1/tools/{tool}"),
+                &ctx,
+                Some(read_args)
+            )
+            .await
+            .status,
+            StatusCode::OK
+        );
+    }
 }
 
 // ---------------------------------------------------------- method gating
@@ -1710,6 +1915,59 @@ async fn how_to_has_its_own_route_and_is_not_a_passthrough_resource() {
 }
 
 #[tokio::test]
+async fn exact_caller_resource_keys_gate_rest_guide_reads_and_openapi() {
+    let router = app(host());
+    let denied = auth(palette_of(&[protocol_tool::CORE_SEARCH_MEMORIES]));
+    assert_eq!(
+        get(&router, "/v1/how-to", &denied).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(&router, "/v1/resources/tools", &denied).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let document = get(&router, "/v1/openapi.json", &denied).await.json();
+    assert!(document["paths"].get("/v1/how-to").is_none());
+    assert!(document["paths"].get("/v1/resources/tools").is_none());
+
+    let held = auth(palette_of(&[
+        protocol_resource::HOW_TO,
+        protocol_resource::TOOLS,
+    ]));
+    assert_eq!(
+        get(&router, "/v1/how-to", &held).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&router, "/v1/resources/tools", &held).await.status,
+        StatusCode::OK
+    );
+    let document = get(&router, "/v1/openapi.json", &held).await.json();
+    assert!(document["paths"].get("/v1/resources/tools").is_some());
+    assert_eq!(
+        document["paths"]["/v1/how-to"]["get"]["responses"]["200"]["content"]["text/markdown"]["schema"]
+            ["type"],
+        "string"
+    );
+    assert!(
+        document["paths"]["/v1/how-to"]["get"]["security"]
+            .as_array()
+            .is_some()
+    );
+
+    let served = served_auth(ServedSurface::Palette(Vec::new()));
+    assert_eq!(
+        get(&router, "/v1/how-to", &served).await.status,
+        StatusCode::OK
+    );
+    assert!(
+        get(&router, "/v1/openapi.json", &served).await.json()["paths"]
+            .get("/v1/how-to")
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn the_resource_catalog_is_scope_filtered_and_maps_onto_rest_paths() {
     let router = app(host());
 
@@ -1728,14 +1986,21 @@ async fn the_resource_catalog_is_scope_filtered_and_maps_onto_rest_paths() {
     let empty = get(
         &router,
         "/v1/resources",
-        &auth(ToolScope::Palette(Vec::new())),
+        &served_auth(ServedSurface::Palette(Vec::new())),
     )
     .await;
     assert_eq!(
         empty.json()["resources"].as_array().map(Vec::len),
         Some(resources.len()),
-        "core resources are reads, advertised under every palette (#462)"
+        "core resources remain served under an empty deployment palette"
     );
+    let empty_caller = get(
+        &router,
+        "/v1/resources",
+        &auth(ToolScope::Palette(Vec::new())),
+    )
+    .await;
+    assert_eq!(empty_caller.json()["resources"], serde_json::json!([]));
 }
 
 #[tokio::test]

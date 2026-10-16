@@ -135,7 +135,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                         .platform_database_url(platform_url.clone())
                         .owner(owner)
                         .embedding_router(router)
-                        .tool_scope(ToolScope::All)
+                        .served_surface(proxima_core::ServedSurface::All)
                         .build()
                 },
             )
@@ -293,7 +293,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
                     .platform_database_url(platform_url.clone())
                     .owner(owner)
                     .embedding_router(router)
-                    .tool_scope(ToolScope::All)
+                    .served_surface(proxima_core::ServedSurface::All)
                     .build()
             },
         )
@@ -388,7 +388,7 @@ impl TwoOwnerFixture {
                 .owner(personal)
                 .embedding_router(router)
                 .embedding_runtime_policy(policy)
-                .tool_scope(ToolScope::All)
+                .served_surface(proxima_core::ServedSurface::All)
                 .build()
         })
         .await?;

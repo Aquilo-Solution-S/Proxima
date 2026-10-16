@@ -966,7 +966,9 @@ mod tests {
     use super::*;
     use crate::auth::McpAuthContext;
     use proxima_core::mcp::{McpAuthorContext, ToolContent};
-    use proxima_core::{AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ToolScope, UserId};
+    use proxima_core::{
+        AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ServedSurface, ToolScope, UserId,
+    };
 
     fn fake_owner() -> OwnerId {
         OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
@@ -1184,8 +1186,7 @@ mod tests {
         );
         assert_eq!(*seen.lock().expect("lock"), ["host_echo"]);
 
-        // The palette gates a host write by its name; a read is admitted
-        // under every palette (#462).
+        // Exact caller keys gate both reads and writes by their own names.
         let narrowed = McpAuthContext {
             owner,
             authz: auth.authz.clone().with_tool_scope(ToolScope::Palette(vec![
@@ -1499,11 +1500,10 @@ mod tests {
     }
 
     /// `read_resource` traverses the same `RequestBehavior` onion
-    /// (`ScopeGateBehavior`) as `call_tool`. A palette narrows writes only:
-    /// a core resource is a declared read, so an empty palette still reads
-    /// `proxima://schemas` for the owner (#462).
+    /// (`ScopeGateBehavior`) as `call_tool`. An empty deployment palette
+    /// retains a core resource read for a caller that holds its key.
     #[tokio::test]
-    async fn read_resource_admitted_under_empty_palette() {
+    async fn read_resource_admitted_under_empty_served_palette() {
         let server = make_server();
         let owner = fake_owner();
         let author = McpAuthorContext {
@@ -1514,7 +1514,7 @@ mod tests {
             caller_self_perspective: None,
         };
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .with_tool_scope(ToolScope::Palette(Vec::new()));
+            .with_served_surface(ServedSurface::Palette(Vec::new()));
         let auth = McpAuthContext { owner, authz };
 
         let result = server
@@ -1523,9 +1523,9 @@ mod tests {
 
         assert!(
             !matches!(result, Err(ToolInvocationError::NotAuthorized(_))),
-            "an empty palette must not deny a resource read: {result:?}"
+            "an empty served palette must not deny a resource read: {result:?}"
         );
-        result.expect("the owner reads proxima://schemas under an empty palette");
+        result.expect("the owner reads proxima://schemas under an empty served palette");
     }
 
     #[tokio::test]

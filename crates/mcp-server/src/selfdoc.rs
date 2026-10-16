@@ -2,7 +2,7 @@
 //! returned at `initialize` and the `proxima://how-to` resource body.
 //!
 //! Both are generated from the *resolved* tool/resource set — the same
-//! `authz.capabilities.tool_scope`-filtered descriptor lists that
+//! caller- and deployment-filtered descriptor lists that
 //! `list_tools`, `resources/list`, and `resources/templates/list` advertise —
 //! so the How-To never references a surface a given deployment profile
 //! (`PROXIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
@@ -53,6 +53,7 @@ const CODE_OPEN_FILE_REVISION: &str = "proxima-code_open_file_revision";
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 struct Surface {
+    how_to: bool,
     remember: bool,
     record_utterance: bool,
     derive: bool,
@@ -77,6 +78,7 @@ impl Surface {
         let has_tool = |id: &str| advertised_tools.contains(id);
         let has_resource = |id: &str| advertised_resources.contains(id);
         Self {
+            how_to: has_resource(protocol_resource::HOW_TO),
             remember: has_tool(RememberTool::NAME),
             record_utterance: has_tool(RecordUtteranceTool::NAME),
             derive: has_tool(DeriveTool::NAME),
@@ -222,11 +224,14 @@ pub fn build_instructions(
         );
     }
 
-    out.push_str(
-        "Recall before you act, and consolidate at natural breaks. Full playbook with worked \
+    out.push_str("Recall before you act, and consolidate at natural breaks.");
+    if s.how_to {
+        out.push_str(
+            " Full playbook with worked \
          examples, the edge-kind table, and the read-resource decision guide: read the \
          `proxima://how-to` resource.",
-    );
+        );
+    }
 
     out
 }
@@ -592,9 +597,22 @@ mod tests {
     }
 
     fn full_resource_set() -> BTreeSet<&'static str> {
-        [protocol_resource::MEMORY, protocol_resource::MEMORY_LINEAGE]
-            .into_iter()
-            .collect()
+        [
+            protocol_resource::MEMORY,
+            protocol_resource::MEMORY_LINEAGE,
+            protocol_resource::HOW_TO,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn instructions_name_the_guide_only_when_its_resource_is_advertised() {
+        let tools = full_tool_set();
+        let mut resources = full_resource_set();
+        assert!(build_instructions(&tools, &resources).contains(HOW_TO_URI));
+        resources.remove(protocol_resource::HOW_TO);
+        assert!(!build_instructions(&tools, &resources).contains(HOW_TO_URI));
     }
 
     /// A `memory`-style profile that keeps authoring + retrieval but, for the

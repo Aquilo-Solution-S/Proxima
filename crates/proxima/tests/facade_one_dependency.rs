@@ -165,7 +165,7 @@ fn both_tiers_name_the_tool_declaration_consts() {
 #[test]
 fn host_tier_names_the_mcp_edge() {
     let _edge: Arc<proxima::McpEdgeAuth> =
-        Arc::new(proxima::McpEdgeAuth::headless().with_tool_scope(proxima::ToolScope::All));
+        Arc::new(proxima::McpEdgeAuth::headless().with_served_surface(proxima::ServedSurface::All));
     let origins =
         proxima::OriginAllowlist::parse(["https://proxima.example.com"]).expect("concrete origin");
     assert!(!origins.origins().is_empty());

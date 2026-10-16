@@ -254,7 +254,7 @@ mod embedding_failure_regressions {
                 .database_url(runtime_url)
                 .platform_database_url(platform_url)
                 .owner(owner)
-                .tool_scope(ToolScope::All)
+                .served_surface(proxima_core::ServedSurface::All)
                 .embedding_router(router.clone())
                 .build()
                 .await?;
@@ -548,7 +548,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -632,7 +632,7 @@ async fn shared_space_include_body_uses_shared_owner() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -727,7 +727,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(personal)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -857,7 +857,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -899,9 +899,12 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
 
         let palette = tools.list_core_tools_for_scope(&palette_of(&["core_search_memories"]));
-        // #462: a mixed dispatcher is listed for its read alone, and offers
-        // only that read: its schema names no write, its effect is a read.
-        let upload = palette
+        // #489: exact caller scope admits only the named search key.
+        assert_eq!(palette.len(), 1);
+        assert_eq!(palette[0].name, "core_search_memories");
+        let upload_palette = tools.list_core_tools_for_scope(&palette_of(&["core_upload:read_url"]));
+        // The explicitly admitted read leaf still projects a read-only schema.
+        let upload = upload_palette
             .iter()
             .find(|tool| tool.name == "core_upload")
             .expect("core_upload is listed for its read action");
@@ -1021,7 +1024,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1060,16 +1063,33 @@ async fn facade_reads_core_resources_with_resource_scope() {
                 .is_empty()
         );
 
-        // A palette narrows writes only (#462): a palette without
-        // `resource:memory` still reads the owner's memory.
-        let admitted = read_test_model_resource(
+        // #489: a caller's resource keys are exact, including reads.
+        let denied = read_test_model_resource(
             &tools,
             host_authz(&owner, palette_of(&["resource:schemas"])),
             owner,
             &format!("proxima://memory/{memory}"),
         )
+        .await;
+        assert!(
+            matches!(denied, Err(CoreMcpError::NotAuthorized(_))),
+            "an omitted resource is refused by the caller scope: {denied:?}"
+        );
+        let memory_scope = || host_authz(&owner, palette_of(&["resource:memory"]));
+        let admitted = read_test_model_resource(
+            &tools,
+            memory_scope(),
+            owner,
+            &format!("proxima://memory/{memory}"),
+        )
         .await?;
         assert_eq!(admitted["memory"], memory);
+        let schemas =
+            read_test_model_resource(&tools, memory_scope(), owner, "proxima://schemas").await;
+        assert!(
+            matches!(schemas, Err(CoreMcpError::NotAuthorized(_))),
+            "an admitted memory key grants no schemas resource: {schemas:?}"
+        );
 
         built.shutdown().await;
         Ok(())
@@ -1101,7 +1121,7 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1265,27 +1285,91 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
     result.expect("core occurrence read-back integration test failed");
 }
 
-/// #462: a palette that holds only flavor commands still reads the owner's
-/// memories (search and `proxima://memory/{id}`), still refuses a write, and
-/// owner authorization still refuses another owner's memory.
+async fn assert_exact_caller_reads(
+    tools: &CoreMcpTools,
+    owner: OwnerId,
+    served: &proxima_core::ServedSurface,
+    mine: &str,
+    theirs: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let exact =
+        |keys: &[&str]| host_authz(&owner, palette_of(keys)).with_served_surface(served.clone());
+    let omitted_search = call_test_model_tool(
+        tools,
+        exact(&["flavor_command"]),
+        owner,
+        "core_search_memories",
+        serde_json::json!({"query":"palette","mode":"lexical","limit":10}),
+    )
+    .await;
+    assert!(matches!(
+        omitted_search,
+        Err(CoreMcpError::NotAuthorized(_))
+    ));
+    let omitted_memory = read_test_model_resource(
+        tools,
+        exact(&["flavor_command"]),
+        owner,
+        &format!("proxima://memory/{mine}"),
+    )
+    .await;
+    assert!(matches!(
+        omitted_memory,
+        Err(CoreMcpError::NotAuthorized(_))
+    ));
+    let requested = || exact(&["core_search_memories", "resource:memory"]);
+    let search = call_test_model_tool(
+        tools,
+        requested(),
+        owner,
+        "core_search_memories",
+        serde_json::json!({"query":"palette","mode":"lexical","limit":10}),
+    )
+    .await?;
+    assert!(
+        search["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"] == mine)
+    );
+    assert!(
+        !search["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"] == theirs)
+    );
+    let memory = read_test_model_resource(
+        tools,
+        requested(),
+        owner,
+        &format!("proxima://memory/{mine}"),
+    )
+    .await?;
+    assert_eq!(memory["memory"], mine);
+    let schemas = read_test_model_resource(tools, requested(), owner, "proxima://schemas").await;
+    assert!(matches!(schemas, Err(CoreMcpError::NotAuthorized(_))));
+    Ok(())
+}
+
+/// #462 and #489: a deployment's flavor-only surface keeps the owner's reads,
+/// while the caller's keys independently restrict those reads. Owner RLS
+/// continues to hide other owners' memories.
 #[tokio::test]
 async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
     let split_db = clone_split_core_db("proxima_core_palette_reads")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = (
-        split_db.runtime_url().to_owned(),
-        split_db.platform_url().to_owned(),
-    );
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let other = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(runtime_url.clone())
-            .platform_database_url(platform_url.clone())
+            .database_url(split_db.runtime_url())
+            .platform_database_url(split_db.platform_url())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1293,7 +1377,7 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
         let remember = |label: &'static str| {
             serde_json::json!({
                 "title": format!("Palette read {label}"),
-                "body": "A palette narrows writes, never reads.",
+                "body": "A deployment keeps its reads while a caller selects exact keys.",
                 "tags": ["palette"],
                 "idempotency_key": format!("palette-read-{label}")
             })
@@ -1317,7 +1401,10 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
         .await?;
         let theirs = theirs["handle"].as_str().expect("handle").to_owned();
 
-        let flavor_only = || host_authz(&owner, palette_of(&["flavor_command"]));
+        let served = proxima_core::ServedSurface::Palette(vec![
+            proxima_core::ScopeKey::parse("flavor_command").unwrap(),
+        ]);
+        let flavor_only = || host_authz(&owner, ToolScope::All).with_served_surface(served.clone());
 
         let found = call_test_model_tool(
             &tools,
@@ -1371,6 +1458,8 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
             "owner authorization still refuses another owner's memory: {foreign:?}"
         );
 
+        assert_exact_caller_reads(&tools, owner, &served, &mine, &theirs).await?;
+
         built.shutdown().await;
         Ok(())
     }
@@ -1398,7 +1487,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1629,7 +1718,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1745,7 +1834,7 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1868,7 +1957,7 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -1955,7 +2044,7 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -2072,7 +2161,7 @@ async fn facade_core_episode_commit_bound_replay_fails() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -2269,7 +2358,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -2361,7 +2450,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
             .embed_client(test_embedding())
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let admin_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
@@ -2500,7 +2589,7 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -2636,7 +2725,7 @@ async fn core_forget_cools_a_remembered_fact() {
                 ..S3RuntimeConfig::from_env()?
             })
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -2726,7 +2815,7 @@ async fn request_services_reject_duplicate_boot_type() {
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let mut request = FlavorServices::new();

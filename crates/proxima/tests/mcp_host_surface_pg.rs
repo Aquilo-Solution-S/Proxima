@@ -7,8 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
-    AppInfo, AuthzContext, FlavorApp, McpHostTool, McpHostTools, Proxima, ToolCall, ToolEffect,
-    ToolReply, ToolScope,
+    AppInfo, AuthzContext, FlavorApp, McpHostTool, McpHostTools, Proxima, ServedSurface, ToolCall,
+    ToolEffect, ToolReply,
 };
 use proxima_core::{AuthError, AuthPath, Authenticator, Credentials, McpToolError, UserId};
 use proxima_pg_testkit::SplitRoleDb;
@@ -157,7 +157,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
             .database_url(db.runtime_url())
             .platform_database_url(db.platform_url())
             .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .host_tools(Arc::new(SleepTools))
             .mcp_transport(proxima_mcp_server::McpTransportConfig {
                 session_idle_timeout: idle,

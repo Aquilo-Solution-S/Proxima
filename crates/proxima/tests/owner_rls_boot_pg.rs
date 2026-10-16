@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
-use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
+use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ServedSurface};
 use proxima_core::{
     AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
     ErrorCode, GroupId, OwnerId, OwnerRoles, UserId,
@@ -188,7 +188,7 @@ async fn boot(
     let mut app = Proxima::<CodeApp>::app()
         .database_url(runtime_url)
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .pg_pool_config(PgPoolConfig::default());
     if let Some(platform_url) = platform_url {
         app = app.platform_database_url(platform_url);
@@ -330,7 +330,7 @@ async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
         .platform_database_url(platform_url)
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect("insecure single-owner boot with enforcing split roles");

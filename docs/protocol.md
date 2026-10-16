@@ -99,6 +99,12 @@ instruction for the host's queue. The host decides how to execute that
 instruction; Proxima persists intent and state. Hard deletion uses the explicit
 host or flavor-scoped inverse paths in [data and erasure](data-and-erasure.md).
 
+Caller scope names exact command/action and resource keys. A deployment's
+served surface always includes declared reads and core resources; that does
+not add keys to the caller. Resource templates use their template key rather
+than a concrete URI, and the guide requires `resource:how-to`. MCP and REST
+listings and invocation apply the same combined policy and owner-role checks.
+
 ## REST projection
 
 Both the host's `rest` Cargo feature and its runtime REST switch must be on.
@@ -114,10 +120,11 @@ serves MCP; build a REST-capable host explicitly when needed.
 | `QUERY` on a read-only tool/action | Read with JSON body; `POST` also works |
 | `GET /v1/resources/…` | Generated resource read |
 | `GET /v1/openapi.json` | Generated OpenAPI contract |
+| `GET /v1/how-to` | Caller-scoped guide |
 
 Resource URIs map from `proxima://x` to `/v1/resources/x`; template arguments
 become path or query parameters. The instructional `proxima://how-to` resource
-is MCP-only. Tool and action `ToolEffect` declarations choose allowed methods;
+also answers at `/v1/how-to` when its caller key is admitted. Tool and action `ToolEffect` declarations choose allowed methods;
 write actions reject `QUERY` with `405` and an `Allow` header.
 
 A narrowed action route injects `action`; including it in that route's body

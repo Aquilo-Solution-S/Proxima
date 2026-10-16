@@ -13,9 +13,7 @@ use boon::{Compiler, Schemas};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
-use proxima_core::{
-    FlavorRegistry, OwnerAccessPort, OwnerId, ToolScope, UserId, provider_safe_tool_name,
-};
+use proxima_core::{FlavorRegistry, OwnerAccessPort, OwnerId, UserId, provider_safe_tool_name};
 use proxima_mcp::ProximaMcpApp;
 use serde_json::json;
 use uuid::Uuid;
@@ -157,7 +155,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
-        .tool_scope(ToolScope::All)
+        .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .owner(OwnerId::from(subject))

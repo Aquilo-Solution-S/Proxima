@@ -506,7 +506,7 @@ mod tests {
         .with_output_schema(serde_json::json!({"type": "object"}))
     }
 
-    /// A host tool declared as a write: the palette still gates it (#462).
+    /// A host tool declared as a write: both policies gate its exact key.
     fn write_host_tool(name: &str) -> crate::McpHostTool {
         crate::McpHostTool::new(
             name,
@@ -988,13 +988,125 @@ mod tests {
             names.iter().any(|name| name == "proxima-stub_ping"),
             "{message}"
         );
-        // A write outside the palette stays unlisted; reads are listed under
-        // every palette (#462), so only writes are checked here.
+        // Exact caller keys omit reads and writes alike.
         assert!(!names.iter().any(|name| name == "host_other"), "{message}");
         assert!(
             !names.iter().any(|name| name == "core_remember"),
             "{message}"
         );
+        assert!(
+            !names.iter().any(|name| name == "core_search_memories"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_host_reads_use_the_same_exact_caller_keys_for_list_and_call() {
+        let host = stub_host().with_host_tools(Arc::new(HostFixture::new(
+            vec![host_tool("host_read"), write_host_tool("host_write")],
+            proxima_core::ToolReply::Structured(serde_json::json!({})),
+        )));
+        let service = mcp_service_for(host);
+        let owner = personal_owner();
+        for (scope, served, admitted) in [
+            (
+                proxima_core::ToolScope::Palette(Vec::new()),
+                proxima_core::ServedSurface::All,
+                false,
+            ),
+            (
+                proxima_core::ToolScope::Palette(vec![
+                    proxima_core::ScopeKey::parse("host_read").unwrap(),
+                ]),
+                proxima_core::ServedSurface::All,
+                true,
+            ),
+            (
+                proxima_core::ToolScope::All,
+                proxima_core::ServedSurface::Palette(Vec::new()),
+                true,
+            ),
+        ] {
+            let mut auth = auth_for(owner);
+            auth.authz = auth
+                .authz
+                .with_tool_scope(scope)
+                .with_served_surface(served);
+            let listed =
+                first_message(service.clone(), authed_rpc("tools/list", auth.clone())).await;
+            assert_eq!(
+                listed_names(&listed).iter().any(|name| name == "host_read"),
+                admitted,
+                "{listed}"
+            );
+            assert!(
+                !listed_names(&listed)
+                    .iter()
+                    .any(|name| name == "host_write"),
+                "{listed}"
+            );
+            let mut call = tools_call("host_read", owner);
+            call.extensions_mut().insert(auth);
+            let called = first_message(service.clone(), call).await;
+            if admitted {
+                assert_eq!(called["result"]["isError"], false, "{called}");
+            } else {
+                assert_eq!(called["error"]["code"], -32600, "{called}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_resource_keys_gate_mcp_static_templates_and_synthesized_guide() {
+        let service = mcp_service();
+        let owner = personal_owner();
+        for admitted in [false, true] {
+            let keys = if admitted {
+                vec!["resource:tools", "resource:memory", "resource:how-to"]
+            } else {
+                vec!["proxima-stub_ping"]
+            };
+            let mut auth = auth_for(owner);
+            auth.authz = auth.authz.with_tool_scope(proxima_core::ToolScope::Palette(
+                keys.into_iter()
+                    .map(|key| proxima_core::ScopeKey::parse(key).unwrap())
+                    .collect(),
+            ));
+            let listed =
+                first_message(service.clone(), authed_rpc("resources/list", auth.clone())).await;
+            let resources = listed["result"]["resources"].as_array().unwrap();
+            assert_eq!(resources.len(), if admitted { 2 } else { 0 }, "{listed}");
+            let templates = first_message(
+                service.clone(),
+                authed_rpc("resources/templates/list", auth.clone()),
+            )
+            .await;
+            assert_eq!(
+                templates["result"]["resourceTemplates"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                usize::from(admitted),
+                "{templates}"
+            );
+            for uri in ["proxima://tools", crate::selfdoc::HOW_TO_URI] {
+                let mut request = per_request_rpc(
+                    "2026-07-28",
+                    "resources/read",
+                    serde_json::json!({"uri": uri}),
+                );
+                request
+                    .headers_mut()
+                    .insert("Mcp-Name", uri.parse().unwrap());
+                request.extensions_mut().insert(auth.clone());
+                let read = first_message(service.clone(), request).await;
+                if admitted {
+                    assert!(read.get("result").is_some(), "{read}");
+                } else {
+                    assert_eq!(read["error"]["code"], -32600, "{read}");
+                }
+            }
+        }
     }
 
     /// The `instructions` of an `initialize` or `server/discover` answer.
@@ -1044,8 +1156,8 @@ mod tests {
     #[tokio::test]
     async fn host_instructions_reach_initialize_and_discover() {
         let owner = personal_owner();
-        // Reads are advertised under every palette (#462), so "nothing of
-        // Proxima's" is a caller the owner role gives no access at all.
+        // Neither caller scope nor owner authority grants this caller a
+        // Proxima operation; the host's own text remains independent.
         let nothing_advertised = crate::McpAuthContext {
             owner,
             authz: proxima_core::AuthzContext::for_subject(

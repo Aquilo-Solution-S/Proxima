@@ -6,7 +6,8 @@ use proxima::UploadCompleted;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId,
-    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ToolScope, UserId,
+    MemoryHydrationOutcome, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ServedSurface,
+    UserId,
 };
 use proxima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
 use proxima_core::StorageError;
@@ -791,7 +792,7 @@ async fn boot(
         .database_url(runtime_url)
         .platform_database_url(platform_url)
         .owner(owner)
-        .tool_scope(ToolScope::All);
+        .served_surface(ServedSurface::All);
     if let Some(s3) = s3 {
         app = app.s3(s3);
     }

@@ -304,7 +304,7 @@ async fn exercise_full_registry_erase(
         .platform_database_url(&platform_url)
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(proxima::ToolScope::All)
+        .served_surface(proxima::ServedSurface::All)
         .skip_migrations()
         .host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .build()

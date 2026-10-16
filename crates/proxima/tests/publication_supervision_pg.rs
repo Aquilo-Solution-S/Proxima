@@ -9,7 +9,7 @@ use proxima::flavor::{
     FactPayload, FlavorBundle, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError,
 };
-use proxima::{AppInfo, FlavorApp, Proxima, RuntimeBuilder, ToolScope, company_owner};
+use proxima::{AppInfo, FlavorApp, Proxima, RuntimeBuilder, ServedSurface, company_owner};
 use proxima_core::flavor::{
     EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
     SearchProjectionDecl, TransferRule,
@@ -245,7 +245,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
                 .database_url(runtime_url)
                 .platform_database_url(platform_url)
                 .owner(owner)
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
                 .allow_insecure_single_owner()
                 .publication(PublicationConfig::new(
                     PublicationSource::new("urn:proxima:publisher-health-tests")

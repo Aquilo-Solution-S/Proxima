@@ -10,7 +10,7 @@ use proxima::host::{
     OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
     RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
 };
-use proxima::{FlavorServices, Proxima, ToolScope};
+use proxima::{FlavorServices, Proxima};
 use proxima_core::verbs::query::{
     EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
@@ -270,7 +270,7 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .other_stores(fake.clone())
             .build()
             .await?;
@@ -425,7 +425,7 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .services(FlavorServices::with(
                 OtherStoresService::new(fake.clone()).with_timeout(Duration::from_millis(300)),
             ))
@@ -575,7 +575,7 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
@@ -675,7 +675,7 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .other_stores(fake.clone())
             .build()
             .await?;

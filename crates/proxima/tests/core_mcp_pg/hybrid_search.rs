@@ -66,7 +66,7 @@ async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors()
             .database_url(runtime_url)
             .platform_database_url(platform_url)
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(proxima_core::ServedSurface::All)
             .embedding_router(router.clone())
             .build()
             .await?;

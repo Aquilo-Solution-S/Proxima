@@ -36,7 +36,7 @@ use proxima::flavor::{
 };
 use proxima::{
     AccessKind, AppContext, AppInfo, Authz, FlavorApp, Proxima, Role, RunningProxima,
-    RuntimeBuilder, ToolScope,
+    RuntimeBuilder,
 };
 use proxima_pg_testkit::SplitRoleDb;
 use serde_json::{Value, json};
@@ -160,7 +160,7 @@ impl FlavorApp for FlavorHost {
 
     /// The tool scope has no environment variable on the facade path.
     fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
-        builder.tool_scope(ToolScope::All)
+        builder.served_surface(proxima_core::ServedSurface::All)
     }
 
     fn mount_http(router: Router, _ctx: AppContext) -> Router {

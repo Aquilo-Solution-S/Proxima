@@ -268,13 +268,14 @@ pub use proxima_core::verbs::query::{
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{
     AccessCeiling, AccessError, AccessKind, ActionName, AuthPath, Authenticator, AuthzContext,
-    DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
-    DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
-    EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
-    EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
-    FlavorServiceError, FlavorServices, ForwarderRole, GroupId, MemoryId, OwnerAccessPort, OwnerId,
-    OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError,
-    SourceId, StorageError, ToolName, ToolScope, UserId, canonical_json_bytes, env_value,
+    CapabilitySet, DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand,
+    DelegatedPhase, DelegationId, DelegationIssued, DelegationRevocation,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingRuntimePolicy, Engine,
+    EngineAuthority, EngineHandle, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
+    ForwarderRole, GroupId, MemoryId, OwnerAccessPort, OwnerId, OwnerIdParseError, OwnerRoles,
+    Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, ServedSurface, SourceId,
+    StorageError, ToolName, ToolScope, UserId, canonical_json_bytes, env_value,
     provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
@@ -332,24 +333,25 @@ pub fn build_openapi_document(
     proxima_mcp_server::rest::openapi::document_from_registry(registry, public_url, None)
 }
 
-/// Derive an MCP tool palette from the frozen registry, excluding every id
+/// Derive a deployment served surface from the frozen registry, excluding every id
 /// in `exclude`. Action-scoped tools expand to `tool:action` granularity
 /// (Proxima's scope gate authorizes them at that granularity), so excluding a
 /// tool's name also excludes every one of its actions in one step — nothing
 /// is emitted for an excluded `tool.name` at all, so an action added later to
 /// an excluded tool never enters the palette.
 ///
-/// The palette also carries every core resource scope key, for hosts that
-/// intersect it with another palette by key.
+/// The configured palette also carries every core resource scope key.
 ///
-/// A palette narrows writes and the owner's own keys, never a read for every
-/// audience ([`ToolScope::admits`]; 12 §Scope keys): excluding such a read —
-/// `core_search_memories`, `protocol_resource::MEMORY` — removes its key, and
-/// the scope gate still admits the read. Owner authorization still runs
-/// after the scope gate.
+/// Every declared read remains served, including Owner-audience reads and
+/// resources. Excluding a read removes its configured key, while
+/// [`ServedSurface::admits`] still serves it. Callers must independently hold
+/// the exact key in their [`ToolScope`], and owner authorization still applies.
 #[must_use]
-pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str]) -> ToolScope {
-    ToolScope::Palette(proxima_core::canonical_scope_keys_excluding(
+pub fn served_surface_excluding(
+    registry: &FlavorRegistryFrozen,
+    exclude: &[&str],
+) -> ServedSurface {
+    ServedSurface::Palette(proxima_core::canonical_scope_keys_excluding(
         registry, exclude,
     ))
 }
@@ -385,7 +387,7 @@ pub use proxima_core::mcp::{
 /// what an [`McpHostTool`] declares, and [`McpToolAnnotations`] the MCP hints
 /// it projects to.
 pub use proxima_core::mcp::{
-    McpArgvActionSpec, McpToolAnnotations, McpToolAudience, Replay, ToolEffect,
+    KeyDeclaration, McpArgvActionSpec, McpToolAnnotations, McpToolAudience, Replay, ToolEffect,
 };
 /// The request-behavior onion. A behavior wraps [`McpToolCtx`] /
 /// [`McpToolError`]; flavors register one through `proxima::flavor`.
@@ -651,7 +653,8 @@ pub use {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionName, FlavorRegistryFrozen, ScopeKey, ToolName, ToolScope, tool_palette_excluding,
+        ActionName, CapabilitySet, FlavorRegistryFrozen, ScopeKey, ServedSurface, ToolName,
+        ToolScope, served_surface_excluding,
     };
     use proxima_core::FlavorRegistry;
     use proxima_core::mcp::McpTool;
@@ -674,13 +677,20 @@ mod tests {
         ScopeKey::parse(text).expect("a scope key")
     }
 
+    fn configured(surface: &ServedSurface, key: &ScopeKey) -> bool {
+        match surface {
+            ServedSurface::All => true,
+            ServedSurface::Palette(keys) => keys.contains(key),
+        }
+    }
+
     #[test]
     fn excluding_an_action_scoped_tool_removes_every_action_entry() {
         let registry = registry();
 
-        let scope = tool_palette_excluding(&registry, &[CoreGoalTool::NAME]);
+        let scope = served_surface_excluding(&registry, &[CoreGoalTool::NAME]);
 
-        let ToolScope::Palette(entries) = &scope else {
+        let ServedSurface::Palette(entries) = &scope else {
             panic!("expected a palette scope")
         };
         assert!(!entries.contains(&ScopeKey::Tool(tool(CoreGoalTool::NAME))));
@@ -698,34 +708,34 @@ mod tests {
     fn unexcluded_action_scoped_tool_keeps_every_action() {
         let registry = registry();
 
-        let scope = tool_palette_excluding(&registry, &[]);
+        let scope = served_surface_excluding(&registry, &[]);
 
-        assert!(scope.allows_action(
-            &tool(CoreGoalTool::NAME),
-            &ActionName::parse("set").expect("an action name")
+        assert!(configured(
+            &scope,
+            &ScopeKey::action(
+                tool(CoreGoalTool::NAME),
+                ActionName::parse("set").expect("an action name")
+            )
+            .expect("a leaf")
         ));
-        assert!(scope.allows(&key(SearchMemoriesTool::NAME)));
+        assert!(configured(&scope, &key(SearchMemoriesTool::NAME)));
         assert!(
-            !scope.allows(&key(CoreGoalTool::NAME)),
+            !configured(&scope, &key(CoreGoalTool::NAME)),
             "flat entry must not leak for an action-scoped tool"
         );
     }
 
-    /// `read_resource` runs through the same flat scope gate as a tool call,
-    /// with the resource's scope key standing in for a tool name. A palette
-    /// built from tools alone therefore *denies* every `proxima://` read
-    /// instead of merely leaving it unadvertised, so a host using
-    /// `tool_palette_excluding` without resource keys loses resource reads
-    /// entirely.
+    /// The canonical configured keys include each core resource, even though
+    /// deployment read admission also follows its declaration.
     #[test]
     fn palette_admits_every_core_resource() {
         let registry = registry();
 
-        let scope = tool_palette_excluding(&registry, &[]);
+        let scope = served_surface_excluding(&registry, &[]);
 
         for resource in proxima_core::all_core_resources() {
             assert!(
-                scope.allows(&key(resource.scope_key)),
+                configured(&scope, &key(resource.scope_key)),
                 "palette must admit resource scope key {}",
                 resource.scope_key
             );
@@ -739,9 +749,9 @@ mod tests {
     fn excluding_a_resource_drops_its_key_but_not_the_read() {
         let registry = registry();
 
-        let scope = tool_palette_excluding(&registry, &[protocol_resource::MEMORY]);
+        let scope = served_surface_excluding(&registry, &[protocol_resource::MEMORY]);
 
-        assert!(!scope.allows(&key(protocol_resource::MEMORY)));
+        assert!(!configured(&scope, &key(protocol_resource::MEMORY)));
         let memory = proxima_core::all_core_resources()
             .find(|resource| resource.scope_key == protocol_resource::MEMORY)
             .expect("the memory resource");
@@ -750,23 +760,41 @@ mod tests {
             "a read-only resource is admitted whatever the palette holds"
         );
         assert!(
-            scope.allows(&key(protocol_resource::SCHEMAS)),
+            configured(&scope, &key(protocol_resource::SCHEMAS)),
             "excluding one resource must not remove the others"
         );
+    }
+
+    #[test]
+    fn excluding_an_owner_read_keeps_it_served_without_granting_the_caller_its_key() {
+        let registry = registry();
+        let name = "core_membership:list_members";
+        let scope = served_surface_excluding(&registry, &[name]);
+        let declared = registry
+            .mcp_tool("core_membership")
+            .expect("the membership dispatcher")
+            .declaration(Some("list_members"));
+        assert!(!configured(&scope, &key(name)));
+        assert!(scope.admits(&key(name), declared));
+        let capabilities = CapabilitySet {
+            tool_scope: ToolScope::Palette(Vec::new()),
+            served_surface: scope,
+        };
+        assert!(!capabilities.admits(&key(name), declared));
     }
 
     /// A host extends the canonical palette with its own flat tools by their
     /// `ToolName`; the typed key cannot be mistaken for a leaf or a resource.
     #[test]
     fn a_host_adds_its_flat_tools_to_the_canonical_palette_by_name() {
-        let ToolScope::Palette(mut entries) = tool_palette_excluding(&registry(), &[]) else {
+        let ServedSurface::Palette(mut entries) = served_surface_excluding(&registry(), &[]) else {
             panic!("expected a palette scope")
         };
         entries.push(ScopeKey::Tool(tool("host_echo")));
-        let scope = ToolScope::Palette(entries);
+        let scope = ServedSurface::Palette(entries);
 
-        assert!(scope.allows(&key("host_echo")));
-        assert!(scope.allows(&key(SearchMemoriesTool::NAME)));
+        assert!(configured(&scope, &key("host_echo")));
+        assert!(configured(&scope, &key(SearchMemoriesTool::NAME)));
         assert!(ToolName::parse("host_echo:set").is_err());
         assert!(ToolName::parse("resource:host_echo").is_err());
     }
