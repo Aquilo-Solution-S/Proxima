@@ -122,8 +122,8 @@ pub enum FlavorRegistryError {
         name: &'static str,
         reason: ScopeKeyError,
     },
-    /// Two flavors claim the same ordinal. Ordinals are load-bearing at
-    /// runtime (unscoped search is `ordinal == 0`), so they cannot collide.
+    /// Two flavors claim the same ordinal. The core ordinal identifies the
+    /// non-removable substrate, so flavor identities cannot collide.
     #[error(
         "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \
          ordinals are load-bearing at runtime and cannot collide"
@@ -404,14 +404,14 @@ pub enum FlavorRegistryError {
         schema_id: SchemaId,
         table: &'static str,
     },
-    /// A non-core schema declares a search projection no request shape can
+    /// A schema declares a search projection no request shape can
     /// scan. Every write to it pays a projection row and a GIN index entry
     /// for a corpus no query reaches.
     #[error(
         "flavor {flavor_id} declares {schema_id} as a search projection that \
          core_search_memories can never scan: {why}. Every write to it still pays a \
-         projection row and a GIN index entry -- declare a tag_column so a \
-         tag-filtered request reaches it, declare SearchProjectionDecl::None {{ why }} \
+         projection row and a GIN index entry -- declare comparable CoreBands, \
+         declare SearchProjectionDecl::None {{ why }} \
          if it is not a search surface, or declare \
          RankSource::SidecarWithProjectionOwner {{ why }} if the flavor's own tools \
          rank it"

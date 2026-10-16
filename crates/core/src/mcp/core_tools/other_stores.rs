@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::mcp::{McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::storage_ports::other_stores::{
-    LOCAL_STORE, OtherStoresService, QualifiedHandle, ReadOrigin, RemoteHit, RemoteMemory,
-    RemoteOriginRead, RemoteSearch, StoreCaller, StoreInfo, StoreName, StoreRoute, route_stores,
+    LOCAL_STORE, OtherStoresService, QualifiedHandle, ReadOrigin, RemoteMemory, RemoteOriginRead,
+    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName, StoreRoute, route_stores,
 };
 
 /// The wired port, if any.
@@ -185,7 +185,7 @@ pub(crate) async fn search_remotes(
     service: &OtherStoresService,
     stores: &[StoreName],
     args: &RemoteSearch,
-) -> (Vec<(StoreName, Vec<RemoteHit>)>, Vec<String>) {
+) -> (Vec<(StoreName, RemoteSearchResult)>, Vec<String>) {
     let caller = caller(ctx);
     let calls = stores.iter().map(|store| async move {
         let result = tokio::time::timeout(
@@ -199,9 +199,11 @@ pub(crate) async fn search_remotes(
     let mut unanswered = Vec::new();
     for (store, result) in futures::future::join_all(calls).await {
         match result {
-            Ok(Ok(mut hits)) => {
-                hits.truncate(usize::try_from(args.limit).unwrap_or(usize::MAX));
-                answered.push((store.clone(), hits));
+            Ok(Ok(mut result)) => {
+                result
+                    .hits
+                    .truncate(usize::try_from(args.limit).unwrap_or(usize::MAX));
+                answered.push((store.clone(), result));
             }
             Ok(Err(_)) | Err(_) => unanswered.push(store.to_string()),
         }
@@ -233,8 +235,13 @@ mod tests {
             _caller: StoreCaller<'a>,
             _store: &'a StoreName,
             _args: &'a RemoteSearch,
-        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
-            Box::pin(async { Ok(Vec::new()) })
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
         }
 
         fn read<'a>(

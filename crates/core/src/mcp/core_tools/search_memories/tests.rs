@@ -271,14 +271,16 @@ mod other_stores {
     use futures::future::BoxFuture;
 
     use super::super::{
-        SearchMemoriesOutput, SearchMemoryOutput, SearchRanking, caller_input_schema,
+        SearchMemoriesKind, SearchMemoriesMode, SearchMemoriesOutput, SearchMemoriesSupersession,
+        SearchMemoriesTool, SearchMemoryOutput, SearchRanking, caller_input_schema,
         merge_store_hits,
     };
+    use crate::McpTool;
     use crate::storage_ports::other_stores::{
         OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteRead, RemoteSearch,
-        StoreCaller, StoreInfo, StoreName,
+        RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
     };
-    use crate::verbs::query::EntityKind;
+    use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
 
     fn local_hit(n: usize) -> SearchMemoryOutput {
         SearchMemoryOutput {
@@ -328,11 +330,24 @@ mod other_stores {
         merge_store_hits(
             &mut output,
             vec![
-                (wiki, (0..3).map(remote_hit).collect()),
-                (crm, (0..3).map(remote_hit).collect()),
+                (
+                    wiki,
+                    RemoteSearchResult {
+                        hits: (0..3).map(remote_hit).collect(),
+                        degraded_to_lexical: false,
+                    },
+                ),
+                (
+                    crm,
+                    RemoteSearchResult {
+                        hits: (0..3).map(remote_hit).collect(),
+                        degraded_to_lexical: false,
+                    },
+                ),
             ],
             vec!["slow".into()],
             4,
+            SearchOrder::Relevance,
         );
         let order: Vec<&str> = output
             .memories
@@ -344,6 +359,249 @@ mod other_stores {
         assert!(output.memories.iter().all(|hit| hit.store.is_some()));
         assert_eq!(output.ranking, SearchRanking::Rank);
         assert_eq!(output.unanswered, Some(vec!["slow".to_string()]));
+    }
+
+    #[test]
+    fn recency_orders_all_store_candidates_before_the_global_limit() {
+        let mut local = vec![local_hit(0), local_hit(1)];
+        local[0].created_at += time::Duration::seconds(100);
+        local[1].created_at += time::Duration::seconds(50);
+        let mut wiki = vec![remote_hit(0), remote_hit(1)];
+        wiki[0].created_at += time::Duration::seconds(300);
+        wiki[1].created_at += time::Duration::seconds(100);
+        let mut crm = remote_hit(0);
+        crm.created_at += time::Duration::seconds(200);
+        let mut output = SearchMemoriesOutput {
+            mode: "hybrid".into(),
+            degraded_to_lexical: true,
+            ranking: SearchRanking::Score,
+            memories: local,
+            neighbor_edges: Vec::new(),
+            next_cursor: Some("opaque-local-cursor".into()),
+            has_more: true,
+            unanswered: None,
+        };
+        merge_store_hits(
+            &mut output,
+            vec![
+                (
+                    StoreName::new("wiki").unwrap(),
+                    RemoteSearchResult {
+                        hits: wiki,
+                        degraded_to_lexical: false,
+                    },
+                ),
+                (
+                    StoreName::new("crm").unwrap(),
+                    RemoteSearchResult {
+                        hits: vec![crm],
+                        degraded_to_lexical: false,
+                    },
+                ),
+            ],
+            Vec::new(),
+            4,
+            SearchOrder::Recency,
+        );
+        assert_eq!(
+            output
+                .memories
+                .iter()
+                .map(|hit| hit.memory.as_str())
+                .collect::<Vec<_>>(),
+            ["wiki:r0", "crm:r0", "F:local-0", "wiki:r1"]
+        );
+        assert!(output.memories.iter().all(|hit| hit.score > 0.0));
+        assert_eq!(output.ranking, SearchRanking::Rank);
+        assert_eq!(output.next_cursor.as_deref(), Some("opaque-local-cursor"));
+        assert!(output.has_more);
+        assert!(output.degraded_to_lexical);
+    }
+
+    struct CapturingStore {
+        listings: std::sync::atomic::AtomicUsize,
+        requests: std::sync::Mutex<Vec<RemoteSearch>>,
+        reply: Result<RemoteSearchResult, OtherStoresError>,
+    }
+
+    impl CapturingStore {
+        fn new(reply: Result<RemoteSearchResult, OtherStoresError>) -> Self {
+            Self {
+                listings: std::sync::atomic::AtomicUsize::new(0),
+                requests: std::sync::Mutex::new(Vec::new()),
+                reply,
+            }
+        }
+    }
+
+    impl OtherStores for CapturingStore {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            self.listings
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vec![StoreInfo {
+                    name: StoreName::new("wiki").unwrap(),
+                    description: String::new(),
+                    schema_ids: vec!["remote/note".into()],
+                }])
+            })
+        }
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            self.requests.lock().unwrap().push(args.clone());
+            Box::pin(async { self.reply.clone() })
+        }
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _handle: &'a str,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            Box::pin(async { Ok(RemoteRead::NotFound) })
+        }
+    }
+
+    fn remote_ctx(port: &Arc<CapturingStore>) -> crate::mcp::McpToolCtx {
+        let mut ctx = super::super::super::memory_spaces::test_ctx::ctx_for(
+            crate::UserId::new(uuid::Uuid::now_v7()),
+            Vec::new(),
+        );
+        ctx.services = crate::FlavorServices::with(OtherStoresService::new(port.clone()));
+        ctx
+    }
+
+    fn remote_args(mode: SearchMemoriesMode) -> super::super::SearchMemoriesArgs {
+        let mut request = super::args(mode);
+        request.stores = Some(vec!["wiki".into()]);
+        request
+    }
+
+    #[tokio::test]
+    async fn remote_search_receives_every_filter_and_the_requested_mode() {
+        let since = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let until = since + time::Duration::days(1);
+        for mode in [SearchMemoriesMode::Hybrid, SearchMemoriesMode::Semantic] {
+            let port = Arc::new(CapturingStore::new(Ok(RemoteSearchResult {
+                hits: Vec::new(),
+                degraded_to_lexical: false,
+            })));
+            let mut request = remote_args(mode);
+            request.limit = 100;
+            request.kind = Some(SearchMemoriesKind::Fact);
+            request.schema_id = Some("remote/note".into());
+            request.tags = vec![" Rust ".into(), "rust".into(), String::new(), "ZED".into()];
+            request.tag_match = TagMatch::All;
+            request.since = Some(
+                since
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+            );
+            request.until = Some(
+                until
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+            );
+            request.order = SearchOrder::Recency;
+            request.supersession = SearchMemoriesSupersession::All;
+            request.min_score = Some(0.4);
+            request.semantic_weight = matches!(mode, SearchMemoriesMode::Hybrid).then_some(0.7);
+            let semantic_weight = request.semantic_weight;
+            SearchMemoriesTool::call(remote_ctx(&port), request)
+                .await
+                .unwrap();
+            assert_eq!(
+                *port.requests.lock().unwrap(),
+                vec![RemoteSearch {
+                    query: "needle".into(),
+                    limit: 50,
+                    kind: Some(EntityKind::Fact),
+                    schema_id: Some("remote/note".into()),
+                    tags: vec!["rust".into(), "zed".into()],
+                    tag_match: TagMatch::All,
+                    mode: SearchMode::from(mode),
+                    since: Some(since),
+                    until: Some(until),
+                    order: SearchOrder::Recency,
+                    supersession: SupersessionStatus::IncludeSuperseded,
+                    min_score: Some(0.4),
+                    semantic_weight,
+                }]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_remote_only_timestamps_are_refused_before_any_port_call() {
+        for (since, until, field) in [
+            (Some("not-a-time".into()), None, "since"),
+            (None, Some("not-a-time".into()), "until"),
+        ] {
+            let port = Arc::new(CapturingStore::new(Ok(RemoteSearchResult {
+                hits: Vec::new(),
+                degraded_to_lexical: false,
+            })));
+            let mut request = remote_args(SearchMemoriesMode::Lexical);
+            request.since = since;
+            request.until = until;
+            let result = SearchMemoriesTool::call(remote_ctx(&port), request).await;
+            assert!(
+                matches!(result, Err(crate::mcp::McpToolError::InvalidInput(message)) if message.contains(field))
+            );
+            assert_eq!(port.listings.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(port.requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_fallback_is_reported_with_empty_or_capped_hits() {
+        let mut opaque = remote_hit(0);
+        opaque.handle = "opaque/id?x:y".into();
+        for hits in [Vec::new(), vec![opaque, remote_hit(1)]] {
+            let expected = hits.len().min(1);
+            let port = Arc::new(CapturingStore::new(Ok(RemoteSearchResult {
+                hits,
+                degraded_to_lexical: true,
+            })));
+            let mut request = remote_args(SearchMemoriesMode::Hybrid);
+            request.limit = 1;
+            let result = SearchMemoriesTool::call(remote_ctx(&port), request)
+                .await
+                .unwrap();
+            assert_eq!(result.memories.len(), expected);
+            if let Some(hit) = result.memories.first() {
+                assert_eq!(hit.memory, "wiki:opaque/id?x:y");
+                assert_eq!(hit.memory_id, uuid::Uuid::nil());
+            }
+            assert!(result.degraded_to_lexical);
+            assert_eq!(result.unanswered, Some(Vec::new()));
+            assert_eq!(port.requests.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_remote_search_is_unanswered_without_a_weaker_retry() {
+        let port = Arc::new(CapturingStore::new(Err(
+            OtherStoresError::UnsupportedSearch("all-tag matching".into()),
+        )));
+        let mut request = remote_args(SearchMemoriesMode::Hybrid);
+        request.tags = vec!["rust".into(), "guide".into()];
+        request.tag_match = TagMatch::All;
+        let result = SearchMemoriesTool::call(remote_ctx(&port), request)
+            .await
+            .unwrap();
+        assert_eq!(result.unanswered, Some(vec!["wiki".into()]));
+        assert!(result.memories.is_empty());
+        let requests = port.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tag_match, TagMatch::All);
+        assert_eq!(requests[0].tags, ["guide", "rust"]);
     }
 
     struct TwoStores;
@@ -373,8 +631,13 @@ mod other_stores {
             _caller: StoreCaller<'a>,
             _store: &'a StoreName,
             _args: &'a RemoteSearch,
-        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
-            Box::pin(async { Ok(Vec::new()) })
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
         }
         fn read<'a>(
             &'a self,

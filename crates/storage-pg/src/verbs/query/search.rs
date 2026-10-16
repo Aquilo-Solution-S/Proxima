@@ -29,14 +29,13 @@
 //!    instead of for the whole candidate window.
 //! 5. **pins** — engine neighbor load, only if the caller asked
 //!
-//! Unscoped search (no tags) scans only flavor #0's schemas. A tag filter
-//! is the documented flavor scope (`docs/build-a-flavor.md`): those
-//! queries also scan flavor schemas that declare a `tag_column`, and only
-//! flavors that declare `BandComparability::CoreBands` and
+//! Every eligible declared projection participates in unscoped search.
+//! Tags narrow rows and require the schema to declare a `tag_column`.
+//! Participating flavors declare `BandComparability::CoreBands` and
 //! `RankSource::Projection` — a score this merge cannot compare and a shape
 //! this renderer cannot serve are both exclusions the contract states. The
-//! semantic arm honours the same scope: a tagged request restricts its
-//! candidate scan to memories those flavors' projection rows satisfy the
+//! semantic arm honours the same scope: its candidate scan requires one
+//! of those flavors' projection rows to satisfy the schema set and the
 //! request's optional tag predicate ([`semantic_search_sql`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -316,21 +315,10 @@ fn core_search_flavors<'a>(
 ) -> Vec<FlavorScan<'a>> {
     let mut by_schema = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
-        // "Core" is the ordinal, asked of the contract. A schema-name
-        // prefix (`starts_with("proxima_core.")`) would be a schema name
-        // standing in for a flavor identity, satisfiable by any flavor that
-        // picked the same schema.
-        let is_core = proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table);
-        // Unscoped search stays on flavor #0's sidecars. A tag filter is
-        // how a flavor scopes `core_search_memories` (docs/build-a-flavor.md); those
-        // queries must reach the flavor sidecar that declared `tag_column`.
-        if !is_core && req.tags.is_empty() {
-            continue;
-        }
-        // A foreign flavor's score enters this merge only if its flavor
+        // A flavor's score enters this merge only if its flavor
         // says the score is comparable, and only if its read shape is one
         // this renderer can serve.
-        if !is_core && !matches!(projection.band_comparability, BandComparability::CoreBands) {
+        if !matches!(projection.band_comparability, BandComparability::CoreBands) {
             continue;
         }
         // The same admission as before, spelled as the value it proves: a
@@ -407,7 +395,7 @@ fn maximum_present(left: Option<f32>, right: Option<f32>) -> Option<f32> {
 ///
 /// A flavor's ranked arm is one statement against its own shard, plus at
 /// most one substring statement over the schemas that arm returned nothing
-/// for. A tag-scoped request that reaches a second flavor runs the same
+/// for. A request that reaches a second flavor runs the same
 /// again against that flavor's shard.
 async fn scan_flavors_on_connection(
     connection: &mut PgConnection,
@@ -1418,16 +1406,22 @@ mod tests {
         assert!(prod.contains(&admit), "admit must run search_admit_sql");
     }
 
-    /// Parity pin for the unscoped-search rewire.
-    ///
-    /// `core_search_flavors` selects it with
-    /// `FLAVOR_0.declares_sidecar_table(..)`. The literal lives HERE so
-    /// production carries no second copy: if the contract stops declaring
-    /// one of these, unscoped search silently narrows and this test says
-    /// which one went.
+    /// The core contract's own projected sidecars stay declared alongside
+    /// the other flavors an unscoped request can reach.
     #[test]
-    fn unscoped_search_scans_exactly_flavor_0s_projected_sidecars() {
+    fn the_core_contract_declares_its_projected_sidecars() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        for projection in registry.search_projections().iter().filter(|projection| {
+            proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table)
+        }) {
+            assert!(
+                matches!(
+                    projection.band_comparability,
+                    proxima_core::flavor::BandComparability::CoreBands
+                ) && projection.rank_source.is_projection(),
+                "flavor #0's own schemas must pass the gate they define"
+            );
+        }
         let mut by_contract = registry
             .search_projections()
             .iter()
@@ -1851,37 +1845,69 @@ mod tests {
         }
     }
 
-    /// The band-comparability gate has a consumer, and the consumer moves
-    /// no score.
-    ///
-    /// `core_search_flavors` admits a non-core projection only under
-    /// `CoreBands` and only under `RankSource::Projection`. The admitted set
-    /// is unchanged by that gate — the code flavor declares no `tag_column`,
-    /// so it is already excluded in every request shape — which is what this
-    /// test pins.
+    /// Reachability follows the projection contract, including without tags.
+    /// Comparable scores and the supported renderer remain separate gates.
     #[test]
     fn the_merge_admits_only_flavors_that_declare_a_comparable_shape() {
         let frozen = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        for projection in frozen.search_projections() {
-            if proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table) {
-                assert!(
-                    matches!(
-                        projection.band_comparability,
-                        proxima_core::flavor::BandComparability::CoreBands
-                    ) && projection.rank_source.is_projection(),
-                    "flavor #0's own schemas must pass the gate they define"
-                );
-                continue;
-            }
-            // Every non-core projected schema in this tree is excluded by
-            // the tag gate as well. If one ever declares a `tag_column`,
-            // this assertion is what says whether the new gate or the old
-            // one is doing the work.
-            assert!(
-                projection.tag_column.is_none(),
-                "a foreign schema declaring a tag_column would reach the merge; \
-                 re-derive the admitted-set-neutrality claim"
-            );
+        let note = frozen
+            .search_projections()
+            .iter()
+            .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+            .expect("the core note projection")
+            .clone();
+        let mut foreign = note.clone();
+        foreign.schema_id = proxima_core::SchemaId::new("search-notes/note-v1".into());
+        foreign.sidecar_table = "search_notes.note_v1".into();
+        foreign.projection_table = "search_notes.projection".into();
+        foreign.tag_column = None;
+        let mut divergent = foreign.clone();
+        divergent.band_comparability = proxima_core::flavor::BandComparability::Divergent {
+            why: "scores have another scale",
+        };
+        let mut divergent_core = note.clone();
+        divergent_core.band_comparability = divergent.band_comparability;
+        let mut unsupported = foreign.clone();
+        unsupported.rank_source = proxima_core::flavor::RankSource::SidecarWithProjectionOwner {
+            why: "the flavor supplies its own renderer",
+        };
+        unsupported.render_bands = None;
+        let mut request = request_with_tags();
+        request.tags.clear();
+        let reaches =
+            |request: &MemorySearchRequest,
+             projection: &proxima_core::verbs::schema::MemorySearchProjection| {
+                !super::core_search_flavors(request, std::slice::from_ref(projection)).is_empty()
+            };
+        for (shape, projection, expected) in [
+            ("core", &note, true),
+            ("comparable foreign without tags", &foreign, true),
+            ("divergent core", &divergent_core, false),
+            ("divergent", &divergent, false),
+            ("unsupported renderer", &unsupported, false),
+        ] {
+            assert_eq!(reaches(&request, projection), expected, "{shape}");
         }
+        let projections = [note.clone(), foreign.clone()];
+        assert_eq!(super::core_search_flavors(&request, &projections).len(), 2);
+        request.schema_id = Some(foreign.schema_id.clone());
+        assert!(reaches(&request, &foreign));
+        request.schema_id = Some(note.schema_id.clone());
+        assert!(
+            !reaches(&request, &foreign),
+            "schema selection still narrows"
+        );
+        request.schema_id = None;
+        request.kind = Some(EntityKind::Abstraction);
+        assert!(!reaches(&request, &foreign), "kind selection still narrows");
+        request.kind = None;
+        assert!(reaches(&request, &foreign));
+        request.tags = vec!["bucket-0".into()];
+        assert!(
+            !reaches(&request, &foreign),
+            "a tag filter needs a tag column"
+        );
+        foreign.tag_column = Some("tags".into());
+        assert!(reaches(&request, &foreign));
     }
 }

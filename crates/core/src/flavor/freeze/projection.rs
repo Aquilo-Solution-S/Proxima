@@ -27,18 +27,14 @@ fn weight_arrays_differ(first: Option<[f32; 4]>, second: Option<[f32; 4]>) -> bo
 }
 
 impl FlavorRegistry {
-    /// A non-core search projection against the query shapes that can
-    /// reach it.
+    /// A search projection against the renderer that can reach it.
     ///
     /// A projection is not free: every write to the schema pays a
-    /// projection row and a GIN index entry. `core_search_flavors`
-    /// (`storage-pg/src/verbs/query/search.rs`) admits a NON-core
-    /// projection only through a tag-filtered request — an unscoped search
-    /// stays on flavor #0's sidecars — and only when the projection
-    /// declares a `tag_column`, its flavor declares
-    /// [`BandComparability::CoreBands`], and its flavor declares
-    /// [`RankSource::Projection`]. Fail any of those and no request shape
-    /// reaches the rows: the corpus is written, indexed, and unscannable.
+    /// projection row and a GIN index entry. A flavor that names
+    /// `RankSource::Projection` claims the core renderer serves its rows,
+    /// so its scores must declare `BandComparability::CoreBands`. Tags
+    /// narrow participating rows; a projection without tags is reachable
+    /// by an unscoped or schema-scoped request.
     ///
     /// The `RankSource` gate is what makes this checkable rather than
     /// presumptuous. `SidecarWithProjectionOwner` is the declared statement
@@ -47,18 +43,11 @@ impl FlavorRegistry {
     /// says nothing about reachability and nothing here may judge it. Only
     /// a flavor that claimed core's renderer is held to what core's
     /// renderer will scan.
-    ///
-    /// Flavor #0 is exempt because it is the corpus every unscoped search
-    /// already scans; a `tag_column` narrows its rows rather than admitting
-    /// them.
     pub(super) fn validate_projection_is_reachable(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {
         use crate::flavor::contract::BandComparability;
 
-        if contract.is_core() {
-            return Ok(());
-        }
         let Some(spec) = contract.projection.spec() else {
             return Ok(());
         };
@@ -66,20 +55,14 @@ impl FlavorRegistry {
             return Ok(());
         }
         for (schema, _) in contract.projected_schemas() {
-            let why = if matches!(spec.band_comparability, BandComparability::Divergent { .. }) {
-                "its flavor claims BandComparability::Divergent, and the merge admits a \
-                 non-core projection only under CoreBands"
-            } else if schema.search.tag_column().is_none() {
-                "it declares no tag_column, and a non-core projection is reached only by a \
-                 tag-filtered request — an unscoped search scans flavor #0's sidecars alone"
-            } else {
-                continue;
-            };
-            return Err(FlavorRegistryError::UnreachableSearchProjection {
-                flavor_id: contract.flavor_id,
-                schema_id: schema.schema_id(),
-                why,
-            });
+            if matches!(spec.band_comparability, BandComparability::Divergent { .. }) {
+                return Err(FlavorRegistryError::UnreachableSearchProjection {
+                    flavor_id: contract.flavor_id,
+                    schema_id: schema.schema_id(),
+                    why: "its flavor claims BandComparability::Divergent, and the merge admits \
+                          projection-ranked scores only under CoreBands",
+                });
+            }
         }
         Ok(())
     }

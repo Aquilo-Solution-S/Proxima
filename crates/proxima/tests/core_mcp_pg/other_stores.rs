@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use proxima::{FlavorServices, Proxima, ToolScope};
-use proxima_core::storage_ports::other_stores::{
+use proxima::host::{
     OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
-    RemoteSearch, StoreCaller, StoreInfo, StoreName,
+    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
 };
-use proxima_core::verbs::query::EntityKind;
+use proxima::{FlavorServices, Proxima, ToolScope};
+use proxima_core::verbs::query::{
+    EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+};
 use proxima_core::{OwnerId, Role, UserId};
 use uuid::Uuid;
 
@@ -30,6 +32,8 @@ struct FakeStore {
     entries: BTreeMap<String, Entry>,
     delay: Option<Duration>,
     schema_ids: Vec<String>,
+    degraded_to_lexical: bool,
+    unsupported_search: Option<String>,
 }
 
 /// In-memory stores. A `Denied` entry answers `NotFound`, exactly as a
@@ -37,6 +41,7 @@ struct FakeStore {
 #[derive(Default)]
 struct FakeStores {
     stores: Mutex<BTreeMap<String, FakeStore>>,
+    searches: Mutex<Vec<(String, RemoteSearch)>>,
 }
 
 fn fact(handle: &str, body: &str) -> RemoteMemory {
@@ -51,7 +56,25 @@ fn fact(handle: &str, body: &str) -> RemoteMemory {
     }
 }
 
+fn dated_fact(handle: &str, body: &str, day: i64) -> RemoteMemory {
+    RemoteMemory {
+        created_at: time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(day),
+        ..fact(handle, body)
+    }
+}
+
 impl FakeStores {
+    fn set_search_outcome(&self, store: &str, degraded: bool, refusal: Option<&str>) {
+        let mut stores = self.stores.lock().expect("stores");
+        let store = stores.get_mut(store).expect("configured fake store");
+        store.degraded_to_lexical = degraded;
+        store.unsupported_search = refusal.map(str::to_owned);
+    }
+
+    fn searches(&self) -> Vec<(String, RemoteSearch)> {
+        self.searches.lock().expect("searches").clone()
+    }
+
     fn with(self, store: &str, handle: &str, entry: Entry) -> Self {
         self.stores
             .lock()
@@ -109,18 +132,25 @@ impl OtherStores for FakeStores {
         _caller: StoreCaller<'a>,
         store: &'a StoreName,
         args: &'a RemoteSearch,
-    ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
+    ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
         Box::pin(async move {
-            let (delay, hits) = {
+            self.searches
+                .lock()
+                .expect("searches")
+                .push((store.to_string(), args.clone()));
+            let (delay, mut hits, degraded_to_lexical) = {
                 let stores = self.stores.lock().expect("lock");
                 let fake = stores
                     .get(store.as_str())
                     .ok_or_else(|| OtherStoresError::UnknownStore(store.to_string()))?;
+                if let Some(reason) = &fake.unsupported_search {
+                    return Err(OtherStoresError::UnsupportedSearch(reason.clone()));
+                }
                 let hits: Vec<RemoteHit> = fake
                     .entries
                     .values()
                     .filter_map(|entry| match entry {
-                        Entry::Readable(memory) if memory.body.contains(&args.query) => {
+                        Entry::Readable(memory) if remote_matches(memory, args) => {
                             Some(RemoteHit {
                                 handle: memory.handle.clone(),
                                 kind: memory.kind,
@@ -133,12 +163,18 @@ impl OtherStores for FakeStores {
                         _ => None,
                     })
                     .collect();
-                (fake.delay, hits)
+                (fake.delay, hits, fake.degraded_to_lexical)
             };
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            Ok(hits)
+            if matches!(args.order, SearchOrder::Recency) {
+                hits.sort_by_key(|hit| std::cmp::Reverse(hit.created_at));
+            }
+            Ok(RemoteSearchResult {
+                hits,
+                degraded_to_lexical,
+            })
         })
     }
 
@@ -160,6 +196,22 @@ impl OtherStores for FakeStores {
             })
         })
     }
+}
+
+fn remote_matches(memory: &RemoteMemory, args: &RemoteSearch) -> bool {
+    memory.body.contains(&args.query)
+        && args.kind.is_none_or(|kind| memory.kind == kind)
+        && args
+            .schema_id
+            .as_ref()
+            .is_none_or(|schema| &memory.schema_id == schema)
+        && args.since.is_none_or(|since| memory.created_at >= since)
+        && args.until.is_none_or(|until| memory.created_at <= until)
+        && (args.tags.is_empty()
+            || match args.tag_match {
+                TagMatch::Any => args.tags.iter().any(|tag| memory.tags.contains(tag)),
+                TagMatch::All => args.tags.iter().all(|tag| memory.tags.contains(tag)),
+            })
 }
 
 /// Rows of the derived-memory tables, counted as the platform role.
@@ -355,12 +407,12 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
                 .with(
                     "wiki",
                     "w1",
-                    Entry::Readable(fact("w1", "zebra crossing in the wiki")),
+                    Entry::Readable(dated_fact("w1", "zebra crossing in the wiki", 3)),
                 )
                 .with(
                     "crm",
                     "c1",
-                    Entry::Readable(fact("c1", "zebra account in the crm")),
+                    Entry::Readable(dated_fact("c1", "zebra account in the crm", 2)),
                 )
                 .with(
                     "slow",
@@ -375,7 +427,7 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
             .owner(owner)
             .tool_scope(ToolScope::All)
             .services(FlavorServices::with(
-                OtherStoresService::new(fake).with_timeout(Duration::from_millis(300)),
+                OtherStoresService::new(fake.clone()).with_timeout(Duration::from_millis(300)),
             ))
             .build()
             .await?;
@@ -433,11 +485,79 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
         assert_eq!(remote["space"], "crm");
         assert_eq!(remote["body"], "zebra account in the crm");
 
+        assert_remote_search_intent(&tools, &authz, owner, &fake).await?;
+
         built.shutdown().await;
         Ok(())
     }
     .await;
     result.expect("search fan-out test failed");
+}
+
+async fn assert_remote_search_intent(
+    tools: &proxima::CoreMcpTools,
+    authz: &proxima_core::AuthzContext,
+    owner: OwnerId,
+    fake: &FakeStores,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fake.set_search_outcome("wiki", true, None);
+    let before = fake.searches().len();
+    let found = call_test_model_tool(
+        tools,
+        authz.clone(),
+        owner,
+        "core_search_memories",
+        serde_json::json!({
+            "query":"zebra", "mode":"hybrid", "limit":1, "kind":"Fact",
+            "schema_id":"remote/note", "tags":[" ReMoTe ","remote"], "tag_match":"all",
+            "since":"1970-01-02T00:00:00Z", "until":"1970-01-05T00:00:00Z",
+            "order":"recency", "supersession":"all", "min_score":0.2,
+            "semantic_weight":0.7, "stores":["crm","wiki"]
+        }),
+    )
+    .await?;
+    assert_eq!(found["memories"].as_array().unwrap().len(), 1);
+    assert_eq!(found["memories"][0]["memory"], "wiki:w1");
+    assert_eq!(found["degraded_to_lexical"], true);
+    let expected = RemoteSearch {
+        query: "zebra".into(),
+        limit: 1,
+        kind: Some(EntityKind::Fact),
+        schema_id: Some("remote/note".into()),
+        tags: vec!["remote".into()],
+        tag_match: TagMatch::All,
+        mode: SearchMode::Hybrid,
+        since: Some(time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(1)),
+        until: Some(time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(4)),
+        order: SearchOrder::Recency,
+        supersession: SupersessionStatus::IncludeSuperseded,
+        min_score: Some(0.2),
+        semantic_weight: Some(0.7),
+    };
+    let requests = fake.searches();
+    assert_eq!(requests.len() - before, 2);
+    for (_, request) in &requests[before..] {
+        assert_eq!(request, &expected);
+    }
+    let empty = call_test_model_tool(
+        tools,
+        authz.clone(),
+        owner,
+        "core_search_memories",
+        serde_json::json!({"query":"absent phrase", "mode":"hybrid", "stores":["wiki"]}),
+    )
+    .await?;
+    assert_eq!(empty["memories"], serde_json::json!([]));
+    assert_eq!(empty["degraded_to_lexical"], true);
+
+    fake.set_search_outcome("wiki", false, Some("tag filter unsupported"));
+    let before = fake.searches().len();
+    let refused = call_test_model_tool(tools, authz.clone(), owner, "core_search_memories",
+        serde_json::json!({"query":"zebra", "mode":"lexical", "tags":["remote"], "stores":["wiki"]})).await?;
+    assert_eq!(refused["memories"], serde_json::json!([]));
+    assert_eq!(refused["unanswered"], serde_json::json!(["wiki"]));
+    assert_eq!(fake.searches().len(), before + 1, "no weaker retry");
+    Ok(())
 }
 
 #[tokio::test]

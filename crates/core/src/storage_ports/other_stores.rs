@@ -20,7 +20,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
 
-use crate::verbs::query::EntityKind;
+use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
 use crate::{AuthzContext, OwnerId};
 
 /// The name `stores` uses for this deployment's own memories.
@@ -142,9 +142,26 @@ pub struct RemoteSearch {
     pub limit: u32,
     pub kind: Option<EntityKind>,
     pub schema_id: Option<String>,
+    pub tags: Vec<String>,
+    pub tag_match: TagMatch,
+    /// Requested mode; each store resolves its own embedding availability.
+    pub mode: SearchMode,
+    pub since: Option<time::OffsetDateTime>,
+    pub until: Option<time::OffsetDateTime>,
+    pub order: SearchOrder,
+    pub supersession: SupersessionStatus,
+    pub min_score: Option<f32>,
+    pub semantic_weight: Option<f32>,
 }
 
-/// One remote search hit, best first within its store.
+/// One store's answer, including lexical fallback even when it found no hits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteSearchResult {
+    pub hits: Vec<RemoteHit>,
+    pub degraded_to_lexical: bool,
+}
+
+/// One remote search hit, in the requested order within its store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteHit {
     pub handle: String,
@@ -231,6 +248,8 @@ pub enum OtherStoresError {
     UnknownStore(String),
     #[error("store unavailable: {0}")]
     Unavailable(String),
+    #[error("store cannot honor search: {0}")]
+    UnsupportedSearch(String),
     #[error("origin batch deadline exceeded")]
     DeadlineExceeded,
 }
@@ -243,13 +262,15 @@ pub trait OtherStores: Send + Sync {
         caller: StoreCaller<'a>,
     ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>>;
 
-    /// Search one store as `caller`, best hit first.
+    /// Search one store as `caller`, in the requested order. Every supplied
+    /// filter and score option must be honored or refused with
+    /// [`OtherStoresError::UnsupportedSearch`]; never retry a weaker request.
     fn search<'a>(
         &'a self,
         caller: StoreCaller<'a>,
         store: &'a StoreName,
         args: &'a RemoteSearch,
-    ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>>;
+    ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>>;
 
     /// Read one memory of one store as `caller`.
     fn read<'a>(
@@ -682,8 +703,13 @@ mod tests {
             _caller: StoreCaller<'a>,
             _store: &'a StoreName,
             _args: &'a RemoteSearch,
-        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
-            Box::pin(async { Ok(Vec::new()) })
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
         }
 
         fn read<'a>(

@@ -1605,10 +1605,8 @@ pub struct FlavorContract {
     pub bespoke_transfer_legs: &'static [&'static str],
 }
 
-/// The ordinal that marks core. Load-bearing at runtime in exactly two
-/// places — unscoped search staying on core sidecars, and flavor #0 being
-/// non-removable — and both are named rather than inferred from a table
-/// name prefix.
+/// The ordinal that marks the non-removable core contract. Search eligibility
+/// follows each flavor's declared projection; tags narrow eligible rows.
 pub const CORE_ORDINAL: u16 = 0;
 
 impl FlavorContract {
@@ -1758,11 +1756,6 @@ impl FlavorContract {
     }
 
     /// Whether `table` is one of this flavor's schema sidecars.
-    ///
-    /// Unscoped `core_search_memories` stays on flavor #0's sidecars, asked
-    /// of the declaration rather than of a `starts_with("proxima_core.")`
-    /// prefix: a schema name standing in for an ordinal says nothing another
-    /// flavor could not accidentally satisfy.
     #[must_use]
     pub fn declares_sidecar_table(&self, table: &str) -> bool {
         self.schemas
