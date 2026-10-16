@@ -181,6 +181,7 @@ pub(in crate::engine) async fn query_authorized(
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     validate_query_cursor(req)?;
+    validate_goal_selectors(req)?;
     ports
         .memory_read
         .query_memories(owner_scope, read_owners, req, schemas)
@@ -209,6 +210,24 @@ fn validate_query_cursor(req: &QueryRequest) -> Result<(), ProtocolError> {
             "cursor kind does not match entity_kind",
         )),
     }
+}
+
+/// A Goal selector filters one stream. Anywhere else the store would ignore
+/// it and return a page wider than the caller asked for.
+fn validate_goal_selectors(req: &QueryRequest) -> Result<(), ProtocolError> {
+    if !req.goal_handles.is_empty() && req.entity_kind != Some(crate::EntityKind::Goal) {
+        return Err(ProtocolError::invalid_argument(
+            "goal_handles",
+            "requires entity_kind Goal",
+        ));
+    }
+    if !req.referenced_goal_handles.is_empty() && req.entity_kind != Some(crate::EntityKind::Fact) {
+        return Err(ProtocolError::invalid_argument(
+            "referenced_goal_handles",
+            "requires entity_kind Fact",
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::engine) async fn read_edges_authorized(
@@ -243,4 +262,64 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
         .walk_memory_lineage(owner_scope, read_owners, req)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_goal_selectors;
+    use crate::verbs::query::QueryRequest;
+    use crate::{EntityKind, ErrorCode};
+
+    fn request(entity_kind: Option<EntityKind>) -> QueryRequest {
+        let mut req = QueryRequest::readable();
+        req.entity_kind = entity_kind;
+        req
+    }
+
+    #[test]
+    fn goal_handles_select_only_the_goal_stream() {
+        for kind in [
+            None,
+            Some(EntityKind::Fact),
+            Some(EntityKind::Abstraction),
+            Some(EntityKind::Perspective),
+        ] {
+            let mut req = request(kind);
+            req.goal_handles = vec![uuid::Uuid::now_v7()];
+            let err = validate_goal_selectors(&req).expect_err("refused outside Goal");
+            assert_eq!(err.code, ErrorCode::InvalidArgument, "{kind:?}");
+            assert!(err.message.contains("goal_handles"), "{}", err.message);
+        }
+        let mut req = request(Some(EntityKind::Goal));
+        req.goal_handles = vec![uuid::Uuid::now_v7()];
+        validate_goal_selectors(&req).expect("accepted on the Goal stream");
+    }
+
+    #[test]
+    fn referenced_goal_handles_select_only_the_fact_stream() {
+        for kind in [
+            None,
+            Some(EntityKind::Goal),
+            Some(EntityKind::Abstraction),
+            Some(EntityKind::Perspective),
+        ] {
+            let mut req = request(kind);
+            req.referenced_goal_handles = vec![uuid::Uuid::now_v7()];
+            let err = validate_goal_selectors(&req).expect_err("refused outside Fact");
+            assert_eq!(err.code, ErrorCode::InvalidArgument, "{kind:?}");
+            assert!(
+                err.message.contains("referenced_goal_handles"),
+                "{}",
+                err.message
+            );
+        }
+        let mut req = request(Some(EntityKind::Fact));
+        req.referenced_goal_handles = vec![uuid::Uuid::now_v7()];
+        validate_goal_selectors(&req).expect("accepted on the Fact stream");
+    }
+
+    #[test]
+    fn requests_without_goal_selectors_pass() {
+        validate_goal_selectors(&request(None)).expect("no selector, no constraint");
+    }
 }

@@ -123,14 +123,20 @@ pub async fn list_goals(
     })
 }
 
+/// Read a Goal series' current head. `raw` names the series or any of its
+/// versions: `core_goal`, listed `goal` and `dependencies` values and Fact
+/// Goal references all carry version ids, and only the listing carries series
+/// handles.
+///
 /// # Errors
 ///
 /// Returns malformed/unknown goal references, authorization, or storage
 /// failures.
 pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolError> {
-    let handle = parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
+    let id = parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
         .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
     let engine = ctx.require_engine()?;
+    let handle = series_handle(&ctx, engine, id).await?;
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_handles = vec![handle];
@@ -141,6 +147,23 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
         .into_iter()
         .next()
         .ok_or_else(|| McpToolError::NotFound(format!("goal {raw} not found")))
+}
+
+/// The series a `G:<uuid>` names. A readable version resolves to its series;
+/// anything else is taken as a series handle. Version ids and handles are
+/// distinct UUIDs, so the version lookup cannot select another series.
+async fn series_handle(
+    ctx: &McpToolCtx,
+    engine: &crate::Engine,
+    id: uuid::Uuid,
+) -> Result<uuid::Uuid, McpToolError> {
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_ids = vec![GoalId::new(id)];
+    req.limit = 1;
+    req.include_payloads = false;
+    let response = engine.query(&ctx.authz, &req).await?;
+    Ok(response.goals.first().map_or(id, |version| version.handle))
 }
 
 fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {

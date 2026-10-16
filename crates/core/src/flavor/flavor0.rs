@@ -1177,7 +1177,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "goal",
         name: "proxima-goal",
         title: "Proxima Goal",
-        description: "Single-goal read by stable series handle G:<uuid>; returns the current head.",
+        description: "Single-goal read by series handle or any version reference G:<uuid>; returns the series' current head.",
         scope_key: scope::GOAL,
         is_template: true,
         read_only: true,

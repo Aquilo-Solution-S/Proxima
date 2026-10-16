@@ -378,11 +378,13 @@ pub struct QueryRequest {
     pub goal_states: BTreeSet<GoalState>,
     /// Goal series filter. Heads-only returns each selected series' latest
     /// version; include-superseded returns its history. Selectors confer no access.
+    /// Refused unless `entity_kind` is `Goal`.
     #[serde(default)]
     pub goal_handles: Vec<Uuid>,
     /// Fact-stream filter: references to any readable version of any selected
     /// Goal series. Unreadable and nonexistent series both match nothing.
-    /// Conjunctive with `schema_id` and the other memory filters.
+    /// Conjunctive with `schema_id` and the other memory filters. Refused
+    /// unless `entity_kind` is `Fact`.
     #[serde(default)]
     pub referenced_goal_handles: Vec<Uuid>,
     /// Goal-stream assignment filter (`goal.assignment_t`). Only

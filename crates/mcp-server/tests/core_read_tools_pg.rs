@@ -346,8 +346,9 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     time::OffsetDateTime::parse(set_at, &time::format_description::well_known::Rfc3339)
         .expect("set_at is RFC 3339");
 
-    // A handle reads the current head, while a version id is not a series
-    // selector. The current head is the paused version at this point.
+    // A handle reads the current head, and so does any version id a client
+    // was given, here the superseded first version. The current head is the
+    // paused version at this point.
     let single = server
         .read_resource(
             &format!("proxima://goal/G:{handle}"),
@@ -356,15 +357,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
         )
         .await?;
     assert_eq!(single, series, "the single read and the listing agree");
-    let first = server
-        .read_resource(
-            &format!("proxima://goal/G:{set}"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("a version UUID is not a goal series handle");
-    assert!(first.to_string().contains("not found"), "{first}");
+    assert_version_id_reads_series_head(&server, &auth, set, &series).await;
     let single_unknown = server
         .read_resource(
             &format!("proxima://goal/G:{unknown_handle}"),
@@ -524,6 +517,35 @@ async fn edge_resources_read_back_interpretation_references()
 }
 
 /// Class-checked reference and closed state vocabulary fail closed.
+async fn assert_version_id_reads_series_head(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    version: uuid::Uuid,
+    head: &serde_json::Value,
+) {
+    let from_version = server
+        .read_resource(
+            &format!("proxima://goal/G:{version}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect("a version id reads its series");
+    assert_eq!(
+        &from_version, head,
+        "a superseded version id reads its series' current head"
+    );
+    let missing = server
+        .read_resource(
+            &format!("proxima://goal/G:{}", uuid::Uuid::now_v7()),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("an id naming no version and no series is not found");
+    assert!(missing.to_string().contains("not found"), "{missing}");
+}
+
 async fn assert_goal_reference_and_state_rejections(
     server: &McpToolHost,
     auth: &McpAuthContext,
