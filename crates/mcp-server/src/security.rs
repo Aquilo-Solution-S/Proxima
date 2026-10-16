@@ -598,24 +598,29 @@ async fn mcp_auth(
     let Some(resolved) = state.auth.resolve_unbound(&token).await else {
         return unauthorized(&state, &path);
     };
-    let (selected_owner, bind_new_session, via_session) =
-        match selected_owner(&state.sessions, request.headers(), resolved.default_owner()).await {
-            OwnerSelection::Selected {
-                owner,
-                bind_new,
-                via_session,
-            } => (owner, bind_new, via_session),
-            // An `Mcp-Session-Id` header that is present but not bound
-            // (unknown or idle-evicted) answers 404, which standard
-            // Streamable-HTTP clients transparently re-initialize on. Only
-            // the token-valid path reaches here, so 404 never leaks to an
-            // unauthenticated caller.
-            OwnerSelection::UnknownSession => return session_not_found(),
-            OwnerSelection::Missing => {
-                return (StatusCode::FORBIDDEN, "owner selection required or invalid")
-                    .into_response();
-            }
-        };
+    let (selected_owner, bind_new_session, via_session) = match selected_owner(
+        &state.sessions,
+        request.headers(),
+        resolved.default_owner(),
+        resolved.verified_forwarded_owner(),
+    )
+    .await
+    {
+        OwnerSelection::Selected {
+            owner,
+            bind_new,
+            via_session,
+        } => (owner, bind_new, via_session),
+        // An `Mcp-Session-Id` header that is present but not bound
+        // (unknown or idle-evicted) answers 404, which standard
+        // Streamable-HTTP clients transparently re-initialize on. Only
+        // the token-valid path reaches here, so 404 never leaks to an
+        // unauthenticated caller.
+        OwnerSelection::UnknownSession => return session_not_found(),
+        OwnerSelection::Missing => {
+            return (StatusCode::FORBIDDEN, "owner selection required or invalid").into_response();
+        }
+    };
     let Some(ctx) = state.auth.narrow_to_owner(resolved, selected_owner).await else {
         return if via_session {
             session_not_found()
@@ -658,9 +663,9 @@ enum OwnerSelection {
         bind_new: bool,
         via_session: bool,
     },
-    /// An `Mcp-Session-Id` header is present but has no live binding
-    /// (never bound, or idle-evicted). Distinct from `Missing` so the
-    /// transport can answer 404 and let the client re-initialize.
+    /// An `Mcp-Session-Id` header is malformed, has no live binding, or
+    /// selects an owner outside the current verified claim. Distinct from
+    /// `Missing` so the transport answers the same opaque session 404.
     UnknownSession,
     /// No usable owner selection: no session id, no owner header and no
     /// host-named default; an invalid owner header; or an owner header that
@@ -668,26 +673,31 @@ enum OwnerSelection {
     Missing,
 }
 
-/// A session binding wins, then an explicit owner header, then the owner
-/// the host named on the credential (`default`). An owner header that is
-/// present but invalid is `Missing`: a malformed selection never falls
-/// back to the default.
+/// A session binding wins for ordinary credentials, followed by the owner
+/// header and host-named default. A forwarding claim is mandatory: a live
+/// session and any owner header must agree with its owner. A present but
+/// malformed owner header never falls back to a claim or default.
 async fn selected_owner(
     sessions: &McpSessionBindings,
     headers: &HeaderMap,
     default: Option<OwnerId>,
+    forwarded: Option<OwnerId>,
 ) -> OwnerSelection {
-    let owner_header = request_header_str(headers, PROXIMA_OWNER_HEADER);
-    let session_id = request_header_str(headers, MCP_SESSION_ID_HEADER);
-    if let Some(session_id) = session_id {
+    let owner_header = headers
+        .get(PROXIMA_OWNER_HEADER)
+        .map(|raw| raw.to_str().ok().and_then(parse_owner_key));
+    if let Some(raw_session_id) = headers.get(MCP_SESSION_ID_HEADER) {
+        let Ok(session_id) = raw_session_id.to_str() else {
+            return OwnerSelection::UnknownSession;
+        };
         let Some(owner) = sessions.owner_for(session_id).await else {
             return OwnerSelection::UnknownSession;
         };
-        if let Some(raw_owner) = owner_header {
-            match parse_owner_key(raw_owner) {
-                Some(requested) if requested == owner => {}
-                _ => return OwnerSelection::Missing,
-            }
+        if forwarded.is_some_and(|claimed| claimed != owner) {
+            return OwnerSelection::UnknownSession;
+        }
+        if owner_header.is_some_and(|requested| requested != Some(owner)) {
+            return OwnerSelection::Missing;
         }
         return OwnerSelection::Selected {
             owner,
@@ -697,9 +707,12 @@ async fn selected_owner(
     }
 
     let owner = match owner_header {
-        Some(raw_owner) => parse_owner_key(raw_owner),
-        None => default,
+        Some(requested) => requested,
+        None => forwarded.or(default),
     };
+    if forwarded.is_some_and(|claimed| Some(claimed) != owner) {
+        return OwnerSelection::Missing;
+    }
     match owner {
         Some(owner) => OwnerSelection::Selected {
             owner,
@@ -735,10 +748,6 @@ fn revalidate_response(
     config: RevalidationConfig,
 ) -> Response {
     response.map(|body| Body::new(RevalidatedBody::new(body, identity, authenticator, config)))
-}
-
-fn request_header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
 }
 
 fn response_header_str(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -917,7 +926,8 @@ mod tests {
     use futures_util::stream;
     use proxima_core::{
         AccessError, AccessKind, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
-        GroupId, Identity, OwnerAccessPort, OwnerId, OwnerRoles, RevalidationConfig, Role, UserId,
+        ForwarderRole, GroupId, Identity, OwnerAccessPort, OwnerId, OwnerRoles, RevalidationConfig,
+        Role, UserId,
     };
     use tokio::sync::mpsc;
     use tokio::time;
@@ -991,16 +1001,14 @@ mod tests {
             ))
     }
 
-    /// One operator, one host, many parties: the bearer authenticates a
-    /// single forwarder subject whose resolved role map carries no Group at
-    /// all. Which party a request acts for is the owner selection, and the
-    /// role for it comes from the access port.
-    struct ForwarderAuth {
+    /// An ordinary subject whose Group memberships are resolved on demand
+    /// rather than enumerated in its initial role map.
+    struct GroupMemberAuth {
         subject: UserId,
     }
 
     #[async_trait]
-    impl Authenticator for ForwarderAuth {
+    impl Authenticator for GroupMemberAuth {
         async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
             match creds {
                 Credentials::Bearer(token) if token == "good-token" => Ok(
@@ -1054,7 +1062,7 @@ mod tests {
 
     /// Production stack with an access port attached, over a stub that
     /// reports what the request was narrowed to.
-    fn forwarder_app(
+    fn group_access_app(
         authenticator: Arc<dyn Authenticator>,
         owner_access: Arc<dyn OwnerAccessPort>,
         sessions: McpSessionBindings,
@@ -1095,21 +1103,265 @@ mod tests {
         (status, body)
     }
 
+    struct VerifiedForwarderAuth {
+        subject: UserId,
+        claims: HashMap<String, OwnerId>,
+    }
+
+    #[async_trait]
+    impl Authenticator for VerifiedForwarderAuth {
+        async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            let Credentials::Bearer(token) = creds;
+            let owner = self
+                .claims
+                .get(token)
+                .ok_or(AuthError::InvalidCredentials)?;
+            Ok(AuthzContext::from_verified_forwarded_owner(
+                self.subject,
+                *owner,
+            ))
+        }
+    }
+
+    struct ForwardedOwnerRegistry {
+        subject: UserId,
+        owners: Vec<OwnerId>,
+        probes: Arc<AtomicU64>,
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for ForwardedOwnerRegistry {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+
+        fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+            Ok(subject == self.subject)
+        }
+
+        async fn resolve_forwarded_owner_role(
+            &self,
+            subject: UserId,
+            owner: OwnerId,
+        ) -> Result<Option<ForwarderRole>, AccessError> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            Ok((subject == self.subject && self.owners.contains(&owner))
+                .then(|| ForwarderRole::new(Role::editor()).unwrap()))
+        }
+    }
+
+    fn verified_forwarder_app(
+        subject: UserId,
+        claims: impl IntoIterator<Item = (&'static str, OwnerId)>,
+        owners: Vec<OwnerId>,
+        sessions: McpSessionBindings,
+    ) -> (Router, Arc<AtomicU64>) {
+        let probes = Arc::new(AtomicU64::new(0));
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(VerifiedForwarderAuth {
+                subject,
+                claims: claims
+                    .into_iter()
+                    .map(|(token, owner)| (token.to_owned(), owner))
+                    .collect(),
+            }))
+            .with_owner_access(Arc::new(ForwardedOwnerRegistry {
+                subject,
+                owners,
+                probes: probes.clone(),
+            }));
+        let app = Router::new()
+            .route(
+                "/mcp",
+                any(|request: Request<Body>| async move {
+                    let mut response = narrowed_owners(request).await;
+                    response
+                        .headers_mut()
+                        .insert("Mcp-Session-Id", "sess-forwarded".parse().unwrap());
+                    response
+                }),
+            )
+            .layer(mcp_auth_layer_with_sessions(
+                Arc::new(auth),
+                sessions,
+                RevalidationConfig::default(),
+                None,
+            ));
+        (app, probes)
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_claim_selects_without_header_and_accepts_only_equal_header() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        for owner in [user_owner(), group_owner()] {
+            let sessions = McpSessionBindings::new();
+            let (app, probes) = verified_forwarder_app(
+                subject,
+                [("good-token", owner)],
+                vec![owner],
+                sessions.clone(),
+            );
+            for selected in [None, Some(owner_key(owner))] {
+                let mut request = mcp_request("Bearer good-token");
+                if let Some(selected) = selected {
+                    request = request.header("X-Proxima-Owner", selected);
+                }
+                assert_eq!(
+                    narrowed_to(app.clone(), request.body(Body::empty()).unwrap()).await,
+                    (StatusCode::OK, Bytes::from(owner_key(owner)))
+                );
+            }
+            assert_eq!(sessions.owner_for("sess-forwarded").await, Some(owner));
+            assert_eq!(probes.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_header_mismatch_and_malformed_bytes_refuse_before_registry_probe() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = user_owner();
+        let (app, probes) = verified_forwarder_app(
+            subject,
+            [("good-token", owner)],
+            vec![owner],
+            McpSessionBindings::new(),
+        );
+        let headers = [
+            owner_key(user_owner()).parse().unwrap(),
+            owner_key(group_owner()).parse().unwrap(),
+            http::HeaderValue::from_static("user:not-a-uuid"),
+            http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        ];
+        for header in headers {
+            let request = mcp_request("Bearer good-token")
+                .header("X-Proxima-Owner", header)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(status_of(app.clone(), request).await, StatusCode::FORBIDDEN);
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_live_session_must_match_the_current_token_claim() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = user_owner();
+        let other = group_owner();
+        let sessions = McpSessionBindings::new();
+        sessions.bind("live-session", owner, subject.into()).await;
+        let (app, probes) = verified_forwarder_app(
+            subject,
+            [("good-token", owner), ("other-token", other)],
+            vec![owner, other],
+            sessions.clone(),
+        );
+
+        let matching = mcp_request("Bearer good-token")
+            .header("Mcp-Session-Id", "live-session")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            narrowed_to(app.clone(), matching).await,
+            (StatusCode::OK, Bytes::from(owner_key(owner)))
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+
+        for session in ["live-session", "unknown-session"] {
+            let mismatching = mcp_request("Bearer other-token")
+                .header("Mcp-Session-Id", session)
+                .header("X-Proxima-Owner", owner_key(other))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                narrowed_to(app.clone(), mismatching).await,
+                (
+                    StatusCode::NOT_FOUND,
+                    Bytes::from_static(b"unknown or expired MCP session")
+                )
+            );
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        assert_eq!(sessions.owner_for("live-session").await, Some(owner));
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_session_header_disagreement_refuses_before_registry_probe() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = group_owner();
+        let sessions = McpSessionBindings::new();
+        sessions.bind("live-session", owner, subject.into()).await;
+        let (app, probes) =
+            verified_forwarder_app(subject, [("good-token", owner)], vec![owner], sessions);
+        for header in [
+            owner_key(user_owner()).parse().unwrap(),
+            http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        ] {
+            let request = mcp_request("Bearer good-token")
+                .header("Mcp-Session-Id", "live-session")
+                .header("X-Proxima-Owner", header)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(status_of(app.clone(), request).await, StatusCode::FORBIDDEN);
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_unknown_session_never_falls_back_to_claim_or_header() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = user_owner();
+        let (app, probes) = verified_forwarder_app(
+            subject,
+            [("good-token", owner)],
+            vec![owner],
+            McpSessionBindings::new(),
+        );
+        for session in [
+            http::HeaderValue::from_static("unknown-session"),
+            http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        ] {
+            for header in [None, Some(owner_key(owner))] {
+                let mut request =
+                    mcp_request("Bearer good-token").header("Mcp-Session-Id", session.clone());
+                if let Some(header) = header {
+                    request = request.header("X-Proxima-Owner", header);
+                }
+                assert_eq!(
+                    status_of(app.clone(), request.body(Body::empty()).unwrap()).await,
+                    StatusCode::NOT_FOUND
+                );
+            }
+        }
+        let invalid_token = mcp_request("Bearer bad-token")
+            .header("Mcp-Session-Id", "unknown-session")
+            .header("X-Proxima-Owner", "invalid")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            status_of(app, invalid_token).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+    }
+
     fn group_owner() -> OwnerId {
         OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    // One forwarder subject, one party per request: each request is
+    // One ordinary subject, one party per request: each request is
     // narrowed to exactly the party it selected, and a party the port does
     // not resolve is refused with today's status.
     #[tokio::test]
-    async fn a_forwarder_is_narrowed_to_one_party_per_request() {
+    async fn an_ordinary_group_subject_is_narrowed_to_one_party_per_request() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let first = group_owner();
         let second = group_owner();
         let unresolved = group_owner();
-        let app = forwarder_app(
-            Arc::new(ForwarderAuth { subject }),
+        let app = group_access_app(
+            Arc::new(GroupMemberAuth { subject }),
             Arc::new(PerOwnerAccess::new(
                 subject,
                 [(first, Role::editor()), (second, Role::viewer())],
@@ -1138,10 +1390,9 @@ mod tests {
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
     }
 
-    // The session binding still decides WHICH party a request acts for; the
-    // port still decides whether that party resolves. A forwarder bound to
-    // one party may present another by header on a session-less request and
-    // is narrowed to that one, for that request only.
+    // A session binding selects one party, and the access port resolves its
+    // role. An ordinary subject can select another party on a session-less
+    // request without changing the earlier binding.
     #[tokio::test]
     async fn a_bound_session_and_a_later_owner_header_each_resolve_per_request() {
         let subject = UserId::new(uuid::Uuid::now_v7());
@@ -1149,8 +1400,8 @@ mod tests {
         let other = group_owner();
         let sessions = McpSessionBindings::new();
         sessions.bind("sess-1", bound, bound).await;
-        let app = forwarder_app(
-            Arc::new(ForwarderAuth { subject }),
+        let app = group_access_app(
+            Arc::new(GroupMemberAuth { subject }),
             Arc::new(PerOwnerAccess::new(
                 subject,
                 [(bound, Role::editor()), (other, Role::editor())],
@@ -1195,8 +1446,8 @@ mod tests {
         let sessions = McpSessionBindings::new();
         let owner = group_owner();
         sessions.bind("sess-1", owner, owner).await;
-        let app = forwarder_app(
-            Arc::new(ForwarderAuth { subject }),
+        let app = group_access_app(
+            Arc::new(GroupMemberAuth { subject }),
             Arc::new(PerOwnerAccess::new(subject, [])),
             sessions,
         );
@@ -1214,7 +1465,7 @@ mod tests {
     async fn an_edge_without_an_access_port_refuses_an_unmapped_party() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let party = group_owner();
-        let auth = McpEdgeAuth::headless().with_host(Arc::new(ForwarderAuth { subject }));
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(GroupMemberAuth { subject }));
         let app =
             Router::new()
                 .route("/mcp", any(narrowed_owners))
@@ -1239,7 +1490,7 @@ mod tests {
         let owner = user_owner();
         let access = PerOwnerAccess::new(UserId::new(uuid::Uuid::now_v7()), []);
         let calls = Arc::clone(&access.calls);
-        let app = forwarder_app(
+        let app = group_access_app(
             Arc::new(TokenAuth { owner }),
             Arc::new(access),
             McpSessionBindings::new(),

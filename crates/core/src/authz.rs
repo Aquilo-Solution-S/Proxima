@@ -329,6 +329,9 @@ pub struct AuthzContext {
     auth_path: AuthPath,
     owner_roles: Option<OwnerRoles>,
     owner_scope: Option<OwnerScope>,
+    /// Mandatory owner from a verified forwarding credential. It selects no
+    /// ordinary membership and survives request narrowing.
+    forwarded_owner: Option<OwnerId>,
     /// `CloudEvents` extension attributes the HOST bound to this context.
     ///
     /// Deliberately NOT part of [`Identity`]: it is deployment-shaped
@@ -740,11 +743,80 @@ impl AuthzContext {
             auth_path,
             owner_roles: Some(owner_roles),
             owner_scope: None,
+            forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
             invoking_tool: None,
             system_binding: None,
         }
+    }
+
+    /// Carry a verified forwarding credential without granting owner access.
+    ///
+    /// For trusted authenticators only: `subject` is the authenticated
+    /// forwarder and `owner` comes from its verified credential, never a
+    /// request header or tool argument. The edge must check selection
+    /// agreement and resolve the registered owner before any role is granted.
+    #[must_use]
+    pub fn from_verified_forwarded_owner(subject: UserId, owner: OwnerId) -> Self {
+        let mut context =
+            Self::server_resolved(OwnerRoles::without_access(subject), AuthPath::HostBearer);
+        context.forwarded_owner = Some(owner);
+        context
+    }
+
+    #[must_use]
+    pub const fn verified_forwarded_owner(&self) -> Option<OwnerId> {
+        self.forwarded_owner
+    }
+
+    /// Resolve a verified forwarding claim after owner selection. The result
+    /// is sealed to that one owner with the non-managing policy ceiling.
+    /// A missing/expired credential, mismatched selection, unknown owner or
+    /// failed policy/registry lookup returns no authority.
+    pub async fn with_authenticated_forwarded_owner(
+        &self,
+        port: &dyn OwnerAccessPort,
+        owner: OwnerId,
+    ) -> Option<Self> {
+        let scope = self.owner_scope.as_ref()?;
+        let expires_at = self
+            .expires_at()
+            .into_iter()
+            .chain(scope.expires_at())
+            .min();
+        if self.forwarded_owner != Some(owner)
+            || expires_at.is_some_and(|deadline| deadline <= SystemTime::now())
+        {
+            return None;
+        }
+        let subject = self.subject()?;
+        if !port
+            .is_forwarder(subject)
+            .inspect_err(|error| {
+                tracing::warn!(%error, "forwarded owner: policy resolution failed");
+            })
+            .ok()?
+        {
+            return None;
+        }
+        let role = port
+            .resolve_forwarded_owner_role(subject, owner)
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(%error, "forwarded owner: registry resolution failed");
+            })
+            .ok()??;
+        let roles = OwnerRoles::scoped_to(subject, owner, role.role());
+        let mut next = self.clone();
+        next.identity.accessible_principals = roles
+            .readable_owners(AccessKind::Fact)
+            .into_iter()
+            .collect();
+        next.owner_roles = Some(roles.clone());
+        next.identity.expires_at = expires_at;
+        next.owner_scope = Some(OwnerScope::from_verified_roles(roles, expires_at));
+        next.narrowed_to_owner(owner)
     }
 
     #[must_use]
@@ -893,7 +965,7 @@ impl AuthzContext {
     /// caller-controlled payload would make the caller its own authorizer.
     #[must_use]
     pub fn with_host_resolved_role(mut self, group: GroupId, role: Role) -> Option<Self> {
-        if self.owner_scope.is_some() {
+        if self.owner_scope.is_some() || self.forwarded_owner.is_some() {
             return None;
         }
         let roles = self.owner_roles.take()?.with_group_role(group, role);
@@ -912,6 +984,9 @@ impl AuthzContext {
         port: &dyn OwnerAccessPort,
         group: GroupId,
     ) -> Option<Self> {
+        if self.forwarded_owner.is_some() {
+            return None;
+        }
         let scope = self.owner_scope.as_ref()?;
         if scope.is_expired() {
             return None;
@@ -995,6 +1070,7 @@ impl AuthzContext {
             auth_path: AuthPath::Denied,
             owner_roles: None,
             owner_scope: None,
+            forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
             default_owner: None,
             invoking_tool: None,
@@ -1335,6 +1411,221 @@ mod tests {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
             Ok(self.context.clone())
         }
+    }
+
+    struct ForwardedOwnerAccess {
+        subject: UserId,
+        owner: OwnerId,
+        role: crate::ForwarderRole,
+        registered: bool,
+        probes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for ForwardedOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            _subject: UserId,
+        ) -> Result<OwnerRoles, crate::AccessError> {
+            panic!("forwarding must not enumerate memberships")
+        }
+
+        fn is_forwarder(&self, subject: UserId) -> Result<bool, crate::AccessError> {
+            Ok(subject == self.subject)
+        }
+
+        async fn resolve_forwarded_owner_role(
+            &self,
+            subject: UserId,
+            owner: OwnerId,
+        ) -> Result<Option<crate::ForwarderRole>, crate::AccessError> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            Ok(
+                (subject == self.subject && owner == self.owner && self.registered)
+                    .then_some(self.role),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_scope_is_exact_and_keeps_the_forwarding_identity() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let stranger = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let unrelated = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let expires = SystemTime::now() + Duration::from_mins(1);
+        for owner in [OwnerId::from(subject), stranger] {
+            for role in [Role::viewer(), Role::ingest(), Role::editor()] {
+                let port = ForwardedOwnerAccess {
+                    subject,
+                    owner,
+                    role: crate::ForwarderRole::new(role).unwrap(),
+                    registered: true,
+                    probes: std::sync::atomic::AtomicUsize::new(0),
+                };
+                let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
+                    .with_expires_at(Some(expires))
+                    .with_auth_epoch(7)
+                    .with_tool_scope(ToolScope::Palette(Vec::new()))
+                    .with_trusted_model_id("trusted-forwarder-model")
+                    .unwrap();
+                assert!(pending.readable_owners(AccessKind::Fact).is_empty());
+                assert!(!pending.can_access_owner(&OwnerId::from(subject)));
+                assert!(
+                    pending
+                        .clone()
+                        .with_host_resolved_role(unrelated.as_group(), Role::admin())
+                        .is_none()
+                );
+                assert!(
+                    pending
+                        .with_authenticated_forwarded_owner(&port, owner)
+                        .await
+                        .is_none(),
+                    "unsealed claims grant nothing"
+                );
+                let sealed = authenticate(
+                    &VerifiedAuthenticator { context: pending },
+                    &Credentials::Bearer("verified".into()),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    sealed
+                        .with_authenticated_forwarded_owner(&port, unrelated)
+                        .await
+                        .is_none()
+                );
+                assert_eq!(
+                    port.probes.load(Ordering::SeqCst),
+                    0,
+                    "selection mismatch must precede target lookup"
+                );
+                let bound = sealed
+                    .with_authenticated_forwarded_owner(&port, owner)
+                    .await
+                    .unwrap();
+                assert_eq!(port.probes.load(Ordering::SeqCst), 1);
+                assert_eq!(bound.subject(), Some(subject));
+                assert_eq!(bound.principal(), OwnerId::from(subject));
+                assert_eq!(bound.verified_forwarded_owner(), Some(owner));
+                assert_eq!(bound.role_for_owner(&owner), Some(role));
+                assert_eq!(bound.expires_at(), Some(expires));
+                assert_eq!(bound.auth_epoch(), 7);
+                assert_eq!(bound.trusted_model_id(), Some("trusted-forwarder-model"));
+                assert_eq!(bound.tool_scope(), &ToolScope::Palette(Vec::new()));
+                assert_eq!(bound.readable_owners(AccessKind::Fact), [owner]);
+                assert!(!bound.may_manage(&owner));
+                for kind in AccessKind::ALL {
+                    assert_eq!(bound.may_read(&owner, kind), role.may_read(kind));
+                    assert_eq!(bound.may_write(&owner, kind), role.may_write(kind));
+                    assert!(!bound.may_read(&unrelated, kind));
+                    assert!(!bound.may_write(&unrelated, kind));
+                }
+                if owner != OwnerId::from(subject) {
+                    assert!(!bound.may_read(&OwnerId::from(subject), AccessKind::Fact));
+                }
+                assert!(bound.clone().narrowed_to_owner(unrelated).is_none());
+                assert!(
+                    bound
+                        .with_authenticated_group_role(&port, unrelated.as_group())
+                        .await
+                        .is_none()
+                );
+                let scope = bound.owner_scope().unwrap();
+                assert_eq!(scope.subject(), subject);
+                assert_eq!(scope.readable_owners(AccessKind::Fact), [owner]);
+                assert!(scope.managed_owners().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_refuses_expiry_unknown_owners_and_unconfigured_subjects() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let port = ForwardedOwnerAccess {
+            subject,
+            owner,
+            role: crate::ForwarderRole::new(Role::editor()).unwrap(),
+            registered: false,
+            probes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let expired = AuthzContext::from_verified_forwarded_owner(subject, owner)
+            .with_expires_at(Some(SystemTime::UNIX_EPOCH))
+            .seal_verified_scope()
+            .unwrap();
+        assert!(
+            expired
+                .with_authenticated_forwarded_owner(&port, owner)
+                .await
+                .is_none()
+        );
+        let unconfigured =
+            AuthzContext::from_verified_forwarded_owner(UserId::new(uuid::Uuid::now_v7()), owner)
+                .seal_verified_scope()
+                .unwrap();
+        assert!(
+            unconfigured
+                .with_authenticated_forwarded_owner(&port, owner)
+                .await
+                .is_none()
+        );
+        assert_eq!(port.probes.load(Ordering::SeqCst), 0);
+        let unknown = AuthzContext::from_verified_forwarded_owner(subject, owner)
+            .seal_verified_scope()
+            .unwrap();
+        assert!(
+            unknown
+                .with_authenticated_forwarded_owner(&port, owner)
+                .await
+                .is_none()
+        );
+        assert_eq!(port.probes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_binding_cannot_extend_the_sealed_expiry() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let port = ForwardedOwnerAccess {
+            subject,
+            owner,
+            role: crate::ForwarderRole::new(Role::editor()).unwrap(),
+            registered: true,
+            probes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let sealed_expiry = SystemTime::now() + Duration::from_mins(2);
+        let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
+            .with_expires_at(Some(sealed_expiry))
+            .seal_verified_scope()
+            .unwrap();
+        let earlier = sealed_expiry - Duration::from_mins(1);
+        for (changed, expected) in [
+            (None, sealed_expiry),
+            (Some(sealed_expiry + Duration::from_mins(1)), sealed_expiry),
+            (Some(earlier), earlier),
+        ] {
+            let bound = pending
+                .clone()
+                .with_expires_at(changed)
+                .with_authenticated_forwarded_owner(&port, owner)
+                .await
+                .unwrap();
+            assert_eq!(bound.expires_at(), Some(expected));
+            assert_eq!(bound.owner_scope().unwrap().expires_at(), Some(expected));
+            assert_eq!(
+                bound.clone().narrowed_to_owner(owner).unwrap().expires_at(),
+                Some(expected)
+            );
+        }
+        let expired = pending.with_expires_at(Some(SystemTime::UNIX_EPOCH));
+        assert!(
+            expired
+                .with_authenticated_forwarded_owner(&port, owner)
+                .await
+                .is_none()
+        );
+        assert_eq!(port.probes.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

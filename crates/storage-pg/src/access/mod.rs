@@ -45,17 +45,17 @@ impl PgOwnerAccessResolver {
             .map_err(|err| resolution_error(&err))
     }
 
-    /// Whether `group` is registered as a group in the owner registry.
+    /// Whether `owner` is registered as a Personal or Group owner.
     ///
-    /// The forwarder policy's question: a forwarder holds its role only in
-    /// a registered group, never in a user's owner.
+    /// The probe uses this resolver's validated platform authority, so owner
+    /// RLS cannot hide a registered owner from a forwarding policy.
     ///
     /// # Errors
     ///
     /// [`AccessError::Resolution`] when the probe fails.
-    pub async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
+    pub async fn is_registered_owner(&self, owner: OwnerId) -> Result<bool, AccessError> {
         let mut tx = self.begin_probe_transaction().await?;
-        let result = owner_columns::registered_group_on_connection(&mut tx, group)
+        let result = owner_columns::registered_owner_on_connection(&mut tx, owner)
             .await
             .map_err(|err| resolution_error(&err));
         tx.rollback().await.ok();
@@ -76,8 +76,7 @@ impl OwnerAccessPort for PgOwnerAccessResolver {
     /// enumeration, folded through the same [`OwnerRoles::for_subject`] path
     /// the eager map uses — so the answer is byte-identical to the default
     /// method's and bounded by one group however many the subject belongs
-    /// to. That bound is the point for a host whose single forwarder subject
-    /// acts for a different party per request.
+    /// to.
     async fn resolve_group_role(
         &self,
         subject: UserId,

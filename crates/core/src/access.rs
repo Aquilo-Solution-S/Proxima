@@ -92,6 +92,8 @@ pub enum AccessError {
     Resolution(String),
     #[error("subject {0:?} is registered as a group owner")]
     SubjectIsGroup(UserId),
+    #[error("a forwarding role cannot manage groups")]
+    ForwarderMayNotManage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -264,6 +266,13 @@ pub struct OwnerRoles {
 }
 
 impl OwnerRoles {
+    /// A verified forwarding claim has no role until its owner is resolved.
+    pub(crate) fn without_access(subject: UserId) -> Self {
+        Self {
+            subject,
+            roles: HashMap::new(),
+        }
+    }
     /// The one role rule: the owner equal to the subject's own id holds
     /// [`Role::personal`]; any other owner holds the subject's membership role
     /// in it, or nothing. A Group named more than once (a member holding
@@ -381,12 +390,58 @@ impl OwnerRoles {
     }
 }
 
+/// A forwarding policy ceiling with no group-management authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwarderRole(Role);
+
+impl ForwarderRole {
+    /// # Errors
+    ///
+    /// Returns [`AccessError::ForwarderMayNotManage`] for a managing role.
+    pub fn new(role: Role) -> Result<Self, AccessError> {
+        if role.manages() {
+            return Err(AccessError::ForwarderMayNotManage);
+        }
+        Ok(Self(role))
+    }
+
+    #[must_use]
+    pub const fn role(self) -> Role {
+        self.0
+    }
+}
+
 #[async_trait]
 pub trait OwnerAccessPort: Send + Sync {
     /// # Errors
     ///
     /// Returns [`AccessError`] when the host cannot resolve access roles.
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError>;
+
+    /// Whether this subject must bind every request to a verified owner claim.
+    /// This reads policy only, without resolving any target owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError`] when the policy port is unavailable.
+    fn is_forwarder(&self, _subject: UserId) -> Result<bool, AccessError> {
+        Ok(false)
+    }
+
+    /// Resolve the policy role for exactly one verified, registered owner.
+    /// Ordinary memberships never contribute to this answer. Callers check
+    /// claim/selection agreement before invoking this target-owner probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError`] when the registry or policy cannot be read.
+    async fn resolve_forwarded_owner_role(
+        &self,
+        _subject: UserId,
+        _owner: OwnerId,
+    ) -> Result<Option<ForwarderRole>, AccessError> {
+        Ok(None)
+    }
 
     /// Resolve only the role `subject` holds in `group`, on demand.
     ///
@@ -638,6 +693,22 @@ mod tests {
             Some(Role::viewer()),
             "a later answer after a demotion is not widened by the stale one"
         );
+    }
+
+    #[test]
+    fn forwarded_owner_role_rejects_management_at_construction() {
+        assert_eq!(
+            ForwarderRole::new(Role::admin()),
+            Err(AccessError::ForwarderMayNotManage)
+        );
+        for role in [
+            Role::viewer(),
+            Role::ingest(),
+            Role::editor(),
+            Role::personal(),
+        ] {
+            assert_eq!(ForwarderRole::new(role).unwrap().role(), role);
+        }
     }
 
     /// Implements the eager method only: the per-group method it inherits is

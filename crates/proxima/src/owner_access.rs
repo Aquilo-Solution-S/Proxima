@@ -1,41 +1,38 @@
 //! The one owner-access port a served runtime resolves roles through.
 //!
-//! The MCP edge (per-Group resolution behind `X-Proxima-Owner`), the
+//! The MCP edge's membership and verified-owner resolution, the
 //! delegation service, and an environment-built OIDC authenticator all ask
 //! the same [`OwnerAccessPort`]: the host's own
-//! ([`crate::RuntimeBuilder::owner_access`]) or the runtime-pool Postgres
+//! ([`crate::RuntimeBuilder::owner_access`]) or the runtime's Postgres
 //! resolver, optionally under a [`ForwarderPolicy`].
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use proxima_core::{AccessError, GroupId, OwnerAccessPort, OwnerRoles, Role, UserId};
+use proxima_core::{
+    AccessError, ForwarderRole, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, UserId,
+};
 
 use crate::ProximaError;
 
 const FORWARDER_SUBJECTS: &str = "PROXIMA_FORWARDER_SUBJECTS";
 const FORWARDER_ROLE: &str = "PROXIMA_FORWARDER_ROLE";
 
-/// Trusted forwarder subjects and the fixed role each holds in whichever
-/// registered Group it selects per request (`X-Proxima-Owner: <uuid>`).
+/// Trusted forwarder subjects and their fixed role for a verified owner claim.
 ///
-/// For a host that serves many parties through one authenticated subject: a
-/// flavor host forwards each party's call under its own token and names the
-/// party's Group, and the Group need not list the forwarder as a member. The
-/// policy answers only the per-Group probe the edge makes for a Group the
-/// subject's membership map lacks — real memberships still win, an id the
-/// owner registry does not hold as a group (a user's owner, or an unknown
-/// id) is never reachable through it, and the delegation service, which
-/// reads memberships, is unaffected: a forwarder cannot delegate a role it
-/// only holds by policy.
+/// The edge verifies the credential's owner claim and request selection
+/// before asking for one registered owner's role. Personal and Group owners
+/// are both supported. The answer is the policy ceiling alone: memberships
+/// do not raise it. Ordinary role resolution still delegates to the wrapped
+/// port, so delegation never sees policy authority as a membership.
 ///
 /// The role may not manage Groups: a forwarder that could administer any
 /// Group it names could make itself, or anyone, a member of every one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwarderPolicy {
     subjects: BTreeSet<UserId>,
-    role: Role,
+    role: ForwarderRole,
 }
 
 impl ForwarderPolicy {
@@ -53,11 +50,8 @@ impl ForwarderPolicy {
                 "a forwarder policy needs at least one subject".into(),
             ));
         }
-        if role.manages() {
-            return Err(ProximaError::Config(
-                "a forwarder role may not manage groups; use viewer, ingest, or editor".into(),
-            ));
-        }
+        let role =
+            ForwarderRole::new(role).map_err(|error| ProximaError::Config(error.to_string()))?;
         Ok(Self { subjects, role })
     }
 
@@ -68,39 +62,40 @@ impl ForwarderPolicy {
 
     #[must_use]
     pub const fn role(&self) -> Role {
-        self.role
+        self.role.role()
     }
 
-    /// `inner` with this policy answering the per-Group probe for its
-    /// subjects, in the groups `groups` holds as registered.
+    /// `inner` with this policy answering verified-owner probes for its
+    /// subjects, limited to owners `owners` holds as registered.
     #[must_use]
     pub fn wrap(
         self,
         inner: Arc<dyn OwnerAccessPort>,
-        groups: Arc<dyn GroupRegistry>,
+        owners: Arc<dyn OwnerRegistry>,
     ) -> Arc<dyn OwnerAccessPort> {
         Arc::new(ForwarderOwnerAccess {
             policy: self,
             inner,
-            groups,
+            owners,
         })
     }
 }
 
-/// The owner registry's one answer the forwarder policy needs: whether an
-/// id is registered as a group.
+/// The authoritative owner registry's one answer the forwarder policy needs.
 #[async_trait]
-pub trait GroupRegistry: Send + Sync {
+pub trait OwnerRegistry: Send + Sync {
+    /// Whether this id is a registered Personal or Group owner.
+    ///
     /// # Errors
     ///
     /// [`AccessError::Resolution`] when the registry cannot be read.
-    async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError>;
+    async fn is_registered_owner(&self, owner: OwnerId) -> Result<bool, AccessError>;
 }
 
 #[async_trait]
-impl GroupRegistry for proxima_storage_pg::PgOwnerAccessResolver {
-    async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
-        Self::is_registered_group(self, group).await
+impl OwnerRegistry for proxima_storage_pg::PgOwnerAccessResolver {
+    async fn is_registered_owner(&self, owner: OwnerId) -> Result<bool, AccessError> {
+        Self::is_registered_owner(self, owner).await
     }
 }
 
@@ -149,7 +144,7 @@ pub(crate) fn forwarder_from_lookup(
 struct ForwarderOwnerAccess {
     policy: ForwarderPolicy,
     inner: Arc<dyn OwnerAccessPort>,
-    groups: Arc<dyn GroupRegistry>,
+    owners: Arc<dyn OwnerRegistry>,
 }
 
 #[async_trait]
@@ -158,14 +153,30 @@ impl OwnerAccessPort for ForwarderOwnerAccess {
         self.inner.resolve_roles_for_subject(subject).await
     }
 
+    fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+        Ok(self.policy.is_forwarder(subject))
+    }
+
+    async fn resolve_forwarded_owner_role(
+        &self,
+        subject: UserId,
+        owner: OwnerId,
+    ) -> Result<Option<ForwarderRole>, AccessError> {
+        if !self.policy.is_forwarder(subject) {
+            return Ok(None);
+        }
+        Ok(self
+            .owners
+            .is_registered_owner(owner)
+            .await?
+            .then_some(self.policy.role))
+    }
+
     async fn resolve_group_role(
         &self,
         subject: UserId,
         group: GroupId,
     ) -> Result<Option<Role>, AccessError> {
-        if self.policy.is_forwarder(subject) && self.groups.is_registered_group(group).await? {
-            return Ok(Some(self.policy.role));
-        }
         self.inner.resolve_group_role(subject, group).await
     }
 }
@@ -210,6 +221,20 @@ impl OwnerAccessPort for LateOwnerAccess {
         self.target()?.resolve_roles_for_subject(subject).await
     }
 
+    fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+        self.target()?.is_forwarder(subject)
+    }
+
+    async fn resolve_forwarded_owner_role(
+        &self,
+        subject: UserId,
+        owner: OwnerId,
+    ) -> Result<Option<ForwarderRole>, AccessError> {
+        self.target()?
+            .resolve_forwarded_owner_role(subject, owner)
+            .await
+    }
+
     async fn resolve_group_role(
         &self,
         subject: UserId,
@@ -232,19 +257,32 @@ mod tests {
     impl OwnerAccessPort for Members {
         async fn resolve_roles_for_subject(
             &self,
-            _subject: UserId,
+            subject: UserId,
         ) -> Result<OwnerRoles, AccessError> {
-            Ok(self.0.clone())
+            Ok(if self.0.subject() == subject {
+                self.0.clone()
+            } else {
+                OwnerRoles::empty_for_subject(subject)
+            })
         }
     }
 
-    /// A registry holding exactly the listed groups.
-    struct Registered(Vec<GroupId>);
+    /// A registry holding exactly the listed owners.
+    struct Registered(Vec<OwnerId>);
 
     #[async_trait]
-    impl GroupRegistry for Registered {
-        async fn is_registered_group(&self, group: GroupId) -> Result<bool, AccessError> {
-            Ok(self.0.contains(&group))
+    impl OwnerRegistry for Registered {
+        async fn is_registered_owner(&self, owner: OwnerId) -> Result<bool, AccessError> {
+            Ok(self.0.contains(&owner))
+        }
+    }
+
+    struct Unavailable;
+
+    #[async_trait]
+    impl OwnerRegistry for Unavailable {
+        async fn is_registered_owner(&self, _owner: OwnerId) -> Result<bool, AccessError> {
+            Err(AccessError::Resolution("owner registry unavailable".into()))
         }
     }
 
@@ -258,38 +296,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_forwarder_holds_the_fixed_role_in_any_group_it_selects() {
+    async fn a_forwarded_owner_gets_only_the_policy_ceiling_even_with_admin_membership() {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
         let member = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
         let port = ForwarderPolicy::new([forwarder], Role::editor())
             .unwrap()
             .wrap(
-                Arc::new(Members(OwnerRoles::for_subject(member, []).unwrap())),
-                Arc::new(Registered(vec![group])),
+                Arc::new(Members(
+                    OwnerRoles::for_subject(forwarder, [(OwnerId::from(group), Role::admin())])
+                        .unwrap(),
+                )),
+                Arc::new(Registered(vec![OwnerId::from(group)])),
             );
 
+        assert!(port.is_forwarder(forwarder).unwrap());
+        assert!(!port.is_forwarder(member).unwrap());
+        let policy_role = port
+            .resolve_forwarded_owner_role(forwarder, OwnerId::from(group))
+            .await
+            .unwrap()
+            .expect("registered owner gets the configured policy role");
+        assert_eq!(policy_role.role(), Role::editor());
+        assert!(!policy_role.role().manages());
         assert_eq!(
             port.resolve_group_role(forwarder, group).await.unwrap(),
-            Some(Role::editor())
+            Some(Role::admin()),
+            "ordinary membership resolution delegates unchanged"
         );
         assert_eq!(
             port.resolve_group_role(member, group).await.unwrap(),
             None,
-            "a non-forwarder still resolves through the inner port"
+            "a non-forwarder still resolves only its own ordinary memberships"
         );
-        assert!(
+        assert_eq!(
+            port.resolve_forwarded_owner_role(member, OwnerId::from(group))
+                .await
+                .unwrap(),
+            None,
+            "an unconfigured subject receives no forwarding authority"
+        );
+        assert_eq!(
             port.resolve_roles_for_subject(forwarder)
                 .await
                 .unwrap()
-                .role_for(&OwnerId::from(group))
-                .is_none(),
-            "the eager map is the inner port's, so delegation sees no policy role"
+                .role_for(&OwnerId::from(group)),
+            Some(Role::admin()),
+            "the eager membership map does not join the policy role"
         );
     }
 
     #[tokio::test]
-    async fn a_forwarder_naming_a_users_id_gets_no_role() {
+    async fn verified_personal_and_group_owners_are_supported_without_creating_memberships() {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
         let user = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
@@ -297,29 +355,88 @@ mod tests {
             .unwrap()
             .wrap(
                 Arc::new(Members(OwnerRoles::for_subject(forwarder, []).unwrap())),
-                Arc::new(Registered(vec![group])),
+                Arc::new(Registered(vec![OwnerId::from(user), OwnerId::from(group)])),
             );
 
-        // The user's id, asked as a group: the registry does not hold it as
-        // one, so the policy role does not apply.
+        for owner in [OwnerId::from(user), OwnerId::from(group)] {
+            assert_eq!(
+                port.resolve_forwarded_owner_role(forwarder, owner)
+                    .await
+                    .unwrap()
+                    .map(ForwarderRole::role),
+                Some(Role::editor())
+            );
+            assert!(
+                port.resolve_roles_for_subject(forwarder)
+                    .await
+                    .unwrap()
+                    .role_for(&owner)
+                    .is_none(),
+                "the eager map supplies no policy role to delegation"
+            );
+        }
         assert_eq!(
             port.resolve_group_role(forwarder, OwnerId::from(user).as_group())
                 .await
                 .unwrap(),
             None,
-            "a forwarder holds no role in a user's owner"
+            "the ordinary group probe does not create personal-owner authority"
         );
         assert_eq!(
-            port.resolve_group_role(forwarder, GroupId::new(uuid::Uuid::now_v7()))
+            port.resolve_forwarded_owner_role(forwarder, OwnerId::new(uuid::Uuid::now_v7()))
                 .await
                 .unwrap(),
             None,
-            "nor in an id the registry never saw"
+            "an owner the authoritative registry never saw is refused"
         );
         assert_eq!(
             port.resolve_group_role(forwarder, group).await.unwrap(),
-            Some(Role::editor()),
+            None,
+            "a registered group does not become a policy membership"
         );
+    }
+
+    #[tokio::test]
+    async fn registry_failure_refuses_forwarding_without_affecting_policy_or_memberships() {
+        let forwarder = UserId::new(uuid::Uuid::now_v7());
+        let other = UserId::new(uuid::Uuid::now_v7());
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let port = ForwarderPolicy::new([forwarder], Role::viewer())
+            .unwrap()
+            .wrap(
+                Arc::new(Members(OwnerRoles::for_subject(forwarder, []).unwrap())),
+                Arc::new(Unavailable),
+            );
+        assert!(port.is_forwarder(forwarder).unwrap());
+        assert!(!port.is_forwarder(other).unwrap());
+        assert!(matches!(
+            port.resolve_forwarded_owner_role(forwarder, OwnerId::from(group))
+                .await,
+            Err(AccessError::Resolution(_))
+        ));
+        assert_eq!(
+            port.resolve_forwarded_owner_role(other, OwnerId::from(group))
+                .await
+                .unwrap(),
+            None,
+            "an unconfigured subject never triggers a target-owner lookup"
+        );
+        assert_eq!(
+            port.resolve_group_role(forwarder, group).await.unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn policy_configuration_accepts_nonmanaging_roles_and_refuses_management() {
+        let forwarder = UserId::new(uuid::Uuid::now_v7());
+        for role in [Role::viewer(), Role::ingest(), Role::editor()] {
+            let policy = ForwarderPolicy::new([forwarder], role).unwrap();
+            assert_eq!(policy.role(), role);
+            assert!(!policy.role().manages());
+        }
+        assert!(ForwarderPolicy::new([forwarder], Role::admin()).is_err());
+        assert!(ForwarderPolicy::new([], Role::viewer()).is_err());
     }
 
     #[test]
@@ -351,10 +468,33 @@ mod tests {
     async fn an_unbound_late_port_refuses() {
         let late = LateOwnerAccess::default();
         let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let owner = OwnerId::from(group);
         assert!(late.resolve_roles_for_subject(subject).await.is_err());
-        late.bind(Arc::new(Members(
-            OwnerRoles::for_subject(subject, []).unwrap(),
-        )));
+        assert!(late.resolve_group_role(subject, group).await.is_err());
+        assert!(late.is_forwarder(subject).is_err());
+        assert!(
+            late.resolve_forwarded_owner_role(subject, owner)
+                .await
+                .is_err()
+        );
+        late.bind(
+            ForwarderPolicy::new([subject], Role::ingest())
+                .unwrap()
+                .wrap(
+                    Arc::new(Members(OwnerRoles::for_subject(subject, []).unwrap())),
+                    Arc::new(Registered(vec![owner])),
+                ),
+        );
         assert!(late.resolve_roles_for_subject(subject).await.is_ok());
+        assert!(late.is_forwarder(subject).unwrap());
+        assert_eq!(
+            late.resolve_forwarded_owner_role(subject, owner)
+                .await
+                .unwrap()
+                .map(ForwarderRole::role),
+            Some(Role::ingest())
+        );
+        assert_eq!(late.resolve_group_role(subject, group).await.unwrap(), None);
     }
 }

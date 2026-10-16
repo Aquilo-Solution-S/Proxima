@@ -18,12 +18,14 @@ use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima_auth_oidc::{
-    OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, OidcTokenValidator, StaticJwksResolver,
-    SubjectBinding,
+    OidcAuthConfig, OidcAuthenticator, OidcBinding, OidcBindingSet, OidcClaimMap, OidcRoleShape,
+    OidcRoleShaper, OidcSubjectMap, OidcTokenValidator, StaticJwksResolver, SubjectBinding,
+    ValidatedOidcToken,
 };
 use proxima_core::{
-    AccessError, ActionName, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
-    GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, ScopeKey, ToolName, ToolScope, UserId,
+    AccessError, AccessKind, ActionName, AuthError, AuthPath, Authenticator, AuthzContext,
+    Credentials, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, ScopeKey, ToolName,
+    ToolScope, UserId,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -65,17 +67,21 @@ fn test_keys() -> TestKeys {
 }
 
 fn token(keys: &TestKeys, issuer: &str, audience: &str, sub: &str, exp: u64) -> String {
-    let header = serde_json::json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
     let claims = TestClaims {
         sub: sub.to_owned(),
         iss: issuer.to_owned(),
         aud: audience.to_owned(),
         exp,
     };
+    signed_claims(keys, &claims, "JWT")
+}
+
+fn signed_claims(keys: &TestKeys, claims: &impl Serialize, typ: &str) -> String {
+    let header = serde_json::json!({"alg": "RS256", "kid": KID, "typ": typ});
     let signing_input = format!(
         "{}.{}",
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("serialize header")),
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("serialize claims"))
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).expect("serialize claims"))
     );
     let mut signature = vec![0; keys.signing.public_modulus_len()];
     keys.signing
@@ -357,4 +363,401 @@ async fn a_custom_host_that_binds_nothing_certifies_nothing() {
         let ctx = host.authenticate(&token).await.expect("authenticates");
         assert_eq!(ctx.trusted_model_id(), None, "audience {audience}");
     }
+}
+
+const FORWARDING_AUDIENCE: &str = "proxima-forwarded";
+const FORWARDING_SUBJECT: &str = "forwarder-subject";
+const ORDINARY_SUBJECT: &str = "ordinary-subject";
+const UNAVAILABLE_POLICY_SUBJECT: &str = "unavailable-policy-subject";
+const FORWARDING_MODEL: &str = "example/forwarder-model";
+
+fn forwarding_subject() -> UserId {
+    UserId::new(Uuid::from_u128(0xf100))
+}
+
+fn ordinary_subject() -> UserId {
+    UserId::new(Uuid::from_u128(0xf101))
+}
+
+fn unavailable_policy_subject() -> UserId {
+    UserId::new(Uuid::from_u128(0xf102))
+}
+
+#[derive(Debug)]
+struct ForwardingOwnerAccess;
+
+#[async_trait]
+impl OwnerAccessPort for ForwardingOwnerAccess {
+    fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+        if subject == unavailable_policy_subject() {
+            return Err(AccessError::Resolution("policy unavailable".to_owned()));
+        }
+        Ok(subject == forwarding_subject())
+    }
+
+    async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError> {
+        assert_ne!(
+            subject,
+            forwarding_subject(),
+            "forwarding does not enumerate roles"
+        );
+        assert_ne!(
+            subject,
+            unavailable_policy_subject(),
+            "a failed policy resolves no roles"
+        );
+        OwnerRoles::for_subject(subject, [])
+    }
+
+    async fn resolve_forwarded_owner_role(
+        &self,
+        _subject: UserId,
+        _owner: OwnerId,
+    ) -> Result<Option<proxima_core::access::ForwarderRole>, AccessError> {
+        panic!("the forwarded owner is resolved only after request owner agreement")
+    }
+}
+
+fn forwarding_config(audience: &str) -> OidcAuthConfig {
+    OidcAuthConfig {
+        issuer: ISSUER.to_owned(),
+        jwks_uri: None,
+        audience: audience.to_owned(),
+        allowed_subjects: None,
+        leeway_secs: 0,
+    }
+}
+
+fn forwarding_subject_map() -> OidcSubjectMap {
+    let mut map = OidcSubjectMap::new();
+    map.insert_binding(
+        ISSUER,
+        FORWARDING_SUBJECT,
+        SubjectBinding::new(forwarding_subject()).with_trusted_model_id(FORWARDING_MODEL),
+    )
+    .expect("forwarding subject binding");
+    map.insert(ISSUER, ORDINARY_SUBJECT, ordinary_subject())
+        .expect("ordinary subject binding");
+    map.insert(
+        ISSUER,
+        UNAVAILABLE_POLICY_SUBJECT,
+        unavailable_policy_subject(),
+    )
+    .expect("unavailable policy subject binding");
+    map
+}
+
+fn forwarding_authenticator(keys: &TestKeys) -> OidcAuthenticator {
+    OidcAuthenticator::new(
+        forwarding_config(FORWARDING_AUDIENCE),
+        resolver(keys.decoding.clone()),
+        forwarding_subject_map(),
+        Arc::new(ForwardingOwnerAccess),
+    )
+    .expect("forwarding authenticator")
+}
+
+fn forwarding_bindings(keys: &TestKeys, shape: OidcRoleShape) -> OidcBindingSet {
+    let access: Arc<dyn OwnerAccessPort> = Arc::new(ForwardingOwnerAccess);
+    OidcBindingSet::new([
+        OidcBinding::with_role_shape(
+            forwarding_config(FORWARDING_AUDIENCE),
+            resolver(keys.decoding.clone()),
+            forwarding_subject_map(),
+            access.clone(),
+            shape,
+        )
+        .expect("forwarding binding"),
+        OidcBinding::new(
+            forwarding_config("proxima-other-audience"),
+            resolver(keys.decoding.clone()),
+            forwarding_subject_map(),
+            access,
+        )
+        .expect("other audience binding"),
+    ])
+    .expect("forwarding binding set")
+}
+
+fn forwarding_authenticators(keys: &TestKeys) -> [(&'static str, Arc<dyn Authenticator>); 2] {
+    [
+        ("single", Arc::new(forwarding_authenticator(keys))),
+        (
+            "bindings",
+            Arc::new(forwarding_bindings(keys, OidcRoleShape::ServerResolved)),
+        ),
+    ]
+}
+
+fn forwarding_claims(owner: Option<serde_json::Value>) -> serde_json::Value {
+    let mut claims = serde_json::json!({
+        "iss": ISSUER,
+        "aud": FORWARDING_AUDIENCE,
+        "sub": FORWARDING_SUBJECT,
+        "exp": future_exp(),
+    });
+    if let Some(owner) = owner {
+        claims["owner"] = owner;
+    }
+    claims
+}
+
+#[tokio::test]
+async fn forwarded_owner_remains_pending_in_single_and_multiple_bindings() {
+    let keys = test_keys();
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let claims = forwarding_claims(Some(serde_json::json!(owner)));
+    let bearer = Credentials::Bearer(signed_claims(&keys, &claims, "JWT"));
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        let context = proxima_core::authenticate(authenticator.as_ref(), &bearer)
+            .await
+            .expect("a verified owner claim authenticates");
+        assert_eq!(context.subject(), Some(forwarding_subject()), "{path}");
+        assert_eq!(
+            context.principal(),
+            OwnerId::from(forwarding_subject()),
+            "{path}"
+        );
+        assert_eq!(context.verified_forwarded_owner(), Some(owner), "{path}");
+        assert_eq!(context.trusted_model_id(), Some(FORWARDING_MODEL), "{path}");
+        assert!(context.expires_at().is_some(), "{path}");
+        assert!(
+            context.readable_owners(AccessKind::Fact).is_empty(),
+            "{path}"
+        );
+        assert!(
+            context.writable_owners(AccessKind::Fact).is_empty(),
+            "{path}"
+        );
+        assert!(context.role_for_owner(&owner).is_none(), "{path}");
+        assert!(
+            context
+                .owner_scope()
+                .expect("core seals authentication")
+                .readable_owners(AccessKind::Fact)
+                .is_empty(),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn forwarded_owner_requires_a_plain_uuid_claim() {
+    let keys = test_keys();
+    let owner = Uuid::now_v7();
+    let invalid = [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(42)),
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!({"id": owner})),
+        Some(serde_json::json!([owner])),
+        Some(serde_json::json!("not-an-owner")),
+        Some(serde_json::json!(owner.simple().to_string())),
+        Some(serde_json::json!(format!("personal:{owner}"))),
+        Some(serde_json::json!(owner.urn().to_string())),
+    ];
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        for owner in &invalid {
+            let claims = forwarding_claims(owner.clone());
+            let bearer = Credentials::Bearer(signed_claims(&keys, &claims, "JWT"));
+            assert_eq!(
+                authenticator.authenticate(&bearer).await,
+                Err(AuthError::InvalidCredentials),
+                "{path}: {owner:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn forwarded_owner_claim_is_ignored_for_an_ordinary_subject() {
+    let keys = test_keys();
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        for owner in [
+            serde_json::json!(Uuid::now_v7()),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+        ] {
+            let mut claims = forwarding_claims(Some(owner));
+            claims["sub"] = serde_json::json!(ORDINARY_SUBJECT);
+            let context = authenticator
+                .authenticate(&Credentials::Bearer(signed_claims(&keys, &claims, "JWT")))
+                .await
+                .expect("an ordinary subject ignores the owner claim");
+            assert_eq!(context.subject(), Some(ordinary_subject()), "{path}");
+            assert_eq!(context.verified_forwarded_owner(), None, "{path}");
+            assert_eq!(context.default_owner(), None, "{path}");
+            assert_eq!(
+                context.readable_owners(AccessKind::Fact),
+                vec![OwnerId::from(ordinary_subject())],
+                "{path}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn forwarded_owner_policy_failure_refuses_without_resolving_roles() {
+    let keys = test_keys();
+    let mut claims = forwarding_claims(Some(serde_json::json!(Uuid::now_v7())));
+    claims["sub"] = serde_json::json!(UNAVAILABLE_POLICY_SUBJECT);
+    let bearer = Credentials::Bearer(signed_claims(&keys, &claims, "JWT"));
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        assert_eq!(
+            authenticator.authenticate(&bearer).await,
+            Err(AuthError::InvalidCredentials),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn forwarded_owner_still_requires_valid_token_credentials() {
+    let keys = test_keys();
+    let other_keys = test_keys();
+    let valid = forwarding_claims(Some(serde_json::json!(Uuid::now_v7())));
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        for (field, value) in [
+            ("iss", serde_json::json!("https://other-issuer.example")),
+            ("aud", serde_json::json!("unconfigured-audience")),
+            ("sub", serde_json::json!("unmapped-subject")),
+            ("exp", serde_json::json!(1)),
+            ("nbf", serde_json::json!(future_exp())),
+        ] {
+            let mut claims = valid.clone();
+            claims[field] = value;
+            assert_eq!(
+                authenticator
+                    .authenticate(&Credentials::Bearer(signed_claims(&keys, &claims, "JWT")))
+                    .await,
+                Err(AuthError::InvalidCredentials),
+                "{path}: {field}"
+            );
+        }
+        assert_eq!(
+            authenticator
+                .authenticate(&Credentials::Bearer(signed_claims(
+                    &other_keys,
+                    &valid,
+                    "JWT"
+                )))
+                .await,
+            Err(AuthError::InvalidCredentials),
+            "{path}: wrong signing key"
+        );
+    }
+    let authenticator = forwarding_authenticator(&keys).require_access_token_typ();
+    assert_eq!(
+        authenticator
+            .authenticate(&Credentials::Bearer(signed_claims(&keys, &valid, "JWT")))
+            .await,
+        Err(AuthError::InvalidCredentials)
+    );
+    assert!(
+        authenticator
+            .authenticate(&Credentials::Bearer(signed_claims(&keys, &valid, "at+jwt")))
+            .await
+            .is_ok()
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ForwardingShape {
+    Preserve,
+    Clear,
+    Change,
+    Grant,
+}
+
+impl OidcRoleShaper for ForwardingShape {
+    fn shape(
+        &self,
+        context: AuthzContext,
+        _token: &ValidatedOidcToken<OidcClaimMap>,
+    ) -> Result<AuthzContext, AuthError> {
+        let subject = context.subject().expect("authenticated subject");
+        let owner = context.verified_forwarded_owner().expect("verified owner");
+        let context = match self {
+            Self::Preserve => {
+                context.with_tool_scope(ToolScope::Palette(vec![key("host_forwarded")]))
+            }
+            Self::Clear => AuthzContext::for_subject(subject, AuthPath::HostBearer),
+            Self::Change => AuthzContext::from_verified_forwarded_owner(
+                subject,
+                OwnerId::from(UserId::new(Uuid::now_v7())),
+            ),
+            Self::Grant => AuthzContext::for_subject_with_role(
+                subject,
+                [(owner, Role::editor())],
+                AuthPath::HostBearer,
+            ),
+        };
+        let context = context
+            .with_trusted_model_id(FORWARDING_MODEL)
+            .map_err(|_| AuthError::InvalidCredentials)?;
+        context
+            .with_publication_extensions(
+                proxima_core::publication::PublicationExtensions::new()
+                    .with("forwarding", "verified")
+                    .expect("valid publication extension"),
+            )
+            .map_err(|_| AuthError::InvalidCredentials)
+    }
+}
+
+#[tokio::test]
+async fn forwarded_owner_host_shaping_preserves_the_pending_binding() {
+    let keys = test_keys();
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let bearer = Credentials::Bearer(signed_claims(
+        &keys,
+        &forwarding_claims(Some(serde_json::json!(owner))),
+        "JWT",
+    ));
+    let bindings = forwarding_bindings(
+        &keys,
+        OidcRoleShape::Host(Arc::new(ForwardingShape::Preserve)),
+    );
+    let context = bindings
+        .authenticate(&bearer)
+        .await
+        .expect("narrowing shape");
+    assert_eq!(context.verified_forwarded_owner(), Some(owner));
+    assert_eq!(context.subject(), Some(forwarding_subject()));
+    assert_eq!(context.trusted_model_id(), Some(FORWARDING_MODEL));
+    assert_eq!(
+        context.publication_extensions().get("forwarding"),
+        Some(&proxima_core::publication::ExtensionValue::from("verified"))
+    );
+    assert!(
+        context.expires_at().is_some(),
+        "expiry is clamped to the token"
+    );
+    assert!(context.tool_scope().allows(&key("host_forwarded")));
+    assert!(!context.tool_scope().allows(&key("other_tool")));
+    assert!(context.readable_owners(AccessKind::Fact).is_empty());
+    for shape in [
+        ForwardingShape::Clear,
+        ForwardingShape::Change,
+        ForwardingShape::Grant,
+    ] {
+        let bindings = forwarding_bindings(&keys, OidcRoleShape::Host(Arc::new(shape)));
+        assert_eq!(
+            bindings.authenticate(&bearer).await,
+            Err(AuthError::InvalidCredentials),
+            "{shape:?}"
+        );
+    }
+    let bindings = forwarding_bindings(
+        &keys,
+        OidcRoleShape::ServerResolvedWithToolScope(ToolScope::Palette(vec![key("host_forwarded")])),
+    );
+    let context = bindings
+        .authenticate(&bearer)
+        .await
+        .expect("static scope shape");
+    assert_eq!(context.verified_forwarded_owner(), Some(owner));
+    assert!(context.tool_scope().allows(&key("host_forwarded")));
+    assert!(!context.tool_scope().allows(&key("other_tool")));
 }

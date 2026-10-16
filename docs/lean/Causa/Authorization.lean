@@ -13,7 +13,10 @@ is just a viewer-role membership in that one group, and sharing beyond that is
 an owner-to-owner TRANSFER of the entity into another group. The host resolves
 the DATA — who populates each group at what role — ONCE; the kernel fixes only
 the RULE (read/write = the role's ceiling over the kind). There is no
-universal-read owner: an entity is exactly as readable as its owning group. No
+universal-read owner: ordinary access follows the owning group's membership. A
+verified forwarding request instead carries one registered owner and one
+non-managing policy role, without changing the authenticated requester or the
+stored membership map. No
 grant or visibility flag lives on the entity (invariant #5); the retired
 owner-space `AccessGrant` / `MemoryAction` layer is gone.
 -/
@@ -86,7 +89,7 @@ theorem may_write_in_implies_read_in :
   intro s r o k h
   exact may_write_implies_read r (s.resolve o) k h
 
-/-- AUTH-NO-UNIVERSAL-READ — access IS membership: a requester holding no role
+/-- AUTH-NO-UNIVERSAL-READ — ordinary access is membership: a requester holding no role
     in the owning group can neither read nor write the entity, whatever its
     kind. THEOREM. This is what stands where the World lane stood: no owner is
     readable by everyone, so no owner needs an exception carved out of the
@@ -187,5 +190,112 @@ theorem union_grants_each (a b : Group) (r : User) (k : AccessKind) :
     | some x =>
       refine ⟨Role.join x y, by simp [Group.union, har, hby], ?_⟩
       simp only [Role.mayRead, Role.join] at hy ⊢; omega
+
+-- ============================================================
+-- Verified request forwarding, separate from stored membership
+-- ============================================================
+
+/-- The trusted policy and registry inputs at a request boundary. Forwarding
+    roles never manage groups; no policy role is a stored membership. -/
+structure ForwardingPolicy where
+  roleFor : User → Option Role
+  registered : OwnerRef → Prop
+  no_manage : ∀ (u : User) (role : Role), roleFor u = some role → ¬ role.manages
+
+/-- A claim produced by credential verification. Cryptographic verification is
+    a boundary input, not an axiom of this authorization model. -/
+structure VerifiedForwardedOwner where
+  subject : User
+  owner : OwnerRef
+
+/-- Each request uses ordinary membership or its verified forwarding claim.
+    These alternatives never union their roles. -/
+inductive RequestAuthority where
+  | membership
+  | forwarded (claim : VerifiedForwardedOwner)
+
+/-- The requester stays the authenticated subject. A forwarded role exists
+    only at the exact claimed, registered owner for a configured forwarder. -/
+def request_has_role (s : OwnerState) (p : ForwardingPolicy)
+    (requester : User) (authority : RequestAuthority) (owner : OwnerRef) (role : Role) : Prop :=
+  match authority with
+  | .membership => s.resolve owner requester = some role
+  | .forwarded claim =>
+      claim.subject = requester ∧ claim.owner = owner ∧ p.registered owner ∧
+      p.roleFor requester = some role
+
+def request_may_read (s : OwnerState) (p : ForwardingPolicy) (r : User)
+    (a : RequestAuthority) (o : OwnerRef) (k : AccessKind) : Prop :=
+  ∃ role : Role, request_has_role s p r a o role ∧ role.mayRead k
+
+def request_may_write (s : OwnerState) (p : ForwardingPolicy) (r : User)
+    (a : RequestAuthority) (o : OwnerRef) (k : AccessKind) : Prop :=
+  ∃ role : Role, request_has_role s p r a o role ∧ role.mayWrite k
+
+/-- Management always uses ordinary membership, never forwarding policy. -/
+def request_may_manage (s : OwnerState) (r : User)
+    (a : RequestAuthority) (o : OwnerRef) : Prop :=
+  match a with
+  | .membership => may_manage_in s r o
+  | .forwarded _ => False
+
+/-- Durable delegation requires ordinary membership authority. -/
+def request_may_delegate (a : RequestAuthority) : Prop :=
+  match a with
+  | .membership => True
+  | .forwarded _ => False
+
+theorem request_write_implies_read (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (a : RequestAuthority) (o : OwnerRef) (k : AccessKind) :
+    request_may_write s p r a o k → request_may_read s p r a o k := by
+  rintro ⟨role, hrole, hw⟩
+  exact ⟨role, hrole, Nat.lt_of_lt_of_le hw role.write_le_read⟩
+
+theorem forwarding_exact_owner (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role) (h : c.owner ≠ o) :
+    ¬ request_has_role s p r (.forwarded c) o role := by
+  simp [request_has_role, h]
+
+theorem forwarding_keeps_subject (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role) (h : c.subject ≠ r) :
+    ¬ request_has_role s p r (.forwarded c) o role := by
+  simp [request_has_role, h]
+
+theorem forwarding_unknown_owner_denied (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role) (h : ¬ p.registered o) :
+    ¬ request_has_role s p r (.forwarded c) o role := by
+  simp [request_has_role, h]
+
+theorem forwarding_unconfigured_subject_denied (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role) (h : p.roleFor r = none) :
+    ¬ request_has_role s p r (.forwarded c) o role := by
+  simp [request_has_role, h]
+
+theorem forwarding_role_no_management (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role)
+    (h : request_has_role s p r (.forwarded c) o role) : ¬ role.manages := by
+  exact p.no_manage r role h.2.2.2
+
+theorem forwarding_no_management (s : OwnerState) (r : User)
+    (c : VerifiedForwardedOwner) (o : OwnerRef) :
+    ¬ request_may_manage s r (.forwarded c) o := by
+  simp [request_may_manage]
+
+theorem forwarding_no_delegation (c : VerifiedForwardedOwner) :
+    ¬ request_may_delegate (.forwarded c) := by
+  simp [request_may_delegate]
+
+/-- The ordinary personal-owner rule remains identity-based. -/
+theorem membership_personal_role (s : OwnerState) (p : ForwardingPolicy) (u r : User) (role : Role) :
+    request_has_role s p r .membership (s.own u) role ↔ Owner.ofUser u r = some role := by
+  simp [request_has_role, s.personal_resolves]
+
+/-- A verified request can reach a registered personal owner without becoming
+    its member; the role is exactly the configured policy ceiling. -/
+theorem forwarding_personal_role (s : OwnerState) (p : ForwardingPolicy)
+    (r u : User) (role : Role) (h : p.registered (s.own u)) :
+    request_has_role s p r (.forwarded ⟨r, s.own u⟩) (s.own u) role ↔
+      p.roleFor r = some role := by
+  simp [request_has_role, h]
 
 end Causa

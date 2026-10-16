@@ -34,6 +34,14 @@ the selected owner. Opening more sessions can evict only that principal's own
 oldest binding; a full global binding store refuses a new principal instead
 of evicting another principal's sessions.
 
+A configured forwarder carries its selected owner in the verified token's
+`owner` UUID claim. Missing or invalid claims refuse authentication. The
+owner header may agree or be absent; it cannot replace the claim. Every
+session request must also agree with the current token's claim. The policy
+role reaches that one registered personal or group owner, while the
+authenticated subject and session principal remain the forwarder. Ordinary
+subjects gain no selection or authority from this claim.
+
 Enforcers: [`AuthzContext`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/authz.rs),
 the engine command ports, and PostgreSQL owner RLS. See [concepts](concepts.md)
 and [host integration](host-integration.md).

@@ -689,7 +689,8 @@ impl DelegatedAuthorityService {
     fn validate_host_bearer(
         source: &AuthzContext,
     ) -> Result<(UserId, SystemTime), DelegatedAuthorityError> {
-        if source.auth_path() != AuthPath::HostBearer {
+        if source.auth_path() != AuthPath::HostBearer || source.verified_forwarded_owner().is_some()
+        {
             return Err(DelegatedAuthorityError::HostBearerRequired);
         }
         let subject = source
@@ -1318,6 +1319,63 @@ mod tests {
 
         assert!(matches!(
             service.issue(&system, owner, command, Role::editor()).await,
+            Err(DelegatedAuthorityError::HostBearerRequired)
+        ));
+        assert_eq!(store.inserts.load(Ordering::SeqCst), 0);
+        assert_eq!(store.loads.load(Ordering::SeqCst), 0);
+    }
+
+    struct ForwardedAccess(Arc<TestOwnerAccess>);
+
+    #[async_trait]
+    impl OwnerAccessPort for ForwardedAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            self.0.resolve_roles_for_subject(subject).await
+        }
+
+        fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+            Ok(subject == self.0.requested_subject)
+        }
+
+        async fn resolve_forwarded_owner_role(
+            &self,
+            subject: UserId,
+            owner: OwnerId,
+        ) -> Result<Option<crate::ForwarderRole>, AccessError> {
+            Ok(
+                (subject == self.0.requested_subject && owner == self.0.owner)
+                    .then(|| crate::ForwarderRole::new(Role::editor()).unwrap()),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_cannot_delegate_even_with_ordinary_membership() {
+        let (subject, owner, store, access, authenticator) = fixtures();
+        let policy = ForwardedAccess(access.clone());
+        let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
+            .with_expires_at(Some(SystemTime::now() + Duration::from_mins(1)))
+            .seal_verified_scope()
+            .unwrap();
+        let forwarded = pending
+            .with_authenticated_forwarded_owner(&policy, owner)
+            .await
+            .unwrap();
+        assert!(forwarded.may_write(&owner, AccessKind::Fact));
+        let (_engine, service, command) = runtime(
+            registry(true),
+            store.clone(),
+            access,
+            authenticator,
+            ToolScope::All,
+        );
+        assert!(matches!(
+            service
+                .issue(&forwarded, owner, command, Role::editor())
+                .await,
             Err(DelegatedAuthorityError::HostBearerRequired)
         ));
         assert_eq!(store.inserts.load(Ordering::SeqCst), 0);
