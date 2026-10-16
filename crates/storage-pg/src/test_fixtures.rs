@@ -1,47 +1,28 @@
 use proxima_core::StorageError;
 use proxima_storage_pg::{PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, core_migrator};
-use sqlx::migrate::Migrator;
-use std::borrow::Cow;
 
 use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, create_named_db_from_template, db_url,
     drop_db, ensure_template, fnv1a64_extend, split_role_urls,
 };
+use sqlx::Connection;
 
 #[must_use]
 pub fn core_template_name() -> String {
     let mut hash = FNV_OFFSET_BASIS;
-    for migration in core_migrator_before_owner_rls().iter() {
+    for migration in core_migrator().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
+    hash = fnv1a64_extend(
+        hash,
+        proxima_storage_pg::definitions::checksum_hex().as_bytes(),
+    );
+    hash = fnv1a64_extend(hash, proxima_core::RELEASE_VERSION.as_bytes());
     format!("proxima_tmpl_core_{hash:016x}")
 }
 
-/// Owner-RLS activation begins at migration 0014. Historical fixtures stop
-/// immediately before it; current boot fixtures then apply the full embedded
-/// migrator in production order.
-pub const OWNER_RLS_MIGRATION_VERSIONS: [i64; 6] = [14, 17, 19, 22, 23, 24];
-
-/// Core migration lane used by historical domain fixtures.
-///
-/// The exact migration prefix before owner-RLS activation. No production path
-/// calls this helper.
-#[must_use]
-pub fn core_migrator_before_owner_rls() -> Migrator {
-    let mut migrator = core_migrator();
-    migrator.migrations = Cow::Owned(
-        migrator
-            .iter()
-            .filter(|migration| migration.version < OWNER_RLS_MIGRATION_VERSIONS[0])
-            .cloned()
-            .collect(),
-    );
-    migrator
-}
-
-/// Build the [`core_template_name`] template once per migration set:
-/// [`core_migrator_before_owner_rls`] run on an empty database.
+/// Build the full core schema template once per migration set.
 ///
 /// # Errors
 ///
@@ -49,18 +30,29 @@ pub fn core_migrator_before_owner_rls() -> Migrator {
 pub async fn ensure_core_template() -> Result<String, sqlx::Error> {
     let template = core_template_name();
     ensure_template(&template, |pool| async move {
-        core_migrator_before_owner_rls()
-            .run(&pool)
+        let database: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await?;
+        let (_runtime_url, platform_url) = split_role_urls(&database).await?;
+        pool.close().await;
+        let mut connection = sqlx::PgConnection::connect(&platform_url).await?;
+        let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
             .await
-            .map_err(sqlx::Error::from)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        proxima_storage_pg::run_core_schema(
+            &mut transaction,
+            proxima_storage_pg::MissingMigrationPolicy::Reject,
+        )
+        .await
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        transaction.commit().await
     })
     .await?;
     Ok(template)
 }
 
-/// Create `name` already migrated through [`core_migrator_before_owner_rls`],
-/// cloned from the core template: the drop-in for `create_db` followed by
-/// Drop it with `drop_db` like any other test database.
+/// Create `name` already migrated through the full core template, cloned
+/// from that template. Drop it with `drop_db` like any other test database.
 ///
 /// # Errors
 ///

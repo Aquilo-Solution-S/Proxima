@@ -170,7 +170,7 @@ impl EmbeddingClient for FixedDimEmbedding {
 }
 
 #[tokio::test]
-async fn pre_v004_database_fails_closed_in_migration_facade() {
+async fn unknown_pre_reset_ledger_fails_closed_in_migration_facade() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -222,7 +222,7 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
 }
 
 #[tokio::test]
-async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
+async fn unknown_pre_reset_ledger_surfaces_typed_reset_error_through_boot() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -273,7 +273,7 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
         match err {
             ProximaError::SchemaResetRequired { details } => {
                 assert!(
-                    details.contains("0001_v008") || details.contains("checksum"),
+                    details.contains("v0.0.35") && details.contains("reset"),
                     "reset details should name the schema mismatch, got: {details}"
                 );
             }

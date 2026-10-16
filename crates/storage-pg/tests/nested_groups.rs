@@ -1,7 +1,6 @@
 //! Storage materializes the Lean mount/union lattice from a forest's written rows.
 #![allow(clippy::too_many_lines)]
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -10,9 +9,8 @@ use proxima_core::storage_ports::OwnerInversePort;
 use proxima_core::{AccessCeiling, GroupId, OwnerId, Relation, Role, UserId};
 use proxima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls};
 use proxima_storage_pg::{
-    PgStorage, add_group_member, begin_migration_transaction, core_migrator, group_role,
-    register_group, remove_group_member, remove_group_member_relation,
-    replace_group_member_relation,
+    PgStorage, add_group_member, begin_migration_transaction, group_role, register_group,
+    remove_group_member, remove_group_member_relation, replace_group_member_relation,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -37,7 +35,7 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new(last_migration: Option<i64>) -> TestResult<Self> {
+    async fn new() -> TestResult<Self> {
         let name = format!("proxima_test_nested_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let database = DbGuard::adopt(name.clone());
@@ -45,19 +43,13 @@ impl Harness {
         let platform = PgPool::connect(&platform_url).await?;
         let runtime = PgPool::connect(&runtime_url).await?;
         let pool = PgPool::connect(&db_url(&name)).await?;
-        let mut migrator = core_migrator();
-        if let Some(last) = last_migration {
-            migrator.migrations = Cow::Owned(
-                migrator
-                    .iter()
-                    .filter(|m| m.version <= last)
-                    .cloned()
-                    .collect(),
-            );
-        }
         let mut conn = platform.acquire().await?;
         let mut tx = begin_migration_transaction(&mut conn).await?;
-        migrator.run(tx.as_mut()).await?;
+        proxima_storage_pg::run_core_schema(
+            &mut tx,
+            proxima_storage_pg::MissingMigrationPolicy::Reject,
+        )
+        .await?;
         tx.commit().await?;
         drop(conn);
         Ok(Self {
@@ -190,7 +182,7 @@ async fn reference_climb(pool: &PgPool) -> TestResult<Roles> {
 
 #[tokio::test]
 async fn projection_equals_reference_after_seeded_person_and_group_write_sequences() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(12).await?;
     let people: Vec<_> = (0..5).map(|_| OwnerId::new(Uuid::now_v7())).collect();
     // A deep chain and a person reached directly and through the chain.
@@ -283,7 +275,7 @@ async fn projection_equals_reference_after_seeded_person_and_group_write_sequenc
 
 #[tokio::test]
 async fn database_lattice_equals_rust_for_all_relations_and_cap_chains() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(4).await?;
     for first in RELATIONS {
         for second in RELATIONS {
@@ -320,7 +312,7 @@ async fn database_lattice_equals_rust_for_all_relations_and_cap_chains() -> Test
 
 #[tokio::test]
 async fn readding_same_group_edge_is_a_noop() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(2).await?;
     let person = OwnerId::new(Uuid::now_v7());
     h.add(groups[1], person, Relation::Admin).await?;
@@ -385,7 +377,7 @@ async fn readding_same_group_edge_is_a_noop() -> TestResult {
 
 #[tokio::test]
 async fn roles_climb_only_and_take_weakest_path_then_strongest_alternative() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let g = h.groups(4).await?;
     let person = OwnerId::new(Uuid::now_v7());
     let parent_only = OwnerId::new(Uuid::now_v7());
@@ -418,7 +410,7 @@ async fn roles_climb_only_and_take_weakest_path_then_strongest_alternative() -> 
 #[tokio::test]
 async fn database_and_host_refuse_second_parent_cycles_self_edges_and_person_kind_confusion()
 -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let g = h.groups(3).await?;
     h.add(g[0], OwnerId::from(g[1]), Relation::Editor).await?;
     for (parent, child) in [(g[2], g[1]), (g[1], g[0]), (g[2], g[2])] {
@@ -465,7 +457,7 @@ async fn database_and_host_refuse_second_parent_cycles_self_edges_and_person_kin
 
 #[tokio::test]
 async fn fixed_snapshot_isolation_refuses_membership_writes() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let group = h.groups(1).await?[0];
     for serializable in [false, true] {
         let mut tx = h.pool.begin().await?;
@@ -506,7 +498,7 @@ async fn wait_for_advisory(pool: &PgPool, pid: i32) -> TestResult {
 
 #[tokio::test]
 async fn racing_person_and_subgroup_writes_wait_on_one_tree_in_both_orders() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let g = h.groups(3).await?;
     h.add(g[0], OwnerId::from(g[1]), Relation::Admin).await?;
     let person = OwnerId::new(Uuid::now_v7());
@@ -608,7 +600,7 @@ async fn scope(conn: &mut PgConnection, groups: &[GroupId]) -> TestResult {
 
 #[tokio::test]
 async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let g = h.groups(3).await?;
     h.add(g[0], OwnerId::from(g[1]), Relation::Editor).await?;
     h.add(g[1], OwnerId::from(g[2]), Relation::Viewer).await?;
@@ -660,32 +652,5 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
         .await?;
     add_group_member(&mut tx, g[2], person, Relation::Admin).await?;
     tx.commit().await?;
-    h.assert_projection().await
-}
-
-#[tokio::test]
-async fn v0_0_30_upgrade_preserves_every_persons_flat_roles() -> TestResult {
-    let h = Harness::new(Some(27)).await?;
-    let groups = h.groups(3).await?;
-    let people: Vec<_> = (0..4).map(|_| Uuid::now_v7()).collect();
-    let mut expected = Roles::new();
-    for person in &people {
-        for group in &groups {
-            for relation in RELATIONS {
-                sqlx::query("INSERT INTO proxima_core.group_memberships (group_id,member_user_id,relation) VALUES ($1,$2,$3)")
-                    .bind(group.into_inner()).bind(person).bind(relation).execute(&h.pool).await?;
-                expected
-                    .entry((*person, group.into_inner()))
-                    .and_modify(|role| *role = role.join(relation.role()))
-                    .or_insert(relation.role());
-            }
-        }
-    }
-    let mut conn = h.platform.acquire().await?;
-    let mut tx = begin_migration_transaction(&mut conn).await?;
-    core_migrator().run(tx.as_mut()).await?;
-    tx.commit().await?;
-    drop(conn);
-    assert_eq!(reference_climb(&h.pool).await?, expected);
     h.assert_projection().await
 }

@@ -8,7 +8,8 @@ concepts and integration; avoid a second invariant or configuration ledger.
 - The Lean kernel in `docs/lean/Causa/` states principles. Rust code and tests
   define runtime behavior. Change a principle in Lean first; `lake build` and
   `scripts/check-lean-axioms.py` check the kernel, not a Rust refinement proof.
-- Types/defaults/limits: rustdoc. Tables: migrations. Settings:
+- Types/defaults/limits: rustdoc. Tables: migrations; core functions, triggers
+  and policies: `crates/storage-pg/definitions/`. Settings:
   [configuration](docs/configuration.md), checked bidirectionally by
   `scripts/check-settings.py`. Action/resource schemas: the live catalog.
 - Keep work within existing crates/packages. Adding a binary, crate, service,
@@ -45,10 +46,10 @@ concepts and integration; avoid a second invariant or configuration ledger.
 4. Merging a change to `proxima_core::RELEASE_VERSION` cuts `v${VERSION}` through
    `release.yml`; an unchanged constant cuts no release. The version checker
    validates the next published number. Never cut a manual release for a child.
-5. Released migrations are immutable; `scripts/check-migration-ranges.py` pins
-   every released file from `RELEASE_EPOCH`. Append one migration per core
-   version, and one dated migration per flavor version. See the named
-   v0.0.15 exception in [contributing](docs/contributing.md#migrations).
+5. Released migrations are immutable; `scripts/check-migrations.py` pins every
+   released file from `RELEASE_EPOCH`. New migration versions must be above all
+   released versions in their directory. Definitions are edited in place; see
+   [contributing](docs/contributing.md#migrations).
 
 ## Boundaries checked by code and review
 

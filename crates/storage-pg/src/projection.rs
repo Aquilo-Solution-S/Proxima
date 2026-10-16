@@ -21,10 +21,10 @@
 //!
 //! Two consumers, deliberately:
 //!
-//! 1. **The migration author.** The destructive baselines
-//!    (`migrations/0001_v008.sql`, `flavors/code/migrations/*_v008_baseline.sql`)
-//!    carry this function's output verbatim, pinned by
-//!    `generator_output_is_the_migration_text` so a change to either side
+//! 1. **The migration author.** The core baseline (`migrations/0033_baseline.sql`)
+//!    carries the table and index output; `definitions/triggers.sql` carries
+//!    the language trigger, while each flavor baseline carries its own table
+//!    and index. The generator-output tests pin those contracts so a change
 //!    fails the build rather than the next boot.
 //! 2. **The boot guardrail** (`ensure_projection_schema`), which re-runs it
 //!    and compares against `information_schema` in the same bidirectional
@@ -151,7 +151,7 @@ pub fn projection_artifacts(
     );
 
     let create_trigger = format!(
-        "CREATE TRIGGER {trigger}
+        "CREATE OR REPLACE TRIGGER {trigger}
     BEFORE INSERT ON {table}
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();",

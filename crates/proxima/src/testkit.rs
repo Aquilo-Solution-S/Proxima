@@ -162,6 +162,8 @@ fn fingerprint_hash(fingerprint: &str, sources: &[NamedMigrator]) -> u64 {
         )
     }
     let mut hash = feed(FNV_OFFSET_BASIS, fingerprint.as_bytes());
+    hash = feed(hash, &proxima_storage_pg::definitions::checksum_bytes());
+    hash = feed(hash, proxima_core::RELEASE_VERSION.as_bytes());
     for source in sources {
         hash = feed(hash, source.source().as_bytes());
         hash = feed(hash, source.ledger().as_bytes());

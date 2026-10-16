@@ -443,7 +443,7 @@ async fn insert_memory(
 
 /// [`insert_memory`] inside a caller's transaction.
 ///
-/// Since `0009_declared_sidecar_presence.sql` a memory row that names a
+/// The definitions trigger bundle refuses a memory row that names a
 /// registered sidecar table it has no row in is refused at `COMMIT`, so a
 /// fixture that stamps one writes the row in the same transaction.
 async fn insert_memory_in_tx(

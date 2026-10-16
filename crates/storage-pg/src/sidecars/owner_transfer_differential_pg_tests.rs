@@ -748,6 +748,28 @@ pub fn by_relation(text: &str) -> BTreeMap<String, Vec<String>> {
     for rows in sections.values_mut() {
         rows.sort();
     }
+    // Timestamp labels follow the same logical row order on both sides.
+    // MVCC can move a row before the dump first encounters its timestamp.
+    let mut timestamps = BTreeMap::new();
+    for rows in sections.values_mut() {
+        for row in rows.iter_mut() {
+            let mut remainder = row.as_str();
+            let mut canonical = String::new();
+            while let Some(start) = remainder.find("<ts") {
+                canonical.push_str(&remainder[..start]);
+                let end = remainder[start..].find('>').expect("normalized timestamp") + start + 1;
+                let next = timestamps.len();
+                let label = timestamps
+                    .entry(remainder[start..end].to_owned())
+                    .or_insert_with(|| format!("<ts{next:03}>"));
+                canonical.push_str(label);
+                remainder = &remainder[end..];
+            }
+            canonical.push_str(remainder);
+            *row = canonical;
+        }
+        rows.sort();
+    }
     sections
 }
 
@@ -976,4 +998,15 @@ async fn transfer_differential() {
     .await;
     teardown(&db_name).await;
     result.expect("transfer differential failed");
+}
+
+#[test]
+fn transfer_snapshot_timestamp_labels_follow_logical_rows() {
+    let left = "## memory (2)\n{a:<ts002>,t:1}\n{a:<ts001>,t:2}\n";
+    let reordered = "## memory (2)\n{a:<ts001>,t:2}\n{a:<ts002>,t:1}\n";
+    let relabeled = "## memory (2)\n{a:<ts009>,t:1}\n{a:<ts008>,t:2}\n";
+    let aliased = "## memory (2)\n{a:<ts002>,t:1}\n{a:<ts002>,t:2}\n";
+    assert_eq!(by_relation(left), by_relation(reordered));
+    assert_eq!(by_relation(left), by_relation(relabeled));
+    assert_ne!(by_relation(left), by_relation(aliased));
 }

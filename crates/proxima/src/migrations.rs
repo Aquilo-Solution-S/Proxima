@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use proxima_core::StorageError;
-pub use proxima_storage_pg::MissingMigrationPolicy;
+pub use proxima_storage_pg::{CoreAdoption, MissingMigrationPolicy};
 use proxima_storage_pg::{
     PgMigrationStorage, PgStorage, core_migrator,
     ensure_core_ledger_compatible_on_connection_with_policy, ensure_core_schema_current,
@@ -311,8 +311,16 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
+    run_lineup_with_pool(pg.clone_migration_pool(), sources, policy).await
+}
+
+async fn run_lineup_with_pool(
+    pool: PgPool,
+    sources: &[NamedMigrator],
+    policy: MissingMigrationPolicy,
+) -> Result<MigrationRunReport, MigrationError> {
     let report = MigrationRunReport::from_sources(sources);
-    let pool = pg.clone_migration_pool();
+
     let mut conn = acquire_session_connection(&pool).await?;
 
     pin_migration_search_path(&mut conn)
@@ -374,8 +382,8 @@ async fn acquire_session_connection(
 /// For `GitOps` / split-role deploys (see docs/operate.md): an init container or
 /// `tools/dev-migrate` applies migrations under a DDL-capable role, and the
 /// long-running app then boots under a DML-only role that cannot issue DDL.
-/// This rejects a stale pre-v0.0.4 database and rejects duplicate
-/// migration versions across composed sources, but never runs
+/// This requires every embedded core migration and the current definitions
+/// record, and rejects duplicate versions across composed sources, but never runs
 /// `run_direct` / touches schema — so it succeeds against an already-migrated
 /// database held by a narrow role.
 ///
@@ -386,8 +394,8 @@ async fn acquire_session_connection(
 /// # Errors
 ///
 /// Returns `MigrationError::DuplicateVersion` if two sources claim the same
-/// version, `MigrationError::CorePreflight` if the database still carries
-/// pre-v0.0.4 artifacts, `MigrationError::Ledger` if a flavor's ledger
+/// version, `MigrationError::CorePreflight` if the core schema is not current,
+/// `MigrationError::Ledger` if a flavor's ledger
 /// conflicts with its lane or lacks one of its migrations, or
 /// `MigrationError::Connection` if the preflight pool cannot be reached.
 pub async fn preflight_without_migrations<P: MigrationStorage>(
@@ -444,37 +452,46 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     ended.map_err(execute_error)?;
     released.map_err(execute_error)?;
     drop(conn);
-    ensure_core_schema_current(&pool)
+    ensure_core_schema_current(&pool, MissingMigrationPolicy::Allow)
         .await
         .map_err(MigrationError::CorePreflight)?;
     Ok(report)
 }
 
-/// A migration a run on the same database would apply.
+/// One operation a migration run on the same database would apply.
 ///
-/// Only [`pending_migrations`] makes one: a value a caller builds would claim
-/// a plan nobody read from a ledger.
+/// Only [`pending_migrations`] constructs an operation read from the database.
 ///
 /// ```compile_fail,E0639
-/// let _planned = proxima::host::PendingMigration {
+/// let _planned = proxima::host::PendingMigration::Sql {
 ///     ledger: "public._sqlx_migrations".to_owned(),
-///     version: 1,
+///     version: 33,
 ///     description: String::new(),
 ///     checksum: Vec::new(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct PendingMigration {
-    /// The schema-qualified table the migration records on, spelled as
-    /// [`flavor_ledger_table`] spells a flavor's (`public._sqlx_migrations`
-    /// for core).
-    pub ledger: String,
-    pub version: i64,
-    pub description: String,
-    /// `SQLx`'s checksum of the migration file; the ledger row a run writes
-    /// records it.
-    pub checksum: Vec<u8>,
+pub enum PendingMigration {
+    /// Apply an embedded SQL migration and record its ledger row.
+    #[non_exhaustive]
+    Sql {
+        ledger: String,
+        version: i64,
+        description: String,
+        checksum: Vec<u8>,
+    },
+    /// Adopt the previous core schema instead of executing the baseline.
+    #[non_exhaustive]
+    CoreAdoption {
+        version: i64,
+        description: String,
+        checksum: Vec<u8>,
+        adoption: CoreAdoption,
+    },
+    /// Replace the core functions, triggers and policies in place.
+    #[non_exhaustive]
+    CoreDefinitions { checksum: Vec<u8>, release: String },
 }
 
 /// What a migration run on this database would apply right now, applying
@@ -499,10 +516,6 @@ pub struct PendingMigration {
 /// DDL and writes nothing. It is a snapshot, not a reservation: a run checks
 /// everything again under the lock. The connection that waits for the lock is
 /// closed, not pooled, if the caller drops the future.
-///
-/// The plan says what would apply, not whether the previous release's binary
-/// tolerates it. A coordinated cutover (docs/contributing.md#migrations, v0.0.15)
-/// overrides any such reading of a migration file.
 ///
 /// # Errors
 ///
@@ -620,7 +633,39 @@ async fn plan_snapshot(
     validate_ledgers(snapshot, lineup, policy).await?;
     let mut plan = Vec::new();
     for source in lineup {
-        plan.extend(plan_source(snapshot, source).await?);
+        if source.source == CORE_SOURCE {
+            source.require_transactional()?;
+            let rows = read_ledger(snapshot, source, &source.ledger(), true).await?;
+            unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
+            let core =
+                proxima_storage_pg::pending_core_schema(snapshot, MissingMigrationPolicy::Allow)
+                    .await
+                    .map_err(MigrationError::CorePreflight)?;
+            plan.extend(core.into_iter().map(|action| match action {
+                proxima_storage_pg::CoreSchemaAction::Adopt {
+                    migration,
+                    adoption,
+                } => PendingMigration::CoreAdoption {
+                    version: migration.version,
+                    description: migration.description.into_owned(),
+                    checksum: migration.checksum.into_owned(),
+                    adoption,
+                },
+                proxima_storage_pg::CoreSchemaAction::Migration(migration) => {
+                    PendingMigration::Sql {
+                        ledger: source.ledger(),
+                        version: migration.version,
+                        description: migration.description.into_owned(),
+                        checksum: migration.checksum.into_owned(),
+                    }
+                }
+                proxima_storage_pg::CoreSchemaAction::Definitions { checksum, release } => {
+                    PendingMigration::CoreDefinitions { checksum, release }
+                }
+            }));
+        } else {
+            plan.extend(plan_source(snapshot, source).await?);
+        }
     }
     Ok(plan)
 }
@@ -640,7 +685,7 @@ async fn plan_source(
     let pending = unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
     Ok(pending
         .into_iter()
-        .map(|migration| PendingMigration {
+        .map(|migration| PendingMigration::Sql {
             ledger: ledger.clone(),
             version: migration.version,
             description: migration.description.to_string(),
@@ -702,7 +747,7 @@ async fn pin_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::
         .execute(&mut *conn)
         .await?;
     // Waiting *for* a lock is not the same as holding one. A migration that
-    // takes ACCESS EXCLUSIVE (0011 rewrites four tables) queues behind any
+    // takes ACCESS EXCLUSIVE queues behind any
     // in-flight reader on the outgoing release — and in Postgres a queued
     // exclusive request blocks every reader that arrives after it. With no
     // lock_timeout that pile-up is unbounded, so a rolling upgrade stalls the
@@ -805,6 +850,23 @@ async fn run_source_with_contention_retry(
                     .map_err(|error| source.run_error(MigrateError::Execute(error)))?;
                 return Err(source.ledger_error(conflict));
             }
+        }
+        if source.source == CORE_SOURCE {
+            ensure_core_ledger_compatible_on_connection_with_policy(
+                &mut transaction,
+                MissingMigrationPolicy::Allow,
+            )
+            .await
+            .map_err(MigrationError::CorePreflight)?;
+            let rows = read_ledger(&mut transaction, source, &source.ledger(), true).await?;
+            unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
+            proxima_storage_pg::run_core_schema(&mut transaction, MissingMigrationPolicy::Allow)
+                .await
+                .map_err(MigrationError::CorePreflight)?;
+            return transaction
+                .commit()
+                .await
+                .map_err(|err| source.run_error(MigrateError::Execute(err)));
         }
         let result = source
             .migrator
@@ -1054,6 +1116,19 @@ impl NamedMigrator {
             .collect()
     }
 
+    /// Versions owned by this source, including core's validated adopted history.
+    fn accounted_versions(&self) -> BTreeSet<i64> {
+        let mut versions: BTreeSet<i64> = self.lane_versions().into_iter().collect();
+        if self.source == CORE_SOURCE {
+            versions.extend(
+                proxima_storage_pg::adopt::PRE_RESET
+                    .iter()
+                    .map(|(version, _)| *version),
+            );
+        }
+        versions
+    }
+
     /// The versions of [`Self::lane`], ascending: the lineage view of a
     /// ledger, where the order a run walks does not matter.
     fn lane_versions(&self) -> Vec<i64> {
@@ -1238,13 +1313,15 @@ fn composed_ledgers<'a>(sources: &[&'a NamedMigrator]) -> Vec<ComposedLedger<'a>
                 versions: BTreeSet::new(),
             });
         }
-        ledgers[index].versions.extend(source.lane_versions());
+        ledgers[index].versions.extend(source.accounted_versions());
     }
     ledgers
 }
 
 /// Validate external rows once against all sources that use their ledger,
 /// before any source can create schemas, prepare ledgers, or apply SQL.
+/// The facade enforces `policy` on the composed version union and definitions
+/// record here, then passes [`MissingMigrationPolicy::Allow`] to storage-pg's core path.
 async fn validate_ledgers(
     conn: &mut PgConnection,
     sources: &[&NamedMigrator],
@@ -1260,7 +1337,7 @@ async fn validate_ledgers(
         .iter()
         .flat_map(|&source| {
             source
-                .lane_versions()
+                .accounted_versions()
                 .into_iter()
                 .map(move |version| (version, source))
         })
@@ -1280,6 +1357,9 @@ async fn validate_ledgers(
         check_recorded_versions(&ledger.versions, &rows, policy)
             .map_err(|err| ledger.source.run_error(err))?;
     }
+    proxima_storage_pg::definitions::current_matches_with_policy(conn, policy)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
     Ok(())
 }
 

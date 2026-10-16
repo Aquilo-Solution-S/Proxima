@@ -1,47 +1,10 @@
-//! `proxima_core.install_owner_rls` against this flavor's hand-written v0.0.15
-//! owner-RLS block: identical policies on every table but three — the
-//! v0.0.15 block keyed an Abstraction sidecar on a Fact reference, and since
-//! core 0023 the two Self sidecars follow their Perspective's kind; the code
-//! migrations are exactly installer calls; and every classification that
+//! `proxima_core.install_owner_rls` for this flavor: every classification that
 //! does not name one owner per table is refused.
 
 mod common;
 
 use common::{HistoricalDb, apply_current_migrations_pool};
 use sqlx::{Connection, PgConnection};
-
-/// The code migrations that replace the v0.0.15 block with installer calls:
-/// v0.0.20, and v0.0.29 under the kind rule.
-const INSTALLER_MIGRATIONS: [i64; 2] = [20_260_924_000_020, 20_260_929_000_020];
-
-/// Core and every code migration but the installer calls: the v0.0.15
-/// hand-written policies. Later files are kept: the template already holds
-/// them, and a lane that lacked them would read its ledger as diverged.
-async fn migrate_through_v015(database: &str) {
-    let (_, platform_url) = proxima_pg_testkit::split_role_urls(database)
-        .await
-        .expect("split roles");
-    let platform = proxima_storage_pg::PgMigrationStorage::connect_with_config(
-        &platform_url,
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
-    )
-    .await
-    .expect("platform pool");
-    let mut v015 = proxima_code::migrator();
-    v015.migrations = std::borrow::Cow::Owned(
-        v015.iter()
-            .filter(|migration| !INSTALLER_MIGRATIONS.contains(&migration.version))
-            .cloned()
-            .collect(),
-    );
-    proxima::run_core_and_flavor_migrations(
-        &platform,
-        [proxima::NamedMigrator::flavor("proxima-code", v015)],
-    )
-    .await
-    .expect("core and the v0.0.15 code lane");
-}
 
 /// The code schema's classification, as a flavor calling the installer
 /// states it.
@@ -99,6 +62,13 @@ type PolicyRow = (
     bool,
     bool,
 );
+
+fn named_policy<'a>(policies: &'a [PolicyRow], table: &str, name: &str) -> &'a PolicyRow {
+    policies
+        .iter()
+        .find(|policy| policy.0 == table && policy.1 == name)
+        .unwrap_or_else(|| panic!("missing {name} policy on {table}"))
+}
 
 fn owned(tables: &[&str]) -> Vec<String> {
     tables.iter().map(|table| (*table).to_owned()).collect()
@@ -363,94 +333,17 @@ async fn assert_memory_owner_refusals(conn: &mut PgConnection) {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one migration history, three installs"
-)]
-async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
-    let db = HistoricalDb::fresh_before_owner_rls().await;
-    migrate_through_v015(&db.name).await;
+async fn installer_refuses_invalid_classifications_and_preserves_live_policies() {
+    let db = HistoricalDb::fresh().await;
+    apply_current_migrations_pool(&db.pool)
+        .await
+        .expect("current migrations");
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
         .expect("split roles");
     let mut conn = PgConnection::connect(&platform_url)
         .await
         .expect("platform connection");
-
-    let hand_written: Vec<PolicyRow> = sqlx::query_as(POLICIES)
-        .fetch_all(&mut conn)
-        .await
-        .expect("hand-written policies");
-    assert_eq!(
-        hand_written.len(),
-        3 * (OWNER_ID_TABLES.len() + FK_PARENT_TABLES.len() + MEMORY_OWNER_TABLES.len()),
-        "every code table carries the three owner-RLS policies"
-    );
-
-    let mut tx = conn.begin().await.expect("install transaction");
-    install(
-        &mut tx,
-        OWNER_ID_TABLES,
-        FK_PARENT_TABLES,
-        &[],
-        MEMORY_OWNER_TABLES,
-    )
-    .await
-    .expect("the code classification installs");
-    let installed: Vec<PolicyRow> = sqlx::query_as(POLICIES)
-        .fetch_all(&mut *tx)
-        .await
-        .expect("installed policies");
-    tx.rollback().await.expect("rollback");
-    assert_eq!(hand_written.len(), installed.len());
-    let changed: Vec<(&PolicyRow, &PolicyRow)> = hand_written
-        .iter()
-        .zip(&installed)
-        .filter(|(left, right)| left != right)
-        .collect();
-    assert_eq!(
-        changed
-            .iter()
-            .map(|(left, _)| (left.0.as_str(), left.1.as_str()))
-            .collect::<Vec<_>>(),
-        [
-            ("commit_summarizer_self_v1", "proxima_owner_read"),
-            ("commit_summarizer_self_v1", "proxima_owner_write"),
-            ("engineer_self_v1", "proxima_owner_read"),
-            ("engineer_self_v1", "proxima_owner_write"),
-            ("execution_plan_v1", "proxima_owner_read"),
-            ("execution_plan_v1", "proxima_owner_write"),
-        ],
-        "every other policy is the v0.0.15 file's"
-    );
-    for (_, current) in changed
-        .iter()
-        .filter(|(v015, _)| v015.0.ends_with("_self_v1"))
-    {
-        let list = if current.1 == "proxima_owner_read" {
-            "app.read_perspective"
-        } else {
-            "app.write_perspective"
-        };
-        assert!(current.5.contains(list), "{}", current.5);
-    }
-    for (v015, v020) in changed
-        .into_iter()
-        .filter(|(v015, _)| v015.0 == "execution_plan_v1")
-    {
-        assert!(
-            v015.5
-                .contains("execution_plan_v1.goal_activated_memory_id"),
-            "{}",
-            v015.5
-        );
-        assert!(
-            v020.5.contains("parent.t = execution_plan_v1.t"),
-            "{}",
-            v020.5
-        );
-        assert!(!v020.5.contains("goal_activated_memory_id"), "{}", v020.5);
-    }
 
     let mut tx = conn.begin().await.expect("install transaction");
     install(
@@ -462,40 +355,66 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
     )
     .await
     .expect("the kind-rule classification installs");
-    let kind_scoped: Vec<PolicyRow> = sqlx::query_as(POLICIES)
+    let expected: Vec<PolicyRow> = sqlx::query_as(POLICIES)
         .fetch_all(&mut *tx)
         .await
-        .expect("kind-scoped policies");
+        .expect("installed policies");
     tx.rollback().await.expect("rollback");
 
-    apply_current_migrations_pool(&db.pool)
-        .await
-        .expect("the code installer migrations apply");
     let live: Vec<PolicyRow> = sqlx::query_as(POLICIES)
         .fetch_all(&mut conn)
         .await
         .expect("live policies");
     assert_eq!(
-        live, kind_scoped,
-        "the v0.0.29 migration is the installer call"
+        live.len(),
+        3 * (KIND_OWNER_ID_TABLES.len() + FK_PARENT_TABLES.len() + KIND_MEMORY_OWNER_TABLES.len()),
+        "every code table carries the three owner-RLS policies"
     );
+    assert_eq!(live, expected, "live policies are the installer result");
+
+    let execution_plan_read = named_policy(&live, "execution_plan_v1", "proxima_owner_read");
+    let execution_plan_write = named_policy(&live, "execution_plan_v1", "proxima_owner_write");
+    for policy in [execution_plan_read, execution_plan_write] {
+        assert!(
+            policy.5.contains("parent.t = execution_plan_v1.t"),
+            "{}: {}",
+            policy.1,
+            policy.5
+        );
+        assert!(
+            !policy.5.contains("goal_activated_memory_id"),
+            "{}",
+            policy.5
+        );
+        assert!(
+            !policy.6.contains("goal_activated_memory_id"),
+            "{}",
+            policy.6
+        );
+    }
+
+    for table in ["commit_summarizer_self_v1", "engineer_self_v1"] {
+        let read = named_policy(&live, table, "proxima_owner_read");
+        let write = named_policy(&live, table, "proxima_owner_write");
+        assert!(read.5.contains("app.read_perspective"), "{}", read.5);
+        assert!(write.5.contains("app.write_perspective"), "{}", write.5);
+    }
 
     assert_refusals(&mut conn).await;
     assert_parent_refusals(&mut conn).await;
     assert_memory_owner_refusals(&mut conn).await;
-
     conn.close().await.expect("close");
 }
 
-/// Under the v0.0.29 policies a code projection row follows its memory's
-/// kind: a Fact-only scope reads and writes the Fact's row and neither reads
-/// nor writes the Abstraction's; an Abstraction scope reaches both.
 #[tokio::test]
-#[expect(clippy::too_many_lines, reason = "seed, then one probe per scope")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the policy scenario keeps seed and scope assertions together"
+)]
 async fn projection_rows_follow_their_memory_kind() {
     use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerId, Role, UserId};
 
-    let db = HistoricalDb::fresh_before_owner_rls().await;
+    let db = HistoricalDb::fresh().await;
     apply_current_migrations_pool(&db.pool)
         .await
         .expect("current migrations");

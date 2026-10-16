@@ -1,6 +1,5 @@
 //! Engine membership authorization for nested group endpoints.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use proxima_core::authz::{AuthorizationHook, AuthzInput, AuthzOperation, AuthzVeto};
@@ -55,15 +54,6 @@ impl Harness {
         let name = format!("proxima_test_nested_engine_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let admin_pool = PgPool::connect(&db_url(&name)).await?;
-        let mut staged = proxima_storage_pg::core_migrator();
-        staged.migrations = Cow::Owned(
-            staged
-                .iter()
-                .filter(|migration| migration.version < 14)
-                .cloned()
-                .collect(),
-        );
-        staged.run(&admin_pool).await?;
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
         let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
