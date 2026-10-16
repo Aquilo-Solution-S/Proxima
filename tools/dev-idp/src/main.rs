@@ -309,10 +309,9 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
         None => println!("  key       in memory — this token dies with this process"),
     }
     println!(
-        "\n1. Point Proxima at this issuer, in another shell:\n\
+        "\n1. Point Proxima at this issuer, in the shell holding the database URLs\n\
+         \x20  (docs/get-started.md step 1):\n\
          \n\
-         export DATABASE_URL={runtime_database_url}\n\
-         export PROXIMA_PLATFORM_DATABASE_URL={platform_database_url}\n\
          export PROXIMA_OIDC_ISSUER={issuer}\n\
          export PROXIMA_OIDC_AUDIENCE={audience}\n\
          export PROXIMA_OIDC_SUBJECT_MAP_JSON={subject_map}\n\
@@ -327,15 +326,13 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
             }])
             .to_string()
         ),
-        runtime_database_url = dev_database_url("proxima_runtime", "proxima-runtime-dev"),
-        platform_database_url = dev_database_url("proxima_platform", "proxima-platform-dev"),
     );
     println!(
         "2. Connect your coding agent:\n\
          \n\
          claude mcp add --transport http proxima {server_url}/mcp \\\n\
          \x20 --header \"Authorization: Bearer {token}\" \\\n\
-         \x20 --header \"X-Proxima-Owner: {user_id}\"\n"
+         \x20 --header \"X-Proxima-Owner: <the user UUID printed after -> user above>\"\n"
     );
     println!("Serving. Ctrl-C to stop.");
 }
@@ -345,25 +342,9 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn dev_database_url(user: &str, password: &str) -> String {
-    format!("postgres://{user}:{password}@localhost:${{PROXIMA_DEV_POSTGRES_PORT:-5434}}/proxima")
-}
-
 #[cfg(test)]
 mod instruction_tests {
-    use super::{dev_database_url, shell_single_quote};
-
-    #[test]
-    fn printed_database_urls_use_the_split_non_superuser_roles() {
-        assert_eq!(
-            dev_database_url("proxima_runtime", "proxima-runtime-dev"),
-            "postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
-        );
-        assert_eq!(
-            dev_database_url("proxima_platform", "proxima-platform-dev"),
-            "postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
-        );
-    }
+    use super::shell_single_quote;
 
     #[test]
     fn generated_json_is_shell_quoted_at_the_output_boundary() {
