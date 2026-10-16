@@ -74,8 +74,13 @@ pub struct S3RuntimeConfig {
     pub bucket: String,
     pub region: String,
     pub key_pair: S3KeyPair,
+    /// Endpoint for internal object I/O; `None` uses AWS endpoint resolution.
     pub endpoint_url: Option<String>,
-    /// Hosts, besides loopback, that may be named in `endpoint_url` over
+    /// Holder-facing endpoint used before signing upload and read URLs.
+    /// `None` uses `endpoint_url` or AWS endpoint resolution. Internal object
+    /// I/O always uses `endpoint_url`.
+    pub public_endpoint_url: Option<String>,
+    /// Hosts, besides loopback, that may be named in either endpoint over
     /// plaintext `http://`. Empty by default ([`PlaintextHosts::none`]).
     /// `from_lookup` reads it from `PROXIMA_PLAINTEXT_HOSTS`.
     pub plaintext_hosts: PlaintextHosts,
@@ -140,13 +145,22 @@ impl S3RuntimeConfig {
         );
         let endpoint_url = env_value(lookup, "PROXIMA_S3_ENDPOINT_URL");
         if let Some(endpoint_url) = &endpoint_url {
-            validate_endpoint_url(endpoint_url, &plaintext_hosts)?;
+            validate_endpoint_url("PROXIMA_S3_ENDPOINT_URL", endpoint_url, &plaintext_hosts)?;
+        }
+        let public_endpoint_url = env_value(lookup, "PROXIMA_S3_PUBLIC_ENDPOINT_URL");
+        if let Some(endpoint_url) = &public_endpoint_url {
+            validate_endpoint_url(
+                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                endpoint_url,
+                &plaintext_hosts,
+            )?;
         }
         Ok(Some(Self {
             bucket,
             region,
             key_pair,
             endpoint_url,
+            public_endpoint_url,
             plaintext_hosts,
             force_path_style: parse_bool_env(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_presign_ttl_env(
@@ -177,9 +191,21 @@ impl S3RuntimeConfig {
         env_value(&process_env, "PROXIMA_S3_BUCKET").is_some()
     }
 
-    /// Build an S3 client solely from these configured values.
+    /// Build the internal object-I/O client solely from configured values.
     #[must_use]
     pub fn client(&self) -> Client {
+        self.client_for_endpoint(self.endpoint_url.as_deref())
+    }
+
+    pub(crate) fn presigning_client(&self) -> Client {
+        self.client_for_endpoint(
+            self.public_endpoint_url
+                .as_deref()
+                .or(self.endpoint_url.as_deref()),
+        )
+    }
+
+    fn client_for_endpoint(&self, endpoint_url: Option<&str>) -> Client {
         let mut builder = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new(self.region.clone()))
@@ -191,7 +217,7 @@ impl S3RuntimeConfig {
                 None,
                 "proxima-s3-config",
             ));
-        if let Some(endpoint_url) = &self.endpoint_url {
+        if let Some(endpoint_url) = endpoint_url {
             builder = builder.endpoint_url(endpoint_url);
         }
         Client::from_conf(builder.build())
@@ -257,22 +283,23 @@ fn parse_optional_u64_env(
 /// `plaintext_hosts` (local object store/dev, or a sidecar on a network with
 /// no route out), unlike production S3 endpoints which must be TLS.
 pub(crate) fn validate_endpoint_url(
+    key: &str,
     raw: &str,
     plaintext_hosts: &PlaintextHosts,
 ) -> Result<(), BlobError> {
     validate_endpoint_url_for_hosts(raw, EndpointUrlPolicy::AllowLoopbackHttp, plaintext_hosts)
         .map_err(|error| match error {
             EndpointUrlError::InvalidUrl(reason) => BlobError::Config(format!(
-                "PROXIMA_S3_ENDPOINT_URL is not a valid URL: {reason}"
+                "{key} is not a valid URL: {reason}"
             )),
             // With no host named the message is the one this lane always gave.
             EndpointUrlError::InsecureTransport if plaintext_hosts.is_empty() => {
                 BlobError::Config(format!(
-                    "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): {raw}"
+                    "{key} must use https (plaintext http allowed only for loopback): {raw}"
                 ))
             }
             EndpointUrlError::InsecureTransport => BlobError::Config(format!(
-                "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback or a host named in PROXIMA_PLAINTEXT_HOSTS): {raw}"
+                "{key} must use https (plaintext http allowed only for loopback or a host named in PROXIMA_PLAINTEXT_HOSTS): {raw}"
             )),
         })
 }
@@ -312,6 +339,97 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
+    }
+
+    #[test]
+    fn from_lookup_rejects_an_invalid_public_endpoint() {
+        for endpoint in [
+            "http://s3.example.com",
+            "s3.example.com",
+            "ftp://s3.example.com",
+            "https://",
+        ] {
+            let extra = [("PROXIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
+            let pairs = bucketed(&extra);
+            let error = S3RuntimeConfig::from_lookup(&env(&pairs))
+                .expect_err("invalid public endpoint must fail configuration");
+            let BlobError::Config(message) = error else {
+                panic!("wrong error variant");
+            };
+            assert!(
+                message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL"),
+                "public endpoint error must name its setting"
+            );
+        }
+    }
+
+    #[test]
+    fn public_endpoint_is_optional_and_an_unconfigured_lane_stays_absent() {
+        for value in [None, Some(""), Some("   ")] {
+            let extra: Vec<_> = value
+                .into_iter()
+                .map(|value| ("PROXIMA_S3_PUBLIC_ENDPOINT_URL", value))
+                .collect();
+            let pairs = bucketed(&extra);
+            let config = S3RuntimeConfig::from_lookup(&env(&pairs))
+                .unwrap()
+                .expect("bucket is set");
+            assert!(config.public_endpoint_url.is_none());
+        }
+        let no_bucket = [("PROXIMA_S3_PUBLIC_ENDPOINT_URL", "not an endpoint")];
+        assert!(
+            S3RuntimeConfig::from_lookup(&env(&no_bucket))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn public_endpoint_uses_the_existing_endpoint_transport_policy() {
+        for (endpoint, hosts) in [
+            ("https://files.example/objects/", None),
+            ("http://localhost:9001/objects/", None),
+            ("http://127.0.0.1:9001/objects/", None),
+            ("http://[::1]:9001/objects/", None),
+            (
+                "http://public-gateway:9090/objects/",
+                Some("public-gateway"),
+            ),
+        ] {
+            let mut extra = vec![("PROXIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
+            if let Some(hosts) = hosts {
+                extra.push(("PROXIMA_PLAINTEXT_HOSTS", hosts));
+            }
+            let pairs = bucketed(&extra);
+            let config = S3RuntimeConfig::from_lookup(&env(&pairs))
+                .unwrap()
+                .expect("bucket is set");
+            assert_eq!(config.public_endpoint_url.as_deref(), Some(endpoint));
+            assert!(config.endpoint_url.is_none());
+        }
+        let pairs = bucketed(&[(
+            "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+            "  https://files.example/objects/  ",
+        )]);
+        assert_eq!(
+            S3RuntimeConfig::from_lookup(&env(&pairs))
+                .unwrap()
+                .unwrap()
+                .public_endpoint_url
+                .as_deref(),
+            Some("https://files.example/objects/")
+        );
+        let pairs = bucketed(&[
+            (
+                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "http://other-gateway:9090",
+            ),
+            ("PROXIMA_PLAINTEXT_HOSTS", "public-gateway"),
+        ]);
+        let error = S3RuntimeConfig::from_lookup(&env(&pairs)).unwrap_err();
+        assert!(
+            matches!(error, BlobError::Config(message) if message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL") && message.contains("PROXIMA_PLAINTEXT_HOSTS"))
+        );
     }
 
     fn assert_missing_key_is_refused(missing: &str) {
@@ -364,20 +482,13 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn client_uses_only_configured_credentials_region_and_endpoint() {
+    async fn presign_config_probe(config: &S3RuntimeConfig, client: &Client) -> reqwest::Url {
         use aws_sdk_s3::presigning::PresigningConfig;
+        use std::time::{Duration, SystemTime};
 
-        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
-            ("PROXIMA_S3_ENDPOINT_URL", "http://127.0.0.1:9000"),
-            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
-        ])))
-        .unwrap()
-        .expect("bucket is set");
         let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let client = Client::from_conf(
-            config
-                .client()
+            client
                 .config()
                 .to_builder()
                 .identity_cache(CredentialsObserver(observed.clone()))
@@ -388,18 +499,15 @@ mod tests {
             .get_object()
             .bucket(&config.bucket)
             .key("config-probe")
-            .presigned(PresigningConfig::expires_in(std::time::Duration::from_mins(1)).unwrap())
+            .presigned(
+                PresigningConfig::builder()
+                    .start_time(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+                    .expires_in(Duration::from_mins(1))
+                    .build()
+                    .unwrap(),
+            )
             .await
-            .unwrap();
-        let endpoint = config
-            .endpoint_url
-            .as_ref()
-            .expect("PROXIMA_S3_ENDPOINT_URL");
-        assert!(
-            request
-                .uri()
-                .starts_with(&format!("{endpoint}/{}/config-probe?", config.bucket))
-        );
+            .expect("configuration-only presigning succeeds");
         let credentials = observed
             .lock()
             .unwrap()
@@ -409,6 +517,118 @@ mod tests {
         assert!(credentials.secret_access_key() == config.key_pair.secret_access_key);
         assert!(credentials.session_token().is_none());
         assert!(credentials.expiry().is_none());
+        reqwest::Url::parse(request.uri()).expect("the SDK emits a valid request URI")
+    }
+
+    fn signed_query_value(url: &reqwest::Url, key: &str) -> String {
+        url.query_pairs()
+            .find(|(name, _)| name == key)
+            .expect("the SDK includes the signing field")
+            .1
+            .into_owned()
+    }
+
+    #[tokio::test]
+    async fn client_uses_only_configured_credentials_region_and_endpoint() {
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
+            (
+                "PROXIMA_S3_ENDPOINT_URL",
+                "https://objects.internal.example/internal/",
+            ),
+            (
+                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "https://files.example/objects/",
+            ),
+            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+        ])))
+        .unwrap()
+        .expect("bucket is set");
+        for (client, host, path) in [
+            (
+                config.client(),
+                "objects.internal.example",
+                "/internal/b/config-probe",
+            ),
+            (
+                config.presigning_client(),
+                "files.example",
+                "/objects/b/config-probe",
+            ),
+        ] {
+            let url = presign_config_probe(&config, &client).await;
+            assert_eq!(url.host_str(), Some(host));
+            assert_eq!(url.path(), path);
+            assert!(
+                signed_query_value(&url, "X-Amz-Credential")
+                    == format!(
+                        "{}/20231114/{}/s3/aws4_request",
+                        config.key_pair.access_key_id, config.region
+                    )
+            );
+            assert!(
+                signed_query_value(&url, "X-Amz-SignedHeaders")
+                    .split(';')
+                    .any(|header| header == "host")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unset_public_endpoint_presigns_the_internal_endpoint() {
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
+            ("PROXIMA_S3_ENDPOINT_URL", "http://127.0.0.1:9000"),
+            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+        ])))
+        .unwrap()
+        .expect("bucket is set");
+        assert!(config.public_endpoint_url.is_none());
+        let internal = presign_config_probe(&config, &config.client()).await;
+        let presigning = presign_config_probe(&config, &config.presigning_client()).await;
+        for url in [&internal, &presigning] {
+            assert_eq!(url.scheme(), "http");
+            assert_eq!(url.host_str(), Some("127.0.0.1"));
+            assert_eq!(url.port(), Some(9000));
+            assert_eq!(url.path(), "/b/config-probe");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_public_endpoint_prefix_is_part_of_the_signed_path() {
+        let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
+            (
+                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "https://files.example/objects/",
+            ),
+            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+        ])))
+        .unwrap()
+        .expect("bucket is set");
+        assert!(config.endpoint_url.is_none());
+        let internal = presign_config_probe(&config, &config.client()).await;
+        assert!(
+            internal.host_str() != Some("files.example"),
+            "public-only configuration leaves internal endpoint resolution unchanged"
+        );
+        let prefixed = presign_config_probe(&config, &config.presigning_client()).await;
+        let mut root_endpoint = config.clone();
+        root_endpoint.public_endpoint_url = Some("https://files.example".into());
+        let unprefixed =
+            presign_config_probe(&root_endpoint, &root_endpoint.presigning_client()).await;
+        assert_eq!(prefixed.path(), "/objects/b/config-probe");
+        assert_eq!(unprefixed.path(), "/b/config-probe");
+        assert!(
+            signed_query_value(&prefixed, "X-Amz-Date")
+                == signed_query_value(&unprefixed, "X-Amz-Date")
+        );
+        assert!(
+            signed_query_value(&prefixed, "X-Amz-Credential")
+                == signed_query_value(&unprefixed, "X-Amz-Credential")
+        );
+        assert!(
+            signed_query_value(&prefixed, "X-Amz-Signature")
+                != signed_query_value(&unprefixed, "X-Amz-Signature"),
+            "the SDK signs the endpoint prefix before returning the URL"
+        );
     }
 
     #[test]
@@ -468,8 +688,12 @@ mod tests {
 
     #[test]
     fn non_loopback_http_endpoint_is_rejected() {
-        let err =
-            validate_endpoint_url("http://s3.example.com", &PlaintextHosts::none()).unwrap_err();
+        let err = validate_endpoint_url(
+            "PROXIMA_S3_ENDPOINT_URL",
+            "http://s3.example.com",
+            &PlaintextHosts::none(),
+        )
+        .unwrap_err();
         let BlobError::Config(msg) = err else {
             panic!("wrong variant");
         };
@@ -478,7 +702,12 @@ mod tests {
 
     #[test]
     fn schemeless_endpoint_is_rejected() {
-        let err = validate_endpoint_url("s3.example.com", &PlaintextHosts::none()).unwrap_err();
+        let err = validate_endpoint_url(
+            "PROXIMA_S3_ENDPOINT_URL",
+            "s3.example.com",
+            &PlaintextHosts::none(),
+        )
+        .unwrap_err();
         assert!(matches!(err, BlobError::Config(_)));
     }
 
