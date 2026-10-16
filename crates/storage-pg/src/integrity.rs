@@ -6,12 +6,12 @@
 //! trigger families to enforce, since the third is guarded at both ends):
 //!
 //! 1. **stamp ⊆ registry** — a stamp names only tables some flavor
-//!    declares. `assert_sidecar_stamp_declared` (`0001_v008.sql`).
+//!    declares. `assert_sidecar_stamp_declared` (`definitions/functions.sql`).
 //! 2. **row ⊆ stamp** — a row in a registered memory-sidecar table exists
 //!    only for a memory row whose `sidecar_tables` declares that table.
 //!    [`DECLARATION_TRIGGER_FUNCTION`], v0.0.9.
 //! 3. **stamp ⊆ rows** — a memory row that declares a table has a row in
-//!    it. [`PRESENCE_TRIGGER_FUNCTION`], `0009_declared_sidecar_presence.sql`,
+//!    it. [`PRESENCE_TRIGGER_FUNCTION`], `definitions/triggers.sql`,
 //!    and the reason this module is not two halves any more.
 //!
 //! Direction 3 is not symmetry for its own sake. A stamp with no row cools
@@ -71,17 +71,15 @@
 //!    other end — the deferred `AFTER DELETE` guard on the sidecar table
 //!    itself. Each carries its own `DROP`. All of it is pasted
 //!    verbatim into migrations — the declaration lane
-//!    (`0002_v009_declaration_triggers.sql` and each flavor's own) for the
+//!    (`definitions/triggers.sql` and each flavor's own) for the
 //!    first family, the presence lane
-//!    (`0009_declared_sidecar_presence.sql` and each flavor's own) for the
+//!    (`definitions/triggers.sql` and each flavor's own) for the
 //!    other three — and pinned by
 //!    `generated_declaration_triggers_are_the_migration_text` and
 //!    `generated_presence_triggers_are_the_migration_text`, so the migration
 //!    author cannot drift from the generator. Deliberately NOT into the
-//!    v0.0.8 baselines, and the declaration lane is not edited either: both
-//!    are applied, and editing one would change the checksum of a version live
-//!    databases have already applied, turning an additive release into a
-//!    forced reset (docs/contributing.md).
+//!    `definitions/triggers.sql`; the baseline carries the tables and the
+//!    definitions bundle is edited in place (docs/contributing.md).
 //! 2. **The boot guardrail** ([`ensure_declaration_triggers`]), which re-runs
 //!    all four generators against the frozen registry and compares the whole
 //!    definition `pg_get_triggerdef` renders back for each. The whole
@@ -323,7 +321,7 @@ pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_
 ///
 /// `DEFERRABLE INITIALLY DEFERRED`, and it has to be: the sidecar's own
 /// foreign key to `proxima_core.memory` has no `ON DELETE CASCADE`
-/// (`0001_v008.sql`), so a legitimate delete of both rows must take the
+/// (the baseline), so a legitimate delete of both rows must take the
 /// sidecar row FIRST. An immediate check would see the memory row still
 /// standing and refuse every forget and every owner erase. Deferred to
 /// `COMMIT`, it sees the transaction's outcome: both gone, or neither.
@@ -494,7 +492,7 @@ $$;";
 /// back the same idempotent replay.
 ///
 /// `AFTER INSERT OR UPDATE OF sidecar_tables` mirrors
-/// `memory_sidecar_stamp_declared` in the v0.0.8 baseline. The `UPDATE` arm
+/// `memory_sidecar_stamp_declared` in `definitions/triggers.sql`. The `UPDATE` arm
 /// is unreachable today — `memory_owner_or_append_only` raises `25006` on any
 /// `UPDATE` that moves `sidecar_tables` — and is spelled out anyway so that a
 /// future migration which unfreezes the column does not silently unfreeze the

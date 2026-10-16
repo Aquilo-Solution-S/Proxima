@@ -1,37 +1,15 @@
 //! `proxima_core.install_owner_rls_table` and `assert_owner_rls_census`
 //! against the schema installer: a table installed in one call gets exactly
 //! the policies `install_owner_rls` would give the same class, the schema
-//! installer builds what core 0023 shipped, every classification that does not
-//! name one owner per table is refused with nothing applied, and the policies
-//! mean what the classes say.
+//! installer and per-table calls agree on the current live policies, every
+//! classification that does not name one owner per table is refused with
+//! nothing applied, and the policies mean what the classes say.
 
 mod common;
 
 use common::{HistoricalDb, apply_current_migrations_pool};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
-
-/// Core 0023, the release that last defined `install_owner_rls`.
-const RELEASED_MIGRATION: &str =
-    include_str!("../../../crates/storage-pg/migrations/0023_v029_kind_scoped_owner_rls.sql");
-
-/// The released installer under another name, to build the policies the
-/// per-table and the redefined schema installer are compared with.
-fn released_installer() -> String {
-    let start = RELEASED_MIGRATION
-        .find("CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls(")
-        .expect("0023 defines the installer");
-    let end = RELEASED_MIGRATION[start..]
-        .find("$install_owner_rls$;")
-        .expect("and ends it")
-        + start
-        + "$install_owner_rls$;".len();
-    RELEASED_MIGRATION[start..end].replacen(
-        "proxima_core.install_owner_rls(",
-        "proxima_core.install_owner_rls_v029(",
-        1,
-    )
-}
 
 /// One table per class and per way a class reads its key: the FK on the key,
 /// the only FK, a parent in the schema with a `t`, a goal parent, a
@@ -74,8 +52,7 @@ const FK_PARENT: &[&str] = &[
 const OWNERLESS: &[&str] = &["settings"];
 const MEMORY_OWNER: &[&str] = &["self_v1", "projection", "m_keyed", "m_only", "m_plain"];
 
-/// The code schema as core 0023 and the code flavor's v0.0.29 migration
-/// classify it.
+/// The code schema's owner classification.
 const CODE_OWNER_ID: &[&str] = &["repo_ingestion_runs", "repos"];
 const CODE_FK_PARENT: &[&str] = &[
     "acceptance_criteria_v1",
@@ -156,15 +133,6 @@ fn owned(tables: &[&str]) -> Vec<String> {
     tables.iter().map(|table| (*table).to_owned()).collect()
 }
 
-/// Which schema installer a call goes to.
-#[derive(Clone, Copy)]
-enum Installer {
-    /// Core 0023's body, loaded by [`released_installer`].
-    Released,
-    /// `proxima_core.install_owner_rls`, as the current migrations define it.
-    Current,
-}
-
 async fn platform_connection(db: &HistoricalDb) -> PgConnection {
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
@@ -176,7 +144,7 @@ async fn platform_connection(db: &HistoricalDb) -> PgConnection {
 
 /// A migrated database and a connection as the role that owns its tables.
 async fn migrated_platform() -> (HistoricalDb, PgConnection) {
-    let db = HistoricalDb::fresh_before_owner_rls().await;
+    let db = HistoricalDb::fresh().await;
     apply_current_migrations_pool(&db.pool)
         .await
         .expect("current migrations");
@@ -193,20 +161,11 @@ async fn create_fixture(conn: &mut PgConnection, schema: &str) {
 
 async fn install_schema(
     conn: &mut PgConnection,
-    installer: Installer,
     schema: &str,
     lists: [&[&str]; 4],
 ) -> Result<(), sqlx::Error> {
     let [owner_id, fk_parent, ownerless, memory_owner] = lists;
-    let query = match installer {
-        Installer::Released => {
-            sqlx::query("SELECT proxima_core.install_owner_rls_v029($1, $2, $3, $4, $5)")
-        }
-        Installer::Current => {
-            sqlx::query("SELECT proxima_core.install_owner_rls($1, $2, $3, $4, $5)")
-        }
-    };
-    query
+    sqlx::query("SELECT proxima_core.install_owner_rls($1, $2, $3, $4, $5)")
         .bind(schema)
         .bind(owned(owner_id))
         .bind(owned(fk_parent))
@@ -303,26 +262,17 @@ fn refusal(result: Result<(), sqlx::Error>, why: &str) -> String {
 
 /// For each of the four classes, a table installed through
 /// `install_owner_rls_table` has the three policies the same table gets from
-/// `install_owner_rls`, and the redefined schema installer builds what core
-/// 0023 shipped. Three copies of one schema: the released installer, the
-/// current one, and one call per table.
+/// `install_owner_rls`.
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // one fixture schema, three installs, one comparison
+#[allow(clippy::too_many_lines)] // one fixture schema, two installs, one comparison
 async fn a_table_installed_per_call_has_the_policies_of_the_schema_installer() {
     let (_db, mut conn) = migrated_platform().await;
     let mut tx = conn.begin().await.expect("transaction");
-    sqlx::raw_sql(sqlx::AssertSqlSafe(released_installer()))
-        .execute(&mut *tx)
-        .await
-        .expect("the released installer loads under its own name");
     let lists: [&[&str]; 4] = [OWNER_ID, FK_PARENT, OWNERLESS, MEMORY_OWNER];
-    for schema in ["rls_released", "rls_current", "rls_per_table"] {
+    for schema in ["rls_current", "rls_per_table"] {
         create_fixture(&mut tx, schema).await;
     }
-    install_schema(&mut tx, Installer::Released, "rls_released", lists)
-        .await
-        .expect("the released installer takes the fixture");
-    install_schema(&mut tx, Installer::Current, "rls_current", lists)
+    install_schema(&mut tx, "rls_current", lists)
         .await
         .expect("the current installer takes the fixture");
     let tables = classified(lists);
@@ -332,26 +282,21 @@ async fn a_table_installed_per_call_has_the_policies_of_the_schema_installer() {
             .unwrap_or_else(|error| panic!("{table} as {class}: {error}"));
     }
 
-    let released = policies(&mut tx, "rls_released").await;
+    let current = policies(&mut tx, "rls_current").await;
     assert_eq!(
-        released.len(),
+        current.len(),
         3 * tables.len(),
         "every table carries the three policies"
     );
     assert!(
-        released
+        current
             .iter()
             .all(|(.., enabled, forced)| *enabled && *forced),
         "RLS is enabled and forced on every table"
     );
     assert_eq!(
-        policies(&mut tx, "rls_current").await,
-        released,
-        "install_owner_rls builds what core 0023 built"
-    );
-    assert_eq!(
         policies(&mut tx, "rls_per_table").await,
-        released,
+        current,
         "one call per table builds what the schema installer builds"
     );
     for class in ["owner_id", "fk_parent", "ownerless", "memory_owner"] {
@@ -369,27 +314,20 @@ async fn a_table_installed_per_call_has_the_policies_of_the_schema_installer() {
 async fn per_table_calls_rebuild_the_code_schemas_policies() {
     let (_db, mut conn) = migrated_platform().await;
     let mut tx = conn.begin().await.expect("transaction");
-    sqlx::raw_sql(sqlx::AssertSqlSafe(released_installer()))
-        .execute(&mut *tx)
-        .await
-        .expect("the released installer loads under its own name");
     let lists: [&[&str]; 4] = [CODE_OWNER_ID, CODE_FK_PARENT, &[], CODE_MEMORY_OWNER];
-    install_schema(&mut tx, Installer::Released, "proxima_code", lists)
-        .await
-        .expect("the released installer takes the code schema");
-    let released = policies(&mut tx, "proxima_code").await;
+    let current = policies(&mut tx, "proxima_code").await;
     assert_eq!(
-        released.len(),
+        current.len(),
         3 * (CODE_OWNER_ID.len() + CODE_FK_PARENT.len() + CODE_MEMORY_OWNER.len())
     );
 
-    install_schema(&mut tx, Installer::Current, "proxima_code", lists)
+    install_schema(&mut tx, "proxima_code", lists)
         .await
         .expect("the current installer takes the code schema");
     assert_eq!(
         policies(&mut tx, "proxima_code").await,
-        released,
-        "install_owner_rls builds what core 0023 built for the code schema"
+        current,
+        "install_owner_rls preserves the code schema policies"
     );
 
     sqlx::raw_sql(STRIP_POLICIES)
@@ -404,7 +342,7 @@ async fn per_table_calls_rebuild_the_code_schemas_policies() {
     }
     assert_eq!(
         policies(&mut tx, "proxima_code").await,
-        released,
+        current,
         "one call per code table builds what the schema installer builds"
     );
     tx.rollback().await.expect("rollback");

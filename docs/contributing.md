@@ -37,17 +37,14 @@ that statement; do not add an edge sidecar.
 
 ## Migrations
 
-Released migrations are immutable from v0.0.9 onward. A schema fix is a new
-additive migration, and a release needing schema work has one core migration
-and one dated migration per flavor. Never rewrite an applied file or create a
-destructive baseline as an implementation shortcut. Run the migration range
-checker before changing SQL. Core versions use `000N_v0XY_<what>.sql`;
-flavor versions use a dated `_v0XY_` file. Scope-specific version lanes are
-enforced by that checker.
-
-The v0.0.15 owner-RLS cutover has one named exception: `0013_v015` remains
-byte-for-byte and `0014_v015_owner_rls.sql` is the companion migration. The one post-tag edit to `0014` is grandfathered by its exact checksum in the
-checker; that list is closed. Later releases get no such exception.
+Released migration files are immutable from v0.0.36 onward; a schema fix is a
+new migration whose version is above every released version in its directory.
+Definitions in `crates/storage-pg/definitions/` are edited in place.
+Run `scripts/check-migrations.py` before changing SQL.
+At a reset, number the new baseline above the old head, move mutable
+objects into definitions, and adopt only the exact supported previous ledgers.
+Delete replaced migration files and the previous adoption module after
+proving fresh and adopted schemas and seed rows identical.
 
 ## Local verification
 
@@ -63,8 +60,8 @@ cargo nextest run --workspace --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
 cd docs/lean && lake build
 cd ../..
-python3 scripts/check-migration-ranges.py --self-test
-python3 scripts/check-migration-ranges.py
+python3 scripts/check-migrations.py --self-test
+python3 scripts/check-migrations.py
 python3 scripts/check-doc-links.py
 python3 scripts/check-doc-status.py
 python3 scripts/check-settings.py --self-test

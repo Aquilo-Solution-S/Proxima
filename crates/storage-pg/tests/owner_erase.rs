@@ -1,4 +1,4 @@
-//! Owner erase against blank `0001_v008.sql`.
+//! Owner erase against the complete core baseline.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;

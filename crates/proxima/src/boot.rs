@@ -88,7 +88,8 @@ impl std::fmt::Debug for Booted {
 /// [`ProximaError::Storage`] for connection, migration or runtime-grant
 /// failures, [`ProximaError::Config`] for a refused grant plan or embedding
 /// client, [`ProximaError::SchemaResetRequired`] when the target database does
-/// not match `0001_v008.sql` (see `docs/contributing.md#migrations`), and
+/// not match the current core baseline and definitions (see
+/// `docs/contributing.md#migrations`), and
 /// [`ProximaError::Engine`] when engine startup fails.
 pub(crate) async fn boot<A: FlavorBundle>(
     config: &RuntimeConfig,

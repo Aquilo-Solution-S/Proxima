@@ -11,23 +11,16 @@ use proxima_core::{
 use proxima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, create_db_from_template, drop_db, ensure_template, fnv1a64_extend,
 };
-use proxima_storage_pg::test_fixtures::core_migrator_before_owner_rls;
 use proxima_storage_pg::{
     PgPlatformScope, PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage,
-    register_core_pg_sidecars,
+    begin_migration_transaction, register_core_pg_sidecars,
 };
-use sqlx::migrate::Migrator;
-use std::borrow::Cow;
+use sqlx::Connection;
 use uuid::Uuid;
 
 pub async fn migrated_db() -> (String, PgStorage) {
     let template = code_template_name();
-    ensure_code_template(
-        &template,
-        core_migrator_before_owner_rls(),
-        code_migrator_before_v015(),
-    )
-    .await;
+    ensure_code_template(&template, proxima_code::migrator()).await;
     open_migrated_db(&template, true).await
 }
 
@@ -42,45 +35,28 @@ pub fn authenticated_owner(owner: &OwnerId) -> AuthzContext {
     ))
 }
 
-/// Build the owner-RLS installer fixture in production order: core stops
-/// before 0014, while the code schema stops before its v0.0.15 policy block.
-/// The later core and code migrations are then applied by the test under test.
-pub async fn migrated_db_before_owner_rls() -> (String, PgStorage) {
-    let template = code_template_before_owner_rls_name();
-    let mut core = proxima_storage_pg::core_migrator();
-    core.migrations = Cow::Owned(
-        core.iter()
-            .filter(|migration| migration.version < 14)
-            .cloned()
-            .collect(),
-    );
-    ensure_code_template(&template, core, code_migrator_before_v015()).await;
-    open_migrated_db(&template, false).await
-}
-
-pub async fn historical_db_before_owner_rls() -> (String, sqlx::PgPool) {
-    let template = code_template_before_owner_rls_name();
-    let mut core = proxima_storage_pg::core_migrator();
-    core.migrations = Cow::Owned(
-        core.iter()
-            .filter(|migration| migration.version < 14)
-            .cloned()
-            .collect(),
-    );
-    ensure_code_template(&template, core, code_migrator_before_v015()).await;
-    let db_name = create_db_from_template("proxima_code_test", &template)
-        .await
-        .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
-    let pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&db_name))
-        .await
-        .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
-    (db_name, pool)
-}
-
-async fn ensure_code_template(template: &str, core_lane: Migrator, flavor_lane: Migrator) {
+async fn ensure_code_template(template: &str, flavor_lane: sqlx::migrate::Migrator) {
     ensure_template(template, |pool| async move {
-        core_lane.run(&pool).await.map_err(sqlx::Error::from)?;
-        flavor_lane.run(&pool).await.map_err(sqlx::Error::from)
+        let database: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await?;
+        let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database).await?;
+        pool.close().await;
+        let mut connection = sqlx::PgConnection::connect(&platform_url).await?;
+        let mut transaction = begin_migration_transaction(&mut connection)
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        proxima_storage_pg::run_core_schema(
+            &mut transaction,
+            proxima_storage_pg::MissingMigrationPolicy::Reject,
+        )
+        .await
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        flavor_lane
+            .run(transaction.as_mut())
+            .await
+            .map_err(sqlx::Error::from)?;
+        transaction.commit().await
     })
     .await
     .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
@@ -133,37 +109,6 @@ async fn open_migrated_db(template: &str, validate_runtime: bool) -> (String, Pg
             .unwrap_or_else(|e| panic!("PG required for tests but admin pool failed: {e}")),
     );
     (db_name, pg)
-}
-
-/// The code lane's owner-RLS files: the v0.0.15 hand-written policies, the
-/// v0.0.20 installer call that replaces them and the v0.0.29 kind-rule call.
-/// As in core's lane, the historical fixtures leave exactly these out and
-/// apply every later file.
-const OWNER_RLS_MIGRATION_VERSIONS: [i64; 3] =
-    [20_260_922_000_020, 20_260_924_000_020, 20_260_929_000_020];
-
-fn pre_owner_rls_code_migrator() -> Migrator {
-    let mut migrator = proxima_code::migrator();
-    migrator.migrations = Cow::Owned(
-        migrator
-            .iter()
-            .filter(|migration| !OWNER_RLS_MIGRATION_VERSIONS.contains(&migration.version))
-            .cloned()
-            .collect(),
-    );
-    migrator
-}
-
-fn code_migrator_before_v015() -> Migrator {
-    let mut migrator = proxima_code::migrator();
-    migrator.migrations = Cow::Owned(
-        migrator
-            .iter()
-            .filter(|migration| migration.version < 20_260_922_000_020)
-            .cloned()
-            .collect(),
-    );
-    migrator
 }
 
 pub const TEST_CITED_BLOB_SCHEMA_ID: &str = "test/cited_blob";
@@ -286,7 +231,7 @@ pub async fn seed_memory_with_sidecars(
 /// [`seed_memory_with_sidecars`] inside a caller's transaction, for a fixture
 /// that has to write the sidecar rows its stamp promises.
 ///
-/// Since `0009_declared_sidecar_presence.sql` a memory row that names a
+/// The definitions trigger bundle refuses a memory row that names a
 /// registered sidecar table it has no row in is refused at `COMMIT`, so the
 /// stamp and the rows have to land together and the caller's inserts need the
 /// same transaction the memory row went into.
@@ -483,8 +428,18 @@ impl TestDb {
 }
 
 impl HistoricalDb {
-    pub async fn fresh_before_owner_rls() -> Self {
-        let (name, pool) = historical_db_before_owner_rls().await;
+    pub async fn fresh() -> Self {
+        let (name, pool) = {
+            let template = code_template_name();
+            ensure_code_template(&template, proxima_code::migrator()).await;
+            let name = create_db_from_template("proxima_code_test", &template)
+                .await
+                .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
+            let pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&name))
+                .await
+                .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
+            (name, pool)
+        };
         let guard = DbGuard::adopt(name.clone());
         Self {
             _guard: guard,
@@ -500,27 +455,13 @@ fn code_template_name() -> String {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
+    hash = fnv1a64_extend(hash, &proxima_storage_pg::definitions::checksum_bytes());
+    hash = fnv1a64_extend(hash, proxima_core::RELEASE_VERSION.as_bytes());
     for migration in proxima_code::migrator().iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
-    format!("proxima_tmpl_code_{hash:016x}_preowner")
-}
-
-fn code_template_before_owner_rls_name() -> String {
-    let mut hash = FNV_OFFSET_BASIS;
-    for migration in proxima_storage_pg::core_migrator()
-        .iter()
-        .filter(|migration| migration.version < 14)
-    {
-        hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
-        hash = fnv1a64_extend(hash, migration.checksum.as_ref());
-    }
-    for migration in code_migrator_before_v015().iter() {
-        hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
-        hash = fnv1a64_extend(hash, migration.checksum.as_ref());
-    }
-    format!("proxima_tmpl_code_before_owner_rls_{hash:016x}")
+    format!("proxima_tmpl_code_{hash:016x}")
 }
 
 /// Register a repository, because every repo-scoped payload declares the

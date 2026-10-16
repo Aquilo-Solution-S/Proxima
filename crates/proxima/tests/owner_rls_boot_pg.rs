@@ -11,7 +11,7 @@ use proxima_core::{
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgPoolConfig;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::PgConnectOptions;
 use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -57,18 +57,6 @@ async fn assert_no_scope_parameter_grant(admin: &PgPool, platform: &str) {
     );
 }
 
-async fn role_pool(database: &str, role: &str, password: &str) -> PgPool {
-    let options = PgConnectOptions::from_str(&db_url(database))
-        .expect("database URL")
-        .username(role)
-        .password(password);
-    PgPoolOptions::new()
-        .max_connections(2)
-        .connect_with(options)
-        .await
-        .expect("role connection")
-}
-
 async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
     admin.close().await;
     drop_db(database).await.expect("drop database");
@@ -81,97 +69,23 @@ async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
     control.close().await;
 }
 
-async fn provision_platform_role(admin: &PgPool, platform: &str, runtime: &str, password: &str) {
-    for role in [platform, runtime] {
-        exec(
-            admin,
-            format!(
-                "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
-                ident(role),
-                password
-            ),
-        )
-        .await;
-    }
-    exec(admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{platform}'); END LOOP; END $$")).await;
-    // SQL-POLICY: fixed-fragment — generated role identifiers are quoted.
-    exec(admin, format!("ALTER SCHEMA proxima_core OWNER TO {p}; GRANT USAGE, CREATE ON SCHEMA proxima_core TO {p}", p = ident(platform))).await;
-    exec(admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'proxima_core' LOOP EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO {platform}', r.nspname, r.proname, r.args); END LOOP; END $$")).await;
-}
-
 async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
-    let database = unique_db_name("proxima_owner_rls_boot");
-    create_db(&database).await.expect("create database");
-    let admin = PgPool::connect(&db_url(&database)).await.expect("admin");
-    exec(&admin, "CREATE EXTENSION IF NOT EXISTS pg_trgm").await;
-    // Stage the v0.0.15 schema before its RLS activation, so boot applies
-    // 0014 and everything after it as the platform role, in release order.
-    let mut staged = proxima_storage_pg::core_migrator();
-    staged.migrations = std::borrow::Cow::Owned(
-        staged
-            .iter()
-            .filter(|migration| migration.version < 14)
-            .cloned()
-            .collect(),
-    );
-    staged.run(&admin).await.expect("core migrations");
-
-    let suffix = uuid::Uuid::now_v7().simple().to_string();
-    let platform = format!("owner_rls_platform_{suffix}");
-    let runtime = format!("owner_rls_runtime_{suffix}");
-    let password = format!("pw_{suffix}");
+    let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await
+    .expect("platform storage");
+    migration.run_migrations().await.expect("core schema");
+    migration.clone_pool_for_backend().close().await;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-    exec(
-        &admin,
-        format!(
-            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ('{}', 'personal')",
-            owner.into_inner()
-        ),
-    )
-    .await;
-    provision_platform_role(&admin, &platform, &runtime, &password).await;
-    assert_no_scope_parameter_grant(&admin, &platform).await;
-    exec(
-        &admin,
-        format!(
-            "GRANT USAGE, CREATE ON SCHEMA public TO {p}; ALTER TABLE public._sqlx_migrations OWNER TO {p}",
-            p = ident(&platform)
-        ),
-    )
-    .await;
-    exec(
-        &admin,
-        format!(
-            "GRANT CREATE ON DATABASE {} TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE, SELECT ON SEQUENCES TO {}",
-            ident(&database), ident(&platform), ident(&platform), ident(&runtime),
-            ident(&platform), ident(&runtime), ident(&platform), ident(&runtime)
-        ),
-    )
-    .await;
-    let platform_pool = role_pool(&database, &platform, &password).await;
-    exec(
-        &admin,
-        format!(
-            "GRANT USAGE ON SCHEMA proxima_core TO {}; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA proxima_core TO {}; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA proxima_core TO {}; GRANT SELECT ON TABLE public._sqlx_migrations TO {}",
-            ident(&runtime), ident(&runtime), ident(&runtime), ident(&runtime)
-        ),
-    )
-    .await;
-    let runtime_pool = role_pool(&database, &runtime, &password).await;
-    runtime_pool.close().await;
-    platform_pool.close().await;
-    let runtime_url = PgConnectOptions::from_str(&db_url(&database))
-        .expect("database URL")
-        .username(&runtime)
-        .password(&password)
-        .to_url_lossy()
-        .to_string();
-    let platform_url = PgConnectOptions::from_str(&db_url(&database))
-        .expect("database URL")
-        .username(&platform)
-        .password(&password)
-        .to_url_lossy()
-        .to_string();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(owner.into_inner())
+        .execute(&admin)
+        .await
+        .expect("fixture owner");
     (
         database,
         admin,
@@ -608,7 +522,7 @@ async fn split_role_boot_refuses_unprotected_new_table() {
 }
 
 #[tokio::test]
-async fn split_role_boot_refuses_mismatched_owner_rls_checksum() {
+async fn split_role_boot_refuses_mismatched_baseline_checksum() {
     let _guard = BOOT_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -623,11 +537,11 @@ async fn split_role_boot_refuses_mismatched_owner_rls_checksum() {
     .await
     .expect("initial automatic migration");
     sqlx::query(
-        "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = 14",
+        "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = 33",
     )
     .execute(&admin)
     .await
-    .expect("corrupt owner-RLS checksum");
+    .expect("corrupt baseline checksum");
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)
             .await

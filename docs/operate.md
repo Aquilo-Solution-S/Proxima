@@ -24,11 +24,15 @@ the runtime role for serving grants. Development provisioning is executable in
 [`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/pg-init.sql).
 Stop older hosts before changing their role/schema contract.
 
-Released migrations are immutable. Existing supported databases append pending
-migrations; a checksum mismatch requires restoring the expected migration and
-database history, not editing the ledger. Do not repair a failed boot with ad
-hoc SQL. The gate and named historical exception are in
-[contributing](contributing.md#migrations).
+Released migrations are immutable. This release adopts databases at v0.0.35 or
+later; older databases must be upgraded to v0.0.35 first, or reset when used
+for development. A database migrated by a newer release refuses an older
+binary unless the host [allows missing migration versions](configuration.md);
+then the older binary leaves newer core definitions in place. Existing
+supported databases append pending migrations; a migration checksum mismatch
+requires restoring the expected migration and database history, not editing
+the ledger. Do not repair a failed boot with ad hoc SQL. See the
+[migration procedure](contributing.md#migrations).
 
 For encrypted PostgreSQL, use the URL's TLS options and the deployment's CA
 trust. A successful TCP connection is not proof of the correct runtime grants;

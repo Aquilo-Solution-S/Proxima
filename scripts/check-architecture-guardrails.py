@@ -367,7 +367,7 @@ def check_event_source_vocabulary(findings: list[Finding]) -> None:
     module_roots = [
         "crates/core/src",
         "crates/storage-pg/src",
-        "crates/storage-pg/migrations/0001_init.sql",
+        "crates/storage-pg/migrations/0033_baseline.sql",
         "crates/mcp-server/src",
         "crates/proxima/src",
         "apps/proxima-mcp/src",

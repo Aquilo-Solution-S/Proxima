@@ -8,7 +8,7 @@ use proxima_storage_pg::PgStorage;
 
 /// `SQLx` records each flavor migration as SHA-384 of its file minus the
 /// `ignored-chars` of `flavors/code/sqlx.toml` (`\r`). The released file bytes
-/// are pinned by `scripts/check-migration-ranges.py`; this pins the
+/// are pinned by `scripts/check-migrations.py`; this pins the
 /// computation, which an `ignored-chars` edit or an `SQLx` upgrade would
 /// change for every deployed ledger at once.
 #[test]
@@ -389,12 +389,24 @@ fn generator_output_is_the_code_baseline_text() {
     .expect("code artifacts")
     .expect("the code flavor declares a projection");
     let baseline = include_str!("../migrations/20260818000020_v008_baseline.sql");
-    for statement in artifacts.forward() {
+    for statement in [
+        artifacts.table.forward.as_str(),
+        artifacts.index.forward.as_str(),
+    ] {
         assert!(
             baseline.contains(statement),
             "the code baseline does not carry the generator's output verbatim:\n{statement}"
         );
     }
+    let legacy_trigger = artifacts.language_trigger.forward.replacen(
+        "CREATE OR REPLACE TRIGGER",
+        "CREATE TRIGGER",
+        1,
+    );
+    assert!(
+        baseline.contains(&legacy_trigger),
+        "the code baseline does not carry the legacy projection trigger:\n{legacy_trigger}"
+    );
 }
 
 /// The same drift check an out-of-tree flavor runs, through the test kit:

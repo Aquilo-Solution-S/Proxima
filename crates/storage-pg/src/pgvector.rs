@@ -190,10 +190,10 @@ mod tests {
     use super::*;
 
     /// The fragments must spell exactly the expression and predicate
-    /// migration 0015 indexes, or the lane falls back to a sequential scan.
+    /// baseline indexes, or the lane falls back to a sequential scan.
     #[test]
     fn every_lane_spells_its_migration_index() {
-        let migration = include_str!("../migrations/0015_v016_embedding_spaces.sql");
+        let migration = include_str!("../migrations/0033_baseline.sql");
         for dim in EmbeddingDim::ALL {
             let lane = Lane::of(dim);
             assert_eq!(usize::try_from(lane.width).ok(), Some(dim.width()));
@@ -205,9 +205,8 @@ mod tests {
                 "vector"
             };
             let index = format!(
-                "CREATE INDEX embeddings_hnsw_d{w} ON proxima_core.embeddings\n    \
-                 USING hnsw ((vec::{kind}({w})) {kind}_cosine_ops) WHERE dim = {w};",
-                w = dim.width()
+                "CREATE INDEX embeddings_hnsw_d{w} ON proxima_core.embeddings USING hnsw (((vec)::public.{kind}({w})) public.{kind}_cosine_ops) WHERE (dim = {w});",
+                w = dim.width(),
             );
             assert!(migration.contains(&index), "missing lane index: {index}");
             assert_eq!(lane.predicate, format!("emb.dim = {}", dim.width()));

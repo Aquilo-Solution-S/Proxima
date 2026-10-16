@@ -126,7 +126,8 @@ const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
 /// Ingest a Fact under an explicit `sidecar_tables` stamp, and write the rows
 /// that stamp promises, in the one transaction.
 ///
-/// `sidecar_rows` is not garnish. Since `0009_declared_sidecar_presence.sql` a
+/// `sidecar_rows` is not garnish. The current definitions trigger bundle makes
+/// a
 /// memory row that stamps a registered table and has no row in it is refused
 /// at `COMMIT`, so a fixture that stamps `AGENT_NOTE` inserts the note here
 /// rather than after this returns. Each statement binds `$1` to the new `t`.
@@ -3130,7 +3131,7 @@ async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
 
         // Stamped, and then the row taken away: exactly the state the writer
         // and the verifier used to disagree about. Since
-        // `0009_declared_sidecar_presence.sql` the database refuses both ways
+        // the definitions trigger bundle refuses both ways
         // in, so the fixture writes the pair and then deletes the row with
         // the orphan guard switched off on a raw connection.
         //

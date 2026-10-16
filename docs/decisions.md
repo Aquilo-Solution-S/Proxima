@@ -22,6 +22,7 @@ Source: [Lean principles](https://github.com/Aquilo-Solution-S/Proxima/blob/main
 | Types, defaults, limits | Rustdoc |
 | Tool and resource schemas | Live catalog: `tools/list`, `proxima://tools`, OpenAPI |
 | Tables | SQL migrations |
+| Core functions, triggers, policies | `crates/storage-pg/definitions/` |
 | Invariants | Lean kernel |
 | Release changes | Release notes and `Upgrade:` footers |
 

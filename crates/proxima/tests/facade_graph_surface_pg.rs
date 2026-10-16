@@ -1240,7 +1240,7 @@ async fn insert_raw_facade_fact(
     let memory_id =
         insert_raw_fact_admission(pool, owner, FacadeFact::SCHEMA_ID, stamped_tables).await?;
     if !insert_primary_row {
-        // Since `0009_declared_sidecar_presence.sql` the database refuses
+        // The definitions trigger bundle refuses
         // both ways into a stamp with no row: the admission above cannot skip
         // the row, and the DELETE below cannot take it while the stamp
         // stands. So the fixture writes the pair and deletes the row with the

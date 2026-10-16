@@ -346,7 +346,7 @@ impl PgSidecarRegistryFrozen {
     ///
     /// [`crate::integrity::DECLARATION_TRIGGER_FUNCTION`] is deliberately
     /// NOT part of this list: it is one function for every flavor, so it
-    /// lives once, in core's `0002_v009_declaration_triggers.sql`, and a
+    /// lives once, in core's `definitions/triggers.sql`, and a
     /// flavor's migration carries only the triggers that call it.
     ///
     /// # Errors
@@ -408,7 +408,7 @@ impl PgSidecarRegistryFrozen {
     ///
     /// The sibling of [`Self::declaration_trigger_artifacts`], one migration
     /// lane later, and split from it rather than folded into it because
-    /// `0002_v009_declaration_triggers.sql` and each flavor's declaration
+    /// `definitions/triggers.sql` and each flavor's declaration
     /// migration are already applied: a generator whose output grew would
     /// make the pin on those files unsatisfiable.
     ///

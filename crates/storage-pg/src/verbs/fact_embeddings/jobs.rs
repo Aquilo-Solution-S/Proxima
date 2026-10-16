@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn claim_needs_no_growing_entity_exclusion_parameter() {
-        let migration = include_str!("../../../migrations/0015_v016_embedding_spaces.sql");
+        let migration = include_str!("../../../migrations/0033_baseline.sql");
         assert!(
             migration.contains("UNIQUE (owner_id, entity_id, model_id, dim)"),
             "the DB must admit at most one job per entity and space"
@@ -681,7 +681,7 @@ mod tests {
         };
         assert_eq!(claim.space.model_id(), "model");
 
-        let migration = include_str!("../../../migrations/0001_v008.sql");
+        let migration = include_str!("../../../migrations/0033_baseline.sql");
         let job_table = migration
             .split_once("CREATE TABLE proxima_core.embedding_jobs (")
             .expect("the migration defines embedding_jobs")

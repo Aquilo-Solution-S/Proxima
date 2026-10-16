@@ -1,24 +1,5 @@
 //! The fresh CREATE set of the core migration. Requires local PG.
 
-#[path = "migrations/coarse_pin_lock.rs"]
-mod coarse_pin_lock;
-#[path = "migrations/fact_occurred_at.rs"]
-mod fact_occurred_at;
-#[path = "migrations/goal_text.rs"]
-mod goal_text;
-#[path = "migrations/kind_rule.rs"]
-mod kind_rule;
-#[path = "migrations/outbox_v031.rs"]
-mod outbox_v031;
-#[path = "migrations/owner_id.rs"]
-mod owner_id;
-#[path = "migrations/owner_rls_table.rs"]
-mod owner_rls_table;
-#[path = "migrations/query_stopwords.rs"]
-mod query_stopwords;
-#[path = "migrations/retired_surfaces.rs"]
-mod retired_surfaces;
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -26,30 +7,33 @@ use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-// Historical schemas have no serving capability. Only fixture SQL can use
-// their pool; runtime behavior is exercised after boot in the serving suites.
-struct MigrationFixture(sqlx::PgPool);
-
-impl MigrationFixture {
-    fn pool_for_tests(&self) -> &sqlx::PgPool {
-        &self.0
-    }
-}
-
 trait DatabaseFixture {
     fn pool_for_tests(&self) -> &sqlx::PgPool;
-}
-
-impl DatabaseFixture for MigrationFixture {
-    fn pool_for_tests(&self) -> &sqlx::PgPool {
-        &self.0
-    }
 }
 
 impl DatabaseFixture for PgStorage {
     fn pool_for_tests(&self) -> &sqlx::PgPool {
         self.pool_for_tests()
     }
+}
+
+async fn apply_current_migrations(
+    pg: &impl DatabaseFixture,
+) -> Result<(), proxima_core::StorageError> {
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pg.pool_for_tests())
+        .await
+        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
+    let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database)
+        .await
+        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await?;
+    migration.run_migrations().await
 }
 
 async fn table_exists(pg: &impl DatabaseFixture, table_name: &str) -> bool {
@@ -494,7 +478,7 @@ async fn migrations_apply_to_fresh_db() {
         }
 
         // A fresh database applies the embedded core set and nothing else.
-        // Derived from the migrator rather than a hardcoded count: v0.0.8 was
+        // Derived from the migrator rather than a hardcoded count: the baseline was
         // one file, and every release after it appends one, so a literal here
         // would have to be edited by each additive migration and would say
         // nothing about which versions actually landed.
@@ -567,6 +551,108 @@ async fn migrations_apply_to_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migrations integration test failed");
+}
+
+/// The final embedding lanes reject unsupported dimensions and mismatched
+/// vector widths.
+#[tokio::test]
+async fn embedding_lanes_refuse_unsupported_dimensions_and_widths() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name)
+        .await
+        .expect("PG is required for migrations tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
+        let pool = pg.pool_for_tests();
+        let owner_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pool)
+            .await?;
+        for (dim, width, check) in [
+            (512_i16, 512_i32, "embeddings_dim_lane_chk"),
+            (1024, 768, "embeddings_vec_width_chk"),
+        ] {
+            let err = sqlx::query(
+                "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
+                 VALUES ($1, 'legacy-model', $2, array_fill(0.5::real, ARRAY[$3])::vector, $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(dim)
+            .bind(width)
+            .bind(owner_id)
+            .execute(pool)
+            .await
+            .expect_err("the width CHECKs refuse the row");
+            assert_eq!(
+                err.as_database_error()
+                    .and_then(sqlx::error::DatabaseError::code),
+                Some("23514".into()),
+                "{dim}/{width}: {err}"
+            );
+            assert!(err.to_string().contains(check), "{dim}/{width}: {err}");
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("embedding lane check test failed");
+}
+
+/// A staged upload content hash remains exactly 32 bytes.
+#[tokio::test]
+async fn blob_upload_content_hash_rejects_noncanonical_length() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name)
+        .await
+        .expect("PG is required for migrations tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(pool)
+            .await?;
+        let upload = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (upload_id, owner_id, bucket, object_key, filename, mime,
+                 expected_byte_len, expires_at)
+             VALUES ($1, $2, 'bucket', 'objects/test', 'test',
+                     'application/octet-stream', 1, now() + interval '1 day')",
+        )
+        .bind(upload)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        let malformed = sqlx::query(
+            "UPDATE proxima_core.blob_uploads SET content_hash = decode('00', 'hex')
+              WHERE upload_id = $1",
+        )
+        .bind(upload)
+        .execute(pool)
+        .await
+        .expect_err("content identity is exactly 32 bytes");
+        assert_eq!(
+            malformed
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23514".into())
+        );
+        assert!(
+            malformed
+                .to_string()
+                .contains("blob_uploads_content_hash_chk"),
+            "{malformed}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("blob upload content hash test failed");
 }
 
 #[tokio::test]
@@ -1251,931 +1337,149 @@ async fn memory_is_append_only_and_head_t_only() {
     result.expect("append-only / head freeze test failed");
 }
 
+/// The final reference arrays remain append-only after the migration reset.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
+async fn memory_reference_arrays_remain_append_only() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        assert_current_markers(pg.pool_for_tests()).await?;
-
-        sqlx::query(
-            "DROP TRIGGER goal_replay_declaration_append_only
-               ON proxima_core.goal_replay_declaration",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing Goal replay append-only trigger must reject boot");
-        assert!(
-            err.to_string().contains("append-only trigger"),
-            "marker error must name the missing Goal replay trigger: {err}"
-        );
-        sqlx::query(
-            "CREATE TRIGGER goal_replay_declaration_append_only
-             BEFORE UPDATE ON proxima_core.goal_replay_declaration
-             FOR EACH ROW
-             EXECUTE FUNCTION proxima_core.enforce_row_append_only()",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration
-             DROP CONSTRAINT goal_replay_declaration_object_chk",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing Goal replay declaration check must reject boot");
-        assert!(
-            err.to_string().contains("object check"),
-            "marker error must name the missing Goal replay check: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration
-             ADD CONSTRAINT goal_replay_declaration_object_chk
-             CHECK (jsonb_typeof(declaration) = 'object')",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration
-             DROP CONSTRAINT goal_replay_declaration_goal_t_fkey",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing Goal replay Goal foreign key must reject boot");
-        assert!(
-            err.to_string().contains("goal_t foreign key"),
-            "marker error must name the missing Goal replay foreign key: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration
-             ADD CONSTRAINT goal_replay_declaration_goal_t_fkey
-             FOREIGN KEY (goal_t) REFERENCES proxima_core.goal(t)
-             ON DELETE CASCADE",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        assert_current_markers(pg.pool_for_tests()).await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.erased_pin_target
-             ADD COLUMN marker_probe text",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("witness marker must reject an extra column");
-        assert!(
-            err.to_string().contains("exactly columns")
-                || err.to_string().contains("extra columns"),
-            "marker error must name witness shape drift: {err}"
-        );
-        sqlx::query("ALTER TABLE proxima_core.erased_pin_target DROP COLUMN marker_probe")
-            .execute(pg.pool_for_tests())
-            .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.cold_purge_pending
-             DROP CONSTRAINT cold_purge_pending_pkey",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing cold purge primary key must reject boot");
-        assert!(
-            err.to_string().contains("primary key"),
-            "marker error must name the missing cold-purge primary key: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.cold_purge_pending
-             ADD PRIMARY KEY (object_key)",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query("ALTER TABLE proxima_core.cooled RENAME COLUMN blob_id TO blob_id_old")
-            .execute(pg.pool_for_tests())
-            .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing cooled.blob_id must reject boot");
-        assert!(
-            err.to_string().contains("cooled.blob_id"),
-            "marker error must name the missing cooled witness: {err}"
-        );
-        sqlx::query("ALTER TABLE proxima_core.cooled RENAME COLUMN blob_id_old TO blob_id")
-            .execute(pg.pool_for_tests())
-            .await?;
-
-        sqlx::query(
-            "ALTER TYPE proxima_core.embedding_job_status
-             RENAME VALUE 'failed_permanent' TO 'failed_terminal'",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("incorrect embedding-job enum labels must reject boot");
-        assert!(
-            err.to_string().contains("labels/order"),
-            "marker error must name the incorrect enum vocabulary: {err}"
-        );
-        sqlx::query(
-            "ALTER TYPE proxima_core.embedding_job_status
-             RENAME VALUE 'failed_terminal' TO 'failed_permanent'",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.embedding_jobs
-             DROP CONSTRAINT embedding_job_processing_claim_chk",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing processing-claim check must reject boot");
-        assert!(
-            err.to_string().contains("processing claim check"),
-            "marker error must name the missing check: {err}"
-        );
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.embedding_jobs
-             ADD CONSTRAINT embedding_job_processing_claim_chk CHECK (
-                 (status = 'processing') = (claimed_at IS NOT NULL AND claim_token IS NOT NULL)
-             ) NOT VALID",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("unvalidated processing-claim check must reject boot");
-        assert!(
-            err.to_string().contains("processing claim check"),
-            "marker error must reject a NOT VALID claim check: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.embedding_jobs
-             VALIDATE CONSTRAINT embedding_job_processing_claim_chk",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        assert_current_markers(pg.pool_for_tests()).await?;
-        sqlx::query(
-            "ALTER TABLE proxima_core.embedding_jobs
-             RENAME COLUMN claim_token TO claim_token_old",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = assert_current_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing claim_token must reject boot");
-        assert!(
-            err.to_string()
-                .contains("claim_token must be nullable uuid"),
-            "marker error must name the incorrect column: {err}"
-        );
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("schema marker validation test failed");
-}
-
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn schema_markers_reject_damaged_lexical_default() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        let pool = pg.pool_for_tests();
-        assert_current_markers(pool).await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             DROP CONSTRAINT lexical_default_pkey",
-        )
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("lexical default without its singleton primary key must reject boot");
-        assert!(
-            err.to_string().contains("sole primary-key column"),
-            "marker error must name the damaged lexical-default primary key: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             ADD CONSTRAINT lexical_default_pkey PRIMARY KEY (singleton)",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             DROP CONSTRAINT lexical_default_singleton_check",
-        )
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("lexical default without CHECK (singleton) must reject boot");
-        assert!(
-            err.to_string().contains("CHECK (singleton)"),
-            "marker error must name the damaged lexical-default singleton check: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             ADD CONSTRAINT lexical_default_singleton_check CHECK (singleton)",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             DROP CONSTRAINT lexical_default_config_fkey",
-        )
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("lexical default without its active-language FK must reject boot");
-        assert!(
-            err.to_string()
-                .contains("must reference lexical_languages(config)"),
-            "marker error must name the damaged lexical-default foreign key: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.lexical_default
-             ADD CONSTRAINT lexical_default_config_fkey
-             FOREIGN KEY (config) REFERENCES proxima_core.lexical_languages(config)",
-        )
-        .execute(pool)
-        .await?;
-
-        // The lexical stamp lives on the projection, beside the vector.
-        sqlx::query(
-            "ALTER TABLE proxima_core.projection
-             DROP CONSTRAINT projection_lexical_language_fkey",
-        )
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("a stamped table without its language FK must reject boot");
-        assert!(
-            err.to_string()
-                .contains("every stamped lexical_language column"),
-            "marker error must name the missing stamped-language foreign key: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.projection
-             ADD CONSTRAINT projection_lexical_language_fkey
-             FOREIGN KEY (lexical_language)
-             REFERENCES proxima_core.lexical_languages(config)",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query("DELETE FROM proxima_core.lexical_default")
-            .execute(pool)
-            .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("lexical default without its live singleton row must reject boot");
-        assert!(
-            err.to_string().contains("exactly one singleton=true row"),
-            "marker error must name the missing lexical-default row: {err}"
-        );
-
-        sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
-            .execute(pool)
-            .await?;
-        assert_current_markers(pool).await?;
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("lexical default schema marker checks failed");
-}
-
-/// Every lifecycle trigger is part of the boot claim, not merely an
-/// implementation detail.  Disabling one at a time must make the marker
-/// probe refuse to stamp the database, and restoring it must make the probe
-/// green again.
-#[tokio::test]
-async fn schema_markers_reject_every_reference_integrity_trigger_when_disabled() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        let pool = pg.pool_for_tests();
-        // Third field: the exact marker text the trigger-wiring group reports
-        // for that trigger. Anything looser lets one trigger's break pass
-        // while another trigger's marker is the one that actually fired.
-        let triggers = [
-            (
-                "memory",
-                "memory_pin_checks",
-                "memory_pin_checks trigger must be enabled BEFORE INSERT and wired to its function",
-            ),
-            (
-                "erased_pin_target",
-                "erased_pin_target_insert_guard",
-                "erased_pin_target insert guard timing or wiring is incorrect",
-            ),
-            (
-                "erased_pin_target",
-                "erased_pin_target_append_only",
-                "erased_pin_target append-only trigger timing or wiring is incorrect",
-            ),
-            (
-                "cooled",
-                "cooled_forget_grounding",
-                "cooled forget-grounding trigger timing or wiring is incorrect",
-            ),
-            (
-                "cooled",
-                "cooled_identity_seal",
-                "cooled identity-seal trigger timing or wiring is incorrect",
-            ),
-            (
-                "cooled",
-                "cooled_append_only",
-                "cooled append-only trigger timing or wiring is incorrect",
-            ),
-            (
-                "goal",
-                "goal_pin_target_checks",
-                "goal target trigger timing or wiring is incorrect",
-            ),
-            (
-                "memory",
-                "memory_erased_pin_target",
-                "memory witness trigger timing or wiring is incorrect",
-            ),
-            (
-                "cooled",
-                "cooled_erased_pin_target",
-                "cooled witness trigger timing or wiring is incorrect",
-            ),
-            (
-                "goal",
-                "goal_erased_pin_target",
-                "goal witness trigger timing or wiring is incorrect",
-            ),
-        ];
-        for (table, trigger, marker) in triggers {
-            // SQL-POLICY: fixed-fragment — both interpolations come only from
-            // the closed literal trigger tuple matrix immediately above.
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE proxima_core.{table} DISABLE TRIGGER {trigger}"
-            )))
-            .execute(pool)
-            .await?;
-            let err = assert_current_markers(pool)
-                .await
-                .expect_err("a disabled reference-integrity trigger must fail the marker probe");
-            assert!(
-                err.to_string().contains(marker),
-                "marker error for {table}.{trigger} must be {marker:?}: {err}"
-            );
-            // SQL-POLICY: fixed-fragment — the same closed literal tuple
-            // matrix supplies the identifiers; no external input is used.
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE proxima_core.{table} ENABLE TRIGGER {trigger}"
-            )))
-            .execute(pool)
-            .await?;
-            assert_current_markers(pool).await?;
-        }
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("reference-integrity trigger marker test failed");
-}
-
-/// Assert the marker probe names `relation` as missing rather than aborting
-/// on a later group's `regclass` cast.
-async fn assert_missing_relation_marker(pool: &sqlx::PgPool, relation: &str) {
-    let err = assert_current_markers(pool)
+    create_db(&db_name)
         .await
-        .expect_err("a relation a marker group casts must fail the probe when absent");
-    let marker = format!("missing relation {relation}");
-    assert!(
-        err.to_string().contains(&marker),
-        "marker error for a missing {relation} must be {marker:?}: {err}"
-    );
-    assert!(
-        !err.to_string().contains("does not exist"),
-        "a missing {relation} must surface as a marker message, not as a raw Postgres \
-         planner error from a later group's regclass cast: {err}"
-    );
-}
-
-/// Every relation a marker group reaches with a `'<relation>'::regclass` cast
-/// must be proved present by a group that runs *earlier*. Postgres
-/// constant-folds such a cast while planning the statement, so an absent
-/// relation aborts the whole `CASE` with a raw planner error even when an
-/// earlier `WHEN` arm of the same group would have matched — a presence leaf
-/// added to the casting group itself would never run. Hiding each cast
-/// relation in turn pins both the presence leaves and the group call order in
-/// `ensure_core_schema_markers` that makes them reachable.
-///
-/// Renaming rather than dropping hides the relation from `to_regclass` and
-/// from `information_schema` exactly as an unapplied migration would, and
-/// leaves its columns, constraints and triggers intact for the repair.
-#[tokio::test]
-async fn schema_markers_name_a_missing_relation_before_any_group_casts_it() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
+        .expect("PG is required for migrations tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
-        assert_current_markers(pool).await?;
-
-        // Cast by GOAL_REPLAY_DECLARATION_MARKERS as the foreign-key target.
-        sqlx::query("ALTER TABLE proxima_core.goal RENAME TO goal_marker_probe")
-            .execute(pool)
-            .await?;
-        assert_missing_relation_marker(pool, "proxima_core.goal").await;
-        sqlx::query("ALTER TABLE proxima_core.goal_marker_probe RENAME TO goal")
-            .execute(pool)
-            .await?;
-        assert_current_markers(pool).await?;
-
-        // Cast by GOAL_REPLAY_DECLARATION_MARKERS for its own constraints.
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration
-             RENAME TO goal_replay_declaration_marker_probe",
-        )
-        .execute(pool)
-        .await?;
-        assert_missing_relation_marker(pool, "proxima_core.goal_replay_declaration").await;
-        sqlx::query(
-            "ALTER TABLE proxima_core.goal_replay_declaration_marker_probe
-             RENAME TO goal_replay_declaration",
-        )
-        .execute(pool)
-        .await?;
-        assert_current_markers(pool).await?;
-
-        // Cast by BLOB_UPLOAD_HASH_MARKERS for its content-hash check.
-        sqlx::query("ALTER TABLE proxima_core.blob_uploads RENAME TO blob_uploads_marker_probe")
-            .execute(pool)
-            .await?;
-        assert_missing_relation_marker(pool, "proxima_core.blob_uploads").await;
-        sqlx::query("ALTER TABLE proxima_core.blob_uploads_marker_probe RENAME TO blob_uploads")
-            .execute(pool)
-            .await?;
-        assert_current_markers(pool).await?;
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("cast-relation marker ordering test failed");
-}
-
-/// Function names alone are insufficient boot markers: a replaced function
-/// can retain its signature while removing the lock, conflict, writer-marker,
-/// or retry branch that makes the schema safe. Capture the shipped definitions,
-/// corrupt each body in turn, and restore the exact text before the next probe.
-#[tokio::test]
-async fn schema_markers_reject_damaged_reference_integrity_function_bodies() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        let pool = pg.pool_for_tests();
-        let record_definition: String = sqlx::query_scalar(
-            "SELECT pg_get_functiondef(
-                 to_regprocedure(
-                     'proxima_core.record_erased_pin_target(uuid,proxima_core.pin_target_kind)'
-                 )
-             )",
-        )
-        .fetch_one(pool)
-        .await?;
-        let grounding_definition: String = sqlx::query_scalar(
-            "SELECT pg_get_functiondef(
-                 to_regprocedure('proxima_core.cooled_forget_grounding()')
-             )",
-        )
-        .fetch_one(pool)
-        .await?;
-
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "CREATE OR REPLACE FUNCTION proxima_core.record_erased_pin_target(
-                 target uuid, target_kind proxima_core.pin_target_kind
-             ) RETURNS void LANGUAGE plpgsql AS $$
-             BEGIN RETURN; END;
-             $$;"
-            .to_owned(),
-        ))
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("a signature-compatible witness writer body must fail the marker probe");
-        assert!(
-            err.to_string().contains("record_erased_pin_target body"),
-            "witness writer body marker should be named: {err}"
-        );
-        // SQL-POLICY: fixed-fragment — this is the exact definition captured
-        // from the database immediately before the closed mutation above.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(record_definition.clone()))
-            .execute(pool)
-            .await?;
-        assert_current_markers(pool).await?;
-
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
-             RETURNS trigger LANGUAGE plpgsql AS $$
-             BEGIN RETURN NEW; END;
-             $$;"
-            .to_owned(),
-        ))
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("a signature-compatible grounding body must fail the marker probe");
-        assert!(
-            err.to_string().contains("cooled_forget_grounding body"),
-            "grounding body marker should be named: {err}"
-        );
-
-        // Keep all required tokens but put them in the wrong order. This
-        // proves the marker checks the lock-before-growth-before-row-lock law,
-        // not just the presence of a familiar error phrase.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
-             RETURNS trigger LANGUAGE plpgsql AS $$
-             BEGIN
-                 -- for update
-                 -- using errcode = '40001'
-                 -- footprint grew
-                 -- not (m.t = any (dependent_ids))
-                 -- lock_pin_targets
-                 RETURN NEW;
-             END;
-             $$;"
-            .to_owned(),
-        ))
-        .execute(pool)
-        .await?;
-        let err = assert_current_markers(pool)
-            .await
-            .expect_err("a reordered grounding body must fail the marker probe");
-        assert!(
-            err.to_string().contains("cooled_forget_grounding body"),
-            "grounding order marker should be named: {err}"
-        );
-        // SQL-POLICY: fixed-fragment — this is the exact definition captured
-        // from the database immediately before the closed mutation above.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(grounding_definition))
-            .execute(pool)
-            .await?;
-        assert_current_markers(pool).await?;
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("reference-integrity function body marker test failed");
-}
-
-#[tokio::test]
-async fn pre_v008_database_fails_closed() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = connect_historical_fixture(&db_name).await?;
-
-        sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool_for_tests())
-            .await?;
-        sqlx::query("CREATE TABLE proxima_core.edges (edge_id uuid NOT NULL)")
-            .execute(pg.pool_for_tests())
-            .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
-                 version bigint PRIMARY KEY,
-                 description text NOT NULL,
-                 installed_on timestamptz NOT NULL DEFAULT now(),
-                 success boolean NOT NULL,
-                 checksum bytea NOT NULL,
-                 execution_time bigint NOT NULL
-             )",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        sqlx::query(
-            "INSERT INTO public._sqlx_migrations
-                 (version, description, success, checksum, execution_time)
-             VALUES
-                 (1, 'init', true, decode('00', 'hex'), 0),
-                 (5, 'group ownership access', true, decode('00', 'hex'), 0)",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        let err = apply_current_migrations(&pg)
-            .await
-            .expect_err("pre-v0.0.8 DB must fail closed");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("reset") || msg.contains("stamp") || msg.contains("v0.0.4"),
-            "error must explain reset, got: {msg}",
-        );
-
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("pre-v0.0.8 fail-closed test failed");
-}
-
-/// 0015 upgrades a v0.0.15 database in place: every stored vector becomes
-/// the 1024 lane's (`dim = 1024` on vectors, heads and jobs), the vector
-/// table is not rewritten, each supported width has its lane index, and the
-/// new CHECKs refuse a width no lane serves or a vector that is not `dim`
-/// wide.
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn embedding_spaces_migration_upgrades_1024_rows_in_place() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = connect_historical_fixture(&db_name).await?;
-        let pool = pg.pool_for_tests();
-        let mut staged = proxima_storage_pg::core_migrator();
-        staged.migrations = std::borrow::Cow::Owned(
-            staged
-                .iter()
-                .filter(|migration| migration.version < 15)
-                .cloned()
-                .collect(),
-        );
-        staged.run(pool).await?;
-
-        let owner_id = Uuid::now_v7();
-        let entity_id = Uuid::now_v7();
+        let owner = Uuid::now_v7();
+        let handle = Uuid::now_v7();
         sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-            .bind(owner_id)
+            .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings (entity_id, model_id, vec, owner_id)
-             VALUES ($1, 'legacy-model', array_fill(0.5::real, ARRAY[1024])::vector, $2)",
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
-        .bind(entity_id)
-        .bind(owner_id)
+        .bind(handle)
+        .bind(owner)
+        .bind(handle)
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
-                 (entity_id, model_id, embedding_version, owner_id)
-             VALUES ($1, 'legacy-model', 1, $2)",
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, refs, goal_refs, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($1))",
         )
-        .bind(entity_id)
-        .bind(owner_id)
+        .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id)
-             VALUES ($1, 'legacy-model', $2)",
-        )
-        .bind(entity_id)
-        .bind(owner_id)
-        .execute(pool)
-        .await?;
-        let before: i64 =
-            sqlx::query_scalar("SELECT pg_relation_filenode('proxima_core.embeddings')::bigint")
-                .fetch_one(pool)
-                .await?;
-
-        apply_current_migrations(&pg).await?;
-
-        let after: i64 =
-            sqlx::query_scalar("SELECT pg_relation_filenode('proxima_core.embeddings')::bigint")
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(before, after, "0015 must not rewrite the vector table");
-        let dims: (Vec<i16>, Vec<i16>, Vec<i16>) = sqlx::query_as(
-            "SELECT (SELECT array_agg(dim) FROM proxima_core.embeddings),
-                    (SELECT array_agg(dim) FROM proxima_core.embedding_heads),
-                    (SELECT array_agg(dim) FROM proxima_core.embedding_jobs)",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(
-            dims,
-            (vec![1024], vec![1024], vec![1024]),
-            "vectors, heads and jobs join the 1024 lane"
-        );
-        let lanes: Vec<String> = sqlx::query_scalar(
-            "SELECT indexname::text FROM pg_indexes
-              WHERE schemaname = 'proxima_core' AND tablename = 'embeddings'
-                AND indexname LIKE 'embeddings\\_hnsw\\_d%'
-              ORDER BY substr(indexname, 18)::int",
-        )
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(
-            lanes,
-            proxima_core::EmbeddingDim::ALL.map(|dim| format!("embeddings_hnsw_d{}", dim.width())),
-        );
-        let nearest: Uuid = sqlx::query_scalar(
-            "SELECT emb.entity_id FROM proxima_core.embeddings emb
-              WHERE emb.dim = 1024
-              ORDER BY emb.vec::vector(1024) <=> array_fill(0.5::real, ARRAY[1024])::vector(1024)
-              LIMIT 1",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(nearest, entity_id, "the 1024 lane serves the upgraded row");
-
-        for (dim, width, check) in [
-            (512_i16, 512_i32, "embeddings_dim_lane_chk"),
-            (1024, 768, "embeddings_vec_width_chk"),
+        let target = Uuid::now_v7();
+        for (column, query) in [
+            (
+                "refs",
+                sqlx::query("UPDATE proxima_core.memory SET refs = ARRAY[$1]::uuid[] WHERE t = $2"),
+            ),
+            (
+                "goal_refs",
+                sqlx::query(
+                    "UPDATE proxima_core.memory SET goal_refs = ARRAY[$1]::uuid[] WHERE t = $2",
+                ),
+            ),
         ] {
-            let err = sqlx::query(
-                "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
-                 VALUES ($1, 'legacy-model', $2, array_fill(0.5::real, ARRAY[$3])::vector, $4)",
-            )
-            .bind(Uuid::now_v7())
-            .bind(dim)
-            .bind(width)
-            .bind(owner_id)
-            .execute(pool)
-            .await
-            .expect_err("the width CHECKs refuse the row");
-            assert!(err.to_string().contains(check), "{dim}/{width}: {err}");
+            let err = query
+                .bind(target)
+                .bind(handle)
+                .execute(pool)
+                .await
+                .expect_err("reference arrays must remain append-only");
+            assert!(
+                err.to_string().contains("append-only"),
+                "{column} refusal: {err}"
+            );
         }
         Ok(())
     }
     .await;
-
     let _ = drop_db(&db_name).await;
-    result.expect("embedding-space upgrade test failed");
+    result.expect("memory reference append-only test failed");
 }
 
-/// The chunk migration preserves every legacy vector/head and all ANN indexes.
+/// The final Fact occurrence constraint remains immutable and complete.
 #[tokio::test]
-async fn embedding_chunks_migration_preserves_legacy_vectors_and_heads()
--> Result<(), Box<dyn std::error::Error>> {
+async fn fact_occurred_at_is_immutable_and_required() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    create_db(&db_name).await?;
+    create_db(&db_name)
+        .await
+        .expect("PG is required for migrations tests");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = connect_historical_fixture(&db_name).await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
-        let mut staged = proxima_storage_pg::core_migrator();
-        staged.migrations = std::borrow::Cow::Owned(
-            staged.iter().filter(|migration| migration.version < 20).cloned().collect(),
-        );
-        staged.run(pool).await?;
-        let owner_id = Uuid::now_v7();
-        let entity_id = Uuid::now_v7();
+        let owner = Uuid::now_v7();
         sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-            .bind(owner_id)
+            .bind(owner)
             .execute(pool)
             .await?;
+        let handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, vec, owner_id)
-             VALUES ($1, 'legacy-model', 1024, 7, array_fill(0.5::real, ARRAY[1024])::vector, $2)",
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $1)",
         )
-        .bind(entity_id)
-        .bind(owner_id)
+        .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
-             VALUES ($1, 'legacy-model', 1024, 7, $2)",
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1', uuid_extract_timestamp($1))",
         )
-        .bind(entity_id)
-        .bind(owner_id)
+        .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await?;
-        let before = embedding_table_and_ann_files(pool).await?;
-        apply_current_migrations(&pg).await?;
-        assert_eq!(
-            embedding_table_and_ann_files(pool).await?, before,
-            "table and ANN indexes are preserved in place"
+        let refused = sqlx::query(
+            "UPDATE proxima_core.memory SET occurred_at = occurred_at - interval '1 day'
+              WHERE t = $1",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await
+        .expect_err("a Fact's occurrence time must not be rewritable");
+        assert!(refused.to_string().contains("append-only"), "{refused}");
+
+        let missing = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-v1', $2, $1)",
+        )
+        .bind(missing)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        let refused = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1')",
+        )
+        .bind(missing)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect_err("a Fact without an occurrence time must be refused");
+        assert!(
+            refused.to_string().contains("memory_fact_occurred_at_chk"),
+            "{refused}"
         );
-        let legacy: (Uuid, i32, i32, Vec<f32>) = sqlx::query_as(
-            "SELECT e.entity_id, e.chunk_ordinal, h.embedding_version, e.vec::real[]
-               FROM proxima_core.embeddings e
-               JOIN proxima_core.embedding_heads h USING (entity_id, model_id, dim, embedding_version)",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(legacy, (entity_id, 0, 7, vec![0.5; 1024]));
-        sqlx::query(
-            "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
-             VALUES ($1, 'legacy-model', 1024, 7, 1, array_fill(0.25::real, ARRAY[1024])::vector, $2)",
-        )
-        .bind(entity_id)
-        .bind(owner_id)
-        .execute(pool)
-        .await?;
-        let ordinals: Vec<i32> = sqlx::query_scalar(
-            "SELECT chunk_ordinal FROM proxima_core.embeddings ORDER BY chunk_ordinal",
-        )
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(
-            ordinals, vec![0, 1],
-            "the extended key permits multiple chunks in one version"
-        );
-        assert_current_markers(pool).await?;
-        sqlx::query(
-            "ALTER TABLE proxima_core.embeddings DROP CONSTRAINT embeddings_chunk_ordinal_chk",
-        )
-        .execute(pool)
-        .await?;
-        let error = assert_current_markers(pool)
-            .await
-            .expect_err("a missing ordinal bound must fail boot");
-        assert!(error.to_string().contains("chunk_ordinal nonnegative check"), "{error}");
         Ok(())
     }
     .await;
-    drop_db(&db_name).await?;
-    result
+    let _ = drop_db(&db_name).await;
+    result.expect("Fact occurrence constraint test failed");
 }
 
-async fn embedding_table_and_ann_files(
-    pool: &sqlx::PgPool,
-) -> Result<Vec<(String, i64)>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT c.relname::text, pg_relation_filenode(c.oid)::bigint
-           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core'
-            AND (c.relname = 'embeddings' OR c.relname LIKE 'embeddings_hnsw_d%')
-          ORDER BY c.relname",
-    )
-    .fetch_all(pool)
-    .await
-}
-
-/// `proxima_core.flavor_surface` is the registry as the database sees it,
-/// and `memory.sidecar_tables` is constrained to be a subset of it.
-///
-/// Two things are asserted, because the table is only worth having if both
-/// hold: the seeded rows are exactly flavor #0's declared sidecar surfaces,
-/// and a stamp naming an undeclared table is refused at write time rather
-/// than accepted and then walked past by every registry-driven sweep.
+/// The flavor surface is the registry for the core sidecar contract.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
@@ -2262,13 +1566,18 @@ fn generator_output_is_the_migration_text() {
     let core = proxima_storage_pg::projection::projection_artifacts(&proxima_core::FLAVOR_0)
         .expect("core artifacts")
         .expect("flavor #0 declares a projection");
-    let baseline = include_str!("../migrations/0001_v008.sql");
-    for statement in core.forward() {
+    let baseline = include_str!("../migrations/0033_baseline.sql");
+    for statement in [core.table.forward.as_str(), core.index.forward.as_str()] {
         assert!(
             baseline.contains(statement),
-            "0001_v008.sql does not carry the generator's output verbatim:\n{statement}"
+            "0033_baseline.sql does not carry the generator's output verbatim:\n{statement}"
         );
     }
+    let definitions = include_str!("../definitions/triggers.sql");
+    assert!(
+        definitions.contains(&core.language_trigger.forward),
+        "definitions/triggers.sql does not carry the projection trigger"
+    );
 
     // The code flavor's baseline is checked from its own crate's test
     // (`flavors/code/tests/migrations_pg.rs`), which is where that file is.
@@ -2287,34 +1596,31 @@ fn frozen_core_sidecars() -> proxima_storage_pg::PgSidecarRegistryFrozen {
         .expect("the core registration freezes against the core contract")
 }
 
-/// The migration text IS the declaration-integrity generator's output.
+/// The definitions text IS the declaration-integrity generator's output.
 ///
 /// The same pin as `generator_output_is_the_migration_text`, one layer
 /// down: `crates/storage-pg/src/integrity.rs` has the same two consumers —
-/// the migration author, who pastes its output into the migration, and
+/// the definitions author, who pastes its output into the definitions, and
 /// `ensure_declaration_triggers`, which re-runs it against the catalog at
 /// boot. A hand edit to the trigger block, or a generator change the
 /// migration did not follow, fails here rather than at the next boot.
 ///
-/// The text lives in `0002_v009_declaration_triggers.sql`, not in the v008
-/// baseline: `0001_v008.sql` is frozen, and pasting into it would change the
-/// checksum of a version live databases have already applied. The second
-/// assertion below is what keeps that decision from quietly rotting.
+/// The text lives in `definitions/triggers.sql` alongside the other core
+/// trigger definitions.
 #[test]
 fn generated_declaration_triggers_are_the_migration_text() {
     use proxima_storage_pg::integrity::DECLARATION_TRIGGER_FUNCTION;
 
-    let migration = include_str!("../migrations/0002_v009_declaration_triggers.sql");
-    let baseline = include_str!("../migrations/0001_v008.sql");
+    let migration = include_str!("../definitions/triggers.sql");
+    let functions = include_str!("../definitions/functions.sql");
     assert!(
-        migration.contains(DECLARATION_TRIGGER_FUNCTION),
-        "0002_v009_declaration_triggers.sql does not carry the shared trigger function \
+        functions.contains(DECLARATION_TRIGGER_FUNCTION),
+        "definitions/functions.sql does not carry the shared trigger function \
          verbatim:\n{DECLARATION_TRIGGER_FUNCTION}"
     );
     assert!(
-        !baseline.contains("assert_memory_declares_sidecar"),
-        "the v008 baseline is frozen — declaration integrity ships as the additive 0002, \
-         never as an edit to a version live databases have already applied"
+        functions.contains("CREATE OR REPLACE FUNCTION"),
+        "definitions/functions.sql carries its trigger functions"
     );
 
     let artifacts = frozen_core_sidecars()
@@ -2325,18 +1631,10 @@ fn generated_declaration_triggers_are_the_migration_text() {
         6,
         "the retired call sidecar no longer receives a declaration trigger"
     );
-    // `goal_change_v1` joined after 0002 was applied, so its text is the
-    // unreleased 0025's goal-change section; the other six are 0002's.
-    let goal_change = include_str!("../migrations/0025_v031_goal_text_outbox_receipt.sql");
     for artifact in &artifacts {
-        let (file, text) = if artifact.forward.contains("proxima_core.goal_change_v1") {
-            ("0025_v031_goal_text_outbox_receipt.sql", goal_change)
-        } else {
-            ("0002_v009_declaration_triggers.sql", migration)
-        };
         assert!(
-            text.contains(&artifact.forward),
-            "{file} does not carry the generator's output verbatim:\n{}",
+            migration.contains(&artifact.forward),
+            "definitions/triggers.sql does not carry the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
@@ -2346,7 +1644,7 @@ fn generated_declaration_triggers_are_the_migration_text() {
 ///
 /// The sibling of `generated_declaration_triggers_are_the_migration_text`,
 /// one lane later. Split from it rather than folded into it because
-/// `0002_v009_declaration_triggers.sql` is applied in live databases: a
+/// `definitions/triggers.sql` is applied in live databases: a
 /// generator whose existing output grew would make that file's pin
 /// unsatisfiable, so the new families get a new generator, a new file and a
 /// new pin.
@@ -2359,13 +1657,12 @@ fn generated_declaration_triggers_are_the_migration_text() {
 fn generated_presence_triggers_are_the_migration_text() {
     use proxima_storage_pg::integrity::{DELETE_GUARD_FUNCTION, PRESENCE_TRIGGER_FUNCTION};
 
-    let migration = include_str!("../migrations/0009_declared_sidecar_presence.sql");
-    let baseline = include_str!("../migrations/0001_v008.sql");
-    let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
+    let migration = include_str!("../definitions/triggers.sql");
+    let functions = include_str!("../definitions/functions.sql");
     for function in [PRESENCE_TRIGGER_FUNCTION, DELETE_GUARD_FUNCTION] {
         assert!(
-            migration.contains(function),
-            "0009_declared_sidecar_presence.sql does not carry a shared function \
+            functions.contains(function),
+            "definitions/functions.sql does not carry a shared function \
              verbatim:\n{function}"
         );
     }
@@ -2374,9 +1671,8 @@ fn generated_presence_triggers_are_the_migration_text() {
         "assert_row_not_still_declared",
     ] {
         assert!(
-            !baseline.contains(name) && !declaration_lane.contains(name),
-            "the v008 baseline and the declaration lane are applied — stamp ⊆ rows ships as \
-             the additive 0009, never as an edit to a version live databases already carry"
+            functions.contains(name),
+            "definitions/functions.sql declares the shared function"
         );
     }
 
@@ -2414,20 +1710,10 @@ fn generated_presence_triggers_are_the_migration_text() {
         presence + orphan + repoint,
         "every generated artifact belongs to one of the three families"
     );
-    let goal_change = include_str!("../migrations/0025_v031_goal_text_outbox_receipt.sql");
     for artifact in &artifacts {
-        let (file, text) = if artifact.forward.contains("proxima_core.goal_change_v1")
-            || artifact
-                .forward
-                .contains("goal_change_v1_declared_by_memory")
-        {
-            ("0025_v031_goal_text_outbox_receipt.sql", goal_change)
-        } else {
-            ("0009_declared_sidecar_presence.sql", migration)
-        };
         assert!(
-            text.contains(&artifact.forward),
-            "{file} does not carry the generator's output verbatim:\n{}",
+            migration.contains(&artifact.forward),
+            "definitions/triggers.sql does not carry the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
@@ -2439,135 +1725,9 @@ fn generated_presence_triggers_are_the_migration_text() {
     );
 }
 
-/// The reference-integrity lane is deliberately one additive migration. Its
-/// trigger body is pinned here so a future rewrite cannot silently collapse
-/// the origin-only and reference-capable target sets back into one check.
-#[test]
-fn reference_integrity_migration_is_set_based_and_keeps_baselines_frozen() {
-    let migration = include_str!("../migrations/0003_v010_reference_integrity.sql");
-    let goal_refs_lane = include_str!("../migrations/0004_v011_goal_refs.sql");
-    let erased_targets_lane = include_str!("../migrations/0005_erased_pin_targets.sql");
-    let baseline = include_str!("../migrations/0001_v008.sql");
-    let declaration_lane = include_str!("../migrations/0002_v009_declaration_triggers.sql");
-    assert!(
-        !baseline.contains("cooled_origins_no_null_chk")
-            && !declaration_lane.contains("cooled_origins_no_null_chk"),
-        "the new cooled witness belongs to the additive 0003 migration"
-    );
-    assert!(
-        !migration.contains("erased_pin_target") && !goal_refs_lane.contains("erased_pin_target"),
-        "0003 and 0004 are frozen; erased-target behavior belongs in 0005"
-    );
-    for fragment in [
-        "CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()",
-        "FROM unnest(NEW.origins)",
-        "FROM unnest(NEW.refs)",
-        "FROM proxima_core.goal",
-        "WHERE t = ANY (NEW.origins || NEW.refs)",
-        "ORDER BY t",
-        "FOR SHARE",
-        "cooled_origins_no_null_chk",
-        "cooled_refs_no_null_chk",
-    ] {
-        assert!(
-            migration.contains(fragment),
-            "0003_v010_reference_integrity.sql is missing {fragment:?}"
-        );
-    }
-    for fragment in [
-        "CREATE TYPE proxima_core.pin_target_kind",
-        "CREATE TABLE proxima_core.erased_pin_target",
-        "CREATE OR REPLACE FUNCTION proxima_core.lock_pin_targets",
-        "CREATE TRIGGER memory_erased_pin_target",
-        "CREATE TRIGGER cooled_erased_pin_target",
-        "CREATE TRIGGER goal_erased_pin_target",
-        "CREATE TRIGGER cooled_identity_seal",
-        "CREATE TRIGGER cooled_append_only",
-        "NEW.goal_refs",
-        "historical_restore",
-        "e.kind = 'goal'",
-    ] {
-        assert!(
-            erased_targets_lane.contains(fragment),
-            "0005_erased_pin_targets.sql is missing {fragment:?}"
-        );
-    }
-}
-
-/// Exact Goal replay is new persisted state, so it gets one additive lane;
-/// no already-shipped file may absorb it without invalidating `SQLx` checksums.
-#[test]
-fn goal_replay_declaration_is_an_additive_immutable_lane() {
-    let migration = include_str!("../migrations/0006_v013_goal_replay_declaration.sql");
-    for frozen in [
-        include_str!("../migrations/0001_v008.sql"),
-        include_str!("../migrations/0002_v009_declaration_triggers.sql"),
-        include_str!("../migrations/0003_v010_reference_integrity.sql"),
-        include_str!("../migrations/0004_v011_goal_refs.sql"),
-        include_str!("../migrations/0005_erased_pin_targets.sql"),
-    ] {
-        assert!(
-            !frozen.contains("goal_replay_declaration"),
-            "Goal replay declarations belong only in the additive v0.0.13 lane"
-        );
-    }
-    for fragment in [
-        "CREATE TABLE proxima_core.goal_replay_declaration",
-        "goal_t uuid PRIMARY KEY",
-        "REFERENCES proxima_core.goal (t) ON DELETE CASCADE",
-        "goal_replay_declaration_object_chk",
-        "goal_replay_edge_count_chk",
-        "CREATE TRIGGER goal_replay_declaration_append_only",
-        "EXECUTE FUNCTION proxima_core.enforce_row_append_only()",
-    ] {
-        assert!(
-            migration.contains(fragment),
-            "0006_v013_goal_replay_declaration.sql is missing {fragment:?}"
-        );
-    }
-}
-
-/// Staged upload identity is new persisted state and therefore lives only in
-/// the additive 0007 lane; no frozen migration may absorb the column.
-#[test]
-fn upload_content_identity_is_an_additive_immutable_lane() {
-    let migration = include_str!("../migrations/0007_upload_content_identity.sql");
-    for frozen in [
-        include_str!("../migrations/0001_v008.sql"),
-        include_str!("../migrations/0002_v009_declaration_triggers.sql"),
-        include_str!("../migrations/0003_v010_reference_integrity.sql"),
-        include_str!("../migrations/0004_v011_goal_refs.sql"),
-        include_str!("../migrations/0005_erased_pin_targets.sql"),
-        include_str!("../migrations/0006_v013_goal_replay_declaration.sql"),
-    ] {
-        assert!(
-            !frozen.contains("blob_uploads_content_hash_chk"),
-            "upload content identity belongs only in the additive 0007 lane"
-        );
-    }
-    for fragment in [
-        "ADD COLUMN content_hash bytea",
-        "blob_uploads_content_hash_chk",
-        "octet_length(content_hash) = 32",
-        "SET content_hash = b.content_hash",
-        "WHERE u.blob_id = b.blob_id",
-        "u.owner_id = b.owner_id",
-        "u.status = 'completed'",
-        "u.completed_at IS NOT NULL",
-        "octet_length(u.sha256) = 32",
-        "COALESCE(u.mounted_from_upload_id, u.upload_id)::text",
-        "blob_uploads_terminal_content_idx",
-    ] {
-        assert!(
-            migration.contains(fragment),
-            "0007_upload_content_identity.sql is missing {fragment:?}"
-        );
-    }
-}
-
 /// `SQLx` records each migration as SHA-384 of its file minus the
 /// `ignored-chars` of `crates/storage-pg/sqlx.toml` (`\r`), and every deployed
-/// ledger holds exactly that. `scripts/check-migration-ranges.py` pins the
+/// ledger holds exactly that. `scripts/check-migrations.py` pins the
 /// released file bytes; this pins the computation over every embedded file,
 /// so an `ignored-chars` edit or an `SQLx` upgrade that hashes differently —
 /// which would change every recorded checksum at once — fails here.
@@ -2714,7 +1874,149 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
     result.expect("declaration integrity trigger test failed");
 }
 
-/// The checks of `goal_change_v1` refuse the rows they name; a re-run of 0025 keeps its rows.
+/// Final Goal replay declarations retain their key, checks, and cascade.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Goal fixture exercises each declaration refusal and its cascade"
+)]
+async fn goal_replay_declaration_enforces_identity_and_cascade() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name)
+        .await
+        .expect("PG is required for migrations tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
+        let pool = pg.pool_for_tests();
+        let owner = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'core/goal-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner)
+        .bind(handle)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $1, $2, 'replay', 'Active', 'replay-test')",
+        )
+        .bind(handle)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, '[]'::jsonb, 0)",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await
+        .expect_err("object check must refuse arrays");
+        assert_eq!(
+            err.as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23514".into()),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("goal_replay_declaration_object_chk"),
+            "{err}"
+        );
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, '{}'::jsonb, -1)",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await
+        .expect_err("edge count check must refuse negatives");
+        assert_eq!(
+            err.as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23514".into()),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("goal_replay_edge_count_chk"),
+            "{err}"
+        );
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, '{}'::jsonb, 0)",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, '{}'::jsonb, 0)",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await
+        .expect_err("goal_t is the primary key");
+        assert_eq!(
+            err.as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23505".into()),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("goal_replay_declaration_pkey"),
+            "{err}"
+        );
+        let missing_goal = Uuid::now_v7();
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+             VALUES ($1, '{}'::jsonb, 0)",
+        )
+        .bind(missing_goal)
+        .execute(pool)
+        .await
+        .expect_err("a replay declaration must reference an existing Goal");
+        assert_eq!(
+            err.as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23503".into()),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("goal_replay_declaration_goal_t_fkey"),
+            "{err}"
+        );
+        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+            .bind(handle)
+            .execute(pool)
+            .await?;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.goal_replay_declaration WHERE goal_t = $1",
+        )
+        .bind(handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            count, 0,
+            "the Goal foreign key cascades declaration removal"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("Goal replay declaration constraint test failed");
+}
+
+/// The checks of `goal_change_v1` refuse the rows they name.
 #[tokio::test]
 async fn goal_change_checks_refuse_the_rows_they_name() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -2765,7 +2067,6 @@ async fn goal_change_checks_refuse_the_rows_they_name() {
             }
         }
 
-        apply_core_migrations(pool, 25..=25).await?;
         let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal_change_v1")
             .fetch_one(pool)
             .await?;
@@ -2816,7 +2117,7 @@ async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
     result.expect("declaration trigger boot guardrail test failed");
 }
 
-/// The same guardrail, over the two families 0009 added.
+/// The same guardrail, over the two trigger families in `definitions/triggers.sql`.
 ///
 /// A dropped presence trigger is a table whose `stamp ⊆ rows` direction is
 /// unenforced; a presence trigger with the right NAME and the wrong
@@ -2949,7 +2250,8 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
     result.expect("presence trigger boot guardrail test failed");
 }
 
-/// The `row ⊆ stamp` direction was INSERT-only until 0009: a legal row could
+/// The `row ⊆ stamp` direction is enforced by the current definitions bundle:
+/// a legal row could
 /// be repointed onto a memory that declares nothing, which is the same
 /// undeclared row the INSERT guard exists to refuse.
 ///
@@ -3339,859 +2641,80 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
     result.expect("renamed-key declaration trigger test failed");
 }
 
-/// Apply the frozen v0.0.8 baseline and nothing else, exactly the way a
-/// database deployed on v0.0.8 carries it: the file's own bytes, and one
-/// ledger row whose checksum is the embedded migration's.
-///
-/// The checksum is taken from the migrator rather than recomputed here, so
-/// this fixture can never disagree with what `ensure_core_ledger_compatible`
-/// compares against.
-async fn seed_a_live_v008_database(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let migrator = proxima_storage_pg::core_migrator();
-    let baseline = migrator
-        .iter()
-        .find(|migration| migration.version == 1)
-        .expect("the embedded core set carries the v008 baseline");
-
-    // SQL-POLICY: fixed-fragment — the migration's own embedded text, the
-    // same bytes `core_migrator().run()` would execute. Nothing from outside
-    // the binary reaches it.
-    sqlx::raw_sql(baseline.sql.clone()).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
-             version bigint PRIMARY KEY,
-             description text NOT NULL,
-             installed_on timestamptz NOT NULL DEFAULT now(),
-             success boolean NOT NULL,
-             checksum bytea NOT NULL,
-             execution_time bigint NOT NULL
-         )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO public._sqlx_migrations
-             (version, description, success, checksum, execution_time)
-         VALUES ($1, $2, true, $3, 0)",
-    )
-    .bind(baseline.version)
-    .bind(baseline.description.as_ref())
-    .bind(baseline.checksum.as_ref())
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// A v0.0.8 database upgrades through the current head in place — no reset,
-/// no data loss.
-///
-/// This is the whole reason the declaration triggers ship as
-/// `0002_v009_declaration_triggers.sql` instead of being pasted into the
-/// baseline. Pasting them in would change the checksum of version 1, which
-/// every deployed database has already recorded, and
-/// `ensure_core_ledger_compatible` would answer `SchemaResetRequired` — a
-/// forced destructive reset with no schema reason behind it.
-///
-/// Three things are asserted, because the upgrade is only real if all three
-/// hold: boot does not demand a reset, the ledger carries every version, and
-/// the installed invariants are actually live afterwards.
+/// A membership names a group: the database refuses a user id or an
+/// unregistered id in the group position.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn a_v008_database_upgrades_to_head_in_place() {
+async fn the_database_refuses_a_membership_under_a_users_id()
+-> Result<(), Box<dyn std::error::Error>> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = connect_historical_fixture(&db_name).await?;
+    create_db(&db_name).await?;
+    let result = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
-        seed_a_live_v008_database(pool).await?;
-
-        // A row written under v0.0.8 that the upgrade must not disturb. The
-        // `BEFORE INSERT` triggers constrain what is written from here on;
-        // they do not validate history, and a migration that dropped this
-        // row would be exactly the destructive reset being avoided.
-        let owner = Uuid::now_v7();
-        let handle = Uuid::now_v7();
-        let survivor = Uuid::now_v7();
+        let (user, member) = (Uuid::now_v7(), Uuid::now_v7());
         sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-            .bind(owner)
+            .bind(user)
             .execute(pool)
             .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-             VALUES ($1, 'fact', 'upgrade.probe.v1', $2, $3)",
-        )
-        .bind(handle)
-        .bind(owner)
-        .bind(survivor)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'upgrade.probe.v1')",
-        )
-        .bind(handle)
-        .bind(survivor)
-        .bind(owner)
-        .execute(pool)
-        .await?;
-
-        apply_current_migrations(&pg).await.map_err(|err| {
-            format!("a live v0.0.8 database must upgrade in place, not reset: {err}")
-        })?;
-
-        let versions: Vec<i64> = sqlx::query_scalar(
-            "SELECT version FROM public._sqlx_migrations
-              WHERE success AND version <= $1 ORDER BY version",
-        )
-        .bind(proxima_storage_pg::CORE_MIGRATION_VERSION_CEILING)
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(
-            versions,
-            vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-            ],
-            "the upgrade appends every migration after the baseline; it does not re-apply or replace the \
-             baseline"
-        );
-
-        let memory_pin_checks: String = sqlx::query_scalar(
-            "SELECT pg_get_functiondef(
-                 'proxima_core.memory_pin_checks()'::regprocedure
-             )",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert!(
-            memory_pin_checks.contains("historical_restore")
-                && memory_pin_checks.contains("NEW.goal_refs"),
-            "the final migration must compose erased-target restore with typed Goal refs"
-        );
-        let cooled_seal: String = sqlx::query_scalar(
-            "SELECT pg_get_functiondef(
-                 'proxima_core.cooled_identity_seal()'::regprocedure
-             )",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert!(
-            cooled_seal.contains("m.goal_refs") && cooled_seal.contains("NEW.goal_refs"),
-            "the final cooled seal must cover the split Goal-reference column"
-        );
-        let cooled_append_only: String = sqlx::query_scalar(
-            "SELECT pg_get_functiondef(
-                 'proxima_core.cooled_append_only()'::regprocedure
-             )",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert!(
-            cooled_append_only.contains("NEW.goal_refs")
-                && cooled_append_only.contains("OLD.goal_refs")
-                && cooled_append_only.contains("NEW.cold_digest")
-                && cooled_append_only.contains("OLD.cold_digest"),
-            "the final cooled append-only guard must freeze the split Goal-reference column"
-        );
-
-        let still_there: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)")
-                .bind(survivor)
-                .fetch_one(pool)
-                .await?;
-        assert!(still_there, "the upgrade must not touch v0.0.8 data");
-
-        // The boot guardrail is the same one `Engine::boot` runs, so this
-        // asserts the upgraded catalog is what the generator expects — not
-        // merely that a migration ran.
-        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &frozen_core_sidecars())
+        for group_id in [user, Uuid::now_v7()] {
+            let err = sqlx::query(
+                "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+                 VALUES ($1, $2, 'viewer')",
+            )
+            .bind(group_id)
+            .bind(member)
+            .execute(pool)
             .await
-            .map_err(|err| {
-                format!("the upgraded database must satisfy the boot guardrail: {err}")
-            })?;
-
-        assert_current_schema(pool).await?;
-
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("v0.0.8 -> head in-place upgrade failed");
-}
-
-/// Applies the embedded core migrations in `versions`, straight from the
-/// shipped files, so a test can stand a database up at an older schema and
-/// then step it forward one migration at a time. The ledger is deliberately
-/// not written: nothing here goes on to call `run_migrations`.
-async fn apply_core_migrations(
-    pool: &sqlx::PgPool,
-    versions: std::ops::RangeInclusive<i64>,
-) -> Result<(), sqlx::Error> {
-    let migrator = proxima_storage_pg::core_migrator();
-    for migration in migrator.iter().filter(|m| versions.contains(&m.version)) {
-        sqlx::raw_sql(migration.sql.clone()).execute(pool).await?;
-    }
-    Ok(())
-}
-
-async fn insert_legacy_outbox_row(
-    pool: &sqlx::PgPool,
-    t: Uuid,
-    owner_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO proxima_core.publication_outbox
-             (t, owner_id, schema_id, schema_version, event_type, event_id,
-              envelope, envelope_digest)
-         VALUES ($1, $2, 'test/fact.v1', 1, 'fact.created', $3, '{}'::bytea, $4)",
-    )
-    .bind(t)
-    .bind(owner_id)
-    .bind(format!("F:{t}"))
-    .bind(vec![0x5a_u8; 32])
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn insert_backfill_fact(
-    pool: &sqlx::PgPool,
-    t: Uuid,
-    owner_id: Uuid,
-    source_id: Option<&str>,
-    ingest_key: Option<&str>,
-) -> Result<Uuid, sqlx::Error> {
-    let handle = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'fact', 'upgrade.fact.v1', $2, $3)",
-    )
-    .bind(handle)
-    .bind(owner_id)
-    .bind(t)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, source_id, ingest_key)
-         VALUES ($1, $2, 'fact', $3, 'upgrade.fact.v1', $4, $5)",
-    )
-    .bind(handle)
-    .bind(t)
-    .bind(owner_id)
-    .bind(source_id)
-    .bind(ingest_key)
-    .execute(pool)
-    .await?;
-    Ok(handle)
-}
-
-/// Migration 0012 preserves the captured owner across transfer and admits
-/// source evidence only from a retained hot/cooled Fact. A missing retained
-/// row, malformed one-NULL pair, hard-delete witness, or pruned outbox is not
-/// evidence and produces no origin.
-#[tokio::test]
-#[allow(clippy::too_many_lines)] // upgrade, transfer, hot/cold, malformed and exclusion proofs share one fixture
-async fn publication_origin_backfill_uses_original_outbox_owner_after_transfer() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let fixture = connect_historical_fixture(&db_name).await?;
-        let pool = fixture.pool_for_tests().clone();
-        let mut staged = proxima_storage_pg::core_migrator();
-        staged.migrations = std::borrow::Cow::Owned(staged.iter().filter(|m| m.version <= 11).cloned().collect());
-        staged.run(&pool).await?;
-
-        let original_personal = Uuid::now_v7();
-        let current_group = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'), ($2, 'group')",
-        )
-        .bind(original_personal)
-        .bind(current_group)
-        .execute(&pool)
-        .await?;
-
-        let transferred = Uuid::now_v7();
-        let hot = Uuid::now_v7();
-        let hot_transferred = Uuid::now_v7();
-        let known_none = Uuid::now_v7();
-        let malformed = Uuid::now_v7();
-        let malformed_reverse = Uuid::now_v7();
-        let pruned = Uuid::now_v7();
-        let orphan = Uuid::now_v7();
-        let witnessed = Uuid::now_v7();
-
-        insert_backfill_fact(&pool, transferred, original_personal, Some("repo-a"), Some("k-a"))
-            .await?;
-        insert_backfill_fact(&pool, hot, current_group, Some("repo-hot"), Some("k-hot")).await?;
-        insert_backfill_fact(
-            &pool,
-            hot_transferred,
-            original_personal,
-            Some("repo-hot-transfer"),
-            Some("k-hot-transfer"),
-        )
-        .await?;
-        insert_backfill_fact(&pool, known_none, current_group, None, None).await?;
-        insert_backfill_fact(&pool, malformed, current_group, Some("repo-b"), Some("k-b"))
-            .await?;
-        insert_backfill_fact(
-            &pool,
-            malformed_reverse,
-            current_group,
-            Some("repo-d"),
-            Some("k-d"),
-        )
-        .await?;
-        insert_backfill_fact(&pool, pruned, current_group, Some("repo-c"), Some("k-c")).await?;
-        insert_backfill_fact(&pool, witnessed, original_personal, None, None).await?;
-
-        insert_legacy_outbox_row(&pool, transferred, original_personal).await?;
-        insert_legacy_outbox_row(&pool, hot, current_group).await?;
-        insert_legacy_outbox_row(&pool, hot_transferred, original_personal).await?;
-        insert_legacy_outbox_row(&pool, known_none, current_group).await?;
-        insert_legacy_outbox_row(&pool, malformed, current_group).await?;
-        insert_legacy_outbox_row(&pool, malformed_reverse, current_group).await?;
-        insert_legacy_outbox_row(&pool, pruned, current_group).await?;
-        insert_legacy_outbox_row(&pool, orphan, current_group).await?;
-        insert_legacy_outbox_row(&pool, witnessed, original_personal).await?;
-
-        // Model the released schema's transfer/cooling writes. Current
-        // serving storage requires current RLS and cannot serve a v0.0.12
-        // fixture; current transfer and cold behavior have dedicated tests.
-        for t in [transferred, hot_transferred] {
-            sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
-                .bind(t).bind(current_group).execute(&pool).await?;
-            sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE t = $1")
-                .bind(t).bind(current_group).execute(&pool).await?;
+            .expect_err("a membership's group must be a registered group");
+            assert!(
+                err.to_string()
+                    .contains("group_memberships_group_registered_fk"),
+                "{err}"
+            );
         }
-        for t in [transferred, known_none, malformed, malformed_reverse, pruned] {
-            sqlx::query(
-                "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, blob_id, content_id,
-                  source_id, ingest_key, origins, refs, goal_refs)
-                 SELECT t, handle, owner_id, kind, 'cold/' || t, blob_id, content_id,
-                        source_id, ingest_key, origins, refs, goal_refs
-                 FROM proxima_core.memory WHERE t = $1",
-            ).bind(t).execute(&pool).await?;
-            sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-                .bind(t).execute(&pool).await?;
-        }
-        // Manufacture a malformed legacy cooled pair while preserving every
-        // other identity seal. The append-only exception is test-local data
-        // corruption, not a production write path.
-        sqlx::query("ALTER TABLE proxima_core.cooled DISABLE TRIGGER cooled_append_only")
-            .execute(&pool)
-            .await?;
-        sqlx::query("UPDATE proxima_core.cooled SET ingest_key = NULL WHERE t = $1")
-            .bind(malformed)
-            .execute(&pool)
-            .await?;
-        sqlx::query("UPDATE proxima_core.cooled SET source_id = NULL WHERE t = $1")
-            .bind(malformed_reverse)
-            .execute(&pool)
-            .await?;
-        sqlx::query("ALTER TABLE proxima_core.cooled ENABLE TRIGGER cooled_append_only")
-            .execute(&pool)
-            .await?;
-
-        // This published row was legitimately removed by old outbox
-        // retention before provenance metadata existed. Retained Fact source
-        // evidence alone must not invent a publication origin.
-        sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
-            .bind(pruned)
-            .execute(&pool)
-            .await?;
-
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-            .bind(witnessed)
-            .execute(&pool)
-            .await?;
-        let witness_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.group_memberships
+                 (group_id, member_user_id, relation, group_kind)
+             VALUES ($1, $2, 'viewer', 'personal')",
         )
-        .bind(witnessed)
-        .fetch_one(&pool)
-        .await?;
-        assert!(witness_exists, "the excluded identity has a real erase witness");
-
-        apply_core_migrations(&pool, 12..=12).await?;
-        let rows: Vec<(Uuid, Uuid, String, Option<String>)> = sqlx::query_as(
-            "SELECT t, original_owner_id, original_owner_kind::text, source_id
-               FROM proxima_core.publication_origin ORDER BY t",
-        )
-        .fetch_all(&pool)
-        .await?;
-        let mut expected = vec![
-            (transferred, original_personal, "personal".into(), Some("repo-a".into())),
-            (hot, current_group, "group".into(), Some("repo-hot".into())),
-            (
-                hot_transferred,
-                original_personal,
-                "personal".into(),
-                Some("repo-hot-transfer".into()),
-            ),
-            (known_none, current_group, "group".into(), None),
-        ];
-        expected.sort_by_key(|row| row.0);
-        assert_eq!(
-            rows,
-            expected,
-            "only rows with retained source evidence are admitted, and transfer keeps the outbox owner"
+        .bind(user)
+        .bind(member)
+        .execute(pool)
+        .await
+        .expect_err("the kind column cannot be spelled around");
+        assert!(
+            err.to_string().contains("group_memberships_group_kind_chk"),
+            "{err}"
         );
-        Ok(())
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("publication-origin upgrade backfill failed");
-}
-
-struct UploadContentIdentityFixture {
-    completed_upload: Uuid,
-    pending_upload: Uuid,
-    terminal_upload: Uuid,
-    cross_owner_upload: Uuid,
-    noncanonical_upload: Uuid,
-    hash: Vec<u8>,
-}
-
-async fn seed_upload_content_identity_fixture(
-    pool: &sqlx::PgPool,
-) -> Result<UploadContentIdentityFixture, sqlx::Error> {
-    let owner = Uuid::now_v7();
-    let blob_id = Uuid::now_v7();
-    let completed_upload = Uuid::now_v7();
-    let pending_upload = Uuid::now_v7();
-    let terminal_upload = Uuid::now_v7();
-    let cross_owner_upload = Uuid::now_v7();
-    let noncanonical_upload = Uuid::now_v7();
-    let other_owner = Uuid::now_v7();
-    let hash = vec![91_u8; 32];
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'), ($2, 'personal')",
-    )
-    .bind(owner)
-    .bind(other_owner)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.blob (blob_id, owner_id, schema_id, content_hash)
-         VALUES ($1, $2, 'core/uploaded-blob-v1', $3)",
-    )
-    .bind(blob_id)
-    .bind(owner)
-    .bind(&hash)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
-            (upload_id, owner_id, bucket, object_key, filename, mime,
-             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
-         VALUES
-            ($1, $3, 'bucket', 'objects/' || $1::text, 'a', 'application/octet-stream',
-             1, 'completed', $4, $5, now() + interval '1 day', now()),
-            ($2, $3, 'bucket', 'pending/pending', 'b', 'application/octet-stream',
-             1, 'pending', NULL, NULL, now() + interval '1 day', NULL)",
-    )
-    .bind(completed_upload)
-    .bind(pending_upload)
-    .bind(owner)
-    .bind(blob_id)
-    .bind(&hash)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
-            (upload_id, owner_id, bucket, object_key, filename, mime,
-             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
-         VALUES
-            ($1, $2, 'bucket', 'objects/not-the-minting-id', 'e',
-             'application/octet-stream', 1, 'completed', $3, $4,
-             now() + interval '1 day', now())",
-    )
-    .bind(noncanonical_upload)
-    .bind(owner)
-    .bind(blob_id)
-    .bind(&hash)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
-            (upload_id, owner_id, bucket, object_key, filename, mime,
-             expected_byte_len, status, blob_id, sha256, expires_at, completed_at)
-         VALUES
-            ($1, $3, 'bucket', 'objects/' || $1::text, 'c',
-             'application/octet-stream', 1, 'aborted', $4, $6,
-             now() + interval '1 day', NULL),
-            ($2, $5, 'bucket', 'objects/' || $2::text, 'd',
-             'application/octet-stream', 1, 'completed', $4, $6,
-             now() + interval '1 day', now())",
-    )
-    .bind(terminal_upload)
-    .bind(cross_owner_upload)
-    .bind(owner)
-    .bind(blob_id)
-    .bind(other_owner)
-    .bind(&hash)
-    .execute(pool)
-    .await?;
-    Ok(UploadContentIdentityFixture {
-        completed_upload,
-        pending_upload,
-        terminal_upload,
-        cross_owner_upload,
-        noncanonical_upload,
-        hash,
-    })
-}
-
-/// Migration 0007 learns exact staged content identity without guessing
-/// interrupted uploads. Rows already carrying a complete, canonical publication inherit
-/// its address; every incomplete or malformed row remains unknown.
-#[tokio::test]
-async fn upload_content_identity_backfills_only_rows_with_an_exact_blob() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
-        apply_core_migrations(&pool, 1..=6).await?;
-        let UploadContentIdentityFixture {
-            completed_upload,
-            pending_upload,
-            terminal_upload,
-            cross_owner_upload,
-            noncanonical_upload,
-            hash,
-        } = seed_upload_content_identity_fixture(&pool).await?;
-
-        apply_core_migrations(&pool, 7..=7).await?;
-        let completed_hash: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
-        )
-        .bind(completed_upload)
-        .fetch_one(&pool)
-        .await?;
-        let pending_hash: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
-        )
-        .bind(pending_upload)
-        .fetch_one(&pool)
-        .await?;
-        let terminal_hash: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
-        )
-        .bind(terminal_upload)
-        .fetch_one(&pool)
-        .await?;
-        let cross_owner_hash: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
-        )
-        .bind(cross_owner_upload)
-        .fetch_one(&pool)
-        .await?;
-        let noncanonical_hash: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT content_hash FROM proxima_core.blob_uploads WHERE upload_id = $1",
-        )
-        .bind(noncanonical_upload)
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(completed_hash, Some(hash));
-        assert_eq!(pending_hash, None, "an interrupted upload is not guessed");
-        assert_eq!(
-            terminal_hash, None,
-            "terminal cleanup is not promoted back into publication authority"
-        );
-        assert_eq!(
-            cross_owner_hash, None,
-            "a legacy cross-owner pointer is not blessed as content authority"
-        );
-        assert_eq!(
-            noncanonical_hash, None,
-            "a completed row with an unminted locator is not blessed"
-        );
-
-        let malformed = sqlx::query(
-            "UPDATE proxima_core.blob_uploads SET content_hash = decode('00', 'hex')
-              WHERE upload_id = $1",
-        )
-        .bind(pending_upload)
-        .execute(&pool)
-        .await
-        .expect_err("content identity is exactly 32 bytes");
-        assert_eq!(
-            malformed
-                .as_database_error()
-                .and_then(sqlx::error::DatabaseError::code),
-            Some("23514".into())
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("upload content identity migration failed");
-}
-
-/// Migration 0004 splits Goal references out of `refs` into their own column. The
-/// rows already on disk were written when `refs` was the only place a Goal
-/// reference could go, so the migration has to move them -- and move only
-/// them, leaving Memory references where they are.
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn goal_refs_migration_backfills_goals_out_of_the_legacy_refs_column() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pool = sqlx::PgPool::connect(&url).await?;
-        // Stop one short of the split: this is the 0003 schema, where a
-        // Goal t in `refs` is exactly what the writer produced.
-        apply_core_migrations(&pool, 1..=3).await?;
-        assert!(
-            !sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (
-                     SELECT 1 FROM information_schema.columns
-                      WHERE table_schema = 'proxima_core'
-                        AND table_name = 'memory'
-                        AND column_name = 'goal_refs'
-                 )",
-            )
-            .fetch_one(&pool)
-            .await?,
-            "the fixture must be seeded before the column exists"
-        );
-
-        let owner = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-            .bind(owner)
-            .execute(&pool)
-            .await?;
-
-        let goal_handle = Uuid::now_v7();
-        let goal_t = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
-             VALUES ($1, 'test/goal-v1', $2, $3)",
-        )
-        .bind(goal_handle)
-        .bind(owner)
-        .bind(goal_t)
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id)
-             VALUES ($1, $2, $3, 'legacy target', 'Active', 'legacy-goal')",
-        )
-        .bind(goal_handle)
-        .bind(goal_t)
-        .bind(owner)
-        .execute(&pool)
-        .await?;
-
-        let seed_fact = async |refs: Vec<Uuid>| -> Result<Uuid, sqlx::Error> {
-            let handle = Uuid::now_v7();
-            let t = Uuid::now_v7();
-            sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-                 VALUES ($1, 'fact', 'test/fact-v1', $2, $3)",
-            )
-            .bind(handle)
-            .bind(owner)
-            .bind(t)
-            .execute(&pool)
-            .await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, refs)
-                 VALUES ($1, $2, 'fact', $3, 'test/fact-v1', $4)",
-            )
-            .bind(handle)
-            .bind(t)
-            .bind(owner)
-            .bind(&refs)
-            .execute(&pool)
-            .await?;
-            Ok(t)
-        };
-
-        let plain = seed_fact(Vec::new()).await?;
-        let memory_only = seed_fact(vec![plain]).await?;
-        // The row the migration exists for: one Goal and one Memory in the
-        // same untyped array.
-        let mixed = seed_fact(vec![plain, goal_t]).await?;
-        let goal_only = seed_fact(vec![goal_t]).await?;
-
-        apply_core_migrations(&pool, 4..=4).await?;
-
-        let stored = async |t: Uuid| -> Result<(Vec<Uuid>, Vec<Uuid>), sqlx::Error> {
-            sqlx::query_as("SELECT refs, goal_refs FROM proxima_core.memory WHERE t = $1")
-                .bind(t)
-                .fetch_one(&pool)
-                .await
-        };
-        assert_eq!(stored(plain).await?, (vec![], vec![]));
-        assert_eq!(
-            stored(memory_only).await?,
-            (vec![plain], vec![]),
-            "a Memory reference must stay in refs and must not be re-typed as a Goal"
-        );
-        assert_eq!(
-            stored(mixed).await?,
-            (vec![plain], vec![goal_t]),
-            "the split must partition a mixed array, not move the whole of it"
-        );
-        assert_eq!(stored(goal_only).await?, (vec![], vec![goal_t]));
-
-        // A backfilled row has to be findable on the spine the reader now
-        // queries -- that is what makes it project Visible rather than
-        // silently disappear. The Goal-target read lane scans `goal_refs`,
-        // so this is the predicate that decides it.
-        let mut found: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.memory WHERE goal_refs && ARRAY[$1]::uuid[]",
-        )
-        .bind(goal_t)
-        .fetch_all(&pool)
-        .await?;
-        found.sort();
-        let mut want = vec![mixed, goal_only];
-        want.sort();
-        assert_eq!(
-            found, want,
-            "every backfilled row must be found on the Goal spine"
-        );
-
-        // And the move is a move, not a copy: the pre-split predicate finds
-        // nothing, so no reader can reach the Goal through `refs` any more.
-        let stale: Vec<Uuid> =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE refs && ARRAY[$1]::uuid[]")
-                .bind(goal_t)
-                .fetch_all(&pool)
-                .await?;
-        assert!(
-            stale.is_empty(),
-            "the backfill must move Goal ids out of refs, not copy them: {stale:?}"
-        );
-
-        // A database paused at the frozen 0004 split must reach the same
-        // final catalog as a fresh apply when the witness lane is replayed.
-        apply_core_migrations(&pool, 5..=5).await?;
-        assert!(
-            sqlx::query_scalar::<_, bool>(
-                "SELECT to_regclass('proxima_core.erased_pin_target') IS NOT NULL",
-            )
-            .fetch_one(&pool)
-            .await?,
-            "the 0005 witness lane must apply after the frozen 0004 split"
-        );
-
-        // The backfill drops the append-only guard for one statement. It has
-        // to be back afterwards, or the split would leave `memory` writable.
-        let err = sqlx::query("UPDATE proxima_core.memory SET refs = '{}' WHERE t = $1")
-            .bind(mixed)
-            .execute(&pool)
-            .await
-            .expect_err("append-only must be restored after the backfill");
-        assert!(
-            err.to_string().contains("append-only"),
-            "the restored guard must be the append-only one: {err}"
-        );
-
-        // And the new column joins that guard rather than becoming the one
-        // mutable pin array.
-        let err = sqlx::query("UPDATE proxima_core.memory SET goal_refs = '{}' WHERE t = $1")
-            .bind(mixed)
-            .execute(&pool)
-            .await
-            .expect_err("goal_refs must be append-only too");
-        assert!(
-            err.to_string().contains("append-only"),
-            "goal_refs must be covered by the append-only guard: {err}"
-        );
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("goal_refs backfill test failed");
-}
-
-/// Apply the current lane under its required platform role. The caller keeps
-/// its admin connection only for fixture setup and independent SQL assertions.
-async fn apply_current_migrations(
-    pg: &impl DatabaseFixture,
-) -> Result<(), proxima_core::StorageError> {
-    let database: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pg.pool_for_tests())
-        .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database)
-        .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
-        &platform_url,
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
-    )
-    .await?;
-    migration.run_migrations().await
-}
-
-/// Migration and fixture authority, including before RLS exists. This pool
-/// is deliberately never wrapped in serving `PgStorage`.
-async fn connect_historical_fixture(
-    db_name: &str,
-) -> Result<MigrationFixture, Box<dyn std::error::Error>> {
-    let (_, platform_url) = proxima_pg_testkit::split_role_urls(db_name).await?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&platform_url)
-        .await?;
-    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
-        .execute(&pool)
-        .await?;
-    Ok(MigrationFixture(pool))
-}
-
-async fn marker_platform_pool(
-    admin: &sqlx::PgPool,
-) -> Result<sqlx::PgPool, proxima_core::StorageError> {
-    let database: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(admin)
-        .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database)
-        .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    sqlx::PgPool::connect(&platform_url)
-        .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))
-}
-
-async fn assert_current_markers(admin: &sqlx::PgPool) -> Result<(), proxima_core::StorageError> {
-    let platform = marker_platform_pool(admin).await?;
-    let result = proxima_storage_pg::ensure_core_schema_markers(&platform).await;
-    platform.close().await;
     result
 }
 
-async fn assert_current_schema(admin: &sqlx::PgPool) -> Result<(), proxima_core::StorageError> {
-    let platform = marker_platform_pool(admin).await?;
-    let result = proxima_storage_pg::ensure_core_schema_current(&platform).await;
-    platform.close().await;
+#[tokio::test]
+async fn publication_record_state_rejects_claimed() -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await?;
+    let result = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        apply_current_migrations(&pg).await?;
+        let error = sqlx::query("SELECT 'claimed'::proxima_core.publication_record_state")
+            .execute(pg.pool_for_tests())
+            .await
+            .expect_err("record state must have no claimed variant");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .as_deref(),
+            Some("22P02")
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
     result
 }

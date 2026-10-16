@@ -1,4 +1,4 @@
-//! Coarse pin-lock mode (0022): a transaction holding SHARE ROW EXCLUSIVE or
+//! Coarse pin-lock mode: a transaction holding SHARE ROW EXCLUSIVE or
 //! stronger on `memory`, `cooled` and `goal` stops taking one advisory lock
 //! per pin target once it has taken 256. Requires local PG.
 #![allow(clippy::too_many_lines)]
@@ -16,7 +16,7 @@ use proxima_core::{
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::erase_memory;
-use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_migrator, core_pg_sidecars};
+use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_pg_sidecars};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
@@ -181,19 +181,10 @@ async fn migrated_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
     Ok(pg)
 }
 
-/// The pre-owner-RLS fixture lane plus 0022, staged the way the enforced
-/// fixtures stage theirs. The engine's test permits carry no `OwnerScope`,
-/// which enforced RLS requires; the pin check under test is the same routine.
+/// A complete core template used by the coarse lock tests.
 async fn engine_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
     create_core_db(name).await?;
     let pg = PgStorage::connect_for_tests(db_url(name)).await?;
-    let coarse = core_migrator()
-        .iter()
-        .find(|migration| migration.version == 22)
-        .ok_or("0022 is embedded")?
-        .sql
-        .clone();
-    sqlx::raw_sql(coarse).execute(pg.pool_for_tests()).await?;
     Ok(pg)
 }
 

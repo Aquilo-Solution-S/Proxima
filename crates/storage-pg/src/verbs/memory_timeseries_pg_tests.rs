@@ -489,12 +489,12 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
 
 #[test]
 fn memory_pin_checks_is_set_based() {
-    let src = include_str!("../../migrations/0001_v008.sql");
+    let src = include_str!("../../definitions/functions.sql");
     let start = src
-        .find("CREATE FUNCTION proxima_core.memory_pin_checks")
+        .find("CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks")
         .expect("memory_pin_checks");
     let next = src[start + 1..]
-        .find("CREATE FUNCTION")
+        .find("CREATE OR REPLACE FUNCTION")
         .expect("next function");
     let body = &src[start..start + 1 + next];
     assert!(

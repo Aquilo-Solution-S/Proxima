@@ -3,19 +3,18 @@ use proxima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
+use proxima_storage_pg::{
+    PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgTuning, assert_runtime_rls,
+    begin_owner_transaction,
+};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::borrow::Cow;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, timeout};
 
 static DDL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-const STAGED_CODE_OWNER_RLS: &str =
-    include_str!("../../../flavors/code/migrations/20260922000020_v015_owner_rls.sql");
 
 struct SyntheticVerifier {
     roles: OwnerRoles,
@@ -116,6 +115,13 @@ async fn runtime_pool(database: &str, role: &str, password: &str) -> PgPool {
         .connect_with(options)
         .await
         .unwrap()
+}
+
+fn role_url(database: &str, role: &str, password: &str) -> String {
+    let url = db_url(database);
+    let (scheme, rest) = url.split_once("://").unwrap();
+    let (_credentials, host) = rest.rsplit_once('@').unwrap();
+    format!("{scheme}://{role}:{password}@{host}")
 }
 
 #[expect(
@@ -244,58 +250,14 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
     )
 }
 
-async fn apply_owner_rls_fixtures(pool: &PgPool) {
-    let mut connection = pool.acquire().await.unwrap().detach();
-    let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
-        .await
-        .unwrap();
-    let core_migrations = proxima_storage_pg::core_migrator();
-    // The fixture stages core through 0013, so replay the remaining core
-    // migrations exactly once in production order.
-    for migration in core_migrations
-        .iter()
-        .filter(|migration| migration.version >= 14)
-    {
-        sqlx::raw_sql(migration.sql.clone())
-            .execute(transaction.as_mut())
-            .await
-            .unwrap();
-    }
-    sqlx::raw_sql(sqlx::AssertSqlSafe(STAGED_CODE_OWNER_RLS.to_owned()))
-        .execute(transaction.as_mut())
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
-}
-
 #[expect(
-    clippy::uninlined_format_args,
     clippy::too_many_lines,
-    reason = "full migrated RLS fixture owns all setup steps"
+    reason = "the complete split-role fixture keeps its setup together"
 )]
 async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String, String) {
     let database = unique_db_name("proxima_rls_full");
     create_db(&database).await.unwrap();
     let admin = PgPool::connect(&db_url(&database)).await.unwrap();
-    let mut core_migrations = proxima_storage_pg::core_migrator();
-    core_migrations.migrations = Cow::Owned(
-        core_migrations
-            .iter()
-            .filter(|migration| migration.version < 14)
-            .cloned()
-            .collect(),
-    );
-    core_migrations.run(&admin).await.unwrap();
-    let mut flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
-    flavor_migrations.migrations = Cow::Owned(
-        flavor_migrations
-            .iter()
-            .filter(|migration| migration.version < 20_260_922_000_020)
-            .cloned()
-            .collect(),
-    );
-    flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
-    flavor_migrations.run(&admin).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
     let platform = format!("rls_platform_{suffix}");
     let runtime = format!("rls_runtime_full_{suffix}");
@@ -311,22 +273,52 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         )
         .await;
     }
+    // The extensions are cluster capabilities; the platform role owns the
+    // schemas and runs the migration path that applies the baseline and
+    // definitions under NOSUPERUSER NOBYPASSRLS.
+    execute(&admin, "CREATE EXTENSION IF NOT EXISTS vector").await;
+    execute(&admin, "CREATE EXTENSION IF NOT EXISTS btree_gin").await;
     execute(
         &admin,
         &format!(
-            "DO $$ DECLARE f record; BEGIN FOR f IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('proxima_core','proxima_code') LOOP EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I', f.nspname, f.proname, f.args, '{}'); END LOOP; END $$",
-            platform
+            "GRANT CREATE ON DATABASE {} TO {}",
+            quoted_identifier(&database),
+            quoted_identifier(&platform)
         ),
     )
     .await;
     execute(
         &admin,
         &format!(
-            "DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname IN ('proxima_core','proxima_code') AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.nspname, r.relname, '{}'); END LOOP; END $$",
-            platform
+            "GRANT CREATE ON SCHEMA public TO {}",
+            quoted_identifier(&platform)
         ),
     )
     .await;
+    let platform_url = role_url(&database, &platform, &password);
+    let platform_storage = PgMigrationStorage::connect_with_config(
+        &platform_url,
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .unwrap();
+    platform_storage.run_migrations().await.unwrap();
+    let platform_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            PgConnectOptions::from_str(&role_url(&database, &platform, &password)).unwrap(),
+        )
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")
+        .execute(&platform_pool)
+        .await
+        .unwrap();
+    let mut flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
+    flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
+    flavor_migrations.run(&platform_pool).await.unwrap();
+    platform_pool.close().await;
     execute(
         &admin,
         &format!(
@@ -344,23 +336,6 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         ),
     )
     .await;
-    execute(
-        &admin,
-        &format!(
-            "ALTER SCHEMA proxima_core OWNER TO {}",
-            quoted_identifier(&platform)
-        ),
-    )
-    .await;
-    execute(
-        &admin,
-        &format!(
-            "ALTER SCHEMA proxima_code OWNER TO {}",
-            quoted_identifier(&platform)
-        ),
-    )
-    .await;
-    let platform_connection = runtime_pool(&database, &platform, &password).await;
     let scope_grant: bool =
         sqlx::query_scalar("SELECT has_parameter_privilege($1, 'app.proxima_scope', 'SET')")
             .bind(&platform)
@@ -371,20 +346,6 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         !scope_grant,
         "owner RLS must apply without a parameter grant"
     );
-    apply_owner_rls_fixtures(&platform_connection).await;
-    platform_connection.close().await;
-    let flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
-    let mut code_transaction = admin.begin().await.unwrap();
-    for migration in flavor_migrations
-        .iter()
-        .filter(|migration| migration.version > 20_260_922_000_020)
-    {
-        sqlx::raw_sql(migration.sql.clone())
-            .execute(&mut *code_transaction)
-            .await
-            .unwrap();
-    }
-    code_transaction.commit().await.unwrap();
     let platform_connection = runtime_pool(&database, &platform, &password).await;
     let runtime_connection = runtime_pool(&database, &runtime, &password).await;
     (

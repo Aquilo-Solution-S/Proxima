@@ -2,14 +2,110 @@
 
 use std::borrow::Cow;
 
-use proxima::{MigrationError, NamedMigrator, pending_migrations, run_core_and_flavor_migrations};
+#[path = "../../storage-pg/tests/support/migration_reset.rs"]
+mod migration_reset_support;
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
+use migration_reset_support::pre_reset_pairs;
+use proxima::{
+    CoreAdoption, MigrationError, NamedMigrator, PendingMigration, pending_migrations,
+    preflight_without_migrations, run_core_and_flavor_migrations,
+};
 use proxima_pg_testkit::SplitRoleDb;
-use proxima_storage_pg::{PgMigrationStorage, PgPoolConfig, PgTuning};
+use proxima_storage_pg::{
+    PgMigrationStorage, PgPoolConfig, PgTuning, adopt::PRE_RESET, core_migrator,
+};
+use split_core_db::clone_split_core_db;
 use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 use sqlx::{PgPool, SqlSafeStr};
 
 const FIRST: i64 = 20_991_001_000_010;
 const UNKNOWN: i64 = FIRST + 1;
+
+async fn core_history_db(count: usize) -> SplitRoleDb {
+    let db = clone_split_core_db("proxima_policy_adoption")
+        .await
+        .expect("owned PG required");
+    let admin = PgPool::connect(&db.admin_url()).await.expect("admin pool");
+    sqlx::query("DELETE FROM public._sqlx_migrations")
+        .execute(&admin)
+        .await
+        .expect("clear current core ledger");
+    for (version, checksum) in pre_reset_pairs(&PRE_RESET).into_iter().take(count) {
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES ($1, 'pre-reset', true, $2, 0)",
+        )
+        .bind(version)
+        .bind(checksum)
+        .execute(&admin)
+        .await
+        .expect("pre-reset ledger row");
+    }
+    admin.close().await;
+    db
+}
+
+#[tokio::test]
+async fn the_facade_adopts_the_complete_pre_reset_main_ledger() {
+    let db = core_history_db(PRE_RESET.len()).await;
+    let pg = storage(&db).await;
+    let before = pending_migrations(&pg.clone_pool_for_backend(), &[])
+        .await
+        .expect("complete pre-reset history is recognized by the planner");
+    assert!(
+        before
+            .iter()
+            .any(|pending| matches!(pending, PendingMigration::CoreAdoption { .. }))
+    );
+
+    run_core_and_flavor_migrations(&pg, Vec::new())
+        .await
+        .expect("complete pre-reset history is adopted");
+    preflight_without_migrations(&pg, Vec::new())
+        .await
+        .expect("adopted history passes facade preflight");
+
+    let pool = pg.clone_pool_for_backend();
+    let baseline = core_migrator().iter().next().expect("baseline").version;
+    let rows: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("core ledger");
+    assert_eq!(rows.len(), PRE_RESET.len() + 1);
+    assert_eq!(rows.last().copied(), Some(baseline));
+}
+
+#[tokio::test]
+async fn the_facade_classifies_the_v0035_shaped_ledger_as_adoption() {
+    let db = core_history_db(30).await;
+    let pg = storage(&db).await;
+    let pool = pg.clone_pool_for_backend();
+    let ledger_before: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("v0.0.35 ledger");
+    let plan = pending_migrations(&pg.clone_pool_for_backend(), &[])
+        .await
+        .expect("v0.0.35 history is recognized by the planner");
+    assert!(plan.iter().any(|pending| matches!(
+        pending,
+        PendingMigration::CoreAdoption {
+            adoption: CoreAdoption::Bridge,
+            ..
+        }
+    )));
+    let after: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("v0.0.35 ledger after plan");
+    assert_eq!(after, ledger_before, "planning must not run the bridge");
+}
 
 fn source(id: &'static str, version: i64, shared: bool) -> NamedMigrator {
     let migrator = Migrator {
@@ -174,10 +270,14 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
             .is_empty()
     );
 
-    sqlx::query("UPDATE public._sqlx_migrations SET checksum = ''::bytea WHERE version = 5")
-        .execute(&pool)
-        .await
-        .expect("checksum corruption");
+    let baseline = core_migrator().iter().next().expect("baseline").version;
+    let amended =
+        sqlx::query("UPDATE public._sqlx_migrations SET checksum = ''::bytea WHERE version = $1")
+            .bind(baseline)
+            .execute(&pool)
+            .await
+            .expect("checksum corruption");
+    assert_eq!(amended.rows_affected(), 1, "baseline row exists to corrupt");
     assert!(
         matches!(
             run_core_and_flavor_migrations_with_policy(&pg, vec![], MissingMigrationPolicy::Allow)

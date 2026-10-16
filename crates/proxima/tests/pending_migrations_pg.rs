@@ -10,11 +10,14 @@
 mod split_core_db;
 
 use std::borrow::Cow;
+use std::fmt::Write;
 use std::time::Duration;
 
 use proxima::{
-    LedgerConflict, MigrationError, NamedMigrator, PendingMigration, pending_migrations,
-    run_core_and_flavor_migrations,
+    LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator, PendingMigration,
+    pending_migrations, pending_migrations_with_policy, preflight_without_migrations,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
+    run_core_and_flavor_migrations_with_policy,
 };
 use proxima_pg_testkit::{
     DbGuard, SplitRoleDb, create_db, db_url, split_role_urls, unique_db_name,
@@ -157,53 +160,6 @@ impl Db {
         Self::open(Guard::Cloned(clone)).await
     }
 
-    /// A live v0.0.8 database: the baseline applied, nothing after it.
-    async fn core_at_the_v008_baseline() -> Self {
-        let name = unique_db_name("proxima_plan");
-        create_db(&name).await.expect("PG required");
-        let guard = DbGuard::adopt(name);
-        let admin = PgPool::connect(&db_url(guard.name()))
-            .await
-            .expect("admin pool");
-        let core = core_migrator();
-        let baseline = core
-            .iter()
-            .find(|migration| migration.version == 1)
-            .expect("the embedded core set carries the v008 baseline");
-        // SQL-POLICY: fixed-fragment — the migration's own embedded text, the
-        // bytes `core_migrator().run()` would execute.
-        sqlx::raw_sql(baseline.sql.clone())
-            .execute(&admin)
-            .await
-            .expect("baseline");
-        sqlx::query(
-            "CREATE TABLE public._sqlx_migrations (
-                 version bigint PRIMARY KEY,
-                 description text NOT NULL,
-                 installed_on timestamptz NOT NULL DEFAULT now(),
-                 success boolean NOT NULL,
-                 checksum bytea NOT NULL,
-                 execution_time bigint NOT NULL
-             )",
-        )
-        .execute(&admin)
-        .await
-        .expect("core ledger");
-        sqlx::query(
-            "INSERT INTO public._sqlx_migrations
-                 (version, description, success, checksum, execution_time)
-             VALUES ($1, $2, true, $3, 0)",
-        )
-        .bind(baseline.version)
-        .bind(baseline.description.as_ref())
-        .bind(baseline.checksum.as_ref())
-        .execute(&admin)
-        .await
-        .expect("baseline row");
-        admin.close().await;
-        Self::open(Guard::Created(guard)).await
-    }
-
     async fn run(&self, sources: Vec<NamedMigrator>) {
         run_core_and_flavor_migrations(&self.pg, sources)
             .await
@@ -280,6 +236,28 @@ impl Db {
         (tables, rows)
     }
 
+    async fn definitions_catalog(&self) -> Option<(String, String, String)> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT to_regprocedure('proxima_core.definitions_applied()') IS NOT NULL",
+        )
+        .fetch_one(&self.admin)
+        .await
+        .expect("definitions record lookup");
+        if !exists {
+            return None;
+        }
+        Some(
+            sqlx::query_as(
+                "SELECT checksum, release,
+                        pg_get_functiondef('proxima_core.definitions_applied()'::regprocedure)
+                   FROM proxima_core.definitions_applied()",
+            )
+            .fetch_one(&self.admin)
+            .await
+            .expect("definitions record"),
+        )
+    }
+
     /// Plan, run, and compare: the plan equals what the run applied, in the
     /// order it applied it, and nothing is left afterwards. Returns the plan.
     async fn plan_then_run(
@@ -287,11 +265,17 @@ impl Db {
         sources: impl Fn() -> Vec<NamedMigrator>,
     ) -> Vec<PendingMigration> {
         let (tables, before) = self.world().await;
+        let definitions_before = self.definitions_catalog().await;
         let plan = self.plan(&sources()).await.expect("the plan");
         assert_eq!(
             self.world().await,
             (tables, before.clone()),
             "the plan wrote nothing and created nothing"
+        );
+        assert_eq!(
+            self.definitions_catalog().await,
+            definitions_before,
+            "the plan did not change the definitions catalog"
         );
         self.run(sources()).await;
         let (_, after) = self.world().await;
@@ -305,6 +289,23 @@ impl Db {
             Vec::new(),
             "nothing is left after the run"
         );
+        if let Some(PendingMigration::CoreDefinitions {
+            checksum, release, ..
+        }) = plan
+            .iter()
+            .find(|pending| matches!(pending, PendingMigration::CoreDefinitions { .. }))
+        {
+            let (recorded_checksum, recorded_release, _) = self
+                .definitions_catalog()
+                .await
+                .expect("definitions record after a definitions pass");
+            let mut expected_checksum = String::with_capacity(checksum.len() * 2);
+            for byte in checksum {
+                write!(expected_checksum, "{byte:02x}").expect("checksum hex");
+            }
+            assert_eq!(recorded_checksum, expected_checksum);
+            assert_eq!(recorded_release, *release);
+        }
         plan
     }
 
@@ -356,19 +357,32 @@ type Triple = (String, i64, Vec<u8>);
 
 fn planned(plan: &[PendingMigration]) -> Vec<Triple> {
     plan.iter()
-        .map(|pending| {
-            (
-                pending.ledger.clone(),
-                pending.version,
-                pending.checksum.clone(),
-            )
+        .filter_map(|pending| match pending {
+            PendingMigration::Sql {
+                ledger,
+                version,
+                checksum,
+                ..
+            } => Some((ledger.clone(), *version, checksum.clone())),
+            PendingMigration::CoreAdoption {
+                version, checksum, ..
+            } => Some((CORE.to_owned(), *version, checksum.clone())),
+            PendingMigration::CoreDefinitions { .. } => None,
+            other => panic!("unknown pending operation {other:?}"),
         })
         .collect()
 }
 
 fn coordinates(plan: &[PendingMigration]) -> Vec<(&str, i64)> {
     plan.iter()
-        .map(|pending| (pending.ledger.as_str(), pending.version))
+        .filter_map(|pending| match pending {
+            PendingMigration::Sql {
+                ledger, version, ..
+            } => Some((ledger.as_str(), *version)),
+            PendingMigration::CoreAdoption { version, .. } => Some((CORE, *version)),
+            PendingMigration::CoreDefinitions { .. } => None,
+            other => panic!("unknown pending operation {other:?}"),
+        })
         .collect()
 }
 
@@ -390,7 +404,7 @@ fn applied_between(before: &[Row], after: &[Row]) -> Vec<Triple> {
         .collect()
 }
 
-/// Core's up migrations as the plan lists them for a database without any.
+/// Core's SQL migrations as the plan lists them for a database without any.
 fn core_triples(after_version: i64) -> Vec<(String, i64, String, Vec<u8>)> {
     core_migrator()
         .iter()
@@ -410,13 +424,32 @@ fn core_triples(after_version: i64) -> Vec<(String, i64, String, Vec<u8>)> {
 
 fn full(plan: &[PendingMigration]) -> Vec<(String, i64, String, Vec<u8>)> {
     plan.iter()
-        .map(|pending| {
-            (
-                pending.ledger.clone(),
-                pending.version,
-                pending.description.clone(),
-                pending.checksum.clone(),
-            )
+        .filter_map(|pending| match pending {
+            PendingMigration::Sql {
+                ledger,
+                version,
+                description,
+                checksum,
+                ..
+            } => Some((
+                ledger.clone(),
+                *version,
+                description.clone(),
+                checksum.clone(),
+            )),
+            PendingMigration::CoreAdoption {
+                version,
+                description,
+                checksum,
+                ..
+            } => Some((
+                CORE.to_owned(),
+                *version,
+                description.clone(),
+                checksum.clone(),
+            )),
+            PendingMigration::CoreDefinitions { .. } => None,
+            other => panic!("unknown pending operation {other:?}"),
         })
         .collect()
 }
@@ -460,7 +493,7 @@ async fn a_fresh_database_lists_everything_in_runner_order() {
         "core's own migrations: version, description and checksum"
     );
     assert_eq!(
-        coordinates(&plan[core_len..]),
+        coordinates(&plan[core_len + 1..]),
         [
             (FORGE, F1),
             (FORGE, F2),
@@ -469,7 +502,15 @@ async fn a_fresh_database_lists_everything_in_runner_order() {
             (CORE, S2)
         ]
     );
-    assert_eq!(plan[core_len].description, format!("plan {F1}"));
+    assert!(matches!(
+        &plan[core_len],
+        PendingMigration::CoreDefinitions { checksum, release, .. }
+            if !checksum.is_empty() && release == proxima_core::RELEASE_VERSION
+    ));
+    assert!(matches!(
+        &plan[core_len + 1],
+        PendingMigration::Sql { description, .. } if *description == format!("plan {F1}")
+    ));
 }
 
 /// An absent ledger is an empty one: the plan neither needs the table nor
@@ -492,20 +533,28 @@ async fn a_database_without_any_ledger_lists_everything() {
     let core_len = core_triples(0).len();
     assert_eq!(full(&plan[..core_len]), core_triples(0));
     assert_eq!(
-        coordinates(&plan[core_len..]),
+        coordinates(&plan[core_len + 1..]),
         [(FORGE, F1), (FORGE, F2), (CORE, S1)]
     );
 }
 
+/// After the reset there is no supported old single-baseline fixture. An
+/// empty core ledger is the fresh form of the same behind-core plan: all
+/// embedded core SQL remains pending before the composed sources.
 #[tokio::test]
 async fn core_behind_lists_the_core_migrations_after_the_ones_recorded() {
-    let db = Db::core_at_the_v008_baseline().await;
+    let db = Db::empty().await;
     let plan = db.plan_then_run(|| vec![forge(&[F1]), shared(&[S1])]).await;
-
-    let core_len = core_triples(1).len();
-    assert!(core_len > 0, "the embedded lane is ahead of the baseline");
-    assert_eq!(full(&plan[..core_len]), core_triples(1));
-    assert_eq!(coordinates(&plan[core_len..]), [(FORGE, F1), (CORE, S1)]);
+    let core_len = core_triples(0).len();
+    assert!(
+        core_len > 0,
+        "the embedded lane is ahead of the empty ledger"
+    );
+    assert_eq!(full(&plan[..core_len]), core_triples(0));
+    assert_eq!(
+        coordinates(&plan[core_len + 1..]),
+        [(FORGE, F1), (CORE, S1)]
+    );
 }
 
 #[tokio::test]
@@ -665,6 +714,155 @@ async fn a_changed_checksum_is_refused_as_the_run_refuses_it() {
 }
 
 #[tokio::test]
+async fn a_changed_definitions_record_is_planned_and_reapplied() {
+    let db = Db::core_current().await;
+    for (policy, release) in [
+        (
+            MissingMigrationPolicy::Reject,
+            proxima_core::RELEASE_VERSION,
+        ),
+        (MissingMigrationPolicy::Allow, proxima_core::RELEASE_VERSION),
+        (MissingMigrationPolicy::Reject, "0.0.35"),
+        (MissingMigrationPolicy::Allow, "0.0.35"),
+    ] {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
+             RETURNS TABLE(checksum text, release text)
+             LANGUAGE sql IMMUTABLE AS $$ SELECT 'changed'::text, '{release}'::text $$"
+        )))
+        .execute(&db.admin)
+        .await
+        .expect("amend definitions record");
+        let world_before = db.world().await;
+        let catalog_before = db
+            .definitions_catalog()
+            .await
+            .expect("drift definitions record");
+        let plan = pending_migrations_with_policy(&db.platform, &[], policy)
+            .await
+            .expect("checksum drift is listed by the plan");
+        assert!(matches!(
+            plan.as_slice(),
+            [PendingMigration::CoreDefinitions { checksum, release, .. }]
+                if !checksum.is_empty() && release == proxima_core::RELEASE_VERSION
+        ));
+        assert_eq!(db.world().await, world_before, "plan wrote no schema");
+        assert_eq!(
+            db.definitions_catalog().await,
+            Some(catalog_before),
+            "plan wrote no definitions catalog"
+        );
+        let preflight = preflight_without_migrations_with_policy(&db.pg, Vec::new(), policy)
+            .await
+            .expect_err("checksum drift is refused by preflight");
+        assert!(matches!(preflight, MigrationError::CorePreflight(_)));
+        run_core_and_flavor_migrations_with_policy(&db.pg, Vec::new(), policy)
+            .await
+            .expect("both policies reapply same-or-older definitions drift");
+        let (applied_checksum, applied_release, _) = db
+            .definitions_catalog()
+            .await
+            .expect("definitions record after reapply");
+        assert_eq!(
+            applied_checksum,
+            proxima_storage_pg::definitions::checksum_hex()
+        );
+        assert_eq!(applied_release, proxima_core::RELEASE_VERSION);
+        assert_eq!(
+            db.world().await,
+            world_before,
+            "definitions changed no ledger rows"
+        );
+        assert!(
+            pending_migrations_with_policy(&db.platform, &[], policy)
+                .await
+                .expect("definitions are current after run")
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
+    let db = Db::core_current().await;
+    let original_function: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+    )
+    .fetch_one(&db.admin)
+    .await
+    .expect("original definitions function");
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
+         RETURNS TABLE(checksum text, release text)
+         LANGUAGE sql IMMUTABLE
+         AS $$ SELECT 'changed'::text, '99.0.0'::text $$",
+    )
+    .execute(&db.admin)
+    .await
+    .expect("amend definitions record");
+    sqlx::raw_sql(
+        "CREATE OR REPLACE FUNCTION proxima_core.cooled_append_only()
+         RETURNS trigger LANGUAGE plpgsql
+         AS $$ BEGIN RETURN NULL; END $$",
+    )
+    .execute(&db.admin)
+    .await
+    .expect("amend a definitions function");
+    let modified_function: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+    )
+    .fetch_one(&db.admin)
+    .await
+    .expect("modified definitions function");
+
+    let planned = pending_migrations(&db.platform, &[])
+        .await
+        .expect_err("reject policy refuses newer definitions in plan");
+    let preflight = preflight_without_migrations(&db.pg, Vec::new())
+        .await
+        .expect_err("reject policy refuses newer definitions in preflight");
+    let ran = run_core_and_flavor_migrations(&db.pg, Vec::new())
+        .await
+        .expect_err("reject policy refuses newer definitions in run");
+    for refused in [&planned, &preflight, &ran] {
+        assert!(
+            format!("{refused:?}").contains("newer release 99.0.0"),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(format!("{planned:?}"), format!("{preflight:?}"));
+    assert_eq!(format!("{planned:?}"), format!("{ran:?}"));
+
+    let before = db
+        .definitions_catalog()
+        .await
+        .expect("newer definitions record");
+    let plan = pending_migrations_with_policy(&db.platform, &[], MissingMigrationPolicy::Allow)
+        .await
+        .expect("allow policy accepts newer definitions in plan");
+    assert!(
+        plan.iter()
+            .all(|pending| !matches!(pending, PendingMigration::CoreDefinitions { .. })),
+        "allow policy must not reapply older definitions: {plan:?}"
+    );
+    preflight_without_migrations_with_policy(&db.pg, Vec::new(), MissingMigrationPolicy::Allow)
+        .await
+        .expect("allow policy accepts newer definitions in preflight");
+    run_core_and_flavor_migrations_with_policy(&db.pg, Vec::new(), MissingMigrationPolicy::Allow)
+        .await
+        .expect("allow policy leaves newer definitions in place");
+    assert_eq!(db.definitions_catalog().await, Some(before));
+    let after_function: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+    )
+    .fetch_one(&db.admin)
+    .await
+    .expect("unchanged definitions function");
+    assert_ne!(modified_function, original_function);
+    assert_eq!(after_function, modified_function);
+}
+
+#[tokio::test]
 async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it() {
     let db = Db::core_current().await;
 
@@ -690,11 +888,11 @@ async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it(
         .expect("restore");
 
     let original: Vec<u8> =
-        sqlx::query_scalar("SELECT checksum FROM public._sqlx_migrations WHERE version = 5")
+        sqlx::query_scalar("SELECT checksum FROM public._sqlx_migrations WHERE version = 33")
             .fetch_one(&db.admin)
             .await
             .expect("checksum");
-    sqlx::query("UPDATE public._sqlx_migrations SET checksum = '\\x00' WHERE version = 5")
+    sqlx::query("UPDATE public._sqlx_migrations SET checksum = '\\x00' WHERE version = 33")
         .execute(&db.admin)
         .await
         .expect("amend");
@@ -703,7 +901,7 @@ async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it(
         matches!(amended, MigrationError::CorePreflight(_)),
         "{amended:?}"
     );
-    sqlx::query("UPDATE public._sqlx_migrations SET checksum = $1 WHERE version = 5")
+    sqlx::query("UPDATE public._sqlx_migrations SET checksum = $1 WHERE version = 33")
         .bind(original)
         .execute(&db.admin)
         .await

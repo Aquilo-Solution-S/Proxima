@@ -19,7 +19,7 @@ async fn insert_edge(
 }
 
 async fn assert_unmanaged_edge_refused(parent_managed: bool) -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(2).await?;
     let managed = if parent_managed { groups[0] } else { groups[1] };
     let mut tx = h.runtime.begin().await?;
@@ -55,7 +55,7 @@ async fn group_edge_insert_refuses_unmanaged_parent() -> TestResult {
 
 #[tokio::test]
 async fn group_edge_insert_accepts_both_managed_groups() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(2).await?;
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &groups).await?;
@@ -71,7 +71,7 @@ async fn group_edge_insert_accepts_both_managed_groups() -> TestResult {
 
 #[tokio::test]
 async fn group_edge_update_requires_both_managed_groups() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(2).await?;
     h.add(groups[0], groups[1].into(), proxima_core::Relation::Viewer)
         .await?;
@@ -110,7 +110,7 @@ async fn group_edge_update_requires_both_managed_groups() -> TestResult {
 
 #[tokio::test]
 async fn group_lock_insert_accepts_managed_member() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(2).await?;
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &[groups[1]]).await?;
@@ -132,7 +132,7 @@ async fn group_lock_insert_accepts_managed_member() -> TestResult {
 
 #[tokio::test]
 async fn group_lock_insert_accepts_person_without_member_manage() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(1).await?;
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &groups).await?;
@@ -152,7 +152,7 @@ async fn group_lock_insert_accepts_person_without_member_manage() -> TestResult 
 
 #[tokio::test]
 async fn group_lock_read_hides_unmanaged_endpoints() -> TestResult {
-    let h = Harness::new(None).await?;
+    let h = Harness::new().await?;
     let groups = h.groups(3).await?;
     let left_managed = Uuid::now_v7();
     let right_managed = Uuid::now_v7();

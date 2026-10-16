@@ -130,7 +130,7 @@ versions are not published release identifiers.
 | Typed identity, references, and field validation | Payload trait tests |
 | Schema/sidecar/tool/inverse declarations agree | Registry freeze and conformance tests |
 | Columns, triggers, owner RLS, and constraints agree | Migration and real PG tests |
-| Old released migrations unchanged | Migration-range gate |
+| Old released migrations unchanged and new versions above the released head | Migration gate |
 | Admission, sidecar, and publication rollback together | Transaction tests |
 | Erase/export/transfer cover new storage | Inverse and lifecycle tests |
 | Tools appear under the intended host profile | Served MCP catalog and host e2e tests |
