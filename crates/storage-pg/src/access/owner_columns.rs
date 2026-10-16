@@ -1002,7 +1002,7 @@ pub(crate) async fn remove_group_member(
                 recheck_caller_manages(&mut tx, group_id, caller).await?;
             }
             remove_group_member_on_connection_authorized(
-                &mut *tx,
+                &mut tx,
                 group_id,
                 member,
                 member_authority,
@@ -1102,6 +1102,7 @@ async fn remove_group_member_on_connection_authorized(
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn remove_group_member_relation(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
@@ -1125,7 +1126,7 @@ pub(crate) async fn remove_group_member_relation(
                 recheck_caller_manages(&mut tx, group_id, caller).await?;
             }
             remove_group_member_relation_on_connection_authorized(
-                &mut *tx,
+                &mut tx,
                 group_id,
                 member,
                 relation,
@@ -1237,6 +1238,7 @@ async fn remove_group_member_relation_on_connection_authorized(
 /// Returns `Conflict`, with nothing changed, when the member does not hold
 /// `from` (including a row the owner scope cannot see), and `Internal` on sqlx
 /// failure.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn replace_group_member_relation(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
@@ -1259,7 +1261,7 @@ pub(crate) async fn replace_group_member_relation(
             if had_manager {
                 recheck_caller_manages(&mut tx, group_id, caller).await?;
             }
-            replace_group_member_relation_on_connection(&mut *tx, group_id, member, from, to)
+            replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to)
                 .await?;
             if had_manager && caller.is_some() && !group_has_manager(&mut tx, group_id).await? {
                 return Err(StorageError::Conflict(

@@ -709,7 +709,9 @@ impl World {
         .await
         .expect("memory dependents");
         for (table, column) in dependents {
-            // Catalog-sourced identifiers in a test helper.
+            // SQL-POLICY: generated — table and column come from pg_constraint
+            // and pg_attribute for foreign keys onto proxima_core.memory; no
+            // caller input reaches the text.
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM {table} WHERE {column} = $1"
             )))
@@ -759,7 +761,10 @@ async fn erase_between_claim_and_accept_is_not_delivered() {
         let accepted = accepted.lock().expect("accepted lock").clone();
         let first_id = world.event_id(first).await;
         assert_eq!(accepted.len(), 1, "only the unerased Fact is delivered");
-        assert!(accepted[0] == first_id, "the delivered event is the unerased one");
+        assert!(
+            accepted[0] == first_id,
+            "the delivered event is the unerased one"
+        );
         assert!(
             !accepted.contains(&erased_id),
             "the erased record is not delivered"

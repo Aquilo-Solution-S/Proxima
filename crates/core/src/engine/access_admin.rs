@@ -656,6 +656,20 @@ fn replace_storage_error(err: StorageError) -> ProtocolError {
     super::errors::map_write_storage_error(err, "from", "group not found")
 }
 
+/// Name the caller on a removal or demotion that runs on parent authority, so
+/// storage re-reads the caller's manage role under the group-tree lock. A
+/// detach on member authority is checked against the member group instead,
+/// which the engine already did; it carries no caller.
+fn with_parent_caller<'a>(
+    permit: MembershipWritePermit<'a>,
+    authz: &AuthzContext,
+) -> MembershipWritePermit<'a> {
+    match (permit.endpoint_authority(), authz.subject()) {
+        (MembershipEndpointAuthority::Parent, Some(caller)) => permit.with_caller(caller),
+        _ => permit,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1507,19 +1521,5 @@ mod tests {
             .await
             .expect_err("a forwarded context cannot transfer a memory");
         assert_eq!(refusal.code, ErrorCode::Forbidden);
-    }
-}
-
-/// Name the caller on a removal or demotion that runs on parent authority, so
-/// storage re-reads the caller's manage role under the group-tree lock. A
-/// detach on member authority is checked against the member group instead,
-/// which the engine already did; it carries no caller.
-fn with_parent_caller<'a>(
-    permit: MembershipWritePermit<'a>,
-    authz: &AuthzContext,
-) -> MembershipWritePermit<'a> {
-    match (permit.endpoint_authority(), authz.subject()) {
-        (MembershipEndpointAuthority::Parent, Some(caller)) => permit.with_caller(caller),
-        _ => permit,
     }
 }
