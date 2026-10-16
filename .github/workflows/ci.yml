@@ -230,9 +230,9 @@ jobs:
     env:
       # pg-testkit clones per-test DBs from this template (admin) URL.
       PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
-      # The HTTP e2e tests boot the facade against a DEDICATED database (created
-      # below) so they never contend with pg-testkit's clone source. end_to_end.rs
-      # reads DATABASE_URL; oidc_e2e.rs reads PROXIMA_TEST_DATABASE_URL.
+      # Code HTTP e2e tests use the dedicated database created below. The
+      # catalog e2e creates its own pg-testkit database for the linked flavors,
+      # so all-feature and shipped-default hosts can run in the same job.
       DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       # Cited-blob lane. `S3RuntimeConfig::present_in_env()` gates those tests
@@ -287,11 +287,11 @@ jobs:
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
           tool: nextest
-      # One feature set, one build. Every feature-gated target (the REST
-      # surface and mounted REST/OIDC e2e) compiles into this build and runs
-      # in the single nextest pass below. Separate `--features` lanes each
-      # recompiled part of the workspace.
+      # All features cover REST and Code integrations. The shipped substrate
+      # host also runs its default-feature tests below.
       - name: build
         run: cargo build --workspace --all-targets --all-features --locked
       - name: test
         run: cargo nextest run --workspace --all-targets --all-features --locked
+      - name: test shipped host defaults
+        run: cargo nextest run -p proxima-mcp --all-targets --locked

@@ -39,6 +39,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_TOOL_PROFILE | tool palette | deployment surface selection | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_TOOL_ALLOW | palette additions | extend selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_TOOL_DENY | palette removals | narrow selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
+| PROXIMA_CODE_REPO_ROOTS | OS path list of repository root directories (`:` on Unix, `;` on Windows); each canonicalized at boot, missing or non-directory roots fail boot | Code repository access; see [operate](operate.md#container-and-network-boundary) | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_BASE_URL | embedding endpoint; redirects are refused, so configure the provider's final endpoint directly | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_API_KEY | embedding bearer | hosted embedding endpoint | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_MODEL | embedding model | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |

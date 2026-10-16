@@ -20,8 +20,6 @@ use proxima_mcp::ProximaMcpApp;
 use serde_json::json;
 use uuid::Uuid;
 
-use common::require_env_or_skip;
-
 const KID: &str = "end-to-end-key";
 const ISSUER: &str = "https://idp.end-to-end.test";
 const AUDIENCE: &str = "proxima-mcp";
@@ -130,11 +128,14 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 
 #[tokio::test]
 async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("DATABASE_URL") else {
-        eprintln!("skipping oidc_host_auth_serves_tools_list: DATABASE_URL not set");
+    if proxima_pg_testkit::admin_url_or_skip().is_none() {
         return Ok(());
-    };
-    let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
+    }
+    // All-feature and shipped-default hosts have different projection tables.
+    // Each catalog test boots a database for its actual linked flavors.
+    let fixture = proxima_pg_testkit::SplitRoleDb::create("mcp_catalog_e2e", &[]).await?;
+    let runtime_url = fixture.runtime_url().to_owned();
+    let platform_url = fixture.platform_url().to_owned();
     let subject = UserId::new(Uuid::now_v7());
     let owner_key = OwnerId::from(subject).to_string();
     let (signing, resolver) = keypair();

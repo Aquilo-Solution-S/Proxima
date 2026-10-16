@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use futures::stream::{self, StreamExt};
 
 use crate::verbs::query::EntityKind;
 use crate::{AuthzContext, OwnerId};
@@ -28,6 +29,16 @@ pub const LOCAL_STORE: &str = "local";
 /// How long a search waits for one other store before reporting it as
 /// unanswered.
 pub const DEFAULT_REMOTE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Maximum time one tool call may spend reading other-store origins.
+pub const DEFAULT_REMOTE_BATCH_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Maximum number of origin reads in flight for one other store per call.
+pub const MAX_REMOTE_READS_PER_STORE: usize = 8;
+
+/// Maximum distinct foreign origins read for one lineage page; remaining
+/// origins render unavailable with an explicit reason.
+pub const MAX_LINEAGE_REMOTE_ORIGINS: usize = 64;
 
 /// Reciprocal-rank-fusion constant used to merge store result lists.
 pub const STORE_RRF_K: f32 = 60.0;
@@ -158,10 +169,9 @@ pub struct RemoteMemory {
 
 /// A memory of another store that this caller read through the port: what
 /// a derived memory may name in another store
-/// (`DerivedMemory::external_origins`). Only
-/// [`OtherStoresService::read_origin`] makes one, so every such name was
-/// readable by its caller when the write was prepared, and its layer is
-/// the one the store reported.
+/// (`DerivedMemory::external_origins`). Only [`OtherStoresService`] makes
+/// one, so every such name was readable by its caller when the write was
+/// prepared, and its layer is the one the store reported.
 ///
 /// ```compile_fail
 /// use proxima_core::storage_ports::other_stores::{QualifiedHandle, ReadOrigin};
@@ -205,6 +215,14 @@ pub enum RemoteRead {
     Erased,
 }
 
+/// A bounded read result that carries the authenticated origin witness.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteOriginRead {
+    Found(ReadOrigin, RemoteMemory),
+    NotFound,
+    Erased,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OtherStoresError {
     #[error("invalid store name '{0}': expected [a-z][a-z0-9_-]{{1,63}}, not 'local'")]
@@ -213,6 +231,8 @@ pub enum OtherStoresError {
     UnknownStore(String),
     #[error("store unavailable: {0}")]
     Unavailable(String),
+    #[error("origin batch deadline exceeded")]
+    DeadlineExceeded,
 }
 
 /// Read access to memory stores beside this one.
@@ -323,6 +343,95 @@ impl OtherStoresService {
             RemoteRead::NotFound | RemoteRead::Erased => None,
         })
     }
+
+    /// Read origins under one call-wide deadline and construct witnesses only
+    /// for memories returned by this service.
+    pub async fn read_origins_bounded(
+        &self,
+        caller: StoreCaller<'_>,
+        handles: &[QualifiedHandle],
+    ) -> Vec<Result<RemoteOriginRead, OtherStoresError>> {
+        self.read_many_bounded(caller, handles)
+            .await
+            .into_iter()
+            .zip(handles)
+            .map(|(result, handle)| {
+                result.map(|read| match read {
+                    RemoteRead::Found(memory) => RemoteOriginRead::Found(
+                        ReadOrigin {
+                            handle: handle.clone(),
+                            kind: memory.kind,
+                        },
+                        memory,
+                    ),
+                    RemoteRead::NotFound => RemoteOriginRead::NotFound,
+                    RemoteRead::Erased => RemoteOriginRead::Erased,
+                })
+            })
+            .collect()
+    }
+
+    /// Read a batch of origins under one call-wide deadline. Reads for each
+    /// store are limited to [`MAX_REMOTE_READS_PER_STORE`] in flight; each
+    /// read retains [`Self::timeout`] as its individual bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OtherStoresError::DeadlineExceeded`] for reads that cannot
+    /// start or finish before the call-wide deadline. Individual port errors
+    /// remain attached to their corresponding result.
+    pub async fn read_many_bounded(
+        &self,
+        caller: StoreCaller<'_>,
+        handles: &[QualifiedHandle],
+    ) -> Vec<Result<RemoteRead, OtherStoresError>> {
+        let mut by_store: std::collections::BTreeMap<StoreName, Vec<(usize, QualifiedHandle)>> =
+            std::collections::BTreeMap::new();
+        for (index, handle) in handles.iter().cloned().enumerate() {
+            by_store
+                .entry(handle.store.clone())
+                .or_default()
+                .push((index, handle));
+        }
+
+        let deadline = tokio::time::Instant::now() + DEFAULT_REMOTE_BATCH_DEADLINE;
+        let groups = by_store.into_values().map(|entries| async move {
+            stream::iter(entries)
+                .map(|(index, handle)| async move {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let result = if remaining.is_zero() {
+                        Err(OtherStoresError::DeadlineExceeded)
+                    } else {
+                        let bound = remaining.min(self.timeout);
+                        tokio::time::timeout(
+                            bound,
+                            self.port.read(caller, &handle.store, &handle.handle),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            if remaining <= self.timeout {
+                                Err(OtherStoresError::DeadlineExceeded)
+                            } else {
+                                Err(OtherStoresError::Unavailable("timed out".into()))
+                            }
+                        })
+                    };
+                    (index, result)
+                })
+                .buffer_unordered(MAX_REMOTE_READS_PER_STORE)
+                .collect::<Vec<_>>()
+                .await
+        });
+        let mut results = stream::iter(groups)
+            .buffer_unordered(usize::MAX)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        results.sort_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, result)| result).collect()
+    }
 }
 
 /// Which stores one search goes to.
@@ -426,6 +535,7 @@ pub fn rrf_merge<T>(lists: Vec<Vec<T>>) -> Vec<(T, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn info(name: &str, schemas: &[&str]) -> StoreInfo {
         StoreInfo {
@@ -533,5 +643,142 @@ mod tests {
         assert_eq!(order, ["l1", "r1", "s1", "l2", "s2", "l3"]);
         assert!((merged[0].1 - 1.0 / 61.0).abs() < f32::EPSILON);
         assert!(merged.windows(2).all(|w| w[0].1 >= w[1].1));
+    }
+
+    struct SlowOrigins {
+        delay: Duration,
+        active: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SlowOrigins {
+        fn new(delay: Duration) -> Self {
+            Self {
+                delay,
+                active: std::sync::atomic::AtomicUsize::new(0),
+                peak: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    struct ActiveRead<'a>(&'a std::sync::atomic::AtomicUsize);
+
+    impl Drop for ActiveRead<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl OtherStores for SlowOrigins {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _handle: &'a str,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            Box::pin(async {
+                use std::sync::atomic::Ordering::SeqCst;
+                let active = self.active.fetch_add(1, SeqCst) + 1;
+                self.peak.fetch_max(active, SeqCst);
+                let _active_read = ActiveRead(&self.active);
+                tokio::time::sleep(self.delay).await;
+                Ok(RemoteRead::NotFound)
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn origin_batch_deadline_bounds_255_slow_foreign_origins() {
+        let owner = OwnerId::new(uuid::Uuid::now_v7());
+        let authz = AuthzContext::denied_for_owner(&owner);
+        let caller = StoreCaller {
+            owner,
+            authz: &authz,
+        };
+        let handles = (0..255)
+            .map(|index| {
+                QualifiedHandle::parse(&format!("remote:{index}")).expect("qualified test handle")
+            })
+            .collect::<Vec<_>>();
+        let port = Arc::new(SlowOrigins::new(Duration::from_millis(1_900)));
+        let service = OtherStoresService::new(port.clone());
+        let started = tokio::time::Instant::now();
+        let reads = tokio::time::timeout(
+            DEFAULT_REMOTE_BATCH_DEADLINE + Duration::from_millis(1),
+            service.read_many_bounded(caller, &handles),
+        )
+        .await
+        .expect("call-wide deadline bounds the batch");
+        assert_eq!(started.elapsed(), DEFAULT_REMOTE_BATCH_DEADLINE);
+        assert_eq!(port.peak.load(std::sync::atomic::Ordering::SeqCst), 8);
+        assert_eq!(port.active.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(reads.len(), 255);
+        assert!(
+            reads
+                .iter()
+                .any(|read| matches!(read, Err(OtherStoresError::DeadlineExceeded)))
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn origin_batch_keeps_two_second_per_read_timeout() {
+        let owner = OwnerId::new(uuid::Uuid::now_v7());
+        let authz = AuthzContext::denied_for_owner(&owner);
+        let caller = StoreCaller {
+            owner,
+            authz: &authz,
+        };
+        let service = OtherStoresService::new(Arc::new(SlowOrigins::new(Duration::from_secs(3))));
+        let handles = [QualifiedHandle::parse("remote:slow").expect("handle")];
+        let started = tokio::time::Instant::now();
+        let reads = service.read_many_bounded(caller, &handles).await;
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        assert!(
+            matches!(&reads[0], Err(OtherStoresError::Unavailable(reason)) if reason == "timed out")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn origin_batch_reads_different_stores_concurrently() {
+        let owner = OwnerId::new(uuid::Uuid::now_v7());
+        let authz = AuthzContext::denied_for_owner(&owner);
+        let caller = StoreCaller {
+            owner,
+            authz: &authz,
+        };
+        let handles = ["first", "second"]
+            .into_iter()
+            .flat_map(|store| {
+                (0..8).map(move |index| {
+                    QualifiedHandle::parse(&format!("{store}:{index}")).expect("handle")
+                })
+            })
+            .collect::<Vec<_>>();
+        let port = Arc::new(SlowOrigins::new(Duration::from_millis(1_900)));
+        let service = OtherStoresService::new(port.clone());
+        let started = tokio::time::Instant::now();
+        let reads = service.read_many_bounded(caller, &handles).await;
+        assert_eq!(started.elapsed(), Duration::from_millis(1_900));
+        assert_eq!(port.peak.load(std::sync::atomic::Ordering::SeqCst), 16);
+        assert!(
+            reads
+                .iter()
+                .all(|read| matches!(read, Ok(RemoteRead::NotFound)))
+        );
     }
 }

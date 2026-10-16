@@ -68,7 +68,7 @@ In the shell containing the database and issuer exports:
 cargo run -p proxima-mcp
 ```
 
-The code flavor host serves `http://127.0.0.1:31415/mcp`. A successful MCP
+The host serves `http://127.0.0.1:31415/mcp`. A successful MCP
 `initialize` response carries `Mcp-Session-Id`. Both authentication headers
 are required on client requests:
 
@@ -111,6 +111,9 @@ These JSON-RPC bodies can be pasted into an MCP client:
 
 No `PROXIMA_EMBED_*` variables are needed for this path. Semantic search
 requires an embedding client; lexical search remains available without one.
+
+For Code builds and repository administration, see
+[operate](operate.md#container-and-network-boundary).
 
 ## Troubleshooting
 

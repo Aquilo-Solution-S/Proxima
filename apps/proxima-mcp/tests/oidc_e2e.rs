@@ -4,7 +4,7 @@
 //! valid Zitadel-shaped JWT lists + calls the Code-flavor tools.
 //!
 //! Uses `PROXIMA_TEST_DATABASE_URL` when set; otherwise `create_db`. Built when
-//! the `code` feature is on (the host default; asserts the Code flavor's
+//! the `code` feature is on (asserts the opt-in Code flavor's
 //! tools are present); the mounted REST smoke additionally requires `rest`
 //! (mounted through `rest_enabled(true)`, not process env).
 #![cfg(feature = "code")]
@@ -109,6 +109,9 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
+        .services(proxima::FlavorServices::with(
+            proxima_code::CodeRepoRoots::new(vec![std::env::temp_dir()])?,
+        ))
         .tool_scope(ToolScope::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())

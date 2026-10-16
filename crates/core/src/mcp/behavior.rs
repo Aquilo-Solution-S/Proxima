@@ -5,6 +5,7 @@ use futures::future::BoxFuture;
 
 use crate::AccessKind;
 
+use super::core_tools::memory_spaces::{ResolvedMemorySpace, SpaceDefault, resolve_space_owner};
 use super::{
     KeyDeclaration, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
 };
@@ -324,7 +325,58 @@ impl ScopeGateBehavior {
                 declared
             }
         };
-        Self::enforce_owner_role(tool, declared, ctx)
+        let owner = Self::resolve_scope_owner(tool, args, ctx)?;
+        Self::enforce_owner_role(tool, declared, owner.owner, ctx)?;
+        Ok(())
+    }
+
+    /// Resolve the owner selected by a call's optional `space` argument for
+    /// the scope gate. The tool's own space resolver remains the source of
+    /// truth for the operation; this gate uses the same resolver for the
+    /// owner-role decision instead of trusting the bound owner.
+    fn resolve_scope_owner(
+        tool: &str,
+        args: &serde_json::Value,
+        ctx: &McpToolCtx,
+    ) -> Result<ResolvedMemorySpace, McpToolError> {
+        let Some(properties) = Self::space_properties(tool, args, ctx) else {
+            return Ok(ResolvedMemorySpace {
+                key: "current".into(),
+                label: "Current owner".into(),
+                owner: ctx.owner,
+            });
+        };
+        let mut normalized = args.clone();
+        super::tool::coerce_space_aliases(tool, &mut normalized, &properties)?;
+        let raw = match normalized.get("space") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or_else(|| {
+                McpToolError::InvalidInput("space must be a string or null".into())
+            })?),
+        };
+        resolve_space_owner(ctx, raw, SpaceDefault::Current)
+    }
+
+    fn space_properties(
+        tool: &str,
+        args: &serde_json::Value,
+        ctx: &McpToolCtx,
+    ) -> Option<Vec<String>> {
+        let descriptor = ctx.registry.mcp_tool(tool)?;
+        let schema = descriptor
+            .action_arg_specs
+            .is_empty()
+            .then_some(&descriptor.args_schema)
+            .or_else(|| {
+                args.get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|action| descriptor.action_argument_schema(action))
+            });
+        let properties = schema
+            .and_then(|schema| schema.get("properties"))
+            .and_then(serde_json::Value::as_object)
+            .filter(|properties| properties.contains_key("space"))?;
+        Some(properties.keys().cloned().collect())
     }
 
     /// What a flat key declares: a core resource's contract, a registered
@@ -355,19 +407,20 @@ impl ScopeGateBehavior {
         }
     }
 
-    /// The owner-role gate: a declared read needs read access to the bound
+    /// The owner-role gate: a declared read needs read access to the selected
     /// owner, anything else write access. Silence is a write: a tool that has
     /// not said what it does may well write, and guessing "read" would hand a
     /// viewer a mutation.
     fn enforce_owner_role(
         tool: &str,
         declared: KeyDeclaration,
+        owner: crate::OwnerId,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
         let allowed = if declared.is_read() {
-            ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
+            ctx.authz.may_read(&owner, AccessKind::Fact)
         } else {
-            ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
+            ctx.authz.may_write(&owner, AccessKind::Fact)
         };
         if allowed {
             Ok(())
@@ -1109,6 +1162,93 @@ mod owner_role_tests {
             ScopeGateBehavior::enforce_scope(SilentTool::NAME, &args, &ctx,).is_err(),
             "silence must not be read as a promise to only read"
         );
+    }
+
+    /// The owner-role half of the scope gate follows the selected memory
+    /// space, rather than the transport-bound owner.
+    #[test]
+    fn selected_space_owner_role_refuses_when_bound_owner_would_allow() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let bound_owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let selected_owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [
+                (bound_owner, Role::editor()),
+                (selected_owner, Role::viewer()),
+            ],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(crate::ToolScope::All);
+        let ctx = McpToolCtx {
+            owner: bound_owner,
+            authz,
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                trusted_model_id: None,
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            services: FlavorServices::default(),
+            engine: None,
+        };
+
+        let err = ScopeGateBehavior::enforce_scope(
+            crate::protocol::tool::CORE_REMEMBER,
+            &serde_json::json!({
+                "title": "t",
+                "body": "b",
+                "spaces": [selected_owner.to_string()],
+            }),
+            &ctx,
+        )
+        .expect_err("viewer on selected space cannot write there");
+        assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn selected_space_owner_role_allows_when_bound_owner_would_refuse() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let bound_owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let selected_owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [
+                (bound_owner, Role::viewer()),
+                (selected_owner, Role::editor()),
+            ],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(crate::ToolScope::All);
+        let ctx = McpToolCtx {
+            owner: bound_owner,
+            authz,
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                trusted_model_id: None,
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            services: FlavorServices::default(),
+            engine: None,
+        };
+
+        ScopeGateBehavior::enforce_scope(
+            crate::protocol::tool::CORE_REMEMBER,
+            &serde_json::json!({
+                "title": "t",
+                "body": "b",
+                "space": selected_owner.to_string(),
+            }),
+            &ctx,
+        )
+        .expect("editor on selected space can write there");
     }
 }
 

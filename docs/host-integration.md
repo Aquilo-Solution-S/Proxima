@@ -56,6 +56,9 @@ OIDC adapter from `auth-oidc`. The authenticator validates the bearer, maps
 `X-Proxima-Owner` value is a raw owner UUID selected from that authorized
 scope. It is not an authorization proof.
 
+The scope gate judges the caller's role on the owner the call's `space`
+resolves to.
+
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor
@@ -86,6 +89,12 @@ For a store accessed by flavor workers, register an `OtherStores` port with
 configured timeout. The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
+
+Derivation reads all foreign origins within one call-wide deadline and refuses
+before writing if they cannot all be read. Lineage deduplicates foreign origins
+across the page, bounds distinct reads, and renders unread origins as unavailable
+with a reason. The limits and concurrency contract live in
+[`other_stores` rustdoc](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/storage_ports/other_stores.rs).
 
 ## Fact publication outbox
 

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
-# Build the Code-flavor MCP server. cmake + pkg-config are required to
+# Build the substrate-only MCP server. cmake + pkg-config are required to
 # build native crypto deps (aws-lc-sys / ring). Pin bookworm so the
 # builder's glibc matches the distroless cc-debian12 runtime.
 FROM rust:1.99-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS builder
@@ -20,7 +20,7 @@ FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67d
 ARG VERSION=0.0.0
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="proxima-mcp" \
-      org.opencontainers.image.description="Proxima MCP server (code flavor)" \
+      org.opencontainers.image.description="Proxima MCP server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="Apache-2.0" \

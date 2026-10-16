@@ -10,6 +10,8 @@ pub use args::{
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 
 use std::collections::{BTreeSet, HashSet};
+#[cfg(feature = "code")]
+use std::ffi::OsString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -47,6 +49,8 @@ const PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT: &str = "PROXIMA_EMBED_CODE_SEMANTIC_WE
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
+#[cfg(feature = "code")]
+const PROXIMA_CODE_REPO_ROOTS: &str = "PROXIMA_CODE_REPO_ROOTS";
 
 /// Tool/action scope keys advertised by the `memory` profile. Flat entries
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
@@ -98,19 +102,8 @@ fn memory_keep_set() -> Vec<&'static str> {
 
     #[cfg(feature = "code")]
     {
-        use proxima_code::mcp::ingest_runs::{
-            CodeGetIngestRunTool, CodeStartIngestHeadSnapshotTool,
-        };
-        use proxima_code::mcp::repos::{CodeIngestHeadSnapshotTool, CodeRegisterRepoTool};
-
         // code-as-memory
         ids.extend(code_keep_set());
-        ids.extend([
-            CodeRegisterRepoTool::NAME,
-            CodeIngestHeadSnapshotTool::NAME,
-            CodeStartIngestHeadSnapshotTool::NAME,
-            CodeGetIngestRunTool::NAME,
-        ]);
     }
 
     ids
@@ -580,6 +573,10 @@ fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
 /// Returns facade config, storage, migration, engine, bind, or transport failures.
 pub async fn run_with_handle(config: McpConfig) -> Result<RunningProxima, CliError> {
     let app = build_app(config, proxima_core::process_env)?;
+    #[cfg(feature = "code")]
+    let app = app.services(FlavorServices::with(code_repo_roots_from_lookup(&|key| {
+        std::env::var_os(key)
+    })?));
     app.run().await.map_err(Into::into)
 }
 
@@ -602,6 +599,20 @@ fn build_app(
         app = app.embedding_router(Arc::new(embedding_router_from_env(&lookup, client)?));
     }
     Ok(app)
+}
+
+#[cfg(feature = "code")]
+fn code_repo_roots_from_lookup(
+    lookup: &impl Fn(&str) -> Option<OsString>,
+) -> Result<proxima_code::CodeRepoRoots, CliError> {
+    let Some(raw) = lookup(PROXIMA_CODE_REPO_ROOTS).filter(|value| !value.is_empty()) else {
+        return Ok(proxima_code::CodeRepoRoots::empty());
+    };
+    proxima_code::CodeRepoRoots::new(std::env::split_paths(&raw).collect()).map_err(|err| {
+        CliError::Runtime(ProximaError::Config(format!(
+            "{PROXIMA_CODE_REPO_ROOTS}: {err}"
+        )))
+    })
 }
 
 /// Every Owner embedded through `client`, its search queries worded by the
@@ -1444,7 +1455,7 @@ mod tests {
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
-        assert!(memory.allows(&key("proxima-code_register_repo")));
+        assert!(!memory.allows(&key("proxima-code_register_repo")));
         assert!(memory.allows(&key(protocol_action::CORE_GOAL_SET)));
         assert!(!memory.allows(&key("proxima-code_emit_execution_request")));
 
@@ -1460,10 +1471,80 @@ mod tests {
     }
 
     #[test]
+    fn default_tools_list_excludes_repository_administration() {
+        let registered = registered_tool_ids().expect("registered code tools");
+        let scope = resolve_tool_scope(None, None, None, &registered).expect("default palette");
+        let listed = admitted(&frozen_registry(), &scope);
+        for name in [
+            "proxima-code_register_repo",
+            "proxima-code_ingest_head_snapshot",
+            "proxima-code_start_ingest_head_snapshot",
+            "proxima-code_get_ingest_run",
+        ] {
+            assert!(
+                !listed.contains(name),
+                "default tools/list advertises {name}"
+            );
+            #[cfg(feature = "code")]
+            {
+                let full = resolve_tool_scope(Some("full"), None, None, &registered)
+                    .expect("full palette");
+                assert!(admitted(&frozen_registry(), &full).contains(name));
+                let explicit = resolve_tool_scope(None, Some(name), None, &registered)
+                    .expect("explicit administration grant");
+                assert!(admitted(&frozen_registry(), &explicit).contains(name));
+            }
+        }
+    }
+
+    #[test]
     fn unknown_tool_profile_fails_closed() {
         let err = resolve_tool_scope(Some("unknown"), None, None, &RegisteredKeys::default())
             .expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
+    }
+
+    #[cfg(feature = "code")]
+    #[test]
+    fn code_repo_roots_require_existing_directories() {
+        let missing = code_repo_roots_from_lookup(&|key| {
+            (key == PROXIMA_CODE_REPO_ROOTS).then(|| OsString::from("/definitely/missing"))
+        })
+        .expect_err("a missing repository root must fail boot");
+        assert!(missing.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
+
+        let file = std::env::temp_dir().join(format!("proxima-code-root-{}", uuid::Uuid::now_v7()));
+        std::fs::write(&file, b"not a directory").expect("create root fixture");
+        let error = code_repo_roots_from_lookup(&|key| {
+            (key == PROXIMA_CODE_REPO_ROOTS).then(|| file.as_os_str().to_owned())
+        })
+        .expect_err("a file must fail boot");
+        std::fs::remove_file(&file).expect("remove root fixture");
+        assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
+    }
+
+    #[cfg(all(feature = "code", unix))]
+    #[test]
+    fn code_repo_roots_validate_non_unicode_os_path_list() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let mut name = format!("proxima-code-root-{}-", uuid::Uuid::now_v7()).into_bytes();
+        name.push(0xff);
+        let root = std::env::temp_dir().join(OsString::from_vec(name));
+        let created = std::fs::create_dir(&root);
+        let raw = std::env::join_paths([&root]).expect("OS path list");
+        let parsed = code_repo_roots_from_lookup(&|key| {
+            (key == PROXIMA_CODE_REPO_ROOTS).then(|| raw.clone())
+        });
+        if let Ok(()) = created {
+            std::fs::remove_dir(&root).expect("remove root fixture");
+            parsed.expect("readable OS paths do not require Unicode");
+        } else {
+            // Some filesystems refuse non-Unicode names. The configured
+            // path must still be validated, rather than treated as unset.
+            let error = parsed.expect_err("unreadable OS path must fail boot");
+            assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
+        }
     }
 
     /// Against everything this build registers, the `code` profile admits

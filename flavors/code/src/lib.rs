@@ -24,6 +24,7 @@ pub use ingest::{
 pub use local_git_source::{
     CodeIngestContext, HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
 };
+pub use mcp::CodeRepoRoots;
 pub use migrations::migrator;
 pub use payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,

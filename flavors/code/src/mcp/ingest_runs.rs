@@ -13,8 +13,7 @@
 //! `RUN_STALE_AFTER` (5 min) lost its process, reads as failed, and is retired by
 //! the next start.
 
-use proxima_core::mcp::{Replay, ToolEffect};
-use std::path::PathBuf;
+use proxima_core::mcp::{McpToolAudience, Replay, ToolEffect};
 use std::sync::Arc;
 
 use proxima_core::{Cursor, Tool, ToolCtx, ToolError};
@@ -31,7 +30,9 @@ use crate::repos::runs::{
 use crate::repos::{RepoIngestionRun, RepoRecord, RunStatus, StageCounters};
 
 use super::code_store;
-use super::repos::{EMBEDDING_BACKFILL_LIMIT, format_time, map_index_error, map_repo_registry};
+use super::repos::{
+    CodeRepoRoots, EMBEDDING_BACKFILL_LIMIT, format_time, map_index_error, map_repo_registry,
+};
 use super::sql::resolve_repo_identifier;
 
 /// One ingestion run as the tools report it.
@@ -114,6 +115,13 @@ pub(super) async fn start_run(
     repo_id: Uuid,
 ) -> Result<(RepoIngestionRun, bool), ToolError> {
     let pool = code_store(ctx)?;
+    let repo = crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo_id)
+        .await
+        .map_err(map_repo_registry)?
+        .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
+    ctx.service::<CodeRepoRoots>()
+        .unwrap_or_default()
+        .admit(std::path::Path::new(&repo.canonical_path))?;
     start_run_with_created(pool.pool(), pool.owner_scope(), &ctx.owner(), repo_id)
         .await
         .map_err(map_repo_registry)
@@ -174,11 +182,11 @@ async fn ingest_head_snapshot(
     pool: &crate::store::ScopedCodeFlavorStore,
     repo: RepoRecord,
 ) -> Result<HeadSnapshotDone, ToolError> {
-    let source = crate::LocalGitSource::new(
-        repo.repo_id,
-        PathBuf::from(repo.canonical_path.clone()),
-        ctx.owner(),
-    );
+    let canonical = ctx
+        .service::<CodeRepoRoots>()
+        .unwrap_or_default()
+        .admit(std::path::Path::new(&repo.canonical_path))?;
+    let source = crate::LocalGitSource::new(repo.repo_id, canonical, ctx.owner());
     let engine = super::engine(ctx)?;
     let ingest_ctx = crate::CodeIngestContext::new(&engine, ctx.authz(), pool);
     let prior = Cursor::from_bytes(repo.last_cursor.clone().unwrap_or_default());
@@ -284,6 +292,7 @@ pub struct CodeStartIngestHeadSnapshotOutput {
 pub struct CodeStartIngestHeadSnapshotTool;
 
 impl Tool for CodeStartIngestHeadSnapshotTool {
+    const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     const NAME: &'static str = "proxima-code_start_ingest_head_snapshot";
     const DESCRIPTION: &'static str = "Start ingesting the current HEAD tree of one registered local Git repository in the background and return its ingestion run at once. Poll proxima-code_get_ingest_run until status is succeeded or failed. When a run of this repository is already active, returns that run instead of starting another.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::Idempotent));
@@ -337,6 +346,7 @@ pub struct CodeGetIngestRunOutput {
 pub struct CodeGetIngestRunTool;
 
 impl Tool for CodeGetIngestRunTool {
+    const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     const NAME: &'static str = "proxima-code_get_ingest_run";
     const DESCRIPTION: &'static str = "Read one ingestion run: status (queued, running, succeeded, failed), stage, counters, error and timestamps. A succeeded run carries files_by_class and chunks_by_class, the same per-class counts as the ingest report; a run that has not succeeded reports zeros. Name the run by run_id, or a repository by repo_handle for its most recent run.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);

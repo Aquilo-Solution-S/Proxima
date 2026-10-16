@@ -30,7 +30,7 @@ starts in the kernel.
 
 One deployment links core, storage, transports, and flavor crates at build
 time. The canonical host is [proxima-mcp](apps/proxima-mcp); its Code flavor
-is default-on. `--no-default-features` builds the substrate-only host. Crates
+requires `--features code`. The default host is substrate-only. Crates
 are unpublished; Rust consumers pin the same git selector across the graph.
 
 License: [Apache-2.0](LICENSE), [contribution terms](LICENSING.md).

@@ -17,8 +17,8 @@ use proxima_code::mcp::{
 };
 use proxima_code::testkit::register_repo;
 use proxima_code::{
-    CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1,
-    FileState,
+    CodeChunkV1, CodeFlavorStore, CodeRepoRoots, CommitV1, ExecutionRequestV1, ExecutionResultV1,
+    FileRevisionV1, FileState,
 };
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
@@ -319,6 +319,55 @@ async fn list_repos_tool_pages_with_opaque_cursor() -> Result<(), Box<dyn std::e
         err.to_string().contains("malformed cursor"),
         "unexpected error: {err}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ingest_refuses_registered_repo_after_roots_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let repo = TempDir::new()?;
+    let excluded = TempDir::new()?;
+    init_git_repo_with_files(repo.path(), &[("src/lib.rs", "pub fn root_marker() {}\n")])?;
+    let allowed = ctx_with_repo_roots(
+        fixture.pg.clone(),
+        owner,
+        registry.clone(),
+        CodeRepoRoots::new(vec![repo.path().to_path_buf()])?,
+    );
+    let registered =
+        run_tool::<CodeRegisterRepoTool>(allowed, json!({ "path": repo.path().to_string_lossy() }))
+            .await?;
+    let args = json!({ "repo_handle": registered["repo"]["repo_id"] });
+    for roots in [
+        CodeRepoRoots::new(vec![excluded.path().to_path_buf()])?,
+        CodeRepoRoots::empty(),
+    ] {
+        let restricted = ctx_with_repo_roots(fixture.pg.clone(), owner, registry.clone(), roots);
+        let sync = CodeIngestHeadSnapshotTool::call(
+            restricted.clone(),
+            serde_json::from_value(args.clone())?,
+        )
+        .await;
+        let start = CodeStartIngestHeadSnapshotTool::call(
+            restricted.clone(),
+            serde_json::from_value(args.clone())?,
+        )
+        .await;
+        assert!(
+            matches!(&sync, Err(McpToolError::InvalidInput(message))
+                if message.contains("PROXIMA_CODE_REPO_ROOTS"))
+                && matches!(&start, Err(McpToolError::InvalidInput(message))
+                    if message.contains("PROXIMA_CODE_REPO_ROOTS")),
+            "both ingest entries must refuse before starting: sync={sync:?}, start={start:?}"
+        );
+        let run = CodeGetIngestRunTool::call(restricted, serde_json::from_value(args.clone())?)
+            .await
+            .expect_err("a refused ingest must not create a run");
+        assert!(matches!(run, McpToolError::NotFound(_)), "{run}");
+    }
     Ok(())
 }
 
@@ -2199,6 +2248,20 @@ async fn run_tool<T: McpTool>(
 }
 
 fn ctx(pg: PgStorage, owner: OwnerId, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+    ctx_with_repo_roots(
+        pg,
+        owner,
+        registry,
+        CodeRepoRoots::new(vec![std::env::temp_dir()]).expect("root exists"),
+    )
+}
+
+fn ctx_with_repo_roots(
+    pg: PgStorage,
+    owner: OwnerId,
+    registry: Arc<FlavorRegistryFrozen>,
+    roots: CodeRepoRoots,
+) -> McpToolCtx {
     let authz = authenticated_owner(&owner);
     let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
     let engine = Arc::new(engine_for_test(pg));
@@ -2214,7 +2277,13 @@ fn ctx(pg: PgStorage, owner: OwnerId, registry: Arc<FlavorRegistryFrozen>) -> Mc
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        services: FlavorServices::with(store),
+        services: {
+            let mut services = FlavorServices::with(store);
+            services
+                .try_insert(roots)
+                .expect("unique repository roots service");
+            services
+        },
         engine: Some(engine),
     }
 }
@@ -2242,7 +2311,13 @@ fn shell_ctx(
             caller_self_perspective: Some(caller_self_perspective),
         },
         caller_self_perspective: Some(caller_self_perspective),
-        services: FlavorServices::with(store),
+        services: {
+            let mut services = FlavorServices::with(store);
+            services
+                .try_insert(CodeRepoRoots::new(vec![std::env::temp_dir()]).expect("root exists"))
+                .expect("unique repository roots service");
+            services
+        },
         engine: Some(engine),
     }
 }
@@ -2603,7 +2678,13 @@ fn embedding_ctx(
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        services: FlavorServices::with(store),
+        services: {
+            let mut services = FlavorServices::with(store);
+            services
+                .try_insert(CodeRepoRoots::new(vec![std::env::temp_dir()]).expect("root exists"))
+                .expect("unique repository roots service");
+            services
+        },
         engine: Some(engine),
     }
 }

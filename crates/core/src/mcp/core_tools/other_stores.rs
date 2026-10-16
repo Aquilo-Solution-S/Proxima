@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::mcp::{McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::storage_ports::other_stores::{
     LOCAL_STORE, OtherStoresService, QualifiedHandle, ReadOrigin, RemoteHit, RemoteMemory,
-    RemoteSearch, StoreCaller, StoreInfo, StoreName, StoreRoute, route_stores,
+    RemoteOriginRead, RemoteSearch, StoreCaller, StoreInfo, StoreName, StoreRoute, route_stores,
 };
 
 /// The wired port, if any.
@@ -69,16 +69,30 @@ pub(crate) async fn admit_external_origins(
             "source_handles must include at least one memory of this store; memories of other stores only join local ones".into(),
         ));
     };
+    let service = service(ctx).ok_or_else(|| not_found(&remote[0].to_string()))?;
+    let reads = service.read_origins_bounded(caller(ctx), remote).await;
     let mut admitted = Vec::with_capacity(remote.len());
-    for origin in remote {
-        let (read, memory) = read_origin(ctx, origin).await?;
-        let class = super::get_memory::memory_class(memory.kind)?;
-        if class != layer {
-            return Err(McpToolError::InvalidInput(
-                "source_handles must have one memory layer per operator invocation".into(),
-            ));
+    for (origin, result) in remote.iter().zip(reads) {
+        match result {
+            Err(crate::storage_ports::other_stores::OtherStoresError::DeadlineExceeded) => {
+                return Err(McpToolError::Unavailable(
+                    "other-store origin deadline exceeded".into(),
+                ));
+            }
+            Err(_) => return Err(not_found(&origin.to_string())),
+            Ok(RemoteOriginRead::Found(read, memory)) => {
+                let class = super::get_memory::memory_class(memory.kind)?;
+                if class != layer {
+                    return Err(McpToolError::InvalidInput(
+                        "source_handles must have one memory layer per operator invocation".into(),
+                    ));
+                }
+                admitted.push(read);
+            }
+            Ok(RemoteOriginRead::NotFound | RemoteOriginRead::Erased) => {
+                return Err(not_found(&origin.to_string()));
+            }
         }
-        admitted.push(read);
     }
     Ok(admitted)
 }
@@ -193,4 +207,79 @@ pub(crate) async fn search_remotes(
         }
     }
     (answered, unanswered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::UserId;
+    use crate::mcp::core_tools::memory::derive::MAX_SOURCE_HANDLES;
+    use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
+    use crate::storage_ports::other_stores::{OtherStores, OtherStoresError, RemoteRead};
+    use futures::future::BoxFuture;
+
+    struct SlowOriginStore;
+
+    impl OtherStores for SlowOriginStore {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: &'a StoreName,
+            _handle: &'a str,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
+                Ok(RemoteRead::Found(RemoteMemory {
+                    handle: "remote:slow".into(),
+                    kind: crate::EntityKind::Fact,
+                    schema_id: "test/fact-v1".into(),
+                    title: None,
+                    body: String::new(),
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    tags: Vec::new(),
+                }))
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn derive_origin_admission_refuses_255_slow_origins_before_writing() {
+        let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
+        ctx.services =
+            crate::FlavorServices::with(OtherStoresService::new(Arc::new(SlowOriginStore)));
+        let origins = (0..MAX_SOURCE_HANDLES - 1)
+            .map(|index| QualifiedHandle::parse(&format!("remote:{index}")))
+            .map(|handle| handle.expect("qualified test handle"))
+            .collect::<Vec<_>>();
+        let started = tokio::time::Instant::now();
+        let deadline = crate::storage_ports::other_stores::DEFAULT_REMOTE_BATCH_DEADLINE;
+        let error = tokio::time::timeout(
+            deadline + std::time::Duration::from_millis(1),
+            admit_external_origins(&ctx, Some(MemoryHandleClass::Fact), &origins),
+        )
+        .await
+        .expect("derive admission must finish within the call deadline")
+        .expect_err("deadline must refuse derivation");
+        assert!(started.elapsed() <= deadline);
+        assert!(
+            matches!(error, McpToolError::Unavailable(ref message) if message.contains("deadline")),
+            "{error:?}"
+        );
+    }
 }
