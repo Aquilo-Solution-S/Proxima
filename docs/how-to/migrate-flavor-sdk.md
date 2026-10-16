@@ -1,5 +1,15 @@
 # Migrate the Flavor SDK
 
+## Unreleased
+
+No database migration.
+
+| Change | Host action |
+|---|---|
+| Goal filters | Replace `QueryRequest.goal_state: Option<GoalState>` with `goal_states: BTreeSet<GoalState>`; empty selects all states. `goal_handles` selects series heads/history; `referenced_goal_handles` selects Facts pointing at any readable version of a Goal series ([14 §Query](../14-protocol-surface.md#query)) |
+| Goal paging | `QueryCursor::Goal { handle, goal_id }` replaces `{ created_at, goal_id }`; order is `(handle,t) DESC`. Restart resource pagination: old cursor tokens are refused |
+| Goal resources | `state=Active,Paused` selects a union. Read `proxima://goal/{id}` with the returned stable `handle`, not version `goal`; the resource returns the current head and its wake configuration |
+
 ## v0.0.35
 
 Pin all Proxima dependencies to the same `v0.0.35` tag. No migration.

@@ -12,7 +12,18 @@ use crate::{
     PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    sqlx::Type,
+)]
 #[sqlx(type_name = "proxima_core.goal_state")]
 pub enum GoalState {
     Active,

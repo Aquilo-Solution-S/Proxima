@@ -69,7 +69,7 @@ pub(super) async fn validate_goal_activated_fact(
         .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
-    req.goal_state = Some(GoalState::Active);
+    req.goal_states.insert(GoalState::Active);
     req.assignment = Some(planner);
     req.limit = 1;
     let response = engine.query(ctx.authz(), &req).await?;

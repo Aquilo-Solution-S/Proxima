@@ -170,7 +170,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "wake trigger fact").await?;
-    let goal_id = insert_active_goal(&pg, &owner, Some(trigger)).await?;
+    let (_, goal_id) = insert_active_goal(&pg, &owner, Some(trigger)).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -235,6 +235,10 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one resource round trip covers paging, scope and wake read-back"
+)]
 async fn goal_resources_list_read_back_wake_config_and_paginate()
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_core_db().await?;
@@ -244,10 +248,15 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
-    let mut goal_ids = Vec::new();
-    goal_ids.push(insert_active_goal(&pg, &owner, Some(trigger)).await?);
-    goal_ids.push(insert_active_goal(&pg, &owner, None).await?);
-    goal_ids.push(insert_active_goal(&pg, &owner, None).await?);
+    let (goal_handles, goal_ids): (Vec<_>, Vec<_>) = [
+        insert_active_goal(&pg, &owner, Some(trigger)).await?,
+        insert_active_goal(&pg, &owner, None).await?,
+        insert_active_goal(&pg, &owner, None).await?,
+    ]
+    .into_iter()
+    .unzip();
+    let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let (foreign_handle, _) = insert_active_goal(&pg, &foreign_owner, None).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -296,10 +305,28 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         assert!(seen.contains(&format!("G:{goal_id}")));
     }
 
+    insert_goal_version(
+        &pg,
+        &owner,
+        Some(goal_handles[1]),
+        Uuid::now_v7(),
+        "Paused",
+        None,
+    )
+    .await?;
+    let union = server
+        .read_resource(
+            "proxima://goals?state=paused,ACTIVE,paused",
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(union["goals"].as_array().expect("goals array").len(), 3);
+
     // The armed goal reads back its wake config; unarmed goals carry none.
     let armed = server
         .read_resource(
-            &format!("proxima://goal/G:{}", goal_ids[0]),
+            &format!("proxima://goal/G:{}", goal_handles[0]),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -311,12 +338,24 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     assert_eq!(armed["wake"]["tool_ids"][0], "core_search_memories");
     let unarmed = server
         .read_resource(
-            &format!("proxima://goal/G:{}", goal_ids[1]),
+            &format!("proxima://goal/G:{}", goal_handles[1]),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
     assert!(unarmed.get("wake").is_none(), "unarmed goal has no wake");
+
+    for handle in [foreign_handle, Uuid::now_v7()] {
+        let error = server
+            .read_resource(
+                &format!("proxima://goal/G:{handle}"),
+                author_ctx(),
+                Some(auth.clone()),
+            )
+            .await
+            .expect_err("unreadable and nonexistent series are both absent");
+        assert!(error.to_string().contains("not found"), "{error}");
+    }
 
     assert_goal_reference_and_state_rejections(&server, &auth, goal_ids[0]).await;
 
@@ -336,6 +375,10 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 /// version knows it and JSON `null` (the key present) when it does not, and
 /// both times are RFC 3339.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one series fixture verifies timestamps, handle advancement and wake read-back"
+)]
 async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn std::error::Error>>
 {
     let db_name = create_core_db().await?;
@@ -344,7 +387,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     // Unknown text: a version no declaration can speak for.
-    let unknown = insert_active_goal(&pg, &owner, None).await?;
+    let (unknown_handle, unknown) = insert_active_goal(&pg, &owner, None).await?;
     // A series set at 22:13:20Z and paused a minute later; the head is the
     // second version, which keeps the first one's text.
     let set = goal_t_at(1_700_000_000_000);
@@ -388,6 +431,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
 
     // The listing returns the full text and both times.
     let series = listed(paused);
+    assert_eq!(series["handle"], format!("G:{handle}"));
     assert_eq!(series["state"], "Paused");
     assert_eq!(series["text"], "write the report");
     assert_eq!(series["set_at"], "2023-11-14T22:13:20Z");
@@ -405,10 +449,11 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     time::OffsetDateTime::parse(set_at, &time::format_description::well_known::Rfc3339)
         .expect("set_at is RFC 3339");
 
-    // The single read says the same, for the head and for the first version.
+    // A handle reads the current head, while a version id is not a series
+    // selector. The current head is the paused version at this point.
     let single = server
         .read_resource(
-            &format!("proxima://goal/G:{paused}"),
+            &format!("proxima://goal/G:{handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -420,19 +465,38 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
             author_ctx(),
             Some(auth.clone()),
         )
-        .await?;
-    assert_eq!(first["state"], "Active");
-    assert_eq!(first["text"], "write the report");
-    assert_eq!(first["set_at"], "2023-11-14T22:13:20Z");
-    assert_eq!(first["changed_at"], "2023-11-14T22:13:20Z");
+        .await
+        .expect_err("a version UUID is not a goal series handle");
+    assert!(first.to_string().contains("not found"), "{first}");
     let single_unknown = server
         .read_resource(
-            &format!("proxima://goal/G:{unknown}"),
+            &format!("proxima://goal/G:{unknown_handle}"),
             author_ctx(),
-            Some(auth),
+            Some(auth.clone()),
         )
         .await?;
     assert_eq!(single_unknown.get("text"), Some(&serde_json::Value::Null));
+
+    // Advance the same series again and arm it. The stable handle now reads
+    // the new head and its wake configuration, rather than the old version.
+    let trigger = insert_fact(&pg, &owner, "current head trigger").await?;
+    arm_goal_for_fact(&pg, paused, trigger).await?;
+    let current: uuid::Uuid =
+        sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1")
+            .bind(handle)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    let current_read = server
+        .read_resource(
+            &format!("proxima://goal/G:{handle}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await?;
+    assert_eq!(current_read["goal"], format!("G:{current}"));
+    assert_eq!(current_read["handle"], format!("G:{handle}"));
+    assert_eq!(current_read["state"], "Active");
+    assert_eq!(current_read["wake"]["trigger_fact"], format!("F:{trigger}"));
 
     drop(server);
     drop(pg);
@@ -596,6 +660,17 @@ async fn assert_goal_reference_and_state_rejections(
         bad_state.to_string().contains("must be one of"),
         "{bad_state}"
     );
+    for state in ["", " ", "Active,", "Active,,Paused"] {
+        let error = server
+            .read_resource(
+                &format!("proxima://goals?state={state}"),
+                author_ctx(),
+                Some(auth.clone()),
+            )
+            .await
+            .expect_err("empty state members must be rejected");
+        assert!(error.to_string().contains("empty"), "{state:?}: {error}");
+    }
 }
 
 /// A page smaller than the admitted set reports `has_more`; a page that
@@ -663,7 +738,7 @@ async fn insert_active_goal(
     pg: &PgStorage,
     owner: &OwnerId,
     trigger_t: Option<uuid::Uuid>,
-) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+) -> Result<(uuid::Uuid, uuid::Uuid), Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
     let owner_id = owner.into_inner();
@@ -709,7 +784,7 @@ async fn insert_active_goal(
     .bind(wake_id)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(t)
+    Ok((handle, t))
 }
 
 /// A `UUIDv7` minted at an exact millisecond.

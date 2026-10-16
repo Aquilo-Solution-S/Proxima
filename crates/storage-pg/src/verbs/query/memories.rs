@@ -35,11 +35,8 @@ pub(crate) async fn query_memories_on_connection(
         .map(proxima_core::OwnerId::into_inner)
         .collect();
     let seq_high_water = read_seq_high_water_on_connection(connection, &owner_ids).await?;
-    let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
-        let (goals, next_cursor) =
-            query_goals_on_connection(connection, req, &owner_ids, schema_id_filter.as_deref())
-                .await?;
+        let (goals, next_cursor) = query_goals_on_connection(connection, req, &owner_ids).await?;
         return Ok(QueryResponse {
             memories: Vec::new(),
             goals,
@@ -64,7 +61,7 @@ pub(crate) async fn query_memories_on_connection(
     let mut memories =
         project_memory_rows_on_connection(connection, sidecars, req, schemas, rows).await?;
     let (goals, next_goal_cursor) = if req.entity_kind.is_none() {
-        query_goals_on_connection(connection, req, &owner_ids, schema_id_filter.as_deref()).await?
+        query_goals_on_connection(connection, req, &owner_ids).await?
     } else {
         (Vec::new(), None)
     };
@@ -105,6 +102,7 @@ async fn fetch_memory_page_on_connection(
             MemoryFilter::Schema(schema_id) => q.bind(schema_id),
             MemoryFilter::Kind(kind) => q.bind(kind),
             MemoryFilter::Ids(ids) => q.bind(ids),
+            MemoryFilter::ReferencedGoalHandles(handles) => q.bind(handles),
             MemoryFilter::Cursor(t) => q.bind(t),
         };
     }
@@ -120,6 +118,7 @@ enum MemoryFilter {
     Schema(String),
     Kind(&'static str),
     Ids(Vec<Uuid>),
+    ReferencedGoalHandles(Vec<Uuid>),
     Cursor(Uuid),
 }
 
@@ -138,6 +137,13 @@ impl MemoryFilter {
                 format!(" AND {alias}.kind = ${placeholder}::text::proxima_core.memory_kind")
             }
             Self::Ids(_) => format!(" AND {alias}.t = ANY(${placeholder}::uuid[])"),
+            Self::ReferencedGoalHandles(_) => format!(
+                " AND m.kind = 'fact' \
+                 AND m.goal_refs && ARRAY(SELECT g.t FROM proxima_core.goal g \
+                 JOIN proxima_core.owners go ON go.owner_id = g.owner_id \
+                 WHERE g.handle = ANY(${placeholder}::uuid[]) \
+                   AND g.owner_id = ANY($1::uuid[]))"
+            ),
             Self::Cursor(_) => format!(" AND {alias}.t < ${placeholder}"),
         }
     }
@@ -158,6 +164,11 @@ fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
         Some(EntityKind::Abstraction) => filters.push(MemoryFilter::Kind("abstraction")),
         Some(EntityKind::Perspective) => filters.push(MemoryFilter::Kind("perspective")),
         Some(EntityKind::Goal) | None => {}
+    }
+    if !req.referenced_goal_handles.is_empty() {
+        filters.push(MemoryFilter::ReferencedGoalHandles(
+            req.referenced_goal_handles.clone(),
+        ));
     }
     if !req.memory_ids.is_empty() {
         filters.push(MemoryFilter::Ids(
@@ -303,15 +314,27 @@ async fn load_row_payloads_batch_on_connection(
 }
 
 fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64) -> String {
-    if heads_only {
+    let reference_filter = filters
+        .iter()
+        .any(|filter| matches!(filter, MemoryFilter::ReferencedGoalHandles(_)));
+    if heads_only && !reference_filter {
         return head_page_sql(filters, fetch_limit);
     }
-    let mut sql = String::from(
+    // Goal-reference predicates start at memory's GIN index. Joining heads
+    // here preserves head membership without visiting unrelated heads first.
+    let head_join = if heads_only {
+        "JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t "
+    } else {
+        ""
+    };
+    // SQL-POLICY: fixed-fragment — head_join is chosen between two literals.
+    let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at \
          FROM proxima_core.memory m \
+         {head_join}\
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
          WHERE m.owner_id = ANY($1::uuid[])",
     );

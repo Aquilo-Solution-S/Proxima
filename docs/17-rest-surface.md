@@ -90,8 +90,8 @@ parser.
 | `GET /v1/resources/memory/{id}/lineage?direction=ancestors&depth=3` | `proxima://memory/{id}/lineage?...` |
 | `GET /v1/resources/change-events?since={seq}&limit=100` | `proxima://change-events?since={seq}&limit=100` |
 | `GET /v1/resources/wake-candidates?fact=F:{uuid}` | `proxima://wake-candidates?fact=F:{uuid}` |
-| `GET /v1/resources/goals?state=active&limit=50` | `proxima://goals?state=active&limit=50` |
-| `GET /v1/resources/goal/G:{uuid}` | `proxima://goal/G:{uuid}` |
+| `GET /v1/resources/goals?state=active,paused&limit=50` | `proxima://goals?state=active,paused&limit=50`; state members are trimmed, case-insensitive, deduplicated, and an empty member is invalid |
+| `GET /v1/resources/goal/G:{uuid}` | `proxima://goal/G:{uuid}`; `uuid` is the stable series handle, returning its current head |
 
 `proxima://how-to` is the one exception. It is synthesized per request
 from the caller's advertised surface rather than served through the

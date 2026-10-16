@@ -5,6 +5,8 @@
     clippy::too_many_lines
 )]
 
+use std::collections::BTreeSet;
+
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -235,7 +237,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         let mut by_assignment = QueryRequest::readable();
         by_assignment.entity_kind = Some(EntityKind::Goal);
-        by_assignment.goal_state = Some(GoalState::Active);
+        by_assignment.goal_states = BTreeSet::from([GoalState::Active]);
         by_assignment.assignment = Some(assignment.memory_id);
         let assigned = pg
             .query_memories(None, &[owner], &by_assignment, &[])

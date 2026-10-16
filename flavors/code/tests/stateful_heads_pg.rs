@@ -218,14 +218,8 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
         let resp = engine
             .query(
@@ -262,14 +256,8 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
         let resp_all = engine
             .query(
@@ -325,14 +313,8 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(StatelessFactV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
         let resp = engine
             .query(
@@ -394,14 +376,8 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            goal_state: None,
-            assignment: None,
-            evidence_contains: None,
             limit: 100,
-            page: proxima_core::verbs::query::QueryPage::default(),
-            include_payloads: true,
-            memory_ids: Vec::new(),
-            goal_ids: Vec::new(),
+            ..QueryRequest::readable()
         };
         let resp = engine
             .query(

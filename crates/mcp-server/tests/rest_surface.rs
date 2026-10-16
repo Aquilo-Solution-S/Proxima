@@ -1612,6 +1612,16 @@ async fn resource_reads_match_the_mcp_error_class() {
             "proxima://wake-candidates",
             StatusCode::BAD_REQUEST,
         ),
+        (
+            "/v1/resources/goals?state=Active,",
+            "proxima://goals?state=Active,",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/v1/resources/goals?state=Active,,Paused",
+            "proxima://goals?state=Active,,Paused",
+            StatusCode::BAD_REQUEST,
+        ),
     ] {
         let mcp_error = host
             .read_resource(resource_uri, author(), Some(ctx.clone()))
@@ -1630,16 +1640,16 @@ async fn resource_reads_match_the_mcp_error_class() {
             .as_str()
             .expect("detail")
             .to_string();
-        assert!(
-            detail.contains(
-                resource_uri
-                    .trim_start_matches("proxima://")
-                    .split('?')
-                    .next()
-                    .unwrap_or_default()
-            ) || detail == format!("tool {resource_uri} not found"),
-            "detail {detail} does not describe {mcp_error:?}"
-        );
+        let expected_detail = match mcp_error {
+            proxima_mcp_server::ToolInvocationError::Tool(inner) => inner.client_message(),
+            proxima_mcp_server::ToolInvocationError::ToolNotFound(name) => {
+                format!("tool {name} not found")
+            }
+            proxima_mcp_server::ToolInvocationError::NotAuthorized(name) => {
+                proxima_core::McpToolError::NotAuthorized(name).client_message()
+            }
+        };
+        assert_eq!(detail, expected_detail, "{rest_uri}");
     }
 }
 

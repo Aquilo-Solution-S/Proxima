@@ -117,8 +117,8 @@ Canonical substrate resources:
 | `proxima://memories/counts` | current memories the caller can read, by kind: `{"counts": {"Fact": n, "Abstraction": n, "Perspective": n, "Goal": n}}`. All four keys always present, zero when none. One per series head (`proxima_core.memory_head`) for Fact, Abstraction and Perspective, one per Goal head (`goal_head`); never one per version, and a forgotten memory is not counted. Same owner set and kind-scoped row security as `Engine::query`; a caller who reads nothing gets `Forbidden`. Parameterless; a read writes no call-ledger row |
 | `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
 | `proxima://change-events{?since,limit}` | forward `announce` poll, ascending, with `next_since` and `has_more` |
-| `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal. Each goal carries `text` (the full prompt text of that version, in the listing too; JSON `null`, key present, when unknown), `set_at` (the series' first version) and `changed_at` (this version), both RFC 3339 |
-| `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration and the same `text`, `set_at` and `changed_at` as the listing ([06 §Goal Entity](06-goals-and-self.md#goal-entity)) |
+| `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional comma-separated state set (Active/Paused/Achieved/Abandoned); omit `state` for all states, while an explicitly empty member is invalid. Keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal. Order is `(handle,t) DESC`; memory recency remains `(created_at,memory_id) DESC`. Each goal carries stable `handle` (`G:<uuid>`) plus version `goal` (`G:<uuid>`), `text` (full prompt text, `null` when unknown), `set_at`, and `changed_at` (RFC 3339). |
+| `proxima://goal/{id}` | single-goal read by stable series handle `G:<uuid>`; a version UUID is absent unless supplied as a handle too. Returns the current head, wake configuration, and the same fields as the listing ([06 §Goal Entity](06-goals-and-self.md#goal-entity)) |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
 | neighbors / lineage | walk `memory.origins` / `memory.refs`. No `proxima://edges` |
 
@@ -211,8 +211,12 @@ Snapshot read of memories and goals scoped to the server-resolved authorized Own
 | entity kind | optional |
 | schema id | optional |
 | supersession | heads-only or include superseded |
-| Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
-| pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` — the write time, never a Fact's `occurred_at` |
+| Goal series | `goal_handles`: any selected series; heads-only selects its newest version, include-superseded selects its history |
+| version hydration | `memory_ids` / `goal_ids`: exact versions, including older versions under heads-only; intersects other filters |
+| Goal pins | `assignment`, `evidence_contains` |
+| `goal_states` | closed state union; empty `BTreeSet` selects all states |
+| Fact goal references | `referenced_goal_handles`: any readable version of any selected Goal series, conjunctive with `schema_id`; unreadable and nonexistent series both match nothing. Other explicit Memory kinds match nothing |
+| pagination | single-kind keyset: `limit` + `page.after`; Memory uses `(created_at, id) DESC`, Goal uses `(handle,t) DESC` |
 | occurrence | every Fact row carries `occurred_at` ([01 §Properties of an Event](01-event-source.md#properties-of-an-event)); Abstractions and Perspectives carry none |
 | payloads | optional typed payload projections; identity hydration by memory/goal ids |
 | stateful Facts | heads by registered natural key; a flavor-defined tombstone payload is the current hot head and suppresses the prior present row |
@@ -224,7 +228,7 @@ Cursor streams:
 | `entity_kind` | cursor |
 |---|---|
 | `Fact` / `Abstraction` / `Perspective` | `QueryCursor::Memory { created_at, memory_id }` |
-| `Goal` | `QueryCursor::Goal { created_at, goal_id }` |
+| `Goal` | `QueryCursor::Goal { handle, goal_id }`; goal pages order by `(handle,t) DESC` |
 | absent | rejected when `page.after` is present; `next_cursor = None` |
 
 Cursor mismatch returns `InvalidArgument`. Storage fetches `limit + 1`,
