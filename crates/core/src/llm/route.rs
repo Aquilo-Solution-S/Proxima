@@ -115,10 +115,11 @@ impl EmbeddingRoute {
 
 /// A route the host cannot resolve for an Owner.
 ///
-/// Misconfiguration, not an outage: fetch credentials inside the client's
-/// `embed`, where the drain retries. The engine never falls back to another
-/// Owner's client or a default; it refuses the write, releases the Owner's
-/// jobs, or drops the Owner's semantic arm.
+/// Resolve provider credentials inside the client's `embed`. Its typed
+/// [`super::LlmError`] decides whether the drain retries a transient failure
+/// or pauses a configuration fault until the host supplies a new client binding.
+/// The engine never falls back to another Owner's client or a default; it
+/// refuses the write, releases the Owner's jobs, or drops its semantic arm.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct EmbeddingRouteError {
