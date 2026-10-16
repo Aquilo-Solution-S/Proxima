@@ -1,5 +1,5 @@
 //! Engine composite — wires `FlavorRegistryFrozen` behind the typed
-//! verb surfaces of docs/14-protocol-surface.md.
+//! verb surfaces of docs/protocol.md.
 
 mod access_admin;
 mod builder;
@@ -48,9 +48,7 @@ pub use pipeline::WritePermit;
 pub use read_verbs::{
     FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
     GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest,
-    GetMemoryReadResponse, ListChangeEventsReadRequest, ListChangeEventsReadResponse,
-    ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT,
-    SearchReadRequest, SearchReadResponse,
+    GetMemoryReadResponse, SearchReadRequest, SearchReadResponse,
 };
 pub use unit_of_work::{FactWrite, HostStateMaintenanceAuthority, HostStateUnitOfWork, UnitOfWork};
 pub use upload::{UploadCompleted, UploadCompletionExpectation};
@@ -72,7 +70,7 @@ pub struct Engine {
     /// their jobs until the delay passes.
     embedding_backoff: embeddings::EmbeddingBackoff,
     /// Producer identity and capture bounds for listenable Fact schemas
-    /// (docs/18). Default-constructed means "no source bound", which is
+    /// (docs/host-integration.md). Default-constructed means "no source bound", which is
     /// correct for the overwhelming majority of deployments: nothing is
     /// listenable, so nothing needs one.
     publication: crate::publication::PublicationConfig,

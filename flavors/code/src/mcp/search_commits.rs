@@ -5,13 +5,12 @@ use proxima_core::OwnerScope;
 use proxima_core::flavor::{BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, SubstringArm};
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::CodeFlavorStore;
 use crate::contract::{COMMIT_SCHEMA_ID, COMMIT_SUMMARY_SCHEMA_ID, band, substring_arm};
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
@@ -147,7 +146,7 @@ struct CommitScan<'a> {
 /// exists past `page_len` in the scanned candidate window.
 async fn load_commit_matches(
     ctx: &ToolCtx,
-    pool: &CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     engine: &proxima_core::Engine,
     scan: &CommitScan<'_>,
 ) -> Result<(Vec<CommitMatch>, bool), ToolError> {
@@ -205,7 +204,7 @@ async fn load_commit_matches(
 /// reports for its own list.
 async fn load_summary_matches(
     ctx: &ToolCtx,
-    pool: &CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     engine: &proxima_core::Engine,
     scan: &CommitScan<'_>,
 ) -> Result<(Vec<SummaryMatch>, bool), ToolError> {
@@ -434,13 +433,13 @@ fn same_table_like_is_declared(schema_id: &str) -> bool {
 
 async fn search_commit_rows(
     pool: &PgPool,
-    owner_scope: Option<&OwnerScope>,
+    owner_scope: &OwnerScope,
     query: &str,
     repo_id: Option<Uuid>,
     limit: i64,
     read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
-    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
+    let mut tx = begin_owner_transaction(pool, owner_scope)
         .await
         .map_err(ToolError::Storage)?;
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
@@ -471,14 +470,14 @@ async fn search_commit_rows(
 
 async fn search_summary_rows(
     pool: &PgPool,
-    owner_scope: Option<&OwnerScope>,
+    owner_scope: &OwnerScope,
     query: &str,
     repo_id: Option<Uuid>,
     change_kind: Option<&str>,
     limit: i64,
     read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
-    let mut tx = begin_compatible_owner_transaction(pool, owner_scope)
+    let mut tx = begin_owner_transaction(pool, owner_scope)
         .await
         .map_err(ToolError::Storage)?;
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment

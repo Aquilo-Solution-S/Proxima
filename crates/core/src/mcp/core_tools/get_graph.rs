@@ -2,7 +2,7 @@
 //! static catalogs.
 //!
 //! There is no edge-type catalog here: the edge vocabulary is closed at
-//! two kinds and lives in docs/16, not in a registry a client has to
+//! two kinds and lives in docs/concepts.md, not in a registry a client has to
 //! enumerate.
 
 use schemars::JsonSchema;

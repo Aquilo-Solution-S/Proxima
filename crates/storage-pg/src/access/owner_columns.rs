@@ -118,7 +118,7 @@ fn owner_fence_ids(owners: &[OwnerId]) -> Vec<uuid::Uuid> {
 
 /// The owner admission fence is a distinct advisory-lock namespace from
 /// lifecycle keys and Memory series handles. Its key is the owner id alone
-/// (`proxima-owner-fence:<uuid>`): one id is one owner. Memory, Goal and wake admission hold
+/// (`proxima-owner-fence:<uuid>`): one id is one owner. Memory and Goal admission hold
 /// this lock in shared mode. Source-scoped erase also holds it shared while
 /// taking its source fence exclusively; whole-owner erase takes the
 /// single-owner fence exclusively. Multi-owner transfers use the separate
@@ -462,7 +462,7 @@ pub(crate) async fn blob_upload_object_keys(
 
 /// Register `owner` in `proxima_core.owners` if it is not registered yet.
 ///
-/// The only production owners upsert on the data path. Memory / goal / wake /
+/// The only production owners upsert on the data path. Memory / goal /
 /// citation / cited-blob writes all go through this. A group is registered
 /// when it is created (`register_group`), so an id a write reaches unregistered
 /// is a user seen for the first time and is registered as `personal`. A
@@ -715,17 +715,14 @@ pub(crate) async fn lock_group_membership_write_tx(
 /// Returns `Conflict` when any Admin row already exists for the group, and
 /// `Internal` on sqlx failure.
 pub(crate) async fn bootstrap_group_admin(
-    pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    _pool: &PgPool,
+    platform: &crate::PgPlatformScope,
     group_id: GroupId,
     first_admin_user_id: UserId,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx = match platform {
-            Some(scope) => scope.begin().await?,
-            None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await?,
-        };
+        let mut tx = platform.begin().await?;
         let result =
             bootstrap_group_admin_on_connection(&mut tx, group_id, first_admin_user_id).await;
         crate::owner_scope::finish_transaction(tx, result).await
@@ -798,8 +795,11 @@ pub(crate) async fn add_group_member(
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = add_group_member_on_connection_authorized(
             &mut tx,
             group_id,
@@ -923,8 +923,11 @@ pub(crate) async fn remove_group_member(
     endpoint_authority: MembershipEndpointAuthority,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = remove_group_member_on_connection_authorized(
             &mut tx,
             group_id,
@@ -1028,8 +1031,11 @@ pub(crate) async fn remove_group_member_relation(
     endpoint_authority: MembershipEndpointAuthority,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = remove_group_member_relation_on_connection_authorized(
             &mut tx,
             group_id,
@@ -1145,8 +1151,11 @@ pub(crate) async fn replace_group_member_relation(
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
     with_bounded_retry(move || async move {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result =
             replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to).await;
         crate::owner_scope::finish_transaction(tx, result).await
@@ -1394,29 +1403,14 @@ fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
 /// source-owned head to participate in the compare-and-set.
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
-/// Most sidecar rows stay keyed by `t` and so follow the memory to
-/// `to_owner`. Owner-pinned sidecars are the exception and this transaction
-/// does not touch them at all. `mcp_call_logged_v1` is the one in the core
-/// contract: it describes the ACTOR of a tool call (`actor_upn`), not the
-/// memory, and it
-/// carries its own `owner_id`, stamped at write time with the owner that
-/// made the call. The row stays under that owner, so the source keeps
-/// answering "what did my agents do" after giving the memory away.
-///
-/// The destination never sees it, because every read of an owner-pinned
-/// sidecar is scoped by the sidecar's OWN owner rather than the memory's:
-/// hydrate joins `memory` on `m.owner_id = s.owner_id` so a moved memory
-/// stops matching, `read_mcp_call_history` selects on `fact.owner_id` with
-/// no `memory` join at all, and owner erase/export select the same
-/// way. Forget skips them in both directions, so cooling or forgetting a
-/// received memory cannot dump or destroy the source's audit trail.
+/// Sidecars follow the memory unless their surface declares `RetainAtSource`.
+/// Such rows retain their own owner and are excluded from generated transfer
+/// statements and the forget/hydrate cycle.
 ///
 /// Cited `blob` rows move when no other live series under a different owner
 /// still cites them. Embeddings / jobs follow the transferred `t`s so ANN
 /// (`emb.owner_id`) stays Tesla-valve. `ingest_keys` for those `t`s are
-/// deleted so the prior owner can mint a new series. The same transaction
-/// announces the transfer under both lanes: the prior owner's (the series
-/// left their owned view) and the destination's (it arrived).
+/// deleted so the prior owner can mint a new series.
 ///
 /// Goals do not transfer — the engine refuses them before storage; this
 /// backstop keeps a direct storage call from transferring one.
@@ -1429,7 +1423,7 @@ fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
 /// violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     permit: &proxima_core::storage_ports::OwnerWritePermit,
     surfaces: &OwnerSurfaces,
     entity: EntityId,
@@ -1479,7 +1473,7 @@ pub(crate) async fn transfer_to_owner(
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
             // rows are already re-homed to the destination in this
-            // transaction with no announce row. Roll back so they revert to
+            // transaction. Roll back so they revert to
             // the prior owner.
             tx.rollback().await.map_err(map_err)?;
             return Ok(false);
@@ -1869,7 +1863,7 @@ async fn transfer_memory_handle(
     // The destination's `owners` row is not seeded anywhere, so mint it (or
     // confirm its kind) BEFORE any statement below binds `to_id` into
     // an `owner_id` FK — `blob`, `content`, `cooled`, `memory_head`,
-    // `memory`, `sketch`, embeddings and the announce lanes all reference
+    // `memory`, `sketch` and embeddings all reference
     // `proxima_core.owners`.
     let to_id = ensure_owner_row(tx.as_mut(), &to_owner).await?;
     let ts = lock_series_membership(tx, handle, from_id).await?;
@@ -1946,21 +1940,16 @@ async fn transfer_memory_handle(
     transfer_cited_blobs(tx, surfaces, handle, from_id, to_id).await?;
     transfer_content_for_handle(tx, surfaces, handle, from_id, to_id).await?;
     run_generated_transfer_legs(tx, surfaces, from_id, to_id, &ts).await?;
-    let event_t = match expected_head_t {
-        Some(expected_head_t) => {
-            if !persist_series_head_transfer(tx, handle, from_id, to_id, expected_head_t).await? {
-                return Ok(false);
-            }
-            expected_head_t
-        }
-        None => *ts.last().expect("non-empty transfer series has an event t"),
-    };
+    if let Some(expected_head_t) = expected_head_t
+        && !persist_series_head_transfer(tx, handle, from_id, to_id, expected_head_t).await?
+    {
+        return Ok(false);
+    }
     // The vectors moved with the series, but they are the destination's
     // only in spaces its route names: the rest go, and the head is queued
     // for each route space it has no vector in.
     purge_series_embedding_spaces_in_tx(tx, to_id, embeddings.spaces, &ts).await?;
     enqueue_series_head_in_tx(tx, to_id, handle, embeddings).await?;
-    announce_series_transfer(tx, handle, from_id, to_id, event_t).await?;
     Ok(true)
 }
 
@@ -2031,12 +2020,8 @@ async fn persist_series_head_transfer(
 /// rather than a row the source owner can still read after the memory became
 /// someone else's.
 ///
-/// Owner-pinned sidecars are untouched BY THEIR DECLARATION.
-/// `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`, stamped
-/// with the owner that made the call; `RetainAtSource` resolves to
-/// `TransferLeg::Retained`, which is not in `generated_transfer_legs()`, so
-/// no statement reaches it. The source keeps answering "what did my agents
-/// do" after giving the memory away.
+/// `RetainAtSource` resolves to `TransferLeg::Retained`, which is excluded
+/// from `generated_transfer_legs()`.
 async fn run_generated_transfer_legs(
     tx: &mut Transaction<'_, Postgres>,
     surfaces: &OwnerSurfaces,
@@ -2106,36 +2091,6 @@ fn series_leg_sql(table: &str, leg: TransferLeg) -> Result<String, StorageError>
             table.as_str()
         ))),
     }
-}
-
-/// One `'transfer'` announce row per lane, same series `(handle, event t)`:
-/// the prior owner's projectors learn the series left their owned view, and
-/// the destination's pull consumers learn it arrived. For a live series the
-/// event `t` is the head; for a fully cooled series it is the newest cooled
-/// `t`, since a head row no longer exists. Both `announce.owner_id` FKs hold
-/// because `transfer_memory_handle` called `ensure_owner_row` for the
-/// destination at the top of this same transaction (the prior owner's row
-/// already exists — it owns the series being read).
-async fn announce_series_transfer(
-    tx: &mut Transaction<'_, Postgres>,
-    handle: uuid::Uuid,
-    from_id: uuid::Uuid,
-    to_id: uuid::Uuid,
-    event_t: uuid::Uuid,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         VALUES ($1, 'transfer', 'memory', $3, $4),
-                ($2, 'transfer', 'memory', $3, $4)",
-    )
-    .bind(from_id)
-    .bind(to_id)
-    .bind(handle)
-    .bind(event_t)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
 }
 
 /// Move the handle's cited blobs to the destination, deduping rather than

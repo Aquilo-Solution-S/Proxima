@@ -95,7 +95,7 @@ struct CoverageRow {
 /// width with no lane.
 pub(crate) async fn embedding_coverage(
     pool: &sqlx::PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     owner: &OwnerId,
     spaces: &[EmbeddingSpace],
     non_embeddable_schemas: &[String],
@@ -210,7 +210,7 @@ WITH keep AS (
 /// through the shared mapper.
 pub(crate) async fn purge_embedding_spaces(
     pool: &sqlx::PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     owner: &OwnerId,
     keep: &[EmbeddingSpace],
     limit: i64,

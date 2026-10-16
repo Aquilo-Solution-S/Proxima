@@ -2,13 +2,13 @@
 
 mod common;
 
-use common::{migrated_db, owner_write_permit, test_owner};
+use common::{authenticated_owner, migrated_db, owner_scope, test_owner};
 use proxima_code::testkit::{build_engine, ingest_file_revision, register_repo};
 use proxima_code::{FileRevisionV1, FileState, RepoScope};
 use proxima_core::engine::{Engine, FactWrite};
-use proxima_core::storage_ports::OwnerTransferPort;
+use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactIngestOutcome;
-use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId};
+use proxima_core::{AccessKind, AuthzContext, EntityId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -52,7 +52,7 @@ async fn register_fixture_repo(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pg.pool_for_tests(),
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         &format!("/tmp/proxima-handle-reuse-{repo_id}"),
@@ -69,8 +69,7 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let authz = authenticated_owner(&owner);
         let repo_id = Uuid::now_v7();
         register_fixture_repo(&pg, &owner, repo_id).await?;
         let file_path = "src/lib.rs";
@@ -83,6 +82,7 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         )
         .await?;
         let destination = proxima_core::OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, destination);
         let transferred = pg
             .transfer_to_owner(
                 &permit,
@@ -150,7 +150,7 @@ async fn a_displaced_revision_reported_again_heads_its_series() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_owner(&owner);
         let repo_id = Uuid::now_v7();
         register_fixture_repo(&pg, &owner, repo_id).await?;
         let main = file_revision(repo_id, "src/lib.rs", "main");

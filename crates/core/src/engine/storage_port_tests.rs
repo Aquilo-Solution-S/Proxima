@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::storage_ports::{
     GoalCommandStoragePorts, GoalWritePort, OwnerAccessReadPort, QueryStoragePorts,
-    ReadVerbStoragePorts,
 };
 use crate::{OwnerId, StorageError};
 
@@ -32,7 +31,6 @@ impl crate::MemoryReadPort for ReadOnlyFake {
             goals: Vec::new(),
             edges: Vec::new(),
             next_cursor: None,
-            seq_high_water: None,
         })
     }
 
@@ -214,11 +212,7 @@ impl OwnerAccessReadPort for GoalFake {
 #[tokio::test]
 async fn query_helper_accepts_only_query_read_handles() {
     let read = Arc::new(ReadOnlyFake);
-    let ports = QueryStoragePorts {
-        change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
-        mcp_call_read: Arc::new(storage_port_tests_support::McpCallReadFake),
-        memory_read: read,
-    };
+    let ports = QueryStoragePorts { memory_read: read };
     let owner = OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7()));
     let req = crate::verbs::query::QueryRequest::readable();
 
@@ -227,30 +221,6 @@ async fn query_helper_accepts_only_query_read_handles() {
         .expect("query helper should compile against query ports only");
 
     assert!(response.memories.is_empty());
-}
-
-#[tokio::test]
-async fn read_verb_helper_accepts_only_read_verb_handles() {
-    let ports = ReadVerbStoragePorts {
-        embedding_job: Arc::new(storage_port_tests_support::EmbeddingJobFake),
-        memory_read: Arc::new(ReadOnlyFake),
-        memory_inspect: Arc::new(storage_port_tests_support::MemoryInspectFake),
-        change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
-        citation: Arc::new(storage_port_tests_support::CitationFake),
-        goal_wake_candidate: Arc::new(storage_port_tests_support::GoalWakeCandidateFake),
-        goal_read: Arc::new(storage_port_tests_support::GoalReadFake),
-    };
-    let owner = OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7()));
-    let req = super::read_verbs::ListChangeEventsReadRequest {
-        after: uuid::Uuid::nil(),
-        limit: 1,
-    };
-
-    let response = super::read_verbs::list_change_events_authorized(&ports, None, &[owner], &req)
-        .await
-        .expect("read helper should compile against read-verb ports only");
-
-    assert!(response.events.is_empty());
 }
 
 #[tokio::test]
@@ -288,50 +258,9 @@ async fn goal_helper_accepts_only_goal_command_handles() {
     assert_eq!(err.code, crate::error::ErrorCode::Internal);
 }
 
+#[allow(dead_code)]
 mod storage_port_tests_support {
     use super::*;
-
-    #[derive(Debug)]
-    pub struct ChangeEventFake;
-
-    #[async_trait::async_trait]
-    impl crate::ChangeEventPort for ChangeEventFake {
-        async fn change_history(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerId],
-            _req: &crate::verbs::change_history::ChangeHistoryRequest,
-        ) -> Result<crate::verbs::change_history::ChangeHistoryResponse, StorageError> {
-            Ok(crate::verbs::change_history::ChangeHistoryResponse {
-                events: Vec::new(),
-                seq_high_water: None,
-            })
-        }
-
-        async fn list_change_events_after(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[OwnerId],
-            _after: uuid::Uuid,
-            _limit: usize,
-        ) -> Result<Vec<crate::read_models::ChangeEventForWake>, StorageError> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct GoalWakeCandidateFake;
-
-    #[async_trait::async_trait]
-    impl crate::storage_ports::GoalWakeCandidatePort for GoalWakeCandidateFake {
-        async fn list_goal_wake_candidates(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _req: &crate::read_models::GoalWakeCandidateRequest<'_>,
-        ) -> Result<Vec<crate::read_models::GoalWakeCandidate>, StorageError> {
-            Ok(Vec::new())
-        }
-    }
 
     #[derive(Debug)]
     pub struct GoalReadFake;
@@ -348,15 +277,6 @@ mod storage_port_tests_support {
             Ok(Vec::new())
         }
 
-        async fn load_goal_wake_configs(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _read_owners: &[crate::OwnerId],
-            _goal_ids: &[crate::GoalId],
-        ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
         async fn load_goal_evidence(
             &self,
             _scope: Option<&crate::OwnerScope>,
@@ -364,20 +284,6 @@ mod storage_port_tests_support {
             _goal_id: crate::GoalId,
         ) -> Result<Option<Vec<crate::MemoryId>>, StorageError> {
             Ok(None)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct McpCallReadFake;
-
-    #[async_trait::async_trait]
-    impl crate::McpCallReadPort for McpCallReadFake {
-        async fn read_mcp_call_history(
-            &self,
-            _scope: Option<&crate::OwnerScope>,
-            _req: &crate::verbs::mcp_call_history::McpCallHistoryRequest,
-        ) -> Result<crate::verbs::mcp_call_history::McpCallHistoryResponse, StorageError> {
-            Ok(crate::verbs::mcp_call_history::McpCallHistoryResponse { calls: Vec::new() })
         }
     }
 

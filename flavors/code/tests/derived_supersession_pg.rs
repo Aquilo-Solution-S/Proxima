@@ -2,14 +2,13 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{TestDb, test_owner};
+use common::{TestDb, authenticated_owner, test_owner};
 use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::SingleClientRouter;
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OperatorId,
-    SeriesHandle,
+    DerivationIdentity, DerivedMemory, MemoryId, MemoryTarget, OperatorId, SeriesHandle,
 };
 use uuid::Uuid;
 
@@ -65,7 +64,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         plan_key,
         "old plan",
     );
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let authz = authenticated_owner(&owner);
     let old_outcome = engine
         .derive_memory(
             &authz,

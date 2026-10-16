@@ -518,15 +518,11 @@ impl Tool for CodeEraseRepoTool {
         Box::pin(async move {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             let pool = code_store(&ctx)?;
-            let repo = crate::repos::get_repo(
-                pool.pool(),
-                ctx.authz().owner_scope(),
-                &ctx.owner(),
-                repo_id,
-            )
-            .await
-            .map_err(map_repo_registry)?
-            .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
+            let repo =
+                crate::repos::get_repo(pool.pool(), pool.owner_scope(), &ctx.owner(), repo_id)
+                    .await
+                    .map_err(map_repo_registry)?
+                    .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             // Confirm against the stored path rather than the caller's, so a
             // handle typo cannot erase a different repository than the one

@@ -1,5 +1,5 @@
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::{PgStorage, begin_migration_transaction, core_migrator};
+use proxima_pg_testkit::{create_db, drop_db, split_role_urls};
+use proxima_storage_pg::{begin_migration_transaction, core_migrator};
 use uuid::Uuid;
 
 /// A live database at migration 0020 (`_v026_`) keeps its function identity,
@@ -10,7 +10,6 @@ async fn query_stopwords_upgrade_preserves_identity_and_runtime_authority()
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
         let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
         let platform = sqlx::PgPool::connect(&platform_url).await?;
         let mut staged = core_migrator();
@@ -26,6 +25,7 @@ async fn query_stopwords_upgrade_preserves_identity_and_runtime_authority()
         staged.run(migration.as_mut()).await?;
         migration.commit().await?;
         drop(connection);
+        let pg = super::connect_historical_fixture(&db_name).await?;
         sqlx::query("INSERT INTO proxima_core.lexical_languages VALUES ('german')")
             .execute(pg.pool_for_tests())
             .await?;

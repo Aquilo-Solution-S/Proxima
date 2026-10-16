@@ -10,9 +10,11 @@
 use proxima_core::{
     AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
+use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
 use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage, group_role, roles_for_subject};
+use proxima_storage_pg::{
+    PgOwnerAccessResolver, PgPlatformScope, PgStorage, group_role, roles_for_subject,
+};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -47,26 +49,32 @@ fn group() -> GroupId {
 }
 
 /// A migrated database and a pool onto it; the caller drops the database.
-async fn fixture() -> (String, sqlx::PgPool) {
+async fn fixture() -> (String, sqlx::PgPool, PgPlatformScope) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let _pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect");
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url(&db_name))
         .await
         .expect("pool");
-    (db_name, pool)
+    let (_, platform_url) = split_role_urls(&db_name).await.expect("roles");
+    let platform_pool = sqlx::PgPool::connect(&platform_url)
+        .await
+        .expect("platform pool");
+    let platform = PgPlatformScope::new(platform_pool, &["proxima_core"])
+        .await
+        .expect("platform scope");
+    (db_name, pool, platform)
 }
 
 #[tokio::test]
 async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
-    let (db_name, pool) = fixture().await;
+    let (db_name, pool, platform) = fixture().await;
     let result = async {
         let subject = user();
         let stranger = user();
@@ -86,7 +94,7 @@ async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
         seed_membership(&pool, strangers_only, stranger, Relation::Admin).await;
         seed_membership(&pool, single, stranger, Relation::Viewer).await;
 
-        let resolver = PgOwnerAccessResolver::new(pool.clone());
+        let resolver = PgOwnerAccessResolver::new(pool.clone(), platform.clone());
         let mut conn = pool.acquire().await?;
         let groups = [single, joined, promoted, strangers_only];
 
@@ -148,11 +156,11 @@ async fn probes_answer_what_the_resolver_answers_for_every_membership_shape() {
 
 #[tokio::test]
 async fn a_probe_sees_the_callers_open_transaction_and_leaves_it_usable() {
-    let (db_name, pool) = fixture().await;
+    let (db_name, pool, platform) = fixture().await;
     let result = async {
         let subject = user();
         let team = group();
-        let resolver = PgOwnerAccessResolver::new(pool.clone());
+        let resolver = PgOwnerAccessResolver::new(pool.clone(), platform.clone());
 
         let mut tx = pool.begin().await?;
         assert_eq!(group_role(&mut tx, subject, team).await?, None);
@@ -207,7 +215,7 @@ async fn a_probe_sees_the_callers_open_transaction_and_leaves_it_usable() {
 
 #[tokio::test]
 async fn a_failing_connection_is_a_resolution_error_not_an_empty_answer() {
-    let (db_name, pool) = fixture().await;
+    let (db_name, pool, _platform) = fixture().await;
     let result = async {
         let subject = user();
         let mut tx = pool.begin().await?;
@@ -236,14 +244,14 @@ async fn a_failing_connection_is_a_resolution_error_not_an_empty_answer() {
 
 #[tokio::test]
 async fn group_registered_subject_is_refused_before_personal_role_derivation() {
-    let (db_name, pool) = fixture().await;
+    let (db_name, pool, platform) = fixture().await;
     let result = async {
         let group = group();
         let subject = UserId::new(group.into_inner());
         let member = user();
         let ordinary = user();
         seed_membership(&pool, group, member, Relation::Viewer).await;
-        let resolver = PgOwnerAccessResolver::new(pool.clone());
+        let resolver = PgOwnerAccessResolver::new(pool.clone(), platform.clone());
         let mut conn = pool.acquire().await?;
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM proxima_core.owners WHERE owner_id = $1)",

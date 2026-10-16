@@ -23,10 +23,7 @@ use proxima_mcp_server::ResourceServerMetadata;
 use crate::OwnerAccessPort;
 use crate::runtime_config::ProximaError;
 
-/// Exactly one of these two names the subject map, and one of them must be
-/// set whenever an issuer is.
 const SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
-const SUBJECT_MAP_LEGACY: &str = "PROXIMA_OIDC_SUBJECT_MAP";
 
 /// Where verification keys come from: fetched from the issuer (discovered, or
 /// at `JWKS_URI`), or pinned in configuration (`JWKS_JSON`). At most one.
@@ -42,7 +39,7 @@ const LEEWAY_SECS: u64 = 60;
 /// Every variable [`oidc_from_lookup`] reads. The runtime environment layer
 /// captures exactly these, so the authenticator it builds at resolve sees
 /// the environment the builder was given.
-pub(crate) const OIDC_ENV_KEYS: [&str; 9] = [
+pub(crate) const OIDC_ENV_KEYS: [&str; 8] = [
     "PROXIMA_OIDC_ISSUER",
     "PROXIMA_OIDC_AUDIENCE",
     "PROXIMA_PUBLIC_URL",
@@ -51,7 +48,6 @@ pub(crate) const OIDC_ENV_KEYS: [&str; 9] = [
     "PROXIMA_OIDC_ALLOWED_SUBJECTS",
     OIDC_HTTP_TIMEOUT_SECONDS,
     SUBJECT_MAP_JSON,
-    SUBJECT_MAP_LEGACY,
 ];
 
 /// What a host needs to serve authenticated MCP: who validates a bearer
@@ -92,8 +88,7 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// - `PROXIMA_OIDC_ISSUER` — the issuer URL; presence switches this on.
 /// - `PROXIMA_OIDC_AUDIENCE` — the audience every token must carry.
 /// - `PROXIMA_PUBLIC_URL` — this server's own URL, advertised to clients.
-/// - `PROXIMA_OIDC_SUBJECT_MAP_JSON` or `PROXIMA_OIDC_SUBJECT_MAP` — which
-///   subject maps to which owner. Mutually exclusive.
+/// - `PROXIMA_OIDC_SUBJECT_MAP_JSON` — which subject maps to which owner.
 /// - `PROXIMA_OIDC_JWKS_URI` — optional override; discovered otherwise.
 /// - `PROXIMA_OIDC_JWKS_JSON` — optional JWKS document pinned in config. When
 ///   set nothing is fetched: the issuer is only matched against `iss`, for a
@@ -105,7 +100,7 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// # Errors
 ///
 /// Returns [`ProximaError::Config`] when an issuer is set without its
-/// companions, when both subject-map spellings or both JWKS sources are set,
+/// companions, when both JWKS sources are set,
 /// when the subject map or pinned JWKS will not parse, or when the issuer or
 /// JWKS URI is not a secure URL.
 pub fn oidc_from_env(
@@ -182,7 +177,7 @@ pub fn oidc_from_lookup(
             .map_err(|err| ProximaError::Config(err.to_string()))?,
         ),
     };
-    let subject_map = subject_map(lookup, &issuer)?;
+    let subject_map = subject_map(lookup)?;
 
     let authenticator =
         proxima_auth_oidc::OidcAuthenticator::new(config, resolver, subject_map, owner_access)
@@ -216,31 +211,16 @@ fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duratio
 
 /// Parse the issuer-aware subject map.
 ///
-/// Exactly one spelling must be set. Both being set is an error rather than
-/// a precedence rule: the two disagree about which owner a subject resolves
-/// to, and silently preferring one would decide an access-control question
-/// by the order of an `if`.
 fn subject_map(
     lookup: &impl Fn(&str) -> Option<String>,
-    issuer: &str,
 ) -> Result<proxima_auth_oidc::OidcSubjectMap, ProximaError> {
-    match (
-        non_empty(lookup, SUBJECT_MAP_JSON),
-        non_empty(lookup, SUBJECT_MAP_LEGACY),
-    ) {
-        (Some(_), Some(_)) => Err(ProximaError::Config(format!(
-            "{SUBJECT_MAP_JSON} and {SUBJECT_MAP_LEGACY} are mutually exclusive"
-        ))),
-        (Some(json), None) => proxima_auth_oidc::OidcSubjectMap::from_json(&json)
-            .map_err(|err| ProximaError::Config(format!("{SUBJECT_MAP_JSON}: {err}"))),
-        (None, Some(legacy)) => {
-            proxima_auth_oidc::OidcSubjectMap::from_legacy_shorthand(&legacy, &[issuer.to_owned()])
-                .map_err(|err| ProximaError::Config(format!("{SUBJECT_MAP_LEGACY}: {err}")))
-        }
-        (None, None) => Err(ProximaError::Config(format!(
-            "PROXIMA_OIDC_ISSUER set without {SUBJECT_MAP_JSON} or {SUBJECT_MAP_LEGACY}"
-        ))),
-    }
+    let json = non_empty(lookup, SUBJECT_MAP_JSON).ok_or_else(|| {
+        ProximaError::Config(format!(
+            "PROXIMA_OIDC_ISSUER set without {SUBJECT_MAP_JSON}"
+        ))
+    })?;
+    proxima_auth_oidc::OidcSubjectMap::from_json(&json)
+        .map_err(|err| ProximaError::Config(format!("{SUBJECT_MAP_JSON}: {err}")))
 }
 
 fn non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
@@ -271,12 +251,12 @@ mod tests {
     /// sqlx pool still requires a Tokio context, which is why these are
     /// `#[tokio::test]` and not `#[test]`.
     fn owner_access() -> Arc<dyn crate::OwnerAccessPort> {
-        Arc::new(
-            proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(
-                "postgres://proxima:proxima@127.0.0.1:5432/proxima",
-            )
-            .expect("a lazy pool never connects"),
-        )
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid/proxima")
+            .expect("test pool URL is syntactically valid");
+        Arc::new(proxima_storage_pg::PgOwnerAccessResolver::new(
+            pool,
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        ))
     }
 
     /// No issuer is not a misconfiguration. An embedded host using the Host
@@ -302,8 +282,8 @@ mod tests {
             ("PROXIMA_OIDC_ALLOWED_SUBJECTS", "a,b"),
             ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "5"),
             (
-                "PROXIMA_OIDC_SUBJECT_MAP",
-                "a:00000000-0000-7000-8000-000000000001",
+                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                r#"[{"iss":"https://issuer.test","sub":"a","user_id":"00000000-0000-7000-8000-000000000001"}]"#,
             ),
         ]);
         let recording = |key: &str| {
@@ -339,8 +319,8 @@ mod tests {
             ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
             ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
             (
-                "PROXIMA_OIDC_SUBJECT_MAP",
-                "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                r#"[{"iss":"https://idp.test","sub":"sub","user_id":"0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"}]"#,
             ),
             ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "17"),
         ];
@@ -354,8 +334,8 @@ mod tests {
                 ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
                 ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
                 (
-                    "PROXIMA_OIDC_SUBJECT_MAP",
-                    "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                    "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                    r#"[{"iss":"https://idp.test","sub":"sub","user_id":"0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"}]"#,
                 ),
                 ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", invalid),
             ];
@@ -406,8 +386,8 @@ mod tests {
             ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
             ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
             (
-                "PROXIMA_OIDC_SUBJECT_MAP",
-                "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                r#"[{"iss":"https://idp.test","sub":"sub","user_id":"0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"}]"#,
             ),
             ("PROXIMA_OIDC_SUBJECT_MAP_JSON", "{}"),
         ]);
@@ -423,8 +403,8 @@ mod tests {
             ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
             ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
             (
-                "PROXIMA_OIDC_SUBJECT_MAP",
-                "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                r#"[{"iss":"https://idp.test","sub":"sub","user_id":"0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"}]"#,
             ),
         ]);
         assert!(oidc_from_lookup(&insecure, owner_access()).is_err());
@@ -549,13 +529,14 @@ mod tests {
             jwks: &str,
             user: Uuid,
         ) -> Result<Option<crate::auth::OidcBundle>, ProximaError> {
-            let subject_map = format!("{CALLER}:{user}");
+            let subject_map =
+                format!(r#"[{{"iss":"{issuer}","sub":"{CALLER}","user_id":"{user}"}}]"#);
             oidc_from_lookup(
                 &env(&[
                     ("PROXIMA_OIDC_ISSUER", issuer),
                     ("PROXIMA_OIDC_AUDIENCE", FLEET),
                     ("PROXIMA_PUBLIC_URL", "https://flavor.test"),
-                    ("PROXIMA_OIDC_SUBJECT_MAP", &subject_map),
+                    ("PROXIMA_OIDC_SUBJECT_MAP_JSON", &subject_map),
                     (JWKS_JSON, jwks),
                     // A regression to the HTTP resolver stalls on the silent
                     // issuer; make it fail in one second rather than ten.
@@ -620,7 +601,12 @@ mod tests {
                 ("PROXIMA_OIDC_ISSUER", "https://centauri.test"),
                 ("PROXIMA_OIDC_AUDIENCE", FLEET),
                 ("PROXIMA_PUBLIC_URL", "https://flavor.test"),
-                ("PROXIMA_OIDC_SUBJECT_MAP", &format!("{CALLER}:{user}")),
+                (
+                    "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                    &format!(
+                        r#"[{{"iss":"https://centauri.test","sub":"{CALLER}","user_id":"{user}"}}]"#
+                    ),
+                ),
                 (JWKS_URI, "https://centauri.test/keys"),
                 (JWKS_JSON, &jwks(KID, &signing_key())),
             ]);

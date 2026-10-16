@@ -32,6 +32,8 @@ use crate::features::{
 };
 use crate::owner_access::ForwarderPolicy;
 use crate::{AppContext, FlavorApp, ProximaError, ProximaHost, RuntimeBuilder};
+#[cfg(test)]
+use proxima_storage_pg::PgPlatformScope;
 use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver};
 
 /// Application runtime facade.
@@ -39,7 +41,7 @@ use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver};
 /// Configuration layers, lowest first: [`FlavorApp::configure`] (the app's
 /// defaults), the environment ([`Self::from_env`] / [`Self::from_lookup`]),
 /// then this value's own builder calls — code wins. Every feature starts
-/// when its config is present (docs/10 §Runtime features); [`Self::build`]
+/// when its config is present (docs/configuration.md §Runtime features); [`Self::build`]
 /// and [`Self::run`] start the same ones.
 pub struct Proxima<A: FlavorApp> {
     overlay: RuntimeBuilder,
@@ -156,13 +158,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn host_tools(mut self, tools: Arc<dyn proxima_mcp_server::McpHostTools>) -> Self {
         self.overlay = self.overlay.host_tools(tools);
-        self
-    }
-
-    /// [`RuntimeBuilder::record_mcp_calls`].
-    #[must_use]
-    pub fn record_mcp_calls(mut self, record: bool) -> Self {
-        self.overlay = self.overlay.record_mcp_calls(record);
         self
     }
 
@@ -333,7 +328,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     /// Bind the deployment's publication source and capture bounds
-    /// (docs/18). Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
+    /// (docs/host-integration.md). Env equivalent: `PROXIMA_PUBLICATION_SOURCE`,
     /// `PROXIMA_OUTBOX_MAX_PENDING`, `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES`.
     #[must_use]
     pub fn publication(
@@ -534,13 +529,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             late.bind(owner_access.clone());
         }
         if let Some(factory) = parts.platform_authenticator.take() {
-            // `resolve` refused a missing platform URL, and boot built the
-            // scope from it; absent here is a boot that skipped the census.
-            let platform_scope = app_ctx.host.platform_scope.clone().ok_or_else(|| {
-                ProximaError::Config(
-                    "authenticator_with_platform_scope: the runtime has no platform scope".into(),
-                )
-            })?;
+            let platform_scope = app_ctx.host.platform_scope.clone();
             parts.authenticator = Some(factory(crate::PlatformAuthContext {
                 platform_scope,
                 owner_access: owner_access.clone(),
@@ -718,7 +707,7 @@ macro_rules! runtime_handle_methods {
             self.runtime.features.feature_control(feature)
         }
 
-        /// The registry of outbox consumers (docs/18 §Consumers): list them,
+        /// The registry of outbox consumers (docs/host-integration.md §Consumers): list them,
         /// or retire one this deployment no longer runs.
         ///
         /// Boot registers every configured consumer; nothing but
@@ -1054,12 +1043,10 @@ fn runtime_owner_access(
 ) -> Arc<dyn OwnerAccessPort> {
     let resolver = {
         let host = app_ctx.host();
-        Arc::new(match &host.platform_scope {
-            Some(scope) => {
-                PgOwnerAccessResolver::new(host.pool.clone()).with_platform_scope(scope.clone())
-            }
-            None => PgOwnerAccessResolver::new(host.pool.clone()),
-        })
+        Arc::new(PgOwnerAccessResolver::new(
+            host.pool.clone(),
+            host.platform_scope.clone(),
+        ))
     };
     let port: Arc<dyn OwnerAccessPort> = host.unwrap_or_else(|| resolver.clone());
     match forwarder {
@@ -1111,12 +1098,7 @@ fn assemble_services<A: FlavorApp>(
         ));
     }
     if let Some(authenticator) = authenticator {
-        let store = Arc::new(match &host.platform_scope {
-            Some(scope) => {
-                PgDelegationStore::new(host.pool.clone()).with_platform_scope(scope.clone())
-            }
-            None => PgDelegationStore::new(host.pool.clone()),
-        });
+        let store = Arc::new(PgDelegationStore::new(host.platform_scope.clone()));
         services.try_insert(DelegatedAuthorityService::new(
             store,
             owner_access.clone(),
@@ -1164,8 +1146,7 @@ fn resolve_mcp_edge(
     }
     let mut tool_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), services)
         .with_engine(engine)
-        .with_request_headers(config.request_headers.clone())
-        .with_call_recording(config.record_mcp_calls);
+        .with_request_headers(config.request_headers.clone());
     if let Some(host_tools) = parts.host_tools.clone() {
         tool_host = tool_host.with_host_tools(host_tools);
     }
@@ -1333,6 +1314,7 @@ mod tests {
         fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
             builder
                 .database_url("postgres://alpha/proxima")
+                .platform_database_url("postgres://alpha/platform")
                 .pg_pool_config(PgPoolConfig {
                     max_connections: 3,
                     ..PgPoolConfig::default()
@@ -1356,6 +1338,7 @@ mod tests {
                 read_ttl_seconds: 300,
                 max_blob_bytes: None,
             },
+            PgPlatformScope::for_tests(),
         )
         .expect("test store config");
         let (engine, _system, delegation_runtime) =
@@ -1470,6 +1453,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1489,6 +1473,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1511,6 +1496,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1544,6 +1530,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
@@ -1574,6 +1561,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
@@ -1597,7 +1585,14 @@ mod tests {
     fn injected_lookup_replaces_the_ambient_process_env_source() {
         let (config, _) = Proxima::<AlphaApp>::app()
             .from_env()
-            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "4".to_string()))
+            .from_lookup(|key| {
+                (key == "PROXIMA_PG_MAX_CONNECTIONS")
+                    .then(|| "4".to_string())
+                    .or_else(|| {
+                        (key == "PROXIMA_PLATFORM_DATABASE_URL")
+                            .then(|| "postgres://unused/platform".to_string())
+                    })
+            })
             .expect("injected pool lookup")
             .tool_scope(ToolScope::All)
             .resolve()
@@ -1610,6 +1605,7 @@ mod tests {
     async fn build_refuses_mcp_without_authenticator_or_insecure_mode_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1624,6 +1620,7 @@ mod tests {
     async fn build_refuses_insecure_exposed_network_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1641,6 +1638,7 @@ mod tests {
     async fn build_refuses_non_loopback_insecure_mcp_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .tool_scope(ToolScope::All)
             .mcp_bind("0.0.0.0:31415".parse().unwrap())
@@ -1657,6 +1655,7 @@ mod tests {
         let owner = owner();
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1683,6 +1682,7 @@ mod tests {
         let owner = owner();
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .tool_scope(ToolScope::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
@@ -1705,6 +1705,7 @@ mod tests {
         // advertising `ToolScope::All`.
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .build()
             .await

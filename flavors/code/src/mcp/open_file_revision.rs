@@ -171,13 +171,13 @@ struct TextProjection {
 /// under. `None` when nothing readable answers the path.
 async fn load_head_revision(
     ctx: &ToolCtx,
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     engine: &proxima_core::Engine,
     scope: &HeadFileScope<'_>,
 ) -> Result<Option<(proxima_core::MemoryId, FileRevisionInfo)>, ToolError> {
     let revision_ids = pool
         .readable_file_revision_head_ts(
-            ctx.authz().owner_scope(),
+            pool.owner_scope(),
             ctx.owner(),
             scope.read_owners,
             scope.repo_id,
@@ -220,14 +220,14 @@ async fn load_head_revision(
 /// ordered by `chunk_index`.
 async fn load_head_chunks(
     ctx: &ToolCtx,
-    pool: &crate::CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     engine: &proxima_core::Engine,
     scope: &HeadFileScope<'_>,
     projection: &TextProjection,
 ) -> Result<Vec<ChunkSummary>, ToolError> {
     let chunk_ids = pool
         .readable_chunk_head_ts_for_file(
-            ctx.authz().owner_scope(),
+            pool.owner_scope(),
             ctx.owner(),
             scope.read_owners,
             scope.repo_id,

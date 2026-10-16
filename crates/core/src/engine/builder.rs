@@ -108,7 +108,7 @@ impl Engine {
     }
 
     /// Deployment tool-surface profile enforced at engine chokepoints that
-    /// consume tool scope (currently wake-candidate admission). Transport
+    /// consume tool scope, including delegated command authority. Transport
     /// hosts additionally intersect this into per-caller `AuthzContext`
     /// scope; setting it here keeps Host-API callers inside the same
     /// deployment surface even when their `AuthzContext` carries
@@ -148,7 +148,7 @@ impl Engine {
     }
 
     /// Bind the deployment's publication source and capture bounds
-    /// (docs/18 §Configuration).
+    /// (docs/host-integration.md).
     ///
     /// Fallible on purpose. A registry that freezes a listenable schema and
     /// a configuration that binds no source is a deployment which would

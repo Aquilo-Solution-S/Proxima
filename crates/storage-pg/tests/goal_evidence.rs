@@ -7,6 +7,7 @@ use std::sync::Arc;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -52,11 +53,11 @@ async fn perspective_evidence_is_rejected_in_tx() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url)
+        let pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(Arc::new(MemoryColdStore::default()));
-        pg.run_before_owner_rls_migrations().await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let owner_scope = owner_scope_for_tests(&[owner]);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
         let mut abs = draft("abstraction");
@@ -85,7 +86,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: GoalAuthorship::User,
                         request_id: IdempotencyKey::new("d7-evidence")?.into_string(),
@@ -129,7 +129,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: GoalAuthorship::User,
                         request_id: IdempotencyKey::new("d7-valid")?.into_string(),
@@ -145,13 +144,18 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(None, &owner, valid.goal_id).await?,
+            pg.load_goal_evidence(Some(&owner_scope), &owner, valid.goal_id).await?,
             Some(vec![fact.memory_id]),
             "Goal read must return its exact stored evidence vector"
         );
         let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         assert_eq!(
-            pg.load_goal_evidence(None, &foreign, valid.goal_id).await?,
+            pg.load_goal_evidence(
+                Some(&owner_scope_for_tests(&[foreign])),
+                &foreign,
+                valid.goal_id,
+            )
+            .await?,
             None,
             "owner mismatch must collapse to None"
         );
@@ -179,7 +183,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                                 GoalEvidenceRef::new(orphan.memory_id),
                             ],
                         )?,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: GoalAuthorship::User,
                         request_id: IdempotencyKey::new("d7-stale-evidence")?.into_string(),
@@ -195,7 +198,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(None, &owner, stale_goal.goal_id).await?,
+            pg.load_goal_evidence(Some(&owner_scope), &owner, stale_goal.goal_id).await?,
             Some(vec![fact.memory_id, orphan.memory_id]),
             "the carried vector must retain cooled or missing positions"
         );
@@ -213,7 +216,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         payload: Vec::new(),
                         sidecar_payload: None,
                     },
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("d7-stale-evidence-next")?,
                     context: GoalAtomicContext {
@@ -275,7 +277,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: operator_fact_topology,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: operator.clone(),
                         request_id: IdempotencyKey::new("d7-operator-fact")?.into_string(),
@@ -314,7 +315,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: operator_abstraction_topology,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: operator,
                         request_id: IdempotencyKey::new("d7-operator-abstraction")?.into_string(),
@@ -330,7 +330,12 @@ async fn perspective_evidence_is_rejected_in_tx() {
             )
             .await?;
         assert_eq!(
-            pg.load_goal_evidence(None, &owner, operator_goal.goal_id).await?,
+            pg.load_goal_evidence(
+                Some(&owner_scope_for_tests(&[owner])),
+                &owner,
+                operator_goal.goal_id,
+            )
+            .await?,
             Some(vec![abs.memory_id]),
             "operator A evidence must be admitted and persisted"
         );
@@ -370,7 +375,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                             Vec::new(),
                             Vec::new(),
                         )?,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: GoalAuthorship::User,
                         request_id: IdempotencyKey::new("d7-perspective-close")?.into_string(),
@@ -425,7 +429,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                             Vec::new(),
                             vec![GoalEvidenceRef::new(fact.memory_id)],
                         )?,
-                        wake: None,
                         supersedes_goal_id: None,
                         authorship: GoalAuthorship::User,
                         request_id: IdempotencyKey::new("d7-decompose-parent")?.into_string(),
@@ -467,7 +470,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                                 sidecar_payload: None,
                             },
                             evidence: vec![GoalEvidenceRef::new(abs.memory_id)],
-                            wake: None,
                             request_id: IdempotencyKey::new("d7-child-valid")?,
                         },
                         ChildGoalDraft {
@@ -480,7 +482,6 @@ async fn perspective_evidence_is_rejected_in_tx() {
                                 sidecar_payload: None,
                             },
                             evidence: vec![GoalEvidenceRef::new(perspective.memory_id)],
-                            wake: None,
                             request_id: IdempotencyKey::new("d7-child-invalid")?,
                         },
                     ],

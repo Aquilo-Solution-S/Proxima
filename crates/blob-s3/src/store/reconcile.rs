@@ -9,7 +9,7 @@ use proxima_core::storage_ports::{
     MAX_RECONCILE_SAMPLE,
 };
 use proxima_core::{AuthzContext, OwnerId, StorageError, UPLOADED_BLOB_SCHEMA_ID};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -228,9 +228,14 @@ impl CitedBlobStore {
 
         let mut after = None;
         loop {
-            let mut tx = begin_compatible_owner_transaction(&self.pool, authz.owner_scope())
-                .await
-                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+            let mut tx = begin_owner_transaction(
+                &self.pool,
+                authz.owner_scope().ok_or_else(|| {
+                    StorageError::ConstraintViolation("owner scope required".into())
+                })?,
+            )
+            .await
+            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
             let page = load_live_upload_page(tx.as_mut(), Some(owner.into_inner()), after).await?;
             tx.commit()
                 .await
@@ -283,11 +288,10 @@ impl CitedBlobStore {
     async fn begin_reconcile_transaction(
         &self,
     ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
-        match &self.platform_scope {
-            Some(scope) => scope.begin().await,
-            None => begin_compatible_owner_transaction(&self.pool, None).await,
-        }
-        .map_err(|err| StorageError::Unavailable(err.to_string()))
+        self.platform_scope
+            .begin()
+            .await
+            .map_err(|err| StorageError::Unavailable(err.to_string()))
     }
 
     /// Claim every completed, locally minted locator, including superseded
@@ -502,8 +506,12 @@ mod tests {
         // Neither backing service exists. Reaching either one would return an
         // infrastructure error (or wait for a connection); the advertised
         // service instead returns the owner denial synchronously.
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
-            .expect("test store config");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("test store config");
         let readable = OwnerId::from(UserId::new(Uuid::now_v7()));
         let denied = OwnerId::from(UserId::new(Uuid::now_v7()));
         let authz = AuthzContext::single_owner(&readable, AuthPath::HostBearer);
@@ -522,8 +530,12 @@ mod tests {
 
     #[tokio::test]
     async fn global_reconcile_rejects_an_unbound_store_before_io() {
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
-            .expect("test store config");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("test store config");
         let (_, authority) =
             Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
 
@@ -540,8 +552,12 @@ mod tests {
 
     #[tokio::test]
     async fn global_reconcile_rejects_a_foreign_boot_before_io() {
-        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
-            .expect("test store config");
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            store_config(None, None),
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .expect("test store config");
         let (_, authority) =
             Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
         let (_, foreign) =

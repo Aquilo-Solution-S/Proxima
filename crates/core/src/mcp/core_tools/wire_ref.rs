@@ -1,8 +1,8 @@
 //! Shared wire formatting for graph endpoints. One place turns an
 //! [`EntityRef`] or [`EdgeTargetProjection`] into a prefixed wire handle,
 //! so the kind→prefix mapping and the redaction sentinels cannot drift
-//! between the edge-bearing read tools (edges, change events, search
-//! neighbor edges, lineage).
+//! between the edge-bearing read tools (edges, search neighbor edges,
+//! lineage).
 
 use crate::mcp::McpToolCtx;
 use crate::{EdgeEndpoint, EdgeTargetProjection, EntityKind, EntityRef, MemoryId};

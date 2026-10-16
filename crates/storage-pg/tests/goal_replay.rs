@@ -1,4 +1,4 @@
-//! Replay must not mint a second wake_config or close-fact write-act.
+//! Replay must not mint a second goal state or close-fact write-act.
 #![allow(
     clippy::doc_markdown,
     clippy::too_many_arguments,
@@ -16,9 +16,9 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
-    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind, GoalWakeConfigWrite,
-    GoalWakeToolId, GoalWakeTrigger, GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest,
-    OperatorKind, SystemOrigin, TransitionGoalAtomicRequest,
+    GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind, GoalWriteOutcome,
+    IdempotencyKey, ModifyGoalAtomicRequest, OperatorKind, SystemOrigin,
+    TransitionGoalAtomicRequest,
 };
 use proxima_core::{
     AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalId, GoalPayload, InputContractId,
@@ -72,11 +72,10 @@ async fn fresh_pg() -> (String, PgStorage) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
         .with_cold(Arc::new(MemoryColdStore::default()));
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 
@@ -99,26 +98,12 @@ fn simple_payload(title: &str) -> GoalPayloadWrite {
     }
 }
 
-fn wake_on(
-    registry: &proxima_core::FlavorRegistryFrozen,
-    target: proxima_core::MemoryId,
-    prompt: &str,
-) -> Result<GoalWakeConfigWrite, proxima_core::ProtocolError> {
-    GoalWakeConfigWrite::new(
-        GoalWakeTrigger::FactMemory { memory_id: target },
-        vec![GoalWakeToolId::parse("core_remember", registry)?],
-        prompt,
-        &[],
-    )
-}
-
 fn decompose_request<'a>(
     owner: OwnerId,
     parent_goal_id: proxima_core::GoalId,
     registry: &'a proxima_core::FlavorRegistryFrozen,
     assignment: proxima_core::MemoryId,
     evidence: proxima_core::MemoryId,
-    wake_target: proxima_core::MemoryId,
     first_title: &str,
     first_request_id: &str,
     second_request_id: &str,
@@ -137,13 +122,11 @@ fn decompose_request<'a>(
             ChildGoalDraft {
                 payload: simple_payload(first_title),
                 evidence: vec![GoalEvidenceRef::new(evidence)],
-                wake: Some(wake_on(registry, wake_target, "decompose wake")?),
                 request_id: IdempotencyKey::new(first_request_id)?,
             },
             ChildGoalDraft {
                 payload: simple_payload("replay child two"),
                 evidence: vec![GoalEvidenceRef::new(evidence)],
-                wake: None,
                 request_id: IdempotencyKey::new(second_request_id)?,
             },
         ],
@@ -156,7 +139,6 @@ fn active_draft(
     request_id: &str,
     title: &str,
     evidence: Vec<GoalEvidenceRef>,
-    wake: Option<GoalWakeConfigWrite>,
 ) -> Result<GoalDraft, Box<dyn std::error::Error>> {
     Ok(GoalDraft {
         owner,
@@ -172,7 +154,6 @@ fn active_draft(
             Vec::new(),
             evidence,
         )?,
-        wake,
         supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id: IdempotencyKey::new(request_id)?.into_string(),
@@ -192,7 +173,6 @@ fn operator_authorship(model_id: &str, prompt_version: &str) -> GoalAuthorship {
 fn assert_exact_replay(first: &GoalWriteOutcome, replay: &GoalWriteOutcome) {
     assert!(replay.idempotent_replay);
     assert_eq!(replay.goal_id, first.goal_id);
-    assert_eq!(replay.change_event_seq, first.change_event_seq);
     assert_eq!(replay.edge_count, first.edge_count);
 }
 
@@ -214,7 +194,7 @@ async fn erase_target(
     Ok(())
 }
 
-type ReplayState = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
+type ReplayState = (i64, i64, i64, i64, i64, i64, i64);
 
 async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sqlx::Error> {
     sqlx::query_as(
@@ -225,8 +205,6 @@ async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sql
                FROM proxima_core.goal_replay_declaration d
                JOIN proxima_core.goal g ON g.t = d.goal_t
               WHERE g.owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.announce WHERE owner_id = $1),
             (SELECT count(*)::bigint FROM proxima_core.sketch WHERE owner_id = $1),
             (SELECT count(*)::bigint FROM proxima_core.memory WHERE owner_id = $1),
             (SELECT count(*)::bigint FROM proxima_core.memory_head WHERE owner_id = $1),
@@ -275,7 +253,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         };
 
         let set = CreateGoalAtomicRequest {
-            draft: active_draft(owner, assignment, "feed-set", "feed", Vec::new(), None)?,
+            draft: active_draft(owner, assignment, "feed-set", "feed", Vec::new())?,
             context: stamped(),
             write_act_t: None,
         };
@@ -294,7 +272,6 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
             owner,
             prior_goal_id: resumed,
             replacement: simple_payload("feed modified"),
-            wake: None,
             authorship: GoalAuthorship::User,
             request_id: IdempotencyKey::new("feed-modify")?,
             context: stamped(),
@@ -302,7 +279,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         };
         let modified = pg.modify_goal_atomic(&modify, &permit).await?.goal_id;
         let mut decompose =
-            decompose_request(owner, modified, &registry, assignment, evidence, evidence, "one", "feed-one", "feed-two")?;
+            decompose_request(owner, modified, &registry, assignment, evidence, "one", "feed-one", "feed-two")?;
         decompose.context = stamped();
         let children = pg.decompose_goal_atomic(&decompose, &permit).await?.children;
         let [one, two] = [children[0].outcome.goal_id, children[1].outcome.goal_id];
@@ -384,7 +361,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
 
         // A listenable schema needs the stamp the engine builds: refused.
         let unstamped = CreateGoalAtomicRequest {
-            draft: active_draft(owner, assignment, "feed-bare", "bare", Vec::new(), None)?,
+            draft: active_draft(owner, assignment, "feed-bare", "bare", Vec::new())?,
             context: context(&registry),
             write_act_t: None,
         };
@@ -408,14 +385,11 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
-        // Create: assignment, evidence, and wake targets may all disappear
+        // Create: assignment, evidence, may all disappear
         // after the command committed. The declaration still decides replay;
         // a fresh key still enters live admission and fails.
         let create_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let create_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
-            .await?;
-        let create_wake_target = pg
             .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
             .await?;
         let create_first = pg
@@ -427,11 +401,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-create",
                         "replay create",
                         vec![GoalEvidenceRef::new(create_evidence.memory_id)],
-                        Some(wake_on(
-                            &registry,
-                            create_wake_target.memory_id,
-                            "create wake",
-                        )?),
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -441,7 +410,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             .await?;
         erase_target(&pg, &owner, create_assignment.memory_id).await?;
         erase_target(&pg, &owner, create_evidence.memory_id).await?;
-        erase_target(&pg, &owner, create_wake_target.memory_id).await?;
         let create_before = replay_state(&pg, owner).await?;
         let create_replay = pg
             .create_goal_atomic(
@@ -452,11 +420,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-create",
                         "replay create",
                         vec![GoalEvidenceRef::new(create_evidence.memory_id)],
-                        Some(wake_on(
-                            &registry,
-                            create_wake_target.memory_id,
-                            "create wake",
-                        )?),
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -474,11 +437,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-create",
                         "changed replay create",
                         vec![GoalEvidenceRef::new(create_evidence.memory_id)],
-                        Some(wake_on(
-                            &registry,
-                            create_wake_target.memory_id,
-                            "create wake",
-                        )?),
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -497,7 +455,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-create-fresh",
                         "fresh create",
                         vec![GoalEvidenceRef::new(create_evidence.memory_id)],
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -509,12 +466,9 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         assert!(matches!(fresh, StorageError::ConstraintViolation(_)));
         assert_eq!(replay_state(&pg, owner).await?, create_before);
 
-        // Transition: exact replay precedes both stale-prior and carried-wake
+        // Transition: exact replay precedes both stale-prior and carried state
         // checks, while a new successor still reauthorizes the carried state.
         let transition_assignment = ingest_grounded_perspective(&pg, &permit).await?;
-        let transition_wake_target = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
-            .await?;
         let transition_source = pg
             .create_goal_atomic(
                 &CreateGoalAtomicRequest {
@@ -524,11 +478,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-transition-source",
                         "transition source",
                         Vec::new(),
-                        Some(wake_on(
-                            &registry,
-                            transition_wake_target.memory_id,
-                            "transition wake",
-                        )?),
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -552,7 +501,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             )
             .await?;
         erase_target(&pg, &owner, transition_assignment.memory_id).await?;
-        erase_target(&pg, &owner, transition_wake_target.memory_id).await?;
         let transition_before = replay_state(&pg, owner).await?;
         let transition_replay = pg
             .transition_goal_atomic(
@@ -640,7 +588,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-achieve-source",
                         "achieve source",
                         Vec::new(),
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -657,7 +604,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-achieve-fresh-source",
                         "achieve fresh source",
                         Vec::new(),
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -726,13 +672,10 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         assert!(matches!(fresh, StorageError::ConstraintViolation(_)));
         assert_eq!(replay_state(&pg, owner).await?, achieve_before);
 
-        // Modify: omitted evidence and wake mean carry from the immutable
+        // Modify: omitted evidence mean carry from the immutable
         // prior declaration. Replay must not load those now-retired targets.
         let modify_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let modify_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
-            .await?;
-        let modify_wake_target = pg
             .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
             .await?;
         let modify_source = pg
@@ -744,11 +687,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-modify-source",
                         "modify source",
                         vec![GoalEvidenceRef::new(modify_evidence.memory_id)],
-                        Some(wake_on(
-                            &registry,
-                            modify_wake_target.memory_id,
-                            "modify wake",
-                        )?),
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -762,7 +700,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     owner,
                     prior_goal_id: modify_source.goal_id,
                     replacement: simple_payload("replay modify"),
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-modify")?,
                     context: context(&registry),
@@ -772,7 +709,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             )
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, modify_evidence.memory_id).await?;
-        erase_target(&pg, &owner, modify_wake_target.memory_id).await?;
         let modify_before = replay_state(&pg, owner).await?;
         let modify_replay = pg
             .modify_goal_atomic(
@@ -780,7 +716,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     owner,
                     prior_goal_id: modify_source.goal_id,
                     replacement: simple_payload("replay modify"),
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-modify")?,
                     context: context(&registry),
@@ -790,33 +725,12 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
             )
             .await?;
         assert_exact_replay(&modify_first, &modify_replay);
-        let changed_wake_intent = pg
-            .modify_goal_atomic(
-                &ModifyGoalAtomicRequest {
-                    owner,
-                    prior_goal_id: modify_source.goal_id,
-                    replacement: simple_payload("replay modify"),
-                    wake: Some(None),
-                    authorship: GoalAuthorship::User,
-                    request_id: IdempotencyKey::new("replay-modify")?,
-                    context: context(&registry),
-                    evidence: None,
-                },
-                &permit,
-            )
-            .await
-            .expect_err("clear-wake must not replay a command that carried wake state");
-        assert!(matches!(
-            changed_wake_intent,
-            StorageError::IdempotencyConflict { .. }
-        ));
         let changed = pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
                     owner,
                     prior_goal_id: modify_source.goal_id,
                     replacement: simple_payload("changed replay modify"),
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-modify")?,
                     context: context(&registry),
@@ -833,7 +747,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     owner,
                     prior_goal_id: modify_first.goal_id,
                     replacement: simple_payload("fresh modify"),
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new("replay-modify-fresh")?,
                     context: context(&registry),
@@ -842,7 +755,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                 &permit,
             )
             .await
-            .expect_err("a fresh modify must require live carried evidence and wake targets");
+            .expect_err("a fresh modify must require live carried evidence");
         assert!(matches!(fresh, StorageError::ConstraintViolation(_)));
         assert_eq!(replay_state(&pg, owner).await?, modify_before);
 
@@ -851,9 +764,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         // changing one child or mixing old and fresh child keys conflicts.
         let decompose_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let decompose_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
-            .await?;
-        let decompose_wake_target = pg
             .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
             .await?;
         let decompose_parent = pg
@@ -865,7 +775,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                         "replay-decompose-parent",
                         "decompose parent",
                         Vec::new(),
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -881,7 +790,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     &registry,
                     decompose_assignment.memory_id,
                     decompose_evidence.memory_id,
-                    decompose_wake_target.memory_id,
                     "replay child one",
                     "replay-decompose-one",
                     "replay-decompose-two",
@@ -906,7 +814,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         .await?;
         erase_target(&pg, &owner, decompose_assignment.memory_id).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, decompose_evidence.memory_id).await?;
-        erase_target(&pg, &owner, decompose_wake_target.memory_id).await?;
         let decompose_before = replay_state(&pg, owner).await?;
         let decompose_replay = pg
             .decompose_goal_atomic(
@@ -916,7 +823,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     &registry,
                     decompose_assignment.memory_id,
                     decompose_evidence.memory_id,
-                    decompose_wake_target.memory_id,
                     "replay child one",
                     "replay-decompose-one",
                     "replay-decompose-two",
@@ -944,7 +850,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     &registry,
                     decompose_assignment.memory_id,
                     decompose_evidence.memory_id,
-                    decompose_wake_target.memory_id,
                     "changed child one",
                     "replay-decompose-one",
                     "replay-decompose-two",
@@ -962,7 +867,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     &registry,
                     decompose_assignment.memory_id,
                     decompose_evidence.memory_id,
-                    decompose_wake_target.memory_id,
                     "replay child one",
                     "replay-decompose-one",
                     "replay-decompose-new-two",
@@ -980,7 +884,6 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
                     &registry,
                     decompose_assignment.memory_id,
                     decompose_evidence.memory_id,
-                    decompose_wake_target.memory_id,
                     "fresh child one",
                     "replay-decompose-fresh-one",
                     "replay-decompose-fresh-two",
@@ -1024,7 +927,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
             "metadata-rotation",
             "metadata rotation",
             vec![GoalEvidenceRef::new(abstraction.memory_id)],
-            None,
         )?;
         first_draft.authorship = operator_authorship("model-a", "prompt-a");
         let first = pg
@@ -1048,7 +950,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
             "metadata-rotation",
             "metadata rotation",
             vec![GoalEvidenceRef::new(abstraction.memory_id)],
-            None,
         )?;
         replay_draft.authorship = operator_authorship("model-b", "prompt-b");
         let replay = pg
@@ -1073,7 +974,6 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
             "metadata-rotation",
             "metadata rotation",
             vec![GoalEvidenceRef::new(abstraction.memory_id)],
-            None,
         )?;
         category_changed_draft.authorship = GoalAuthorship::System(SystemOrigin::Tool {
             tool_id: ToolId::new("test/tool"),
@@ -1118,7 +1018,6 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
                         "replay-without-declaration",
                         "declaration source",
                         Vec::new(),
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,
@@ -1154,7 +1053,6 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
                         "replay-without-declaration",
                         "declaration source",
                         Vec::new(),
-                        None,
                     )?,
                     context: context(&registry),
                     write_act_t: None,

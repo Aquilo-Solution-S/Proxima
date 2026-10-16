@@ -17,8 +17,8 @@ use sqlx::{Connection, Postgres, Transaction};
 /// bundle iff it declares `Rows` or `Allowlist`, with exactly the fields it
 /// names, ordered by the key it names.
 pub async fn export_owner_bundle(
-    pool: &PgPool,
-    platform: Option<&crate::PgPlatformScope>,
+    _pool: &PgPool,
+    platform: &crate::PgPlatformScope,
     auth: &ExportAuthorization,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
@@ -26,16 +26,7 @@ pub async fn export_owner_bundle(
     let owner = auth.audit().owner();
     let owner_id = owner.into_inner();
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    let mut conn = if let Some(scope) = platform {
-        scope.detached_connection().await?
-    } else {
-        crate::begin_compatible_owner_transaction(pool, None)
-            .await?
-            .rollback()
-            .await
-            .map_err(map_err)?;
-        pool.acquire().await.map_err(map_err)?.detach()
-    };
+    let mut conn = platform.detached_connection().await?;
     // Session locks survive the following transaction and are released when
     // this detached connection is dropped. If cancellation/error interrupts
     // any later await, Drop closes the connection instead of returning a
@@ -58,7 +49,7 @@ pub async fn export_owner_bundle(
 
 async fn export_owner_bundle_snapshot(
     conn: &mut sqlx::postgres::PgConnection,
-    platform: Option<&crate::PgPlatformScope>,
+    platform: &crate::PgPlatformScope,
     auth: &ExportAuthorization,
     owner: proxima_core::OwnerId,
     owner_id: uuid::Uuid,
@@ -70,9 +61,7 @@ async fn export_owner_bundle_snapshot(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-    if let Some(scope) = platform {
-        scope.bind_transaction(tx.as_mut()).await?;
-    }
+    platform.bind_transaction(tx.as_mut()).await?;
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for surface in surfaces.generic_surfaces() {
         let Some(sql) = export_statement(surface)? else {
@@ -496,28 +485,11 @@ mod tests {
         assert!(sql.contains("to_jsonb(s)"), "{sql}");
     }
 
-    /// The owner-pinned shape: no join, because joining `memory` would drop
-    /// the rows whose Memory has been transferred away — exactly the history
-    /// this owner is entitled to a copy of.
-    #[test]
-    fn an_owner_pinned_sidecar_is_filtered_on_its_own_owner() {
-        let sql = export_statement(&surface("proxima_core.mcp_call_logged_v1"))
-            .expect("generates")
-            .expect("the call log is exported");
-        assert!(!sql.contains("JOIN"), "{sql}");
-        assert!(
-            sql.contains("WHERE s.owner_id IS NOT DISTINCT FROM $1"),
-            "{sql}"
-        );
-    }
-
     #[test]
     fn a_surface_declared_excluded_generates_nothing() {
         for table in [
             "proxima_core.content",
             "proxima_core.blob_uploads",
-            "proxima_core.wake_config",
-            "proxima_core.announce",
             "proxima_core.owners",
         ] {
             let declared = surface(table);

@@ -47,7 +47,7 @@ impl std::fmt::Debug for PlatformAuthContext {
 pub type PlatformAuthenticatorFactory =
     Arc<dyn Fn(PlatformAuthContext) -> Result<Arc<dyn Authenticator>, ProximaError> + Send + Sync>;
 
-pub(crate) const DUPLICATE_HOST_STATE_PARTICIPANT: &str = "a host-state participant is already registered and a unit of work dispatches to exactly one; register one participant that serves every command type (docs/19)";
+pub(crate) const DUPLICATE_HOST_STATE_PARTICIPANT: &str = "a host-state participant is already registered and a unit of work dispatches to exactly one; register one participant that serves every command type (docs/host-integration.md)";
 
 /// Runtime configuration builder for host applications.
 #[derive(Default)]
@@ -71,7 +71,6 @@ pub struct RuntimeBuilder {
     authenticator: Option<Arc<dyn Authenticator>>,
     platform_authenticator: Option<PlatformAuthenticatorFactory>,
     host_tools: Option<Arc<dyn McpHostTools>>,
-    record_mcp_calls: Option<bool>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
@@ -133,7 +132,6 @@ impl std::fmt::Debug for RuntimeBuilder {
                 &self.platform_authenticator.is_some(),
             )
             .field("host_tools", &self.host_tools)
-            .field("record_mcp_calls", &self.record_mcp_calls)
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
@@ -194,7 +192,6 @@ impl RuntimeBuilder {
             authenticator,
             platform_authenticator,
             host_tools: self.host_tools.or(base.host_tools),
-            record_mcp_calls: self.record_mcp_calls.or(base.record_mcp_calls),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             embedding_router: self.embedding_router.or(base.embedding_router),
@@ -275,7 +272,7 @@ impl RuntimeBuilder {
     /// `None` — the default — keeps delivered records forever. The horizon
     /// can never reach a `pending` or `claimed` record whatever its age: an
     /// undelivered event is a promise this deployment has not kept, and no
-    /// retention policy may quietly cancel it (doc 18, kernel OB-9).
+    /// retention policy may quietly cancel it (docs/host-integration.md, kernel OB-9).
     ///
     /// Setting this suppresses the environment read, so a host that composes
     /// programmatically is not overridden by a stray variable. A value under
@@ -291,7 +288,7 @@ impl RuntimeBuilder {
     /// one-consumer case of [`Self::outbox_consumer`], registered as the
     /// consumer `default` ([`ConsumerName::DEFAULT`]). Set, the outbox
     /// publisher starts and calls [`DurableIntake::accept`] once per captured
-    /// event (docs/18 §Delivery). With no consumer configured nothing drains
+    /// event (docs/host-integration.md §Delivery). With no consumer configured nothing drains
     /// the outbox: Facts are still captured, the backlog is bounded by
     /// `max_pending`, and a later boot with an intake delivers it.
     ///
@@ -318,7 +315,7 @@ impl RuntimeBuilder {
     }
 
     /// Deliver the captured outbox to `intake` as the consumer `name`, in
-    /// this process (docs/18 §Consumers).
+    /// this process (docs/host-integration.md §Consumers).
     ///
     /// Each configured consumer gets its own drain and its own delivery lane
     /// per record: every listenable Fact captured after the consumer was first
@@ -428,7 +425,7 @@ impl RuntimeBuilder {
     }
 
     /// Serve the `/v1` REST rendering of the tool manifest beside `/mcp`
-    /// (see docs/17). Off by default, and only effective when the crate is
+    /// (see docs/protocol.md). Off by default, and only effective when the crate is
     /// built with the `rest` feature. Env equivalent:
     /// `PROXIMA_REST_ENABLED`.
     #[must_use]
@@ -609,15 +606,6 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn host_tools(mut self, tools: Arc<dyn McpHostTools>) -> Self {
         self.host_tools = Some(tools);
-        self
-    }
-
-    /// Record every served MCP `tools/call` as a `core/mcp-call-logged-v1`
-    /// Fact: tool, outcome, latency, size and the verified subject as actor;
-    /// never the request or response body. Default: off.
-    #[must_use]
-    pub fn record_mcp_calls(mut self, record: bool) -> Self {
-        self.record_mcp_calls = Some(record);
         self
     }
 
@@ -936,6 +924,11 @@ impl RuntimeBuilder {
             .take()
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
         self.check_platform_authenticator()?;
+        let platform_database_url = self.platform_database_url.take().ok_or_else(|| {
+            ProximaError::Config(
+                "PROXIMA_PLATFORM_DATABASE_URL is required for owner-RLS boot".into(),
+            )
+        })?;
         self.register_outbox_http()?;
         let ServedPath {
             late_owner_access,
@@ -993,7 +986,7 @@ impl RuntimeBuilder {
         let publication = self.publication.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
-            platform_database_url: self.platform_database_url,
+            platform_database_url,
             s3: self.s3,
             owner,
             mcp,
@@ -1015,7 +1008,6 @@ impl RuntimeBuilder {
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.has_authenticator(),
             },
-            record_mcp_calls: self.record_mcp_calls.unwrap_or(false),
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: publication.clone(),
@@ -1046,7 +1038,7 @@ struct ServedPath {
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub database_url: String,
-    pub platform_database_url: Option<String>,
+    pub platform_database_url: String,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Option<OwnerId>,
     pub mcp: Option<McpSettings>,
@@ -1061,7 +1053,7 @@ pub struct RuntimeConfig {
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     /// Serve `/v1` beside `/mcp` on the same listener, inside the same Host,
-    /// auth, and body-limit layers (docs/17). Two gates, both required: the
+    /// auth, and body-limit layers (docs/protocol.md). Two gates, both required: the
     /// `rest` cargo feature compiles the module, this flag serves it. A second
     /// transport projection is opt-in twice on purpose — compiling it is a
     /// build decision, exposing it is a deployment one.
@@ -1072,7 +1064,7 @@ pub struct RuntimeConfig {
     /// Grant the runtime role its DML privileges at boot
     /// (`PROXIMA_RUNTIME_GRANTS`), after migrating and before the runtime
     /// pool connects. Off by default: a DBA-managed deployment grants
-    /// out-of-band (docs/15).
+    /// out-of-band (docs/operate.md).
     pub runtime_grants: bool,
     /// Inbound headers copied to tools as `RequestHeaders`
     /// (`PROXIMA_REQUEST_HEADERS`). Empty publishes nothing.
@@ -1093,19 +1085,17 @@ pub struct RuntimeConfig {
     /// shipped behaviour, so an unset environment is production.
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
-    /// Record served `tools/call`s ([`RuntimeBuilder::record_mcp_calls`]).
-    pub record_mcp_calls: bool,
     pub resource_metadata: Option<ResourceServerMetadata>,
     pub embedding_runtime_policy: EmbeddingRuntimePolicy,
     /// The deployment's `CloudEvents` producer identity and capture bounds
-    /// (`PROXIMA_PUBLICATION_SOURCE`, `PROXIMA_OUTBOX_*`; docs/18).
+    /// (`PROXIMA_PUBLICATION_SOURCE`, `PROXIMA_OUTBOX_*`; docs/host-integration.md).
     ///
     /// Always present, never optional: it is handed to the engine builder
     /// on every boot, and its `limits` are the ones enforced at capture —
     /// no backend holds a second copy.
     pub publication: PublicationConfig,
     /// How long a DELIVERED record is kept before the publisher task
-    /// reclaims it (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`; docs/18
+    /// reclaims it (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`; docs/host-integration.md
     /// §Retention).
     ///
     /// `None` keeps published records forever — the behaviour of every
@@ -1168,10 +1158,7 @@ impl std::fmt::Debug for RuntimeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeConfig")
             .field("database_url", &"<redacted>")
-            .field(
-                "platform_database_url",
-                &self.platform_database_url.as_ref().map(|_| "<redacted>"),
-            )
+            .field("platform_database_url", &"<redacted>")
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("mcp", &self.mcp)
@@ -1191,7 +1178,6 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("auth", &self.auth)
-            .field("record_mcp_calls", &self.record_mcp_calls)
             .field("resource_metadata", &self.resource_metadata)
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
@@ -1374,7 +1360,7 @@ pub enum ProximaError {
     /// The target database does not match this binary's schema and must
     /// be reset. Distinct from [`Self::Storage`] so hosts can match on it.
     #[error(
-        "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
+        "database schema does not match this binary; reset required (see docs/contributing.md#migrations): {details}"
     )]
     SchemaResetRequired { details: String },
 }
@@ -1538,6 +1524,19 @@ mod tests {
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
 
     use super::*;
+
+    #[test]
+    fn platform_database_url_is_required_at_resolve() {
+        let error = RuntimeBuilder::default()
+            .database_url("postgres://runtime/proxima")
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect_err("owner-RLS boot must require the platform URL");
+        assert!(
+            error.to_string().contains("PROXIMA_PLATFORM_DATABASE_URL"),
+            "{error}"
+        );
+    }
     use crate::company_owner;
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
@@ -1583,6 +1582,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .platform_database_url("postgres://localhost/platform")
                 .tool_scope(ToolScope::All)
         };
 
@@ -1613,6 +1613,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .platform_database_url("postgres://localhost/platform")
                 .tool_scope(ToolScope::All)
         };
         let names = |config: &RuntimeConfig| {
@@ -1698,6 +1699,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .platform_database_url("postgres://localhost/platform")
                 .tool_scope(ToolScope::All)
                 .authenticator(Arc::new(TestAuthenticator))
         };
@@ -1746,7 +1748,7 @@ mod tests {
             published_retention: None,
             outbox_consumers: OutboxConsumers::default(),
             database_url: "postgres://localhost/proxima".to_string(),
-            platform_database_url: None,
+            platform_database_url: "postgres://unused/platform".into(),
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
             mcp: mcp.map(|bind| McpSettings { bind }),
@@ -1768,7 +1770,6 @@ mod tests {
             auth: RuntimeAuthState {
                 has_host_authenticator: true,
             },
-            record_mcp_calls: false,
             resource_metadata: None,
             embedding_runtime_policy: EmbeddingRuntimePolicy::default(),
         }
@@ -1953,6 +1954,7 @@ mod tests {
     fn stream_revalidation_env_parses_integer_seconds() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .apply_lookup(lookup(&[
@@ -1977,6 +1979,7 @@ mod tests {
     fn stream_revalidation_zero_duration_rejected_at_resolve() {
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .stream_max_lifetime(Duration::ZERO)
             .resolve()
@@ -1989,6 +1992,7 @@ mod tests {
     fn stream_revalidation_defaults_when_unset() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .resolve()
@@ -2040,6 +2044,7 @@ mod tests {
 
         let resolved = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .embedding_runtime_policy(explicit)
@@ -2079,6 +2084,7 @@ mod tests {
     fn pg_pool_config_reads_the_injected_env_block() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .apply_lookup(lookup(&[
@@ -2109,6 +2115,7 @@ mod tests {
 
         let programmatic_error = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .pg_pool_config(PgPoolConfig {
@@ -2150,6 +2157,7 @@ mod tests {
             .expect("explicit default-valued pool env");
         let configured_base = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .pg_pool_config(configured);
@@ -2220,6 +2228,7 @@ mod tests {
         // (core_transfer/core_membership included) by omitting `.tool_scope(...)`.
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .resolve()
             .unwrap_err();
@@ -2234,6 +2243,7 @@ mod tests {
     fn resolve_with_explicit_tool_scope_all_builds_as_before() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .resolve()
@@ -2250,6 +2260,7 @@ mod tests {
     fn a_programmatic_retention_horizon_is_floored_like_the_env_one() {
         let refused = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .published_retention(Duration::from_secs(59))
@@ -2262,6 +2273,7 @@ mod tests {
 
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .published_retention(Duration::from_mins(1))
@@ -2271,6 +2283,7 @@ mod tests {
 
         let (default_config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .resolve()
@@ -2285,6 +2298,7 @@ mod tests {
     fn runtime_config_accepts_custom_authenticator_without_separate_owner_access() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .mcp_bind(addr([127, 0, 0, 1]))
@@ -2327,6 +2341,7 @@ mod tests {
     fn served_builder() -> RuntimeBuilder {
         RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .platform_database_url("postgres://localhost/platform")
             .tool_scope(ToolScope::All)
     }
 
@@ -2402,12 +2417,15 @@ mod tests {
     #[cfg(feature = "auth-oidc")]
     #[tokio::test]
     async fn the_env_oidc_authenticator_fills_in_only_without_one_in_code() {
-        let map = format!("sub:{}", uuid::Uuid::now_v7());
+        let map = format!(
+            r#"[{{"iss":"https://idp.test","sub":"subject","user_id":"{}"}}]"#,
+            uuid::Uuid::now_v7()
+        );
         let oidc = [
             ("PROXIMA_OIDC_ISSUER", "https://idp.test"),
             ("PROXIMA_OIDC_AUDIENCE", "proxima"),
             ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
-            ("PROXIMA_OIDC_SUBJECT_MAP", map.as_str()),
+            ("PROXIMA_OIDC_SUBJECT_MAP_JSON", map.as_str()),
         ];
         let (config, parts) = served_builder()
             .apply_lookup(lookup(&oidc))

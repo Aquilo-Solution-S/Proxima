@@ -115,7 +115,7 @@ impl PreparedMemoryAdmission {
     }
 }
 
-/// One txn: owners upsert + ingest_keys + memory_head + memory + announce(append).
+/// One txn: owners upsert + ingest_keys + memory_head + memory.
 ///
 /// `sidecar_tables` is the declared set forget will dump/delete — tables
 /// actually inserted for this `t`, never the global registry.
@@ -579,7 +579,6 @@ async fn load_ingest_replay(
     Ok(Some(FactIngestOutcome {
         receipt_id: None,
         memory_id: MemoryId::new(replay_t),
-        change_event_seq: replay_t,
         idempotent_replay: true,
         cited_object_id: None,
         handle: replay_row.0,
@@ -648,7 +647,7 @@ async fn replay_decision(
 ///
 /// Re-observation `n` of `key` claims [`reobservation_key`]`(key, n)`, in
 /// order, so the chain has no gaps: every key stays bound to the one `t` it
-/// first claimed (docs/07 §Identity Rules), and a retried re-observation is
+/// first claimed (docs/concepts.md), and a retried re-observation is
 /// found here and replays. The newest admission is displaced when its handle
 /// has moved on to another row — the source went back to a state an earlier
 /// observation already recorded. A cooled admission is never admitted again:
@@ -699,7 +698,7 @@ async fn latest_observation(
 }
 
 /// The replay key of re-observation `n` of `key`: domain-separated from the
-/// source's own keys, and as opaque as the key it extends (docs/01
+/// source's own keys, and as opaque as the key it extends (docs/concepts.md
 /// §Idempotency-key constraint).
 fn reobservation_key(key: &str, n: u64) -> String {
     let mut hash = blake3::Hasher::new();
@@ -846,11 +845,10 @@ async fn materialize_prepared_memory_admission_after_locks(
     let content_id = resolve_admission_content_id(tx, &prepared, kind, content_id).await?;
     advance_memory_head(tx, &prepared, kind).await?;
     insert_memory_revision(tx, &prepared, kind, content_id).await?;
-    let seq = announce_memory_admission(tx, &prepared, kind).await?;
+    refresh_memory_sketch(tx, &prepared, kind).await?;
     Ok(FactIngestOutcome {
         receipt_id: None,
         memory_id: MemoryId::new(prepared.t),
-        change_event_seq: seq,
         idempotent_replay: false,
         // Reports the blob this admission actually persisted. The predecessor
         // always returned `None` here and left `ingest_core` to fill it in;
@@ -977,26 +975,12 @@ async fn insert_memory_revision(
     Ok(())
 }
 
-/// Announce the append and refresh the Memory sketch, reporting the change
-/// event sequence the admission produced.
-async fn announce_memory_admission(
+/// Refresh the Memory sketch after the admission.
+async fn refresh_memory_sketch(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
     kind: &str,
-) -> Result<Uuid, StorageError> {
-    let seq: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.announce
-            (owner_id, op, entity, handle, t)
-         VALUES ($1, 'append', 'memory', $2, $3)
-         RETURNING seq",
-    )
-    .bind(prepared.owner_id)
-    .bind(prepared.handle)
-    .bind(prepared.t)
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
+) -> Result<(), StorageError> {
     super::sketch::upsert_sketch(
         tx,
         prepared.owner_id,
@@ -1006,7 +990,7 @@ async fn announce_memory_admission(
     )
     .await?;
 
-    Ok(seq)
+    Ok(())
 }
 
 /// Project authorized endpoints to the UUID array stored by Postgres while

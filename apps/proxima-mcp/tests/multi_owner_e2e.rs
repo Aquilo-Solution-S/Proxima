@@ -26,7 +26,7 @@ use proxima_core::{
     Relation, Role, ToolScope, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
-use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
+use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -53,11 +53,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let owner_a = OwnerId::from(group_a);
     let owner_b = OwnerId::from(group_b);
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
 
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
@@ -239,11 +235,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     let destination_side = UserId::new(Uuid::now_v7());
 
     let owner_access: Arc<dyn OwnerAccessPort> =
-        Arc::new(PgOwnerAccessResolver::connect_lazy_platform(
-            &runtime_url,
-            &platform_url,
-            common::schemas(),
-        )?);
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
     let (signing, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
     subject_map.insert(ISSUER, "transfer-both-sides", both_sides)?;

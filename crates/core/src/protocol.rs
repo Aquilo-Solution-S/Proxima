@@ -48,8 +48,6 @@ pub mod resource {
     pub const MEMORY_COUNTS: &str = "resource:memory-counts";
     pub const TOOLS: &str = "resource:tools";
     pub const GRAPH: &str = "resource:graph";
-    pub const CHANGE_EVENTS: &str = "resource:change-events";
-    pub const WAKE_CANDIDATES: &str = "resource:wake-candidates";
     pub const SCHEMAS: &str = "resource:schemas";
     pub const SCHEMA: &str = "resource:schema";
     pub const GOALS: &str = "resource:goals";

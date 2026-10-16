@@ -10,7 +10,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
 use proxima_core::{AuthzContext, OwnerId};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -281,9 +281,12 @@ impl CitedBlobStore {
         owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<super::rows::UploadRow, BlobError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, scope)
-            .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
         let row = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id)
             .await?
             .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
@@ -298,9 +301,12 @@ impl CitedBlobStore {
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<CitedBlobStaged, BlobError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, scope)
-            .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
         let result =
             load_staged_payload_on_connection(tx.as_mut(), owner, upload_id, blob_id).await?;
         tx.commit().await.map_err(BlobError::Db)?;
@@ -340,9 +346,13 @@ impl CitedBlobStore {
         // with transfer's exclusive source fence so the transfer cannot
         // pass its unresolved-publication check and then observe a row that
         // appeared concurrently.
-        let mut tx = begin_compatible_owner_transaction(&self.pool, ctx.owner_scope())
-            .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            ctx.owner_scope()
+                .ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, &owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -534,9 +544,12 @@ impl CitedBlobStore {
             // Finish or abort may have won since this snapshot. Use the
             // status observed under the expiry helper's row lock.
             {
-                let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
-                    .await
-                    .map_err(|err| BlobError::State(err.to_string()))?;
+                let mut tx = begin_owner_transaction(
+                    &self.pool,
+                    owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+                )
+                .await
+                .map_err(|err| BlobError::State(err.to_string()))?;
                 let status = mark_upload_expired_on_connection(&mut tx, owner, upload_id).await?;
                 tx.commit().await.map_err(BlobError::Db)?;
                 status
@@ -649,9 +662,12 @@ impl CitedBlobStore {
         staged: &UploadedBlobPayload,
     ) -> Result<StageLocatorDecision, BlobError> {
         let canonical_key = &staged.object_key;
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
-            .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
@@ -765,6 +781,11 @@ impl CitedBlobStore {
         // incurred it is metadata, and unavailable metadata is not a reason to
         // drop a debt on the floor. The backend is not: it is the bucket this
         // stage published to, so the drain deletes against the right store.
+        let mut platform_tx = self
+            .platform_scope
+            .begin()
+            .await
+            .map_err(|error| BlobError::State(error.to_string()))?;
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
              VALUES ($1, NULL, $2)
@@ -773,9 +794,13 @@ impl CitedBlobStore {
         )
         .bind(canonical_key)
         .bind(bucket)
-        .execute(&mut **tx)
+        .execute(&mut *platform_tx)
         .await
         .map_err(BlobError::Db)?;
+        platform_tx
+            .commit()
+            .await
+            .map_err(|error| BlobError::State(error.to_string()))?;
         Ok(())
     }
 
@@ -902,7 +927,7 @@ impl CitedBlobStore {
     /// There is no in-process pending-expiry sweep: leftover `pending/`
     /// objects (from a crashed complete, an abandoned prepare, or an
     /// expired upload) MUST be reclaimed by a mandatory S3
-    /// lifecycle-expiration rule on the `pending/` prefix (see docs/15
+    /// lifecycle-expiration rule on the `pending/` prefix (see docs/operate.md
     /// deployment). Do not rely on application code to GC them.
     ///
     /// # Errors
@@ -939,9 +964,12 @@ impl CitedBlobStore {
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<String, BlobError> {
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
-            .await
-            .map_err(BlobError::from)?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(BlobError::from)?;
         let bucket = proxima_storage_pg::access::owner_columns::complete_upload_in_tx(
             &mut tx, owner, upload_id, blob_id,
         )
@@ -1006,9 +1034,12 @@ impl CitedBlobStore {
         // The row lock is the exact status revalidation: an earlier pool read
         // must never authorize a pending->aborted write after another
         // transition published the upload.
-        let mut tx = begin_compatible_owner_transaction(&self.pool, owner_scope)
-            .await
-            .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = begin_owner_transaction(
+            &self.pool,
+            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
+        )
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
         proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
             .await
             .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;

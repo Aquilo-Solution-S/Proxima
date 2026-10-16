@@ -7,6 +7,7 @@ use std::sync::Arc;
 use proxima_core::error::ErrorCode;
 use proxima_core::read_models::MemoryCounts;
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
@@ -97,7 +98,6 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
         assignment_t: None,
         dependency_t: Vec::new(),
         evidence_t: Vec::new(),
-        wake_id: None,
         mint_write_act: false,
         write_act_t: None,
     };
@@ -160,10 +160,9 @@ async fn fixture() -> TestResult<(String, PgStorage)> {
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await?
         .with_cold(Arc::new(MemoryColdStore::default()));
-    pg.run_before_owner_rls_migrations().await?;
     Ok((db_name, pg))
 }
 
@@ -174,7 +173,10 @@ async fn counts_are_heads_by_kind_and_follow_forget() {
         let (_, owner) = personal();
         let seeded = seed(&pg, owner, 0).await?;
         let engine = engine(&pg);
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
 
         // Counting `proxima_core.memory` instead would report the versions.
         assert_eq!(memory_rows(&pg, owner, "fact").await?, 3);
@@ -193,7 +195,9 @@ async fn counts_are_heads_by_kind_and_follow_forget() {
 
         // A caller who owns nothing sees every kind, all zero.
         let (_, empty) = personal();
-        let nobody = AuthzContext::single_owner(&empty, AuthPath::HostBearer);
+        let nobody = proxima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&empty, AuthPath::HostBearer),
+        );
         assert_eq!(
             engine.memory_counts(&nobody).await?,
             MemoryCounts::default()
@@ -223,14 +227,14 @@ async fn counts_leave_out_owners_the_caller_cannot_read() {
         seed(&pg, stranger, 3).await?;
         let engine = engine(&pg);
 
-        let alone = AuthzContext::for_subject(user, AuthPath::HostBearer);
+        let alone = authenticated_context(AuthzContext::for_subject(user, AuthPath::HostBearer));
         assert_eq!(engine.memory_counts(&alone).await?, seeded_counts(0));
 
-        let member = AuthzContext::for_subject_with_role(
+        let member = authenticated_context(AuthzContext::for_subject_with_role(
             user,
             [(readable_group, Role::viewer())],
             AuthPath::HostBearer,
-        );
+        ));
         assert_eq!(
             engine.memory_counts(&member).await?,
             sum(seeded_counts(0), seeded_counts(1)),

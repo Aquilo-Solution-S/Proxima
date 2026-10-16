@@ -61,8 +61,7 @@ pub use proxima_core::cursor::Cursor;
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
     FactWrite, HostStateCommand, HostStateMaintenanceAuthority, HostStateOutcome,
-    HostStateUnitOfWork, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
-    SearchReadRequest, SearchReadResponse, UnitOfWork,
+    HostStateUnitOfWork, SearchReadRequest, SearchReadResponse, UnitOfWork,
 };
 /// The owner-authorized batch Memory read already exposed by
 /// [`proxima_core::Engine::get_memories`].
@@ -132,16 +131,14 @@ pub use proxima_core::storage_ports::{
     HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, MAX_RECONCILE_SAMPLE,
     StateSurfaceName, VerifiedCitedBlob,
 };
-pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
     GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
-    GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError, GoalWriteOutcome,
-    IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS, MAX_WAKE_TOOL_ID_CHARS,
-    OperatorKind, SystemOrigin,
+    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS,
+    MAX_GOAL_TITLE_CHARS, OperatorKind, SystemOrigin,
 };
 /// Flavor-scoped erase for the host's retention schedule: open a unit with
 /// `Engine::system_unit_of_work` and call [`UnitOfWork::erase_own_series`].
@@ -206,13 +203,13 @@ pub use proxima_core::UPLOADED_BLOB_SCHEMA_ID;
 /// [`RuntimeBuilder::outbox_consumer`] hands the runtime a [`DurableIntake`]
 /// per named consumer ([`RuntimeBuilder::outbox_intake`] is the consumer
 /// `default`), and the runtime calls each once per captured event, in this
-/// process (docs/18). No cargo feature and no broker client is involved.
+/// process (docs/host-integration.md). No cargo feature and no broker client is involved.
 /// [`SubjectPosition`] is [`ReceivedEvent::position`], the per-series order a
 /// consumer applies events in.
 pub use proxima_core::publication::intake::{
     CloudEventEnvelope, DurableIntake, EventIdentity, Intake, IntakeError, ReceivedEvent,
 };
-/// The publication half of the engine configuration (docs/18).
+/// The publication half of the engine configuration (docs/host-integration.md).
 ///
 /// A host that registers a listenable schema must bind a
 /// [`PublicationSource`]; the engine refuses the boot otherwise, naming the
@@ -253,10 +250,6 @@ pub use proxima_core::storage_ports::publication::{
 /// cancels every delivery it was still owed.
 pub use proxima_core::storage_ports::publication::{PublicationConsumerPort, RetireOutcome};
 pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
-pub use proxima_core::verbs::mcp_call_history::{
-    MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
-};
-pub use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
     EdgeReadCursor, EdgeReadRequest, EdgeReadResponse, EntityKind, FactCitationReadback,
@@ -272,10 +265,10 @@ pub use proxima_core::{
     DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
-    FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
-    OwnerAccessPort, OwnerId, OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId,
-    ScopeKey, ScopeKeyError, SourceId, StorageError, ToolName, ToolScope, UserId,
-    canonical_json_bytes, env_value, provider_safe_tool_name,
+    FlavorServiceError, FlavorServices, GroupId, MemoryId, OwnerAccessPort, OwnerId,
+    OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError,
+    SourceId, StorageError, ToolName, ToolScope, UserId, canonical_json_bytes, env_value,
+    provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
@@ -430,13 +423,12 @@ pub use proxima_core::{
 pub use proxima_core::{
     ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding,
     EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome,
-    GoalWakeCandidateRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow,
-    MemoryOperatorKind, MemorySchemaSpec, OperatorPhase, goal_write::AchieveGoalAtomicRequest,
-    goal_write::CreateGoalAtomicRequest, goal_write::DecomposeGoalAtomicRequest,
-    goal_write::GoalAtomicContext, goal_write::GoalDraft, goal_write::GoalReplayOutcome,
-    goal_write::GoalReplayRequest, goal_write::ModifyGoalAtomicRequest,
-    goal_write::TransitionGoalAtomicRequest, own_erase::SeriesEraseOutcome,
-    own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
+    MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec,
+    OperatorPhase, goal_write::AchieveGoalAtomicRequest, goal_write::CreateGoalAtomicRequest,
+    goal_write::DecomposeGoalAtomicRequest, goal_write::GoalAtomicContext, goal_write::GoalDraft,
+    goal_write::GoalReplayOutcome, goal_write::GoalReplayRequest,
+    goal_write::ModifyGoalAtomicRequest, goal_write::TransitionGoalAtomicRequest,
+    own_erase::SeriesEraseOutcome, own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
 };
 /// Host authentication: the argument and error types of
 /// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the
@@ -458,56 +450,51 @@ pub use proxima_core::{
     storage_ports::MembershipWritePermit, storage_ports::OperatorWriteProof,
     storage_ports::OwnerWritePermit,
 };
-/// Rows, cursors and edges the read responses carry ([`QueryRequest`],
-/// [`QueryResponse`], [`MemoryLineageRequest`], [`ChangeHistoryResponse`],
-/// [`FactCitationReadback`], [`EdgeFilter`], [`FactWriteCommand`]): a host that
-/// pages a query, reads the change history or follows an edge names them.
-pub use proxima_core::{
-    ChangeEvent, ChangeEventForWake, ChangeEventKind, Edge, EdgeEndpoint, EdgeKind,
-    EdgeTargetProjection, EntityRef, query::FactCitationCursor, query::GoalRow,
-    query::MemoryLineageCursor, query::QueryCursor, query::QueryPage,
-};
 /// The storage ports and their handles. [`StoragePortsBuilder`]'s setters take the
 /// `*Handle` aliases (`Arc<dyn ...Port>`), [`StoragePortsBuilder::try_build`]
 /// returns the `StoragePortsBuildError`, and a host that supplies its own backend
 /// ([`Engine::with_storage_ports`]) implements the `*Port` traits those handles
 /// wrap.
 pub use proxima_core::{
-    ChangeEventPort, CitationPort, EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort,
-    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, McpCallReadPort,
-    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort,
-    OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort,
-    OwnerTransferPort, SourceCursorPort, storage_ports::ChangeEventHandle,
-    storage_ports::CitationHandle, storage_ports::EmbeddingJobHandle,
+    CitationPort, EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort,
+    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort, MemoryAuthoringPort,
+    MemoryInspectPort, MemoryReadPort, OwnerAccessReadPort, OwnerDropProofPort,
+    OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort,
+    SourceCursorPort, storage_ports::CitationHandle, storage_ports::EmbeddingJobHandle,
     storage_ports::EmbeddingMaintenanceHandle, storage_ports::EmbeddingTextHandle,
     storage_ports::EmbeddingWriteHandle, storage_ports::FactIngestHandle,
-    storage_ports::GoalReadHandle, storage_ports::GoalWakeCandidateHandle,
-    storage_ports::GoalWakeCandidatePort, storage_ports::GoalWriteHandle,
-    storage_ports::McpCallReadHandle, storage_ports::MemoryAuthoringHandle,
-    storage_ports::MemoryInspectHandle, storage_ports::MemoryReadHandle,
-    storage_ports::OwnerAccessReadHandle, storage_ports::OwnerDropProofHandle,
-    storage_ports::OwnerEraseAuthorityHandle, storage_ports::OwnerInverseHandle,
-    storage_ports::OwnerMembershipAdminHandle, storage_ports::OwnerTransferHandle,
-    storage_ports::SourceCursorHandle, storage_ports::StoragePortsBuildError,
-    storage_ports::WriteSession, storage_ports::WriteSessionFactory,
-    storage_ports::WriteSessionFactoryHandle,
+    storage_ports::GoalReadHandle, storage_ports::GoalWriteHandle,
+    storage_ports::MemoryAuthoringHandle, storage_ports::MemoryInspectHandle,
+    storage_ports::MemoryReadHandle, storage_ports::OwnerAccessReadHandle,
+    storage_ports::OwnerDropProofHandle, storage_ports::OwnerEraseAuthorityHandle,
+    storage_ports::OwnerInverseHandle, storage_ports::OwnerMembershipAdminHandle,
+    storage_ports::OwnerTransferHandle, storage_ports::SourceCursorHandle,
+    storage_ports::StoragePortsBuildError, storage_ports::WriteSession,
+    storage_ports::WriteSessionFactory, storage_ports::WriteSessionFactoryHandle,
+};
+/// Rows, cursors and edges the read responses carry ([`QueryRequest`],
+/// [`QueryResponse`], [`MemoryLineageRequest`],
+/// [`FactCitationReadback`], [`EdgeFilter`], [`FactWriteCommand`]): a host that
+/// pages a query, reads the change history or follows an edge names them.
+pub use proxima_core::{
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, query::FactCitationCursor,
+    query::GoalRow, query::MemoryLineageCursor, query::QueryCursor, query::QueryPage,
 };
 /// Request, response and outcome types of the [`Engine`] verbs a host calls:
-/// `get_graph`, `list_change_events`, `read_fact_citation`, `facts_citing_object`,
+/// `get_graph`, `read_fact_citation`, `facts_citing_object`,
 /// `list_members`, `drain_embedding_jobs`, `reconcile_embeddings`,
 /// `embedding_coverage`, `purge_embedding_spaces`, `complete_upload_as_fact`,
-/// `inbound_pin_nodes`, `load_sketches`, `memory_counts`, `read_goal_wake_configs`,
+/// `inbound_pin_nodes`, `load_sketches`, `memory_counts`,
 /// `try_compose` and `with_mcp_listener`. Without them a host can call each verb and cannot
 /// write its argument or result in a signature.
 pub use proxima_core::{
     EmbeddingDrainOutcome, EmbeddingMode, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
     EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationReadRequest,
-    FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GoalWakeConfigRow,
-    GroupMemberPage, InboundPinQuery, ListChangeEventsReadRequest, ListChangeEventsReadResponse,
-    MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts,
-    UploadCompleted, UploadCompletionExpectation, query::FactCitationPage,
-    storage_ports::StoragePortsBuilder,
+    FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GroupMemberPage,
+    InboundPinQuery, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode,
+    RunningMcpListener, StoragePorts, UploadCompleted, UploadCompletionExpectation,
+    query::FactCitationPage, storage_ports::StoragePortsBuilder,
 };
 /// What [`AuthzContext`] reports about its caller: the identity and invoking
 /// tool [`AuthzContext::identity_for_revalidation`] and
@@ -516,12 +503,11 @@ pub use proxima_core::{
 pub use proxima_core::{Identity, InvokingTool, TrustedModelIdError};
 /// The tool-descriptor and handle vocabulary of [`McpToolDescriptor`],
 /// [`McpTool`], [`McpToolPresentation`], [`McpToolError`],
-/// [`RequestHeaderAllowlist::extract`] and the call log ([`McpCallLogInput`]): a
+/// [`RequestHeaderAllowlist::extract`]: a
 /// host that registers or presents its own tools names them.
 pub use proxima_core::{
     McpAuthorContext, McpCallFn, McpUnknownFieldPolicy, MemoryHandleClass, RequestHeaders,
     ToolError, mcp::McpActionArgSpec, mcp::McpActionSchema, mcp::McpDispatcherSchema,
-    persist_mcp_call::McpCallLoggedV1,
 };
 /// The publication extension set and plan the Fact write path carries
 /// ([`PublicationExtensions::iter`], [`AuthorizedFactWrite`]'s `publication`):
@@ -607,7 +593,7 @@ pub use proxima_storage_pg::begin_owner_transaction;
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`ProximaHost::platform_scope_for_host`] returns, and the sqlx →
 /// [`StorageError`] classifier for host-state SQL.
-pub use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, map_err};
+pub use proxima_storage_pg::{PgPlatformScope, map_err};
 /// The registry, contract and hook vocabulary a host composes and reads back:
 /// [`Engine::try_compose`], [`ProximaError`], [`FlavorApp`],
 /// [`FlavorRegistryFrozen`]'s accessors, [`ProximaHost::pg_sidecars_for_host`],
@@ -650,9 +636,8 @@ pub use {
         storage_ports::HostStateEraseSelection, storage_ports::HostStateFactCopyLocator,
     },
     proxima_storage_pg::{
-        ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions,
-        ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, PruneOwnerOutcome, StorageMaintenanceLock,
-        access::scope_surfaces::ScopeSurfaces,
+        ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock,
+        StorageMaintenanceLock, access::scope_surfaces::ScopeSurfaces,
     },
 };
 

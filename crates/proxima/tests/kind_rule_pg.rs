@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use proxima::flavor::{FlavorBundle, NamedMigrator};
 use proxima::{
-    AppInfo, AuthzContext, BuiltProxima, ChangeHistoryRequest, CoreMcpTools, FactWrite, FlavorApp,
+    AppInfo, AuthzContext, BuiltProxima, CoreMcpTools, FactWrite, FlavorApp,
     GetMemoriesReadRequest, GetMemoryReadRequest, MemoryLineageDirection, MemoryLineageRequest,
     Proxima, QueryRequest, S3RuntimeConfig, ToolScope,
 };
@@ -28,9 +28,9 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::test_fixtures::{ConstantEmbedding, TestEmbeddingRouter};
 use proxima_core::{
-    AccessCeiling, AccessKind, AgentNoteV1, AuthPath, ChangeEventKind, ColdObjectStore,
-    EdgeTargetProjection, EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, OwnerId,
-    OwnerRoles, Role, StorageError, UploadedBlobPayload, UserId,
+    AccessCeiling, AccessKind, AgentNoteV1, AuthPath, ColdObjectStore, EdgeTargetProjection,
+    EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, OwnerId, OwnerRoles, Role,
+    StorageError, UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use serde_json::{Value, json};
@@ -210,11 +210,6 @@ async fn set_goal(
             "body": {},
             "evidence": [seeded.abstraction["handle"]],
             "target_perspective": seeded.perspective["handle"],
-            "wake": {
-                "trigger_schema_id": "core/agent-note-v1",
-                "tool_ids": ["core_search_memories"],
-                "prompt": "kindrule wake",
-            },
         }),
     )
     .await
@@ -495,32 +490,6 @@ async fn assert_reads(
             "{name} walk: {error}"
         ),
     }
-
-    let history = engine
-        .change_history(
-            &authz,
-            &ChangeHistoryRequest {
-                owner: group,
-                limit: 1000,
-                before: None,
-            },
-        )
-        .await?;
-    let seen: BTreeSet<_> = history
-        .events
-        .iter()
-        .map(|event| match &event.kind {
-            ChangeEventKind::EntityAppend { entity_kind, .. }
-            | ChangeEventKind::EntityDelete { entity_kind, .. }
-            | ChangeEventKind::EntityTransfer { entity_kind, .. } => entity_kind.as_str(),
-        })
-        .collect();
-    let expected: BTreeSet<_> = KINDS
-        .iter()
-        .filter(|kind| readable(**kind))
-        .map(|kind| kind.as_str())
-        .collect();
-    assert_eq!(seen, expected, "{name} change history");
 
     let memories = engine.query(&authz, &QueryRequest::readable()).await?;
     let seen: BTreeSet<_> = memories.memories.iter().map(|m| m.kind.as_str()).collect();
@@ -1028,8 +997,6 @@ enum Rows {
     Memory(&'static str),
     /// A Fact schema's sidecar: the memory at `t`, only ever a Fact.
     FactSidecar,
-    /// A Goal, or the hot or cooled memory at `t`.
-    Announce,
     /// The hot or cooled admission naming it.
     Content,
     /// Its `memory_head`.
@@ -1041,7 +1008,6 @@ enum Rows {
 const TABLES: &[(&str, Rows)] = &[
     ("agent_derivation_v1", Rows::Memory("t")),
     ("agent_note_v1", Rows::FactSidecar),
-    ("announce", Rows::Announce),
     ("blob", Rows::NoKind),
     ("blob_uploads", Rows::NoKind),
     ("closed_handle", Rows::ClosedHandle),
@@ -1067,7 +1033,6 @@ const TABLES: &[(&str, Rows)] = &[
     ("interpretation_v1", Rows::Memory("t")),
     ("lexical_default", Rows::NoKind),
     ("lexical_languages", Rows::NoKind),
-    ("mcp_call_logged_v1", Rows::FactSidecar),
     ("memory", Rows::Kind),
     ("memory_external_origin", Rows::Memory("t")),
     ("memory_head", Rows::Kind),
@@ -1082,7 +1047,6 @@ const TABLES: &[(&str, Rows)] = &[
     ("source_cursors", Rows::NoKind),
     ("task_goal_v1", Rows::Goal),
     ("utterance_v1", Rows::FactSidecar),
-    ("wake_config", Rows::Goal),
     ("write_act_v1", Rows::FactSidecar),
 ];
 
@@ -1098,7 +1062,6 @@ fn above_fact(table: &str, rows: Rows) -> Option<String> {
         Rows::Kind => "x.kind::text <> 'fact'".to_owned(),
         Rows::Goal => "true".to_owned(),
         Rows::Memory(column) => memory_kind(&format!("m.t = x.{column}")),
-        Rows::Announce => format!("x.entity::text = 'goal' OR {}", memory_kind("m.t = x.t")),
         Rows::Content => memory_kind("m.content_id = x.content_id"),
         Rows::ClosedHandle => "EXISTS (SELECT 1 FROM proxima_core.memory_head AS h
                                 WHERE h.handle = x.handle AND h.kind <> 'fact')"

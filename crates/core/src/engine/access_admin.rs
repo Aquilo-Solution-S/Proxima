@@ -364,7 +364,7 @@ impl Engine {
     ///   `InvalidArgument`.
     ///
     /// The destination's `owners` row is minted inside the storage
-    /// transaction (`ensure_owner_row`), so the paired announce rows'
+    /// transaction (`ensure_owner_row`), so the destination-owned rows'
     /// `owner_id` FKs hold without any migration-seeded owner.
     ///
     /// The ownership oracle is closed by resolving the home only through the

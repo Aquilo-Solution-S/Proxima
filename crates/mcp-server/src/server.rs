@@ -8,10 +8,8 @@ use proxima_core::mcp::core_tools::{
     get_memories::{GetMemoriesArgs, get_memories},
     get_memory::{GetMemoryArgs, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
-    list_change_events::{ListChangeEventsArgs, list_change_events},
     list_schemas::{ListSchemasArgs, get_schema, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
-    list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
     memory_counts::memory_counts,
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
@@ -41,25 +39,17 @@ pub struct McpToolHost {
     engine: Option<Arc<Engine>>,
     request_headers: RequestHeaderAllowlist,
     host_tools: Option<Arc<dyn McpHostTools>>,
-    record_calls: bool,
-    /// Bounds call-record writes in flight; a saturated host drops the
-    /// record (and says so) rather than queueing without limit.
-    record_permits: Arc<tokio::sync::Semaphore>,
     tool_list: Option<ToolListNotifier>,
 }
 
 /// Longest host tool name served.
 pub const MAX_HOST_TOOL_NAME_CHARS: usize = 128;
 
-/// Call-record writes in flight per tool host.
-const RECORD_PERMITS: usize = 64;
-
 impl std::fmt::Debug for McpToolHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpToolHost")
             .field("has_engine", &self.engine.is_some())
             .field("host_tools", &self.host_tools)
-            .field("record_calls", &self.record_calls)
             .field("tool_list_notifications", &self.tool_list.is_some())
             .finish_non_exhaustive()
     }
@@ -74,8 +64,6 @@ impl McpToolHost {
             engine: None,
             request_headers: RequestHeaderAllowlist::default(),
             host_tools: None,
-            record_calls: false,
-            record_permits: Arc::new(tokio::sync::Semaphore::new(RECORD_PERMITS)),
             tool_list: None,
         }
     }
@@ -98,17 +86,6 @@ impl McpToolHost {
         self
     }
 
-    /// Record every MCP `tools/call` as a `core/mcp-call-logged-v1` Fact
-    /// under the call's owner: tool, outcome, latency, and the verified
-    /// subject as the actor; no request or response body. Needs an engine;
-    /// the write authorizes against the caller's own context, so a caller
-    /// that cannot write the owner (a viewer) is not recorded. Default: off.
-    #[must_use]
-    pub fn with_call_recording(mut self, record: bool) -> Self {
-        self.record_calls = record;
-        self
-    }
-
     /// Advertise `tools.listChanged` and register every caller with
     /// `notifier` under its owner, so [`ToolListNotifier::notify`] reaches
     /// that owner's connected clients. A host attaches one only if it calls
@@ -122,16 +99,6 @@ impl McpToolHost {
 
     pub(crate) const fn tool_list_notifier(&self) -> Option<&ToolListNotifier> {
         self.tool_list.as_ref()
-    }
-
-    /// Whether [`Self::with_call_recording`] is on.
-    #[must_use]
-    pub const fn records_calls(&self) -> bool {
-        self.record_calls
-    }
-
-    pub(crate) fn record_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        Arc::clone(&self.record_permits).try_acquire_owned().ok()
     }
 
     /// The engine tools run against, when one was attached.
@@ -215,7 +182,7 @@ impl McpToolHost {
     ) -> Result<Self, crate::McpServerError> {
         let pool_config = proxima_storage_pg::PgPoolConfig::from_env()?;
         let tuning = proxima_storage_pg::PgTuning::from_env()?;
-        let migration = proxima_storage_pg::PgStorage::connect_for_migrations_with_config(
+        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             platform_url,
             pool_config,
             tuning,
@@ -230,10 +197,13 @@ impl McpToolHost {
             .map_err(|error| StorageError::Unavailable(error.to_string()))?;
         let platform =
             proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs).await?;
-        let pg =
-            proxima_storage_pg::PgStorage::connect_with_config(runtime_url, pool_config, tuning)
-                .await?
-                .with_platform_scope(platform);
+        let pg = proxima_storage_pg::PgStorage::connect_with_config(
+            runtime_url,
+            pool_config,
+            tuning,
+            platform,
+        )
+        .await?;
         proxima_storage_pg::assert_runtime_rls(&pg.clone_pool_for_backend(), &schema_refs).await?;
         let engine =
             Arc::new(Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg).storage_ports()));
@@ -535,14 +505,6 @@ pub(crate) enum ToolTarget<'a> {
 }
 
 impl ToolTarget<'_> {
-    /// The canonical name: what the gate judges and a call record carries.
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            Self::Registry(descriptor) => descriptor.name,
-            Self::Host(tool) => &tool.name,
-        }
-    }
-
     /// Every registry tool declares an output schema; a host tool may not.
     const fn declares_output_schema(&self) -> bool {
         match self {
@@ -681,12 +643,6 @@ async fn dispatch_resource(
         ParsedResource::MemoryLineage(args) => {
             resource_output_value(walk_memory_lineage(ctx, args).await?)
         }
-        ParsedResource::ChangeEvents(args) => {
-            resource_output_value(list_change_events(ctx, args).await?)
-        }
-        ParsedResource::WakeCandidates(args) => {
-            resource_output_value(list_wake_candidates(ctx, args).await?)
-        }
         ParsedResource::Goals(args) => resource_output_value(list_goals(ctx, args).await?),
         ParsedResource::Goal(reference) => resource_output_value(get_goal(ctx, &reference).await?),
     }
@@ -779,8 +735,6 @@ enum ParsedResource {
     Memories(GetMemoriesArgs),
     MemoryCounts,
     MemoryLineage(WalkMemoryLineageArgs),
-    ChangeEvents(ListChangeEventsArgs),
-    WakeCandidates(ListWakeCandidatesArgs),
     Goals(ListGoalsArgs),
     Goal(String),
 }
@@ -796,8 +750,6 @@ impl ParsedResource {
             Self::Memories(_) => protocol_resource::MEMORIES,
             Self::MemoryCounts => protocol_resource::MEMORY_COUNTS,
             Self::MemoryLineage(_) => protocol_resource::MEMORY_LINEAGE,
-            Self::ChangeEvents(_) => protocol_resource::CHANGE_EVENTS,
-            Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
             Self::Goals(_) => protocol_resource::GOALS,
             Self::Goal(_) => protocol_resource::GOAL,
         }
@@ -817,8 +769,6 @@ mod resource_path {
     pub const SCHEMA: &str = core_resource(protocol_resource::SCHEMA).path;
     pub const TOOLS: &str = core_resource(protocol_resource::TOOLS).path;
     pub const GRAPH: &str = core_resource(protocol_resource::GRAPH).path;
-    pub const CHANGE_EVENTS: &str = core_resource(protocol_resource::CHANGE_EVENTS).path;
-    pub const WAKE_CANDIDATES: &str = core_resource(protocol_resource::WAKE_CANDIDATES).path;
     pub const MEMORIES: &str = core_resource(protocol_resource::MEMORIES).path;
     /// The segment after [`MEMORIES`] that names the counts resource, which
     /// shares its path key; pinned to the contract's template by
@@ -853,19 +803,6 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
         })),
         resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
         resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),
-        resource_path::CHANGE_EVENTS => Ok(ParsedResource::ChangeEvents(ListChangeEventsArgs {
-            since: query_value(&query, "since").map(ToOwned::to_owned),
-            limit: query_parse(&query, "limit", "a non-negative integer")?,
-        })),
-        resource_path::WAKE_CANDIDATES => {
-            Ok(ParsedResource::WakeCandidates(ListWakeCandidatesArgs {
-                fact: query_value(&query, "fact")
-                    .filter(|fact| !fact.is_empty())
-                    .ok_or(ResourceUriError::MissingParam { param: "fact" })?
-                    .to_owned(),
-                limit: query_parse(&query, "limit", "a non-negative integer")?,
-            }))
-        }
         resource_path::MEMORIES => {
             let ids = query_value(&query, "ids")
                 .filter(|ids| !ids.is_empty())
@@ -1453,40 +1390,6 @@ mod tests {
             parse_resource_uri("proxima://memory/F:one/two/lineage").unwrap_err(),
             ResourceUriError::UnknownPath
         );
-        assert_eq!(
-            parse_resource_uri("proxima://change-events?limit=not-a-number").unwrap_err(),
-            ResourceUriError::InvalidParam {
-                param: "limit",
-                value: "not-a-number".into(),
-                expected: "a non-negative integer",
-            }
-        );
-
-        let wake = parse_resource_uri(
-            "proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=5",
-        )
-        .expect("wake-candidates resource");
-        assert!(matches!(
-            wake,
-            ParsedResource::WakeCandidates(ListWakeCandidatesArgs { limit: Some(5), .. })
-        ));
-        assert_eq!(
-            parse_resource_uri("proxima://wake-candidates").unwrap_err(),
-            ResourceUriError::MissingParam { param: "fact" }
-        );
-        assert_eq!(
-            parse_resource_uri("proxima://wake-candidates?fact=").unwrap_err(),
-            ResourceUriError::MissingParam { param: "fact" }
-        );
-        assert_eq!(
-            parse_resource_uri("proxima://wake-candidates?fact=F:018f0000-0000-7000-8000-000000000001&limit=not-a-number")
-                .unwrap_err(),
-            ResourceUriError::InvalidParam {
-                param: "limit",
-                value: "not-a-number".into(),
-                expected: "a non-negative integer",
-            }
-        );
     }
 
     /// `proxima://memories/counts` shares the `memories` path key with the
@@ -1594,15 +1497,6 @@ mod tests {
         assert!(
             matches!(unknown, ToolInvocationError::ToolNotFound(uri) if uri == "proxima://nope")
         );
-        let missing = ResourceUriError::MissingParam { param: "fact" }
-            .into_invocation_error("proxima://wake-candidates");
-        match missing {
-            ToolInvocationError::Tool(McpToolError::InvalidInput(message)) => {
-                assert!(message.contains("missing required parameter `fact`"));
-                assert!(message.contains("proxima://wake-candidates"));
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
     }
 
     /// `read_resource` traverses the same `RequestBehavior` onion

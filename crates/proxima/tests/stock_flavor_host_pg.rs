@@ -269,11 +269,12 @@ impl Stack {
             ("PROXIMA_OIDC_AUDIENCE", AUDIENCE.to_owned()),
             ("PROXIMA_PUBLIC_URL", PUBLIC_URL.to_owned()),
             (
-                "PROXIMA_OIDC_SUBJECT_MAP",
-                format!(
-                    "{FORWARDER_SUB}:{},{MEMBER_SUB}:{}",
-                    self.forwarder, self.member
-                ),
+                "PROXIMA_OIDC_SUBJECT_MAP_JSON",
+                serde_json::json!([
+                    {"iss": self.idp.issuer.clone(), "sub": FORWARDER_SUB, "user_id": self.forwarder},
+                    {"iss": self.idp.issuer.clone(), "sub": MEMBER_SUB, "user_id": self.member},
+                ])
+                .to_string(),
             ),
             ("PROXIMA_FORWARDER_SUBJECTS", self.forwarder.to_string()),
             ("PROXIMA_FORWARDER_ROLE", "editor".to_owned()),

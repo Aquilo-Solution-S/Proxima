@@ -10,8 +10,8 @@ use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
     GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalTopologyWrite,
-    GoalTransitionKind, GoalWakeConfigWrite, GoalWakeTrigger, GoalWriteBuildError,
-    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    GoalTransitionKind, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, SchemaVersion};
@@ -20,7 +20,6 @@ use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, Schema
 pub struct GoalCreatePayloadWriteRequest {
     pub owner: crate::OwnerId,
     pub topology: GoalTopologyWrite,
-    pub wake: Option<GoalWakeConfigWrite>,
     pub payload: GoalPayloadWrite,
     pub request_id: IdempotencyKey,
     pub authorship: GoalAuthorship,
@@ -52,7 +51,6 @@ pub struct GoalModifyRequest {
     pub owner: crate::OwnerId,
     pub prior_goal_id: crate::GoalId,
     pub replacement: GoalPayloadWrite,
-    pub wake: Option<Option<GoalWakeConfigWrite>>,
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub evidence: Option<Vec<crate::verbs::goal_write::GoalEvidenceRef>>,
@@ -79,7 +77,6 @@ impl Engine {
         Ok(GoalCreatePayloadWriteRequest {
             owner: request.owner,
             topology: request.topology,
-            wake: request.wake,
             payload: self.normalize_payload_write(payload)?,
             request_id: request.request_id,
             authorship: request.authorship,
@@ -153,7 +150,6 @@ impl Engine {
             *permit.owner(),
             req.payload.clone(),
             req.topology.clone(),
-            req.wake.clone(),
             req.authorship.clone(),
             req.request_id.clone(),
         );
@@ -175,8 +171,6 @@ impl Engine {
         self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
             .await?;
         self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
-            .await?;
-        self.validate_wake_config_for_write(authz, req.wake.as_ref())
             .await?;
         self.storage()
             .goal_command
@@ -303,7 +297,6 @@ impl Engine {
             owner: *permit.owner(),
             prior_goal_id: req.prior_goal_id,
             replacement,
-            wake: req.wake.clone(),
             authorship: req.authorship.clone(),
             request_id: req.request_id.clone(),
             context,
@@ -320,10 +313,6 @@ impl Engine {
         }
         self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
-        if let Some(Some(config)) = &req.wake {
-            self.validate_wake_config_for_write(authz, Some(config))
-                .await?;
-        }
         if let Some(evidence) = &req.evidence {
             self.validate_goal_evidence_authorized(authz, evidence)
                 .await?;
@@ -522,7 +511,6 @@ impl Engine {
         Ok(ChildGoalDraft {
             payload: self.normalize_payload_write(child.payload.clone())?,
             evidence: child.evidence.clone(),
-            wake: child.wake.clone(),
             request_id: child.request_id.clone(),
         })
     }
@@ -532,8 +520,6 @@ impl Engine {
         authz: &AuthzContext,
         child: &ChildGoalDraft,
     ) -> Result<(), ProtocolError> {
-        self.validate_wake_config_for_write(authz, child.wake.as_ref())
-            .await?;
         self.validate_goal_evidence_authorized(authz, &child.evidence)
             .await?;
         Ok(())
@@ -589,49 +575,6 @@ impl Engine {
         Ok(())
     }
 
-    pub(in crate::engine) async fn validate_wake_config_for_write(
-        &self,
-        authz: &AuthzContext,
-        wake: Option<&GoalWakeConfigWrite>,
-    ) -> Result<(), ProtocolError> {
-        let Some(wake) = wake else {
-            return Ok(());
-        };
-        match wake.trigger() {
-            GoalWakeTrigger::FactSchema {
-                schema_id,
-                schema_version,
-            } => {
-                self.registry()
-                    .lookup_payload(schema_id, *schema_version, PayloadKind::Fact)
-                    .ok_or_else(|| {
-                        ProtocolError::unknown_schema(
-                            schema_id.as_str(),
-                            schema_version.into_inner(),
-                        )
-                    })?;
-            }
-            GoalWakeTrigger::FactMemory { memory_id } => {
-                self.require_readable_memory_kind(
-                    authz,
-                    *memory_id,
-                    "wake_trigger",
-                    EntityKind::Fact,
-                )
-                .await?;
-            }
-        }
-        for memory_id in wake.hard_memory_ids() {
-            let permit = self
-                .authorize_entry_read(authz, EntityId::Memory(*memory_id))
-                .await?;
-            let _kind = self
-                .load_required_memory_kind(authz.owner_scope(), permit.owner(), *memory_id)
-                .await?;
-        }
-        Ok(())
-    }
-
     /// Read-admit each evidence target. Kind ∈ {F, A} is the in-tx
     /// TOCTOU (`validate_evidence_in_owner`); a second pre-tx kind
     /// load here is the overlapping walk.
@@ -643,28 +586,6 @@ impl Engine {
         for item in evidence {
             self.authorize_entry_read(authz, EntityId::Memory(item.memory_id()))
                 .await?;
-        }
-        Ok(())
-    }
-
-    async fn require_readable_memory_kind(
-        &self,
-        authz: &AuthzContext,
-        memory_id: MemoryId,
-        field: &'static str,
-        expected: EntityKind,
-    ) -> Result<(), ProtocolError> {
-        let permit = self
-            .authorize_entry_read(authz, EntityId::Memory(memory_id))
-            .await?;
-        let kind = self
-            .load_required_memory_kind(authz.owner_scope(), permit.owner(), memory_id)
-            .await?;
-        if kind != expected {
-            return Err(ProtocolError::invalid_argument(
-                field,
-                format!("target must be {expected:?}"),
-            ));
         }
         Ok(())
     }
@@ -788,7 +709,7 @@ mod tests {
             .expect("validate_goal_evidence_authorized");
         let rest = &src[start..];
         let end = rest
-            .find("async fn require_readable_memory_kind")
+            .find("async fn require_perspective_kind")
             .expect("next fn");
         let reload = format!("{}{}", "load_required_memory_", "kind");
         assert!(
@@ -932,7 +853,6 @@ mod tests {
         let req = GoalCreatePayloadWriteRequest {
             owner,
             topology: topology(target),
-            wake: None,
             payload: payload_write(),
             request_id: request_id("create-unreadable-target"),
             authorship: tool_authorship(),
@@ -969,7 +889,6 @@ mod tests {
             children: vec![ChildGoalDraft {
                 payload: payload_write(),
                 evidence: Vec::new(),
-                wake: None,
                 request_id: request_id("decompose-unreadable-target"),
             }],
             author_self_perspective_id: None,
@@ -992,7 +911,6 @@ mod tests {
         let req = GoalCreatePayloadWriteRequest {
             owner,
             topology: topology(memory_id()),
-            wake: None,
             payload: payload_write(),
             request_id: request_id("create"),
             authorship: tool_authorship(),
@@ -1032,7 +950,6 @@ mod tests {
             owner,
             prior_goal_id: goal_id(),
             replacement: payload_write(),
-            wake: None,
             authorship: GoalAuthorship::User,
             request_id: request_id("modify"),
             evidence: None,
@@ -1059,7 +976,6 @@ mod tests {
             owner,
             prior_goal_id: goal_id(),
             replacement: payload_write(),
-            wake: None,
             authorship: GoalAuthorship::User,
             request_id: request_id("modify-carry-evidence"),
             evidence: None,
@@ -1118,7 +1034,6 @@ mod tests {
             children: vec![ChildGoalDraft {
                 payload: payload_write(),
                 evidence: Vec::new(),
-                wake: None,
                 request_id: request_id("decompose-child"),
             }],
             author_self_perspective_id: None,

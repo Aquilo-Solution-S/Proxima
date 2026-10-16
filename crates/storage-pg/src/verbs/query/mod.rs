@@ -46,7 +46,6 @@ pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories_on_connection;
-pub(crate) use rows::read_seq_high_water_on_connection;
 pub(crate) use search::search_memories_on_connection;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{

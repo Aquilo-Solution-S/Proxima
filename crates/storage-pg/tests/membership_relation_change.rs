@@ -16,6 +16,7 @@ use proxima_core::authz::{
 use proxima_core::storage_ports::{
     MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
 };
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{
     AccessCeiling, AccessKind, AuthPath, AuthzContext, Engine, ErrorCode, FlavorRegistry, GroupId,
     OwnerId, Relation, Role, StorageError, UserId,
@@ -83,10 +84,9 @@ impl Harness {
         if let Err(error) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {error}");
         }
-        let pg = PgStorage::connect(&db_url(&db_name))
+        let pg = PgStorage::connect_for_tests(db_url(&db_name))
             .await
             .expect("connect");
-        pg.run_before_owner_rls_migrations().await.expect("migrate");
         let observer = PgPoolOptions::new()
             .max_connections(4)
             .connect(&db_url(&db_name))
@@ -107,11 +107,11 @@ impl Harness {
         pg.bootstrap_group_admin(group, admin, admin.into_inner())
             .await
             .expect("bootstrap");
-        let admin_authz = AuthzContext::for_subject_with_role(
+        let admin_authz = authenticated_context(AuthzContext::for_subject_with_role(
             admin,
             [(OwnerId::from(group), Role::admin())],
             AuthPath::HostBearer,
-        );
+        ));
         Self {
             db_name,
             pg,

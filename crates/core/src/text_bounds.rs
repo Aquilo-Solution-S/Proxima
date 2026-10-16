@@ -7,7 +7,7 @@
 //!
 //! [`crate::tool::validate_trimmed_len`] cannot be called from `verbs`
 //! (SDK sits above). This module is the lowest thing `IdempotencyKey`,
-//! `GoalWakeConfigWrite`, and `GoalWriteBuildError` can reach: it depends
+//! and `GoalWriteBuildError` can reach: it depends
 //! on nothing, decides only *which* half of the contract broke, and leaves
 //! each layer to wrap [`TrimmedLenViolation::reason`] in its own error
 //! type. Three error types refuse the same input in the same words without

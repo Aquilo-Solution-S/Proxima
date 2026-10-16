@@ -489,40 +489,27 @@ impl ServerHandler for DynamicHandler {
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
             let error_auth = auth.clone();
-            // The name resolves once: the catalog a host tool is found in is
-            // listed once per call, and the record carries the name it found.
             let call = async {
                 let Some(auth) = auth else {
                     let name = canonical_tool_name(&server, &request_name)
                         .unwrap_or_else(|| request_name.clone());
-                    return (None, Err(ToolInvocationError::NotAuthorized(name)));
+                    return Err(ToolInvocationError::NotAuthorized(name));
                 };
                 let target = match server.resolve_tool(&auth, &request_name).await {
                     Ok(target) => target,
-                    Err(err) => return (None, Err(err)),
+                    Err(err) => return Err(err),
                 };
-                let recording = server
-                    .records_calls()
-                    .then(|| CallRecording::start(target.name().to_owned(), &args));
-                let reply = server
+                server
                     .call_resolved(target, args, author, auth, request_services)
-                    .await;
-                (recording, reply)
+                    .await
             };
-            let (recording, reply) = with_progress_heartbeat(call, heartbeat).await;
+            let reply = with_progress_heartbeat(call, heartbeat).await;
             let outcome = reply
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
                 })
                 .and_then(|reply| wire_reply(&request_name, reply));
-            if let Some(recording) = recording {
-                let recorded = match &outcome {
-                    Ok((_, recorded)) => *recorded,
-                    Err(err) => Recorded::Refused(err.code.0),
-                };
-                recording.finish(&server, error_auth.as_ref(), recorded);
-            }
-            Ok(outcome?.0.into())
+            Ok(outcome?.into())
         }
     }
 }
@@ -692,41 +679,21 @@ fn structured_tool_output(
     Ok((output, text))
 }
 
-/// What a call record keeps of how a call ended: its shape, never its
-/// content.
-#[derive(Clone, Copy)]
-enum Recorded {
-    /// The tool answered; the reply's size in bytes.
-    Replied(u64),
-    /// The tool ran and answered [`ToolReply::Failure`] or
-    /// [`ToolReply::StructuredFailure`].
-    ToolFailure,
-    /// The call was refused or failed with this JSON-RPC code.
-    Refused(i32),
-}
-
-/// A tool's reply as the wire carries it, with the shape a call record keeps.
-///
-/// `Structured` is `structuredContent` plus its text rendering; `Content` is
-/// content blocks alone; `Failure` is content blocks with `isError`;
-/// `StructuredFailure` is the same with `structuredContent` beside them.
-fn wire_reply(tool: &str, reply: ToolReply) -> Result<(CallToolResult, Recorded), ErrorData> {
+/// A tool's reply as the wire carries it.
+fn wire_reply(tool: &str, reply: ToolReply) -> Result<CallToolResult, ErrorData> {
     match reply {
         ToolReply::Structured(output) => {
             let (output, text) = structured_tool_output(tool, output)?;
-            let recorded = Recorded::Replied(text.len() as u64);
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
-            Ok((result, recorded))
+            Ok(result)
         }
         ToolReply::Content(content) => {
             let blocks: Vec<ContentBlock> = content.into_iter().map(content_block).collect();
-            let size = serde_json::to_vec(&blocks).map_or(0, |bytes| bytes.len() as u64);
-            Ok((CallToolResult::success(blocks), Recorded::Replied(size)))
+            Ok(CallToolResult::success(blocks))
         }
-        ToolReply::Failure(content) => Ok((
-            CallToolResult::error(content.into_iter().map(content_block).collect()),
-            Recorded::ToolFailure,
+        ToolReply::Failure(content) => Ok(CallToolResult::error(
+            content.into_iter().map(content_block).collect(),
         )),
         ToolReply::StructuredFailure {
             structured,
@@ -735,7 +702,7 @@ fn wire_reply(tool: &str, reply: ToolReply) -> Result<(CallToolResult, Recorded)
             let mut result =
                 CallToolResult::error(content.into_iter().map(content_block).collect());
             result.structured_content = Some(serde_json::Value::Object(structured));
-            Ok((result, Recorded::ToolFailure))
+            Ok(result)
         }
     }
 }
@@ -1269,74 +1236,6 @@ fn host_wire_output_schema(
     match mcp_wire_output_schema(schema) {
         serde_json::Value::Object(wire) => Ok(Some(wire)),
         _ => Err("MCP output schema must be a JSON object".to_owned()),
-    }
-}
-
-/// One `tools/call` being recorded ([`McpToolHost::with_call_recording`]).
-struct CallRecording {
-    tool: String,
-    started: std::time::Instant,
-    occurred_at: time::OffsetDateTime,
-    request_bytes: u64,
-}
-
-impl CallRecording {
-    fn start(tool: String, args: &serde_json::Value) -> Self {
-        Self {
-            tool,
-            started: std::time::Instant::now(),
-            occurred_at: time::OffsetDateTime::now_utc(),
-            request_bytes: serde_json::to_vec(args).map_or(0, |bytes| bytes.len() as u64),
-        }
-    }
-
-    /// Write the record off the request path: a client that disconnects
-    /// does not cancel it, and a failed write never fails the call. Every
-    /// field is server-derived: a failure is its JSON-RPC code, or the fixed
-    /// "tool failure" of a [`ToolReply::Failure`] or
-    /// [`ToolReply::StructuredFailure`], never a message or content block,
-    /// which can echo arguments.
-    fn finish(self, server: &McpToolHost, auth: Option<&McpAuthContext>, outcome: Recorded) {
-        let (Some(engine), Some(auth)) = (server.engine(), auth) else {
-            return;
-        };
-        // The actor is the verified subject, never a claim in the request.
-        let Some(subject) = auth.authz.subject() else {
-            return;
-        };
-        let (ok, error, response_bytes) = match outcome {
-            Recorded::Replied(bytes) => (true, None, bytes),
-            Recorded::ToolFailure => (false, Some("tool failure".to_owned()), 0),
-            Recorded::Refused(code) => (false, Some(format!("jsonrpc {code}")), 0),
-        };
-        let input = proxima_core::McpCallLogInput {
-            owner: auth.owner,
-            actor_oid: subject.into_inner().to_string(),
-            actor_upn: String::new(),
-            tool_name: self.tool,
-            ok,
-            error,
-            latency_ms: u32::try_from(self.started.elapsed().as_millis()).unwrap_or(u32::MAX),
-            // No body: the Fact records that the call happened and its size,
-            // never what was sent or returned.
-            io_body: Vec::new(),
-            io_byte_len_original: self.request_bytes + response_bytes,
-            io_truncated: true,
-            observed_at: time::OffsetDateTime::now_utc(),
-            occurred_at: self.occurred_at,
-        };
-        let Some(permit) = server.record_permit() else {
-            tracing::warn!(tool = %input.tool_name, "mcp call recording saturated; call not recorded");
-            return;
-        };
-        let engine = Arc::clone(engine);
-        let authz = auth.authz.clone();
-        tokio::spawn(async move {
-            if let Err(err) = engine.persist_mcp_call(&authz, input).await {
-                tracing::warn!(error = %err, "mcp call not recorded");
-            }
-            drop(permit);
-        });
     }
 }
 

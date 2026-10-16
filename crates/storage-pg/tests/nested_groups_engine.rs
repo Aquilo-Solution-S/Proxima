@@ -65,7 +65,7 @@ impl Harness {
         );
         staged.run(&admin_pool).await?;
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
-        let migration = PgStorage::connect_for_migrations_with_config(
+        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
             PgTuning::default(),
@@ -75,9 +75,13 @@ impl Harness {
         let platform_pool = PgPool::connect(&platform_url).await?;
         let platform_scope = PgPlatformScope::new(platform_pool.clone(), &["proxima_core"]).await?;
         let storage = Arc::new(
-            PgStorage::connect(&runtime_url)
-                .await?
-                .with_platform_scope(platform_scope),
+            PgStorage::connect_with_config(
+                &runtime_url,
+                PgPoolConfig::default(),
+                PgTuning::default(),
+                platform_scope,
+            )
+            .await?,
         );
         let parent = GroupId::new(Uuid::now_v7());
         let child = GroupId::new(Uuid::now_v7());

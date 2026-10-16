@@ -851,27 +851,22 @@ mod tests {
     #[tokio::test]
     async fn a_request_reads_the_host_catalog_at_most_once() {
         let owner = personal_owner();
-        for record_calls in [false, true] {
-            let fixture = HostFixture::structured(serde_json::json!({"ok": true}));
-            let lists = fixture.lists();
-            let host = stub_host()
-                .with_host_tools(Arc::new(fixture))
-                .with_call_recording(record_calls);
-            let service = mcp_service_for(host);
-            let reads = || lists.load(std::sync::atomic::Ordering::SeqCst);
+        let fixture = HostFixture::structured(serde_json::json!({"ok": true}));
+        let lists = fixture.lists();
+        let host = stub_host().with_host_tools(Arc::new(fixture));
+        let service = mcp_service_for(host);
+        let reads = || lists.load(std::sync::atomic::Ordering::SeqCst);
 
-            first_message(service.clone(), authed_rpc("tools/list", auth_for(owner))).await;
-            assert_eq!(reads(), 1, "tools/list, recording {record_calls}");
+        first_message(service.clone(), authed_rpc("tools/list", auth_for(owner))).await;
+        assert_eq!(reads(), 1, "tools/list");
 
-            let message = first_message(service.clone(), tools_call("host_output", owner)).await;
-            assert_eq!(message["result"]["isError"], false, "{message}");
-            assert_eq!(reads(), 2, "host tools/call, recording {record_calls}");
+        let message = first_message(service.clone(), tools_call("host_output", owner)).await;
+        assert_eq!(message["result"]["isError"], false, "{message}");
+        assert_eq!(reads(), 2, "host tools/call");
 
-            let message =
-                first_message(service.clone(), tools_call("proxima-stub_ping", owner)).await;
-            assert_eq!(message["result"]["isError"], false, "{message}");
-            assert_eq!(reads(), 2, "registry tools/call, recording {record_calls}");
-        }
+        let message = first_message(service.clone(), tools_call("proxima-stub_ping", owner)).await;
+        assert_eq!(message["result"]["isError"], false, "{message}");
+        assert_eq!(reads(), 2, "registry tools/call");
     }
 
     /// Hides the named tools from every listing; counts what it is asked

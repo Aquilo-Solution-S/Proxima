@@ -106,17 +106,23 @@ async fn terminal_locator_repair_preserves_owner_erase_debt() -> TestResult<()> 
 #[allow(clippy::too_many_lines)] // two barriers pin the actual abort/stage/erase APIs
 async fn run_race(database: &str) -> TestResult<Observation> {
     let mut tasks = AbortTasks(Vec::new());
-    let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(database)).await?;
     let pool = pg.pool_for_tests();
     let config = S3RuntimeConfig {
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
     };
     let client = config.client();
-    let store = CitedBlobStore::new(pool.clone(), config.clone())?;
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )?;
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+        &owner,
+        AuthPath::HostBearer,
+    ));
     let prepared = store
         .prepare_upload(
             &ctx,
@@ -141,6 +147,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
     sqlx::raw_sql(
         "CREATE SEQUENCE abort_probe;
          CREATE SEQUENCE locator_probe;
+         GRANT USAGE ON SEQUENCE abort_probe, locator_probe TO PUBLIC;
          CREATE FUNCTION block_abort() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
              PERFORM nextval('abort_probe');

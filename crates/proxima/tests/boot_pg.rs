@@ -16,7 +16,7 @@ use proxima_core::{
     ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, split_role_urls, unique_db_name};
-use proxima_storage_pg::{PgSidecarKey, PgStorage};
+use proxima_storage_pg::PgSidecarKey;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
@@ -176,9 +176,14 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &db_url,
+            proxima_storage_pg::PgPoolConfig::from_env()?,
+            proxima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
         sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool_for_tests())
+            .execute(&pg.clone_pool_for_backend())
             .await?;
         sqlx::query(
             "CREATE TABLE public._sqlx_migrations (
@@ -190,14 +195,14 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
                  execution_time bigint NOT NULL
              )",
         )
-        .execute(pg.pool_for_tests())
+        .execute(&pg.clone_pool_for_backend())
         .await?;
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
                  (version, description, success, checksum, execution_time)
              VALUES (1, 'init', true, decode('00', 'hex'), 0)",
         )
-        .execute(pg.pool_for_tests())
+        .execute(&pg.clone_pool_for_backend())
         .await?;
 
         let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
@@ -223,9 +228,14 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url).await?;
+        let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &db_url,
+            proxima_storage_pg::PgPoolConfig::from_env()?,
+            proxima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
         sqlx::query("CREATE SCHEMA proxima_core")
-            .execute(pg.pool_for_tests())
+            .execute(&pg.clone_pool_for_backend())
             .await?;
         sqlx::query(
             "CREATE TABLE public._sqlx_migrations (
@@ -237,22 +247,23 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
                  execution_time bigint NOT NULL
              )",
         )
-        .execute(pg.pool_for_tests())
+        .execute(&pg.clone_pool_for_backend())
         .await?;
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
                  (version, description, success, checksum, execution_time)
              VALUES (1, 'init', true, decode('00', 'hex'), 0)",
         )
-        .execute(pg.pool_for_tests())
+        .execute(&pg.clone_pool_for_backend())
         .await?;
-        pg.pool_for_tests().close().await;
+        pg.clone_pool_for_backend().close().await;
         drop(pg);
 
         let owner = company_owner(Uuid::now_v7());
 
         let err = Proxima::<GoalTestApp>::app()
             .database_url(db_url.clone())
+            .platform_database_url(db_url.clone())
             .owner(owner)
             .tool_scope(ToolScope::All)
             .build()
@@ -667,7 +678,12 @@ async fn assert_role_ddl_contention_retries_to_green(
             .map(|(_, authority)| authority.split('/').next().unwrap_or(authority))
             .ok_or("test admin URL must contain an authority")?;
         let role_url = format!("postgres://{role_name}:{role_password}@{authority}/{db_name}");
-        let pg = PgStorage::connect(&role_url).await?;
+        let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &role_url,
+            proxima_storage_pg::PgPoolConfig::from_env()?,
+            proxima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
         let migrator = role_ddl_migrator(&role_name);
         let run = tokio::spawn(async move {
             run_core_and_flavor_migrations(&pg, [NamedMigrator::new("role-ddl-flavor", migrator)])

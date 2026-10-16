@@ -1,20 +1,17 @@
 use std::sync::Arc;
 
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
-use super::change::ChangeEventPort;
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
 };
 use super::fact::FactIngestPort;
-use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
-use super::mcp::McpCallReadPort;
+use super::goals::{GoalReadPort, GoalWritePort};
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::write_session::WriteSessionFactory;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
-pub type McpCallReadHandle = Arc<dyn McpCallReadPort>;
 pub type MemoryAuthoringHandle = Arc<dyn MemoryAuthoringPort>;
 pub type MemoryReadHandle = Arc<dyn MemoryReadPort>;
 pub type MemoryInspectHandle = Arc<dyn MemoryInspectPort>;
@@ -24,8 +21,6 @@ pub type EmbeddingJobHandle = Arc<dyn EmbeddingJobPort>;
 pub type EmbeddingMaintenanceHandle = Arc<dyn EmbeddingMaintenancePort>;
 pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
-pub type GoalWakeCandidateHandle = Arc<dyn GoalWakeCandidatePort>;
-pub type ChangeEventHandle = Arc<dyn ChangeEventPort>;
 pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;

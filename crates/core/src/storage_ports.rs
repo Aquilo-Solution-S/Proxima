@@ -5,7 +5,6 @@
 
 mod access;
 mod bundle;
-mod change;
 mod cited_blob;
 mod cited_blob_read;
 mod cited_blob_reconcile;
@@ -17,7 +16,6 @@ mod goals;
 mod handles;
 mod host_state;
 mod host_state_lifecycle;
-mod mcp;
 mod memory;
 pub mod other_stores;
 mod owner_inverse;
@@ -31,7 +29,6 @@ pub(crate) use bundle::{
     EngineStoragePorts, GoalCommandStoragePorts, QueryStoragePorts, ReadVerbStoragePorts,
 };
 pub use bundle::{StoragePorts, StoragePortsBuildError, StoragePortsBuilder};
-pub use change::ChangeEventPort;
 pub use cited_blob::{
     CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
     CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
@@ -61,11 +58,10 @@ pub use embeddings::{
     EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
 };
 pub use fact::FactIngestPort;
-pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
+pub use goals::{GoalReadPort, GoalWritePort};
 pub use handles::{
-    ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
-    EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
+    CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
+    EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle, GoalWriteHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
     SourceCursorHandle, WriteSessionFactoryHandle,
@@ -79,7 +75,6 @@ pub use host_state_lifecycle::{
     HostStateEraseTableCount, HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
     HostStateFactCopyLocator,
 };
-pub use mcp::McpCallReadPort;
 pub use memory::{
     CitationPort, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorWriteProof,

@@ -356,7 +356,7 @@ fn blob_service(ctx: &McpToolCtx) -> Result<Arc<CitedBlobService>, McpToolError>
         McpToolError::Unavailable(
             "blob storage is not configured for this host: set PROXIMA_S3_BUCKET / \
              PROXIMA_S3_REGION / PROXIMA_S3_ACCESS_KEY_ID / PROXIMA_S3_SECRET_ACCESS_KEY \
-             (see PROXIMA_S3_* in docs/10-configuration.md) to enable \
+             (see PROXIMA_S3_* in docs/configuration.md) to enable \
              the cited-blob upload lane"
                 .into(),
         )

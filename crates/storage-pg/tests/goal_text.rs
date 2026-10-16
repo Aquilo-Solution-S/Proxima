@@ -15,6 +15,7 @@ use proxima_core::owner_inverse::{
 use proxima_core::storage_ports::{
     FactIngestPort, GoalWritePort, MemoryReadPort, OwnerInversePort, OwnerWritePermit,
 };
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -65,11 +66,10 @@ async fn fresh_pg() -> (String, PgStorage) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let pg = PgStorage::connect(&db_url(&db_name))
+    let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
         .with_cold(Arc::new(MemoryColdStore::default()));
-    pg.run_before_owner_rls_migrations().await.expect("migrate");
     (db_name, pg)
 }
 
@@ -159,7 +159,6 @@ impl Harness {
             self.owner,
             Self::payload(title, text),
             self.topology()?,
-            None,
             GoalAuthorship::User,
             IdempotencyKey::new(request_id)?,
         );
@@ -220,7 +219,6 @@ impl Harness {
                     owner: self.owner,
                     prior_goal_id: prior,
                     replacement: Self::payload(title, text),
-                    wake: None,
                     authorship: GoalAuthorship::User,
                     request_id: IdempotencyKey::new(request_id)?,
                     context: self.context(),
@@ -271,7 +269,6 @@ impl Harness {
                 Ok(ChildGoalDraft {
                     payload: Self::payload(title, text),
                     evidence: Vec::new(),
-                    wake: None,
                     request_id: IdempotencyKey::new(format!("{prefix}-{index}"))?,
                 })
             })
@@ -305,7 +302,12 @@ impl Harness {
         req.limit = 1;
         let response = self
             .pg
-            .query_memories(None, &[self.owner], &req, &[])
+            .query_memories(
+                Some(&owner_scope_for_tests(&[self.owner])),
+                &[self.owner],
+                &req,
+                &[],
+            )
             .await?;
         response
             .goals
@@ -320,7 +322,12 @@ impl Harness {
         req.entity_kind = Some(EntityKind::Goal);
         let response = self
             .pg
-            .query_memories(None, &[self.owner], &req, &[])
+            .query_memories(
+                Some(&owner_scope_for_tests(&[self.owner])),
+                &[self.owner],
+                &req,
+                &[],
+            )
             .await?;
         Ok(response.goals)
     }

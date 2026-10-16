@@ -35,8 +35,8 @@ open Lean
 
 #eval show Lean.Elab.Command.CommandElabM Unit from do
   let env ← getEnv
-  unless env.contains `Causa.Flavor.wipeable_when_abandoned do
-    throwError "Causa import did not expose Causa.Flavor.wipeable_when_abandoned; refusing to print an axiom surface"
+  unless env.contains `Causa.principle_1_facts_below_perspective do
+    throwError "Causa import did not expose Causa.principle_1_facts_below_perspective; refusing to print an axiom surface"
   let mut names : Array String := #[]
   for (n, ci) in env.constants.toList do
     match ci with

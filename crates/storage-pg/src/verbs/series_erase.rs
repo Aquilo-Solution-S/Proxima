@@ -1,5 +1,5 @@
 //! Flavor-scoped series erase: the storage half of
-//! `UnitOfWork::erase_own_series` (docs/13 §Flavor-scoped erase).
+//! `UnitOfWork::erase_own_series` (docs/data-and-erasure.md).
 //!
 //! The engine has authorized the owner and resolved the named flavor's
 //! memory schemas. This module turns the selection into a closed footprint —

@@ -1593,11 +1593,6 @@ async fn resource_reads_match_the_mcp_error_class() {
 
     for (rest_uri, resource_uri, expected) in [
         (
-            "/v1/resources/change-events?limit=not-a-number",
-            "proxima://change-events?limit=not-a-number",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
             "/v1/resources/memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
             "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
             StatusCode::BAD_REQUEST,
@@ -1606,11 +1601,6 @@ async fn resource_reads_match_the_mcp_error_class() {
             "/v1/resources/no-such-resource",
             "proxima://no-such-resource",
             StatusCode::NOT_FOUND,
-        ),
-        (
-            "/v1/resources/wake-candidates",
-            "proxima://wake-candidates",
-            StatusCode::BAD_REQUEST,
         ),
         (
             "/v1/resources/goals?state=Active,",

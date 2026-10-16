@@ -1,60 +1,24 @@
-//! Operator maintenance verbs — the cold-object purge drain and change-log
-//! rotation.
+//! Operator maintenance verb for the cold-object purge drain.
 //!
-//! Both are operator surfaces for the `proxima-mcp maintain-storage` CLI
+//! This is an operator surface for the `proxima-mcp maintain-storage` CLI
 //! (holding the database credentials is the authority, like the embedding
 //! maintenance verbs). Neither is a promise to a user: the drain finishes
 //! destruction a committed erase already owes the object store, and the
-//! prune is log rotation on an operator-supplied horizon with no default.
 //! What a host promises its users about retention, holds or erasure lives in
 //! the host.
 
 use crate::platform_scope::PgPlatformScope;
 use proxima_core::ColdObjectStore;
-use proxima_core::{OwnerId, StorageError};
+use proxima_core::StorageError;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::error::map_err;
 
 async fn begin_platform(
-    pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    _pool: &PgPool,
+    platform: &PgPlatformScope,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
-    match platform {
-        Some(scope) => scope.begin().await,
-        None => crate::owner_scope::begin_compatible_owner_transaction(pool, None).await,
-    }
-}
-
-/// Options for one `change_event` prune pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChangeEventPruneOptions {
-    /// Age horizon: only events older than this many seconds are pruned.
-    /// There is deliberately no default — destruction requires an
-    /// explicit operator choice.
-    pub older_than_seconds: i64,
-    /// Events deleted per transaction. Each batch is its own transaction, so
-    /// a long rotation never holds one open across the whole log.
-    pub batch_size: i64,
-    /// Count prunable events without deleting anything.
-    pub dry_run: bool,
-}
-
-/// Per-owner outcome of a `change_event` prune pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PruneOwnerOutcome {
-    pub owner: OwnerId,
-    /// Events deleted (dry run: events that would be deleted).
-    pub events_pruned: u64,
-}
-
-/// Outcome of one `change_event` prune pass.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ChangeEventPruneOutcome {
-    pub owners: Vec<PruneOwnerOutcome>,
-    pub events_pruned: u64,
-    pub dry_run: bool,
+    platform.begin().await
 }
 
 /// Options for one bounded retry of exact object-store purge debts.
@@ -77,7 +41,7 @@ pub struct ColdPurgeRetryOutcome {
 /// Retry a stable, bounded batch of durable exact-key purge debts.
 pub(crate) async fn retry_cold_object_purges(
     pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    platform: &PgPlatformScope,
     cold: &dyn ColdObjectStore,
     options: ColdPurgeRetryOptions,
 ) -> Result<ColdPurgeRetryOutcome, StorageError> {
@@ -148,7 +112,7 @@ pub(crate) async fn retry_cold_object_purges(
 /// [`proxima_core::UNRECORDED_BACKEND`].
 async fn refuse_foreign_backends(
     pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    platform: &PgPlatformScope,
     store_backend: &str,
 ) -> Result<(), StorageError> {
     if store_backend == proxima_core::UNRECORDED_BACKEND {
@@ -186,7 +150,7 @@ async fn refuse_foreign_backends(
 
 async fn pending_cold_purge_count(
     pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
+    platform: &PgPlatformScope,
 ) -> Result<u64, StorageError> {
     let mut tx = begin_platform(pool, platform).await?;
     let count: i64 =
@@ -196,103 +160,4 @@ async fn pending_cold_purge_count(
             .map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
     Ok(count.unsigned_abs())
-}
-
-pub(crate) async fn prune_change_log(
-    pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
-    options: ChangeEventPruneOptions,
-) -> Result<ChangeEventPruneOutcome, StorageError> {
-    if options.older_than_seconds < 1 {
-        return Err(StorageError::ConstraintViolation(
-            "change_event prune horizon must be positive".into(),
-        ));
-    }
-    if options.batch_size < 1 {
-        return Err(StorageError::ConstraintViolation(
-            "change_event prune batch_size must be positive".into(),
-        ));
-    }
-    let mut tx = begin_platform(pool, platform).await?;
-    let candidates: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT a.owner_id
-           FROM proxima_core.announce a
-           JOIN proxima_core.owners o ON o.owner_id = a.owner_id
-          WHERE COALESCE(uuid_extract_timestamp(a.seq), TIMESTAMPTZ '1970-01-01')
-                < now() - make_interval(secs => ($1::bigint)::double precision)
-          ORDER BY a.owner_id",
-    )
-    .bind(options.older_than_seconds)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
-
-    let mut outcome = ChangeEventPruneOutcome {
-        dry_run: options.dry_run,
-        ..ChangeEventPruneOutcome::default()
-    };
-    for owner_id in candidates {
-        let owner = OwnerId::new(owner_id);
-        let owner_outcome = prune_owner(pool, platform, owner, options).await?;
-        outcome.events_pruned += owner_outcome.events_pruned;
-        outcome.owners.push(owner_outcome);
-    }
-    Ok(outcome)
-}
-
-async fn prune_owner(
-    pool: &PgPool,
-    platform: Option<&PgPlatformScope>,
-    owner: OwnerId,
-    options: ChangeEventPruneOptions,
-) -> Result<PruneOwnerOutcome, StorageError> {
-    let owner_id = owner.into_inner();
-    let mut events_pruned: u64 = 0;
-    loop {
-        let mut tx = begin_platform(pool, platform).await?;
-        if options.dry_run {
-            let due: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM proxima_core.announce
-                  WHERE owner_id IS NOT DISTINCT FROM $1
-                    AND COALESCE(uuid_extract_timestamp(seq), TIMESTAMPTZ '1970-01-01') < now()
-                        - make_interval(secs => ($2::bigint)::double precision)",
-            )
-            .bind(owner_id)
-            .bind(options.older_than_seconds)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            return Ok(PruneOwnerOutcome {
-                owner,
-                events_pruned: due.unsigned_abs(),
-            });
-        }
-        let deleted = sqlx::query(
-            "DELETE FROM proxima_core.announce
-              WHERE seq IN (
-                  SELECT seq FROM proxima_core.announce
-                   WHERE owner_id IS NOT DISTINCT FROM $1
-                     AND COALESCE(uuid_extract_timestamp(seq), TIMESTAMPTZ '1970-01-01') < now()
-                         - make_interval(secs => ($2::bigint)::double precision)
-                   ORDER BY seq
-                   LIMIT $3
-              )",
-        )
-        .bind(owner_id)
-        .bind(options.older_than_seconds)
-        .bind(options.batch_size)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?
-        .rows_affected();
-        tx.commit().await.map_err(map_err)?;
-        events_pruned += deleted;
-        if deleted < options.batch_size.unsigned_abs() {
-            return Ok(PruneOwnerOutcome {
-                owner,
-                events_pruned,
-            });
-        }
-    }
 }

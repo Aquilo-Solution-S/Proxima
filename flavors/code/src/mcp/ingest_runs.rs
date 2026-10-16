@@ -22,13 +22,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::IndexReport;
 use crate::file_class::FileClassCounts;
 use crate::repos::runs::{
     ABANDONED_RUN, RUN_HEARTBEAT, RUN_STALE_AFTER, begin_run, get_owner_run, latest_run,
     mark_failed, mark_succeeded, start_run_with_created, touch_run,
 };
 use crate::repos::{RepoIngestionRun, RepoRecord, RunStatus, StageCounters};
-use crate::{CodeFlavorStore, IndexReport};
 
 use super::code_store;
 use super::repos::{EMBEDDING_BACKFILL_LIMIT, format_time, map_index_error, map_repo_registry};
@@ -171,7 +171,7 @@ pub(super) async fn drive_run(
 
 async fn ingest_head_snapshot(
     ctx: &ToolCtx,
-    pool: &CodeFlavorStore,
+    pool: &crate::store::ScopedCodeFlavorStore,
     repo: RepoRecord,
 ) -> Result<HeadSnapshotDone, ToolError> {
     let source = crate::LocalGitSource::new(
@@ -242,7 +242,7 @@ fn stage_counters(report: &IndexReport) -> StageCounters {
 struct RunHeartbeat(tokio::task::JoinHandle<()>);
 
 impl RunHeartbeat {
-    fn spawn(pool: Arc<CodeFlavorStore>, run_id: Uuid) -> Self {
+    fn spawn(pool: Arc<crate::store::ScopedCodeFlavorStore>, run_id: Uuid) -> Self {
         Self(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(RUN_HEARTBEAT).await;

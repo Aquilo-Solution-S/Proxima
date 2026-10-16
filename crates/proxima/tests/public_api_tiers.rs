@@ -488,7 +488,6 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
     let request = GoalCreateRequest {
         owner,
         topology,
-        wake: None,
         title: "title".into(),
         text: "text".into(),
         payload: SdkGoalPayload {
@@ -1176,7 +1175,7 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
 #[test]
 fn host_extra_table_bridge_is_on_proxima_host() {
     // The one sanctioned PgPool leak is ProximaHost::clone_pool_for_host,
-    // reached through `AppContext::host` (docs/08). Flavor SDK still must
+    // reached through `AppContext::host` (docs/host-integration.md). Flavor SDK still must
     // not name the type. The host accessors are scanned so this cannot hide
     // in a submodule the host.rs scan misses.
     let flavor_exports = include_str!("../src/flavor.rs");
@@ -1209,7 +1208,7 @@ fn every_runtime_handle_reaches_the_one_host_accessor_set() {
     let _: fn(&proxima::AppContext) -> &proxima::ProximaHost = proxima::AppContext::host;
     let _: fn(&proxima::BuiltProxima) -> &proxima::ProximaHost = proxima::BuiltProxima::host;
     let _: fn(&proxima::RunningProxima) -> &proxima::ProximaHost = proxima::RunningProxima::host;
-    let _: fn(&proxima::ProximaHost) -> Option<proxima::PgPlatformScope> =
+    let _: fn(&proxima::ProximaHost) -> proxima::PgPlatformScope =
         proxima::ProximaHost::platform_scope_for_host;
     let _: fn(&proxima::ProximaHost) -> proxima::PgHostStateEraseContext =
         proxima::ProximaHost::host_state_erase_context_for_host;

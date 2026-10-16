@@ -1,9 +1,7 @@
-use super::wake::prepare_goal_wake_plan;
 use super::{
     GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
     PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, RowColumns, StorageError,
-    Transaction, WakeWrite, lock_prepared_goal_write, persist_prepared_goal_write,
-    prepare_goal_write,
+    Transaction, lock_prepared_goal_write, persist_prepared_goal_write, prepare_goal_write,
 };
 use crate::verbs::goal_timeseries::{
     GoalChangeFact, GoalWriteCommand, attach_goal_change_fact_reservation,
@@ -23,10 +21,6 @@ pub(super) struct PreparedGoalInsert<'a> {
     pub(super) change_fact: Option<GoalChangeFact<'a>>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "forwards prepare_goal_insert's arguments and the sidecar registry"
-)]
 pub(super) async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -34,19 +28,9 @@ pub(super) async fn insert_or_replay_goal(
     expected_prior: Option<GoalId>,
     change: GoalChange,
     context: GoalAtomicContext<'_>,
-    wake_write: WakeWrite<'_>,
     columns: RowColumns<'_>,
 ) -> Result<InsertedGoal, StorageError> {
-    let prepared = prepare_goal_insert(
-        tx,
-        draft,
-        expected_prior,
-        change,
-        context,
-        wake_write,
-        columns,
-    )
-    .await?;
+    let prepared = prepare_goal_insert(tx, draft, expected_prior, change, context, columns).await?;
     if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
         lock_prepared_goal_write(tx, prepared_write).await?;
     }
@@ -59,12 +43,11 @@ pub(super) async fn prepare_goal_insert<'a>(
     expected_prior: Option<GoalId>,
     change: GoalChange,
     context: GoalAtomicContext<'a>,
-    wake_write: WakeWrite<'_>,
     columns: RowColumns<'_>,
 ) -> Result<PreparedGoalInsert<'a>, StorageError> {
     let owner = draft.owner();
 
-    // Replay detection precedes prior-head and wake lookups: a replay must
+    // Replay detection precedes prior-head lookups: a replay must
     // not become dependent on a target that a later erase removed.
     if let Some(existing) = load_goal_by_request_id(tx, &owner, &draft.request_id).await? {
         return Ok(PreparedGoalInsert {
@@ -85,7 +68,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     }
     // Fence the owner immediately after replay detection.  The lower-level
     // preparation repeats this re-entrantly, which keeps this decomposition
-    // entry point safe when its prior/head and wake preparation spans a bulk
+    // entry point safe when its prior/head preparation spans a bulk
     // owner erase.
     crate::access::owner_columns::lock_owner_fence_shared_tx(tx, &owner).await?;
     crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner).await?;
@@ -126,19 +109,11 @@ pub(super) async fn prepare_goal_insert<'a>(
             .iter()
             .map(|item| item.memory_id().into_inner())
             .collect(),
-        wake_id: None,
         mint_write_act: false,
         write_act_t: columns.write_act_t,
     };
-    let wake = prepare_goal_wake_plan(tx, context, &owner, wake_write).await?;
-    let preparation = prepare_goal_write(
-        tx,
-        &owner,
-        &command,
-        wake,
-        expected_prior.map(GoalId::into_inner),
-    )
-    .await?;
+    let preparation =
+        prepare_goal_write(tx, &owner, &command, expected_prior.map(GoalId::into_inner)).await?;
     let close_fact = match &preparation {
         GoalWritePreparation::New(_)
             if matches!(draft.state, GoalState::Achieved | GoalState::Abandoned) =>
@@ -224,7 +199,6 @@ pub(super) async fn persist_prepared_goal_insert(
 
     Ok(InsertedGoal {
         goal_id: GoalId::new(out.t),
-        change_event_seq: out.t,
         idempotent_replay: out.replay,
     })
 }

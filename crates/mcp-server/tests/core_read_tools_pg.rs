@@ -2,21 +2,29 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{create_core_db, db_url, drop_db};
+use common::{create_core_db, db_url, drop_db, storage};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, OwnerId, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+fn owner_authz(owner: OwnerId) -> AuthzContext {
+    authenticated_context(
+        AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .narrowed_to_owner(owner)
+            .expect("personal owner narrows"),
+    )
+}
 
 #[tokio::test]
 async fn core_read_resources_return_prefixed_ids_and_author()
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
-    let pg = PgStorage::connect(&database_url).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = storage(&database_url).await?;
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let source = insert_memory(&pg, &owner, "source lineage memory", &[]).await?;
@@ -32,9 +40,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     // a None context is unauthenticated and correctly denied).
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
+        authz: owner_authz(owner),
     };
 
     let fetched = server
@@ -118,8 +124,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
 async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
-    let pg = PgStorage::connect(&database_url).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = storage(&database_url).await?;
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let memory_id = insert_memory(&pg, &owner, "structured search identity", &[]).await?;
@@ -130,9 +135,7 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
     let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
+        authz: owner_authz(owner),
     };
 
     let output = server
@@ -162,101 +165,21 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std::error::Error>> {
+async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
-    let pg = PgStorage::connect(&database_url).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = storage(&database_url).await?;
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-    let trigger = insert_fact(&pg, &owner, "wake trigger fact").await?;
-    let (_, goal_id) = insert_active_goal(&pg, &owner, Some(trigger)).await?;
-
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let engine = Arc::new(
-        Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
-    );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
-    let auth = McpAuthContext {
-        owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
-    };
-
-    let output = server
-        .read_resource(
-            &format!("proxima://wake-candidates?fact=F:{trigger}"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    let candidates = output["candidates"].as_array().expect("candidates array");
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0]["goal"], format!("G:{goal_id}"));
-    assert_eq!(candidates[0]["prompt"], "plan only");
-    assert_eq!(candidates[0]["tool_ids"][0], "core_search_memories");
-    assert_eq!(candidates[0]["actor_write_owners"][0], owner.to_string());
-
-    // A non-Fact reference class is rejected at parse (F:<uuid> required)...
-    let abstraction = insert_memory(&pg, &owner, "not a fact", &[]).await?;
-    let wrong_class = server
-        .read_resource(
-            &format!("proxima://wake-candidates?fact=A:{abstraction}"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("non-Fact reference class must be rejected at parse");
-    assert!(
-        wrong_class.to_string().contains("got prefix 'A'"),
-        "unexpected error: {wrong_class}"
-    );
-
-    // ...and a Fact-classed reference to a non-Fact row is still rejected by
-    // the engine's kind check (defense in depth behind the parse gate).
-    let mislabeled = server
-        .read_resource(
-            &format!("proxima://wake-candidates?fact=F:{abstraction}"),
-            author_ctx(),
-            Some(auth),
-        )
-        .await
-        .expect_err("Fact-classed reference to an Abstraction row must be rejected");
-    assert!(
-        mislabeled.to_string().contains("must be a Fact"),
-        "unexpected error: {mislabeled}"
-    );
-
-    drop(server);
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one resource round trip covers paging, scope and wake read-back"
-)]
-async fn goal_resources_list_read_back_wake_config_and_paginate()
--> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_core_db().await?;
-    let database_url = db_url(&db_name);
-    let pg = PgStorage::connect(&database_url).await?;
-    pg.run_before_owner_rls_migrations().await?;
-
-    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-    let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
     let (goal_handles, goal_ids): (Vec<_>, Vec<_>) = [
-        insert_active_goal(&pg, &owner, Some(trigger)).await?,
-        insert_active_goal(&pg, &owner, None).await?,
-        insert_active_goal(&pg, &owner, None).await?,
+        insert_active_goal(&pg, &owner).await?,
+        insert_active_goal(&pg, &owner).await?,
+        insert_active_goal(&pg, &owner).await?,
     ]
     .into_iter()
     .unzip();
     let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let (foreign_handle, _) = insert_active_goal(&pg, &foreign_owner, None).await?;
+    let (foreign_handle, _) = insert_active_goal(&pg, &foreign_owner).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -265,9 +188,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
+        authz: owner_authz(owner),
     };
 
     // Paginate Active goals two-at-a-time: disjoint, exhaustive, terminated.
@@ -305,11 +226,12 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         assert!(seen.contains(&format!("G:{goal_id}")));
     }
 
+    let paused_head = Uuid::now_v7();
     insert_goal_version(
         &pg,
         &owner,
         Some(goal_handles[1]),
-        Uuid::now_v7(),
+        paused_head,
         "Paused",
         None,
     )
@@ -323,27 +245,14 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
         .await?;
     assert_eq!(union["goals"].as_array().expect("goals array").len(), 3);
 
-    // The armed goal reads back its wake config; unarmed goals carry none.
-    let armed = server
-        .read_resource(
-            &format!("proxima://goal/G:{}", goal_handles[0]),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(armed["goal"], format!("G:{}", goal_ids[0]));
-    assert_eq!(armed["state"], "Active");
-    assert_eq!(armed["wake"]["trigger_fact"], format!("F:{trigger}"));
-    assert_eq!(armed["wake"]["prompt"], "plan only");
-    assert_eq!(armed["wake"]["tool_ids"][0], "core_search_memories");
-    let unarmed = server
+    let goal = server
         .read_resource(
             &format!("proxima://goal/G:{}", goal_handles[1]),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert!(unarmed.get("wake").is_none(), "unarmed goal has no wake");
+    assert_eq!(goal["goal"], format!("G:{paused_head}"));
 
     for handle in [foreign_handle, Uuid::now_v7()] {
         let error = server
@@ -359,11 +268,6 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 
     assert_goal_reference_and_state_rejections(&server, &auth, goal_ids[0]).await;
 
-    // Wake candidates now signal truncation instead of dropping silently.
-    arm_goal_for_fact(&pg, goal_ids[1], trigger).await?;
-    arm_goal_for_fact(&pg, goal_ids[2], trigger).await?;
-    assert_wake_candidates_signal_truncation(&server, &auth, trigger).await?;
-
     drop(server);
     drop(pg);
     drop_db(&db_name).await?;
@@ -375,19 +279,14 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
 /// version knows it and JSON `null` (the key present) when it does not, and
 /// both times are RFC 3339.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one series fixture verifies timestamps, handle advancement and wake read-back"
-)]
 async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn std::error::Error>>
 {
     let db_name = create_core_db().await?;
-    let pg = PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = storage(&db_url(&db_name)).await?;
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     // Unknown text: a version no declaration can speak for.
-    let (unknown_handle, unknown) = insert_active_goal(&pg, &owner, None).await?;
+    let (unknown_handle, unknown) = insert_active_goal(&pg, &owner).await?;
     // A series set at 22:13:20Z and paused a minute later; the head is the
     // second version, which keeps the first one's text.
     let set = goal_t_at(1_700_000_000_000);
@@ -411,9 +310,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
+        authz: owner_authz(owner),
     };
 
     let listing = server
@@ -477,10 +374,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
         .await?;
     assert_eq!(single_unknown.get("text"), Some(&serde_json::Value::Null));
 
-    // Advance the same series again and arm it. The stable handle now reads
-    // the new head and its wake configuration, rather than the old version.
-    let trigger = insert_fact(&pg, &owner, "current head trigger").await?;
-    arm_goal_for_fact(&pg, paused, trigger).await?;
+    // The stable handle reads the current head rather than a version id.
     let current: uuid::Uuid =
         sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1")
             .bind(handle)
@@ -495,8 +389,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
         .await?;
     assert_eq!(current_read["goal"], format!("G:{current}"));
     assert_eq!(current_read["handle"], format!("G:{handle}"));
-    assert_eq!(current_read["state"], "Active");
-    assert_eq!(current_read["wake"]["trigger_fact"], format!("F:{trigger}"));
+    assert_eq!(current_read["state"], "Paused");
 
     drop(server);
     drop(pg);
@@ -513,8 +406,7 @@ async fn edge_resources_read_back_interpretation_references()
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
-    let pg = PgStorage::connect(&database_url).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = storage(&database_url).await?;
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let hub = insert_memory(&pg, &owner, "hub abstraction", &[]).await?;
@@ -527,9 +419,7 @@ async fn edge_resources_read_back_interpretation_references()
     let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
-        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
-            .narrowed_to_owner(owner)
-            .expect("personal owner narrows"),
+        authz: owner_authz(owner),
     };
 
     let interpreted = server
@@ -673,71 +563,9 @@ async fn assert_goal_reference_and_state_rejections(
     }
 }
 
-/// A page smaller than the admitted set reports `has_more`; a page that
-/// covers it reports completion.
-async fn assert_wake_candidates_signal_truncation(
-    server: &McpToolHost,
-    auth: &McpAuthContext,
-    trigger: uuid::Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let capped = server
-        .read_resource(
-            &format!("proxima://wake-candidates?fact=F:{trigger}&limit=2"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(
-        capped["candidates"].as_array().expect("candidates").len(),
-        2
-    );
-    assert_eq!(capped["has_more"], serde_json::json!(true));
-    let full = server
-        .read_resource(
-            &format!("proxima://wake-candidates?fact=F:{trigger}&limit=10"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(full["candidates"].as_array().expect("candidates").len(), 3);
-    assert_eq!(full["has_more"], serde_json::json!(false));
-    Ok(())
-}
-
-async fn insert_fact(
-    pg: &PgStorage,
-    owner: &OwnerId,
-    text: &str,
-) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    // The stamp and the row it promises land in one transaction: a memory row
-    // that names a sidecar table it has no row in is refused at COMMIT.
-    let mut stamped = pg.pool_for_tests().begin().await?;
-    let t = insert_memory_row(
-        &mut stamped,
-        owner,
-        "fact",
-        "core/agent-note-v1",
-        &[],
-        &["proxima_core.agent_note_v1"],
-    )
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1
-            (t, note_id, title, body, tags)
-         VALUES ($1, $1, $2, $2, ARRAY[]::text[])",
-    )
-    .bind(t)
-    .bind(text)
-    .execute(&mut *stamped)
-    .await?;
-    stamped.commit().await?;
-    Ok(t)
-}
-
 async fn insert_active_goal(
     pg: &PgStorage,
     owner: &OwnerId,
-    trigger_t: Option<uuid::Uuid>,
 ) -> Result<(uuid::Uuid, uuid::Uuid), Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
@@ -758,30 +586,14 @@ async fn insert_active_goal(
     .bind(t)
     .execute(pg.pool_for_tests())
     .await?;
-    let wake_id = if let Some(trigger) = trigger_t {
-        let wake_id: uuid::Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.wake_config
-                (owner_id, trigger_kind, trigger_t, tool_ids, prompt)
-             VALUES ($1, 'fact_memory', $2, ARRAY['core_search_memories'], 'plan only')
-             RETURNING wake_id",
-        )
-        .bind(owner_id)
-        .bind(trigger)
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        Some(wake_id)
-    } else {
-        None
-    };
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, wake_id)
-         VALUES ($1, $2, $3, 'wake goal', 'Active', $4, $5)",
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id)
+         VALUES ($1, $2, $3, 'goal', 'Active', $4)",
     )
     .bind(handle)
     .bind(t)
     .bind(owner_id)
-    .bind(format!("wake-e2e:{t}"))
-    .bind(wake_id)
+    .bind(format!("read-e2e:{t}"))
     .execute(pg.pool_for_tests())
     .await?;
     Ok((handle, t))
@@ -840,49 +652,6 @@ async fn insert_goal_version(
     .execute(pg.pool_for_tests())
     .await?;
     Ok(handle)
-}
-
-async fn arm_goal_for_fact(
-    pg: &PgStorage,
-    goal_id: uuid::Uuid,
-    trigger_memory_id: uuid::Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (handle, owner_id, title, request_id): (Uuid, Uuid, String, String) = sqlx::query_as(
-        "SELECT handle, owner_id, title, request_id FROM proxima_core.goal WHERE t = $1",
-    )
-    .bind(goal_id)
-    .fetch_one(pg.pool_for_tests())
-    .await?;
-    let wake_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.wake_config
-            (owner_id, trigger_kind, trigger_t, tool_ids, prompt)
-         VALUES ($1, 'fact_memory', $2, ARRAY['core_search_memories'], 'plan only')
-         RETURNING wake_id",
-    )
-    .bind(owner_id)
-    .bind(trigger_memory_id)
-    .fetch_one(pg.pool_for_tests())
-    .await?;
-    let t = uuid::Uuid::now_v7();
-    sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
-        .bind(handle)
-        .bind(t)
-        .execute(pg.pool_for_tests())
-        .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.goal
-            (handle, t, owner_id, title, state, request_id, wake_id)
-         VALUES ($1, $2, $3, $4, 'Active', $5, $6)",
-    )
-    .bind(handle)
-    .bind(t)
-    .bind(owner_id)
-    .bind(title)
-    .bind(format!("{request_id}:armed"))
-    .bind(wake_id)
-    .execute(pg.pool_for_tests())
-    .await?;
-    Ok(())
 }
 
 /// `sidecars` is the tables this admission's caller then writes a row into.
@@ -989,7 +758,8 @@ async fn insert_memory(
     origins: &[uuid::Uuid],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     // The stamp and the row it promises land in one transaction: see above.
-    let mut stamped = pg.pool_for_tests().begin().await?;
+    let mut stamped: sqlx::Transaction<'static, sqlx::Postgres> =
+        sqlx::Acquire::begin(pg.pool_for_tests()).await?;
     let t = insert_memory_row(
         &mut stamped,
         owner,

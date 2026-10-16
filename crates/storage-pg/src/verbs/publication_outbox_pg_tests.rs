@@ -713,12 +713,6 @@ async fn an_oversized_export_refuses_the_whole_fact_write() {
         .await
         .expect("count reads");
     assert_eq!(receipts, 0);
-    let announced: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.announce")
-        .fetch_one(&pool)
-        .await
-        .expect("count reads");
-    assert_eq!(announced, 0);
-
     drop(pg);
     let _ = drop_db(&db).await;
 }
@@ -836,7 +830,10 @@ async fn an_uncommitted_write_session_leaves_no_visible_record() {
         PublicationLimits::default(),
     ));
     {
-        let mut session = pg.begin(None).await.expect("session begins");
+        let mut session = pg
+            .begin(authorized.owner_write_permit().owner_scope())
+            .await
+            .expect("session begins");
         session
             .ingest_fact_with_typed_sidecar(&authorized, &[])
             .await
@@ -1019,7 +1016,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         .await
         .expect("capture");
     let t = fact.memory_id.into_inner();
-    let transfer_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let transfer_permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, group);
     assert!(
         OwnerTransferPort::transfer_to_owner(
             &pg,
@@ -1263,7 +1260,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     assert!(
         OwnerTransferPort::transfer_to_owner(
             &pg,
-            &OwnerWritePermit::new_for_tests(source_owner, AccessKind::Fact),
+            &OwnerWritePermit::transfer_for_tests(source_owner, AccessKind::Fact, destination),
             EntityId::Memory(source_fact),
             destination,
             pg.surfaces(),
@@ -1348,7 +1345,8 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
     .await
     .expect("capture");
     let t = fact.memory_id.into_inner();
-    let transfer = OwnerWritePermit::new_for_tests(original_owner, AccessKind::Fact);
+    let transfer =
+        OwnerWritePermit::transfer_for_tests(original_owner, AccessKind::Fact, current_owner);
     assert!(
         OwnerTransferPort::transfer_to_owner(
             &pg,
@@ -1477,7 +1475,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     .await
     .expect("unrelated capture");
 
-    let transfer = OwnerWritePermit::new_for_tests(original, AccessKind::Fact);
+    let transfer = OwnerWritePermit::transfer_for_tests(original, AccessKind::Fact, destination);
     for fact in [
         &source_transferred,
         &destination_transferred,
@@ -1848,16 +1846,9 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
             drop_event_id: "publication-outbox-erase".into(),
         },
     );
-    let cold = crate::verbs::forget::MemoryColdStore::default();
-    let outcome = crate::verbs::owner_erase::erase_personal_owner(
-        &pool,
-        &cold,
-        &auth,
-        user_id,
-        pg.surfaces(),
-    )
-    .await
-    .expect("owner erase");
+    let outcome = OwnerInversePort::erase_personal_owner(&pg, &auth, user_id, pg.surfaces())
+        .await
+        .expect("owner erase");
     assert!(
         matches!(
             outcome,
@@ -2078,7 +2069,7 @@ fn sealing_is_a_function_of_the_draft_and_the_t() {
     assert_eq!(first.digest, *blake3::hash(&first.bytes).as_bytes());
 }
 
-// ── consumers (docs/18 §Consumers) ──────────────────────────────────────
+// ── consumers (docs/host-integration.md) ──────────────────────────────────────
 
 fn consumer(name: &str) -> ConsumerName {
     ConsumerName::new(name).expect("a valid consumer name")
@@ -2360,7 +2351,7 @@ async fn a_record_captured_with_no_consumer_registered_is_published_at_once() {
     let _ = drop_db(&db).await;
 }
 
-// ── ordering (docs/18 §Ordering) ────────────────────────────────────────
+// ── ordering (docs/host-integration.md) ────────────────────────────────────────
 
 async fn envelope_of(pool: &sqlx::PgPool, t: Uuid) -> serde_json::Value {
     let bytes: Vec<u8> =

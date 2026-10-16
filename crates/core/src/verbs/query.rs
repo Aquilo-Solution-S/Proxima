@@ -1,21 +1,21 @@
 //! Query verb — owner-scoped snapshot read of memories.
 //!
-//! See docs/14-protocol-surface.md §"Query" and
-//! docs/02-memory.md.
+//! See docs/protocol.md §"Query" and
+//! docs/concepts.md.
 
 use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::change_event::EntityRef;
 pub use crate::edge::EdgeTargetProjection;
 use crate::edge::{Edge, EdgeKind};
+use crate::entity::EntityRef;
 use crate::verbs::goal_write::GoalState;
 use crate::{GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload};
 
-/// Re-export the canonical `EntityKind` from `change_event` so query
+/// Re-export the canonical `EntityKind` from `entity` so query
 /// callers don't need a second import path.
-pub use crate::change_event::EntityKind;
+pub use crate::entity::EntityKind;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -366,7 +366,7 @@ pub struct QueryPage {
 }
 
 /// One core-generic Query request. Flavor-typed filters
-/// per docs/14 §"Query" land when the first flavor crate
+/// per docs/protocol.md
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
@@ -631,8 +631,6 @@ pub struct QueryResponse {
     pub goals: Vec<GoalRow>,
     pub edges: Vec<Edge>,
     pub next_cursor: Option<QueryCursor>,
-    /// docs/14 §Query.
-    pub seq_high_water: Option<Uuid>,
 }
 
 #[cfg(test)]

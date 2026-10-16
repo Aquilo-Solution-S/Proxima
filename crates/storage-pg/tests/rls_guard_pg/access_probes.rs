@@ -11,7 +11,8 @@ use proxima_core::{
     Credentials, Engine, FlavorRegistry, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
 use proxima_storage_pg::{
-    PgPlatformScope, PgStorage, begin_owner_transaction, group_role, roles_for_subject,
+    PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, begin_owner_transaction, group_role,
+    roles_for_subject,
 };
 use uuid::Uuid;
 
@@ -136,9 +137,17 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     seed(&admin, group, manager, &[Relation::Admin]).await;
     seed(&admin, group, member, &[Relation::Admin, Relation::Ingest]).await;
 
-    let pg = PgStorage::connect(&role_url(&database, &runtime_role, &password))
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
         .await
-        .expect("runtime storage");
+        .expect("platform scope");
+    let pg = PgStorage::connect_with_config(
+        &role_url(&database, &runtime_role, &password),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+        scope,
+    )
+    .await
+    .expect("runtime storage");
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     let verifier = super::SyntheticVerifier {

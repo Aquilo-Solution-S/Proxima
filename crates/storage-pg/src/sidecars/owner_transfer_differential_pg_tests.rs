@@ -111,7 +111,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
-const MCP_CALL: &str = "proxima_core.mcp_call_logged_v1";
 
 /// The three transfers this corpus performs, and the entities that must
 /// refuse. Named so the adapter and the dump agree without sharing state.
@@ -191,16 +190,13 @@ async fn write_note(
     handle: Option<Uuid>,
     blob_id: Option<Uuid>,
     title: &str,
-    call_log: bool,
+    _call_log: bool,
 ) -> Result<(MemoryId, Uuid), Box<dyn std::error::Error>> {
     let mut tx = pool.begin().await?;
     let write = draft(source, handle, blob_id);
     // `call_log` admissions carry a hand-written `RetainAtSource` row below,
     // and a sidecar row the memory does not declare is one no verb reaches.
-    let mut tables = vec![AGENT_NOTE.to_owned()];
-    if call_log {
-        tables.push(MCP_CALL.to_owned());
-    }
+    let tables = vec![AGENT_NOTE.to_owned()];
     let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], &[], &tables, None).await?;
     core_pg_sidecars()
         .writing(&write)
@@ -420,21 +416,6 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
         cool(pool, first.into_inner(), "2026-02-02 00:00:00Z").await?;
         embed(pool, second.into_inner(), source).await?;
         embed(pool, third.into_inner(), source).await?;
-        // An owner-pinned sidecar row: `RetainAtSource`. It must NOT move,
-        // and the destination must never gain a row that names the source's
-        // actor.
-        sqlx::query(
-            "INSERT INTO proxima_core.mcp_call_logged_v1
-                 (t, owner_id, tool_name, actor_oid, actor_upn, ok, latency_ms,
-                  io_byte_len, io_truncated, io_content_hash)
-             VALUES ($1, $2, 'core_remember', 'oid', 'source@example.test', true, 7, 11,
-                     false, $3)",
-        )
-        .bind(second.into_inner())
-        .bind(source.into_inner())
-        .bind(vec![41u8; 32])
-        .execute(pool)
-        .await?;
         // The other `RetainAtSource` surface: a captured publication record.
         // A series that changes hands does not retroactively make an event
         // already captured for the source the destination's to deliver, so
@@ -534,18 +515,6 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     )
     .await?;
     embed(pool, bystander_t.into_inner(), bystander).await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.mcp_call_logged_v1
-             (t, owner_id, tool_name, actor_oid, actor_upn, ok, latency_ms,
-              io_byte_len, io_truncated, io_content_hash)
-         VALUES ($1, $2, 'core_remember', 'oid', 'bystander@example.test', true, 7, 11,
-                 false, $3)",
-    )
-    .bind(bystander_t.into_inner())
-    .bind(bystander.into_inner())
-    .bind(vec![42u8; 32])
-    .execute(pool)
-    .await?;
 
     // ── StaysOnKey surfaces: owner state a memory transfer never touches ─
     for (owner, source_name) in [(source, "src-a"), (source, "src-b"), (bystander, "src-a")] {
@@ -585,15 +554,6 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
 
     // ── A goal series, so the refusal is witnessed against real rows ────
     let goal_handle = Uuid::now_v7();
-    let wake_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.wake_config
-             (owner_id, trigger_kind, trigger_schema_id, tool_ids, prompt)
-         VALUES ($1, 'fact_schema', 'core/agent-note-v1', ARRAY['core.remember'], 'wake')
-         RETURNING wake_id",
-    )
-    .bind(source.into_inner())
-    .fetch_one(pool)
-    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, 'core/task-goal-v1', $2, $1)",
@@ -604,12 +564,11 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .await?;
     let goal_t: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.goal
-             (handle, t, owner_id, title, state, request_id, wake_id)
-         VALUES ($1, $1, $2, 'a goal', 'Active', 'req-1', $3) RETURNING t",
+             (handle, t, owner_id, title, state, request_id)
+         VALUES ($1, $1, $2, 'a goal', 'Active', 'req-1') RETURNING t",
     )
     .bind(goal_handle)
     .bind(source.into_inner())
-    .bind(wake_id)
     .fetch_one(pool)
     .await?;
     sqlx::query(
@@ -881,8 +840,7 @@ pub async fn fresh_db(prefix: &str) -> (String, String) {
 }
 
 pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
-    let pg = PgStorage::connect(url).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(url.to_owned()).await?;
     Ok(pg)
 }
 
@@ -911,8 +869,10 @@ async fn run_transfers(
     pg: &PgStorage,
     corpus: &Corpus,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let permit = OwnerWritePermit::new_for_tests(corpus.source, AccessKind::Fact);
-    let goal_permit = OwnerWritePermit::new_for_tests(corpus.source, AccessKind::Goal);
+    let permit =
+        OwnerWritePermit::transfer_for_tests(corpus.source, AccessKind::Fact, corpus.destination);
+    let goal_permit =
+        OwnerWritePermit::transfer_for_tests(corpus.source, AccessKind::Goal, corpus.destination);
     let mut out = String::new();
     for (name, memory) in [
         ("in_place", corpus.in_place),

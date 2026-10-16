@@ -499,7 +499,11 @@ pub async fn enqueue_missing_embedding_jobs(
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
-    let mut tx = crate::begin_compatible_owner_transaction(pool, permit.owner_scope()).await?;
+    let mut tx = crate::begin_owner_transaction(
+        pool,
+        crate::owner_scope::require_owner_scope(permit.owner_scope())?,
+    )
+    .await?;
     let result = enqueue_missing_embedding_jobs_on_connection(
         tx.as_mut(),
         permit,

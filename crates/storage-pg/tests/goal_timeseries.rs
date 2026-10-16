@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EntityKind, QueryRequest};
@@ -47,8 +48,7 @@ async fn goal_write_replay_terminal_and_write_act() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
@@ -68,7 +68,6 @@ async fn goal_write_replay_terminal_and_write_act() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: true,
                 write_act_t: None,
             },
@@ -112,7 +111,6 @@ async fn goal_write_replay_terminal_and_write_act() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: true,
                 write_act_t: None,
             },
@@ -139,7 +137,6 @@ async fn goal_write_replay_terminal_and_write_act() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -164,7 +161,6 @@ async fn goal_write_replay_terminal_and_write_act() {
                 assignment_t: None,
                 dependency_t: vec![],
                 evidence_t: vec![],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -191,8 +187,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
@@ -227,7 +222,6 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 assignment_t: Some(assignment.memory_id.into_inner()),
                 dependency_t: vec![],
                 evidence_t: vec![evidence.memory_id.into_inner()],
-                wake_id: None,
                 mint_write_act: false,
                 write_act_t: None,
             },
@@ -240,7 +234,12 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         by_assignment.goal_states = BTreeSet::from([GoalState::Active]);
         by_assignment.assignment = Some(assignment.memory_id);
         let assigned = pg
-            .query_memories(None, &[owner], &by_assignment, &[])
+            .query_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &by_assignment,
+                &[],
+            )
             .await?;
         assert_eq!(assigned.goals.len(), 1);
         assert_eq!(assigned.goals[0].id.into_inner(), created.t);
@@ -250,14 +249,23 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let mut by_evidence = QueryRequest::readable();
         by_evidence.entity_kind = Some(EntityKind::Goal);
         by_evidence.evidence_contains = Some(evidence.memory_id);
-        let evidenced = pg.query_memories(None, &[owner], &by_evidence, &[]).await?;
+        let evidenced = pg
+            .query_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &by_evidence,
+                &[],
+            )
+            .await?;
         assert_eq!(evidenced.goals.len(), 1);
         assert_eq!(evidenced.goals[0].id.into_inner(), created.t);
 
         let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
         miss.assignment = Some(MemoryId::new(Uuid::now_v7()));
-        let empty = pg.query_memories(None, &[owner], &miss, &[]).await?;
+        let empty = pg
+            .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &miss, &[])
+            .await?;
         assert!(empty.goals.is_empty());
         Ok(())
     }

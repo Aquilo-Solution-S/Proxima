@@ -18,8 +18,7 @@ async fn nested_group_erasure_refuses_parent_and_removes_child_edge()
     let name = format!("proxima_test_nested_erase_{}", Uuid::now_v7().simple());
     create_core_db(&name).await.expect("create test database");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&name)).await?;
         let parent = GroupId::new(Uuid::now_v7());
         let child = GroupId::new(Uuid::now_v7());
         register_group_for_tests(pg.pool_for_tests(), parent).await?;
@@ -66,8 +65,7 @@ async fn erasing_person_removes_projected_roles() -> Result<(), Box<dyn std::err
     let name = format!("proxima_test_person_erase_{}", Uuid::now_v7().simple());
     create_core_db(&name).await.expect("create test database");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&name)).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(db_url(&name)).await?;
         let group = GroupId::new(Uuid::now_v7());
         let person = UserId::new(Uuid::now_v7());
         register_group_for_tests(pg.pool_for_tests(), group).await?;

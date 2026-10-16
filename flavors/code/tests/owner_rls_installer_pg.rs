@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{TestDb, apply_current_migrations};
+use common::{HistoricalDb, apply_current_migrations_pool};
 use sqlx::{Connection, PgConnection};
 
 /// The code migrations that replace the v0.0.15 block with installer calls:
@@ -17,14 +17,11 @@ const INSTALLER_MIGRATIONS: [i64; 2] = [20_260_924_000_020, 20_260_929_000_020];
 /// Core and every code migration but the installer calls: the v0.0.15
 /// hand-written policies. Later files are kept: the template already holds
 /// them, and a lane that lacked them would read its ledger as diverged.
-async fn migrate_through_v015(database: &str, pg: &proxima_storage_pg::PgStorage) {
-    proxima_storage_pg::test_fixtures::reopen_migrations_after_owner_rls_lane(pg.pool_for_tests())
-        .await
-        .expect("reopen the migrations after the lane");
+async fn migrate_through_v015(database: &str) {
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(database)
         .await
         .expect("split roles");
-    let platform = proxima_storage_pg::PgStorage::connect_for_migrations_with_config(
+    let platform = proxima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         proxima_storage_pg::PgPoolConfig::default(),
         proxima_storage_pg::PgTuning::default(),
@@ -371,8 +368,8 @@ async fn assert_memory_owner_refusals(conn: &mut PgConnection) {
     reason = "one migration history, three installs"
 )]
 async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
-    let db = TestDb::fresh_before_owner_rls().await;
-    migrate_through_v015(&db.name, &db.pg).await;
+    let db = HistoricalDb::fresh_before_owner_rls().await;
+    migrate_through_v015(&db.name).await;
     let (_, platform_url) = proxima_pg_testkit::split_role_urls(&db.name)
         .await
         .expect("split roles");
@@ -471,7 +468,7 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
         .expect("kind-scoped policies");
     tx.rollback().await.expect("rollback");
 
-    apply_current_migrations(&db.pg)
+    apply_current_migrations_pool(&db.pool)
         .await
         .expect("the code installer migrations apply");
     let live: Vec<PolicyRow> = sqlx::query_as(POLICIES)
@@ -498,11 +495,11 @@ async fn installer_rekeys_one_v015_policy_and_refuses_gaps() {
 async fn projection_rows_follow_their_memory_kind() {
     use proxima_core::{AccessCeiling, AuthPath, AuthzContext, GroupId, OwnerId, Role, UserId};
 
-    let db = TestDb::fresh_before_owner_rls().await;
-    apply_current_migrations(&db.pg)
+    let db = HistoricalDb::fresh_before_owner_rls().await;
+    apply_current_migrations_pool(&db.pool)
         .await
         .expect("current migrations");
-    let admin = db.pg.pool_for_tests();
+    let admin = &db.pool;
     let owner = uuid::Uuid::now_v7();
     let (fact, abstraction) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
     let mut seed = admin.begin().await.expect("seed transaction");

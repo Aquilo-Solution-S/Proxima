@@ -83,14 +83,17 @@ async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
     }
     let database = unique_db_name("proxima_reenqueue_purge");
     create_core_db(&database).await?;
-    let pg = PgStorage::connect(&db_url(&database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(&database)).await?;
     let config = S3RuntimeConfig {
         force_path_style: true,
         ..S3RuntimeConfig::from_env()?
     };
     let client = config.client();
-    let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+    let store = CitedBlobStore::new(
+        pg.clone_pool_for_backend(),
+        config.clone(),
+        pg.platform_scope_for_host(),
+    )?;
     let key = format!("objects/{}", Uuid::now_v7());
     let result = tokio::time::timeout(
         Duration::from_secs(30),

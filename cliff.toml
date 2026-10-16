@@ -44,6 +44,28 @@ body = """
           {%- if commit.remote.username %} by @{{ commit.remote.username }}{% endif -%}
     {%- endfor %}
 {% endfor %}
+{%- set_global has_upgrade = false -%}
+{%- for commit in commits -%}
+    {%- if commit.breaking -%}
+        {%- for note in commit.footers -%}
+            {%- if note.token == "Upgrade" -%}
+                {%- set_global has_upgrade = true -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endfor %}
+{% if has_upgrade %}
+### Upgrade
+{% for commit in commits -%}
+    {%- if commit.breaking -%}
+        {%- for note in commit.footers -%}
+            {% if note.token == "Upgrade" %}
+- {{ note.value }}
+            {% endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endfor %}
+{% endif -%}
 {%- if github.contributors | filter(attribute="is_first_time", value=true) | length != 0 %}
 
 ### New Contributors

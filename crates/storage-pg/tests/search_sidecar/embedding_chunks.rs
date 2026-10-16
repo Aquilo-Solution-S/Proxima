@@ -1,4 +1,5 @@
 use super::*;
+use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::query::SearchCursor;
 use proxima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
 use proxima_storage_pg::test_fixtures::fresh_pg;
@@ -102,7 +103,11 @@ async fn last_chunk_matches_semantic_and_hybrid_with_full_precision_score() -> T
             req.semantic_weight = Some(0.75);
             req.min_score = Some(0.75);
             let page = pg
-                .search_memories(None, &req, std::slice::from_ref(&projection))
+                .search_memories(
+                    Some(&owner_scope_for_tests(&[owner])),
+                    &req,
+                    std::slice::from_ref(&projection),
+                )
                 .await?;
             assert_eq!(page.results.len(), 1, "{dim:?} {mode:?}: {page:?}");
             let hit = &page.results[0];
@@ -157,7 +162,11 @@ async fn chunk_clusters_do_not_spend_distinct_memory_limit_or_cursor() -> TestRe
         req.limit = 2;
         req.semantic = Some(chunk_query(dim));
         let first_page = pg
-            .search_memories(None, &req, std::slice::from_ref(&projection))
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                std::slice::from_ref(&projection),
+            )
             .await?;
         assert_eq!(
             first_page
@@ -175,7 +184,11 @@ async fn chunk_clusters_do_not_spend_distinct_memory_limit_or_cursor() -> TestRe
             seen: 2,
         });
         let second_page = pg
-            .search_memories(None, &req, std::slice::from_ref(&projection))
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &req,
+                std::slice::from_ref(&projection),
+            )
             .await?;
         assert_eq!(
             second_page
@@ -211,7 +224,13 @@ async fn chunk_scan_stops_at_existing_cap_when_one_memory_dominates() -> TestRes
     req.mode = SearchMode::Semantic;
     req.limit = 2;
     req.semantic = Some(chunk_query(dim));
-    let page = pg.search_memories(None, &req, &[note_projection()]).await?;
+    let page = pg
+        .search_memories(
+            Some(&owner_scope_for_tests(&[owner])),
+            &req,
+            &[note_projection()],
+        )
+        .await?;
     assert_eq!(page.results.len(), 1);
     assert_eq!(page.results[0].memory_id.into_inner(), first);
     assert!(!page.has_more);

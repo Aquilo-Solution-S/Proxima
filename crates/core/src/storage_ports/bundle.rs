@@ -2,9 +2,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::handles::{
-    ChangeEventHandle, CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle,
-    EmbeddingTextHandle, EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, MemoryAuthoringHandle,
+    CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
+    EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle, GoalWriteHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
     SourceCursorHandle, WriteSessionFactoryHandle,
@@ -15,7 +14,6 @@ use super::rejecting::RejectingStorage;
 #[derive(Clone)]
 pub struct StoragePorts {
     fact_ingest: FactIngestHandle,
-    mcp_call_read: McpCallReadHandle,
     memory_authoring: MemoryAuthoringHandle,
     memory_read: MemoryReadHandle,
     memory_inspect: MemoryInspectHandle,
@@ -25,8 +23,6 @@ pub struct StoragePorts {
     embedding_maintenance: EmbeddingMaintenanceHandle,
     goal_write: GoalWriteHandle,
     goal_read: GoalReadHandle,
-    goal_wake_candidate: GoalWakeCandidateHandle,
-    change_event: ChangeEventHandle,
     citation: CitationHandle,
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
@@ -77,8 +73,6 @@ pub(crate) struct PipelineStoragePorts {
 
 #[derive(Clone)]
 pub(crate) struct QueryStoragePorts {
-    pub change_event: ChangeEventHandle,
-    pub mcp_call_read: McpCallReadHandle,
     pub memory_read: MemoryReadHandle,
 }
 
@@ -87,9 +81,7 @@ pub(crate) struct ReadVerbStoragePorts {
     pub embedding_job: EmbeddingJobHandle,
     pub memory_read: MemoryReadHandle,
     pub memory_inspect: MemoryInspectHandle,
-    pub change_event: ChangeEventHandle,
     pub citation: CitationHandle,
-    pub goal_wake_candidate: GoalWakeCandidateHandle,
     pub goal_read: GoalReadHandle,
 }
 
@@ -118,7 +110,6 @@ pub(crate) struct EngineStoragePorts {
 #[derive(Default)]
 pub struct StoragePortsBuilder {
     fact_ingest: Option<FactIngestHandle>,
-    mcp_call_read: Option<McpCallReadHandle>,
     memory_authoring: Option<MemoryAuthoringHandle>,
     memory_read: Option<MemoryReadHandle>,
     memory_inspect: Option<MemoryInspectHandle>,
@@ -128,8 +119,6 @@ pub struct StoragePortsBuilder {
     embedding_maintenance: Option<EmbeddingMaintenanceHandle>,
     goal_write: Option<GoalWriteHandle>,
     goal_read: Option<GoalReadHandle>,
-    goal_wake_candidate: Option<GoalWakeCandidateHandle>,
-    change_event: Option<ChangeEventHandle>,
     citation: Option<CitationHandle>,
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
@@ -165,7 +154,6 @@ impl StoragePorts {
         let rejecting = Arc::new(RejectingStorage);
         Self {
             fact_ingest: rejecting.clone(),
-            mcp_call_read: rejecting.clone(),
             memory_authoring: rejecting.clone(),
             memory_read: rejecting.clone(),
             memory_inspect: rejecting.clone(),
@@ -175,8 +163,6 @@ impl StoragePorts {
             embedding_maintenance: rejecting.clone(),
             goal_write: rejecting.clone(),
             goal_read: rejecting.clone(),
-            goal_wake_candidate: rejecting.clone(),
-            change_event: rejecting.clone(),
             citation: rejecting.clone(),
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
@@ -268,17 +254,13 @@ impl From<StoragePorts> for EngineStoragePorts {
                 owner_access_read: ports.owner_access_read.clone(),
             },
             query: QueryStoragePorts {
-                change_event: ports.change_event.clone(),
-                mcp_call_read: ports.mcp_call_read.clone(),
                 memory_read: ports.memory_read.clone(),
             },
             read_verb: ReadVerbStoragePorts {
                 embedding_job: ports.embedding_job.clone(),
                 memory_read: ports.memory_read.clone(),
                 memory_inspect: ports.memory_inspect.clone(),
-                change_event: ports.change_event.clone(),
                 citation: ports.citation.clone(),
-                goal_wake_candidate: ports.goal_wake_candidate.clone(),
                 goal_read: ports.goal_read.clone(),
             },
             write_session: ports.write_session,
@@ -290,12 +272,6 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn fact_ingest(mut self, handle: FactIngestHandle) -> Self {
         self.fact_ingest = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn mcp_call_read(mut self, handle: McpCallReadHandle) -> Self {
-        self.mcp_call_read = Some(handle);
         self
     }
 
@@ -350,18 +326,6 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn goal_read(mut self, handle: GoalReadHandle) -> Self {
         self.goal_read = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn goal_wake_candidate(mut self, handle: GoalWakeCandidateHandle) -> Self {
-        self.goal_wake_candidate = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn change_event(mut self, handle: ChangeEventHandle) -> Self {
-        self.change_event = Some(handle);
         self
     }
 
@@ -452,7 +416,6 @@ impl StoragePortsBuilder {
 
         Ok(require_ports!(
             fact_ingest,
-            mcp_call_read,
             memory_authoring,
             memory_read,
             memory_inspect,
@@ -462,8 +425,6 @@ impl StoragePortsBuilder {
             embedding_maintenance,
             goal_write,
             goal_read,
-            goal_wake_candidate,
-            change_event,
             citation,
             owner_access_read,
             owner_membership_admin,

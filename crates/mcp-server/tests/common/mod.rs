@@ -19,6 +19,30 @@ pub fn nil_owner_header() -> String {
     owner_key(nil_owner())
 }
 
+#[allow(dead_code)]
+pub async fn storage(
+    database_url: &str,
+) -> Result<proxima_storage_pg::PgStorage, Box<dyn std::error::Error>> {
+    let options = database_url.parse::<sqlx::postgres::PgConnectOptions>()?;
+    let database = options.get_database().ok_or("missing database name")?;
+    let (runtime_url, platform_url) = split_role_urls(database).await?;
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::from_env()?,
+        proxima_storage_pg::PgTuning::from_env()?,
+    )
+    .await?;
+    migration.run_migrations().await?;
+    let scope = proxima_storage_pg::PgPlatformScope::new(
+        sqlx::PgPool::connect(&platform_url).await?,
+        &["proxima_core"],
+    )
+    .await?;
+    let storage = proxima_storage_pg::PgStorage::connect(&runtime_url, scope).await?;
+    let admin_pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(database)).await?;
+    Ok(storage.with_admin_pool_for_tests(admin_pool))
+}
+
 /// MCP initialize request. Returns the `session_id`.
 #[allow(dead_code)]
 pub async fn initialize(
@@ -135,15 +159,12 @@ pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
     Ok(db_name)
 }
 
-/// Create a test database already migrated through the pre-owner-RLS core
-/// lane, cloned from the core template.
+/// Create a fresh test database. The storage helper applies the current
+/// migration lane before constructing a serving handle, so this fixture must
+/// not clone the historical pre-owner-RLS template.
 #[allow(dead_code)]
 pub async fn create_core_db() -> Result<String, Box<dyn std::error::Error>> {
-    let db_name = proxima_pg_testkit::unique_db_name("proxima_test");
-    proxima_storage_pg::test_fixtures::create_core_db(&db_name)
-        .await
-        .expect("PG required for tests");
-    Ok(db_name)
+    create_db().await
 }
 
 /// The serve task returned by [`start_server`].

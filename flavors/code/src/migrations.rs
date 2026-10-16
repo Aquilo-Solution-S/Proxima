@@ -5,7 +5,7 @@
 //! Tracking table is `public._sqlx_migrations_proxima_code`, not
 //! `proxima_code`: baselines `DROP SCHEMA proxima_code`, and the ledger
 //! must survive. `ignore_missing = true` forgives orphaned rows after a
-//! lane is squashed (docs/how-to/migrations.md).
+//! lane is squashed (docs/contributing.md).
 
 /// Embedded migration set (`flavors/code/migrations/`).
 ///

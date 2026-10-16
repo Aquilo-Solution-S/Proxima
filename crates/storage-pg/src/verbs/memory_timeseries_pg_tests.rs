@@ -46,8 +46,7 @@ async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
         // Deliberately unsorted, so the helper's own sort decides the order and
@@ -103,8 +102,7 @@ async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let identity = Uuid::now_v7();
         let mut handle_holder = pool.begin().await?;
@@ -136,8 +134,7 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -209,8 +206,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -419,8 +415,7 @@ async fn an_id_first_seen_as_a_user_is_never_registered_as_a_group() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let id = Uuid::now_v7();
         let owner = OwnerId::from(UserId::new(id));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -455,8 +450,7 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_before_owner_rls_migrations().await?;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));

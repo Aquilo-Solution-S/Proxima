@@ -1,6 +1,6 @@
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::{EdgeEndpoint, EdgeKind, EntityKind, EntityRef, MemoryId, ToolCtx, ToolError};
-use proxima_storage_pg::begin_compatible_owner_transaction;
+use proxima_storage_pg::begin_owner_transaction;
 use uuid::Uuid;
 
 use crate::payloads::ExecutionRequestV1;
@@ -74,7 +74,7 @@ pub(super) async fn find_execution_request_by_key(
     request_key: &str,
 ) -> Result<Option<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
-    let mut tx = begin_compatible_owner_transaction(pool.pool(), pool.owner_scope())
+    let mut tx = begin_owner_transaction(pool.pool(), pool.owner_scope())
         .await
         .map_err(ToolError::Storage)?;
     let engine = engine(ctx)?;

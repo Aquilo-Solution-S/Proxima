@@ -18,7 +18,7 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
 use super::goals::query_goals_on_connection;
-use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water_on_connection};
+use super::rows::{MemoryRowDb, memory_row_from_db};
 
 /// Transaction-backed query path. Every statement, including typed sidecar
 /// hydration, uses the caller's one borrowed connection.
@@ -34,7 +34,6 @@ pub(crate) async fn query_memories_on_connection(
         .copied()
         .map(proxima_core::OwnerId::into_inner)
         .collect();
-    let seq_high_water = read_seq_high_water_on_connection(connection, &owner_ids).await?;
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) = query_goals_on_connection(connection, req, &owner_ids).await?;
         return Ok(QueryResponse {
@@ -42,7 +41,6 @@ pub(crate) async fn query_memories_on_connection(
             goals,
             edges: Vec::new(),
             next_cursor,
-            seq_high_water,
         });
     }
     let single_memory_stream = is_single_memory_stream(req);
@@ -73,7 +71,6 @@ pub(crate) async fn query_memories_on_connection(
         goals,
         edges,
         next_cursor: next_memory_cursor.or(next_goal_cursor),
-        seq_high_water,
     })
 }
 

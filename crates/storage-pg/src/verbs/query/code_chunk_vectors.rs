@@ -108,7 +108,9 @@ pub async fn nearest_code_chunk_candidates(
     filters: CodeChunkVectorFilters<'_>,
     limit: i64,
 ) -> Result<Vec<CodeChunkVectorCandidate>, StorageError> {
-    let mut tx = crate::begin_compatible_owner_transaction(pool, None).await?;
+    let mut tx =
+        crate::begin_owner_transaction(pool, crate::owner_scope::require_owner_scope(None)?)
+            .await?;
     let result = nearest_code_chunk_candidates_on_connection(
         tx.as_mut(),
         tuning,

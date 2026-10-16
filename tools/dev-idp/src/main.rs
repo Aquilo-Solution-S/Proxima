@@ -311,22 +311,68 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
     println!(
         "\n1. Point Proxima at this issuer, in another shell:\n\
          \n\
-         export DATABASE_URL=postgres://proxima:proxima@localhost:${{PROXIMA_DEV_POSTGRES_PORT:-5434}}/proxima\n\
+         export DATABASE_URL={runtime_database_url}\n\
+         export PROXIMA_PLATFORM_DATABASE_URL={platform_database_url}\n\
          export PROXIMA_OIDC_ISSUER={issuer}\n\
          export PROXIMA_OIDC_AUDIENCE={audience}\n\
-         export PROXIMA_OIDC_SUBJECT_MAP={subject}:{user_id}\n\
+         export PROXIMA_OIDC_SUBJECT_MAP_JSON={subject_map}\n\
          export PROXIMA_PUBLIC_URL={server_url}\n\
          export PROXIMA_TOOL_PROFILE=full\n\
-         cargo run -p proxima-mcp\n"
+         cargo run -p proxima-mcp\n",
+        subject_map = shell_single_quote(
+            &serde_json::json!([{
+                "iss": issuer,
+                "sub": subject,
+                "user_id": user_id,
+            }])
+            .to_string()
+        ),
+        runtime_database_url = dev_database_url("proxima_runtime", "proxima-runtime-dev"),
+        platform_database_url = dev_database_url("proxima_platform", "proxima-platform-dev"),
     );
     println!(
         "2. Connect your coding agent:\n\
          \n\
          claude mcp add --transport http proxima {server_url}/mcp \\\n\
          \x20 --header \"Authorization: Bearer {token}\" \\\n\
-         \x20 --header \"X-Proxima-Owner: <the user id from PROXIMA_OIDC_SUBJECT_MAP above>\"\n"
+         \x20 --header \"X-Proxima-Owner: {user_id}\"\n"
     );
     println!("Serving. Ctrl-C to stop.");
+}
+
+/// Quote generated values for POSIX shell copy/paste guidance.
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn dev_database_url(user: &str, password: &str) -> String {
+    format!("postgres://{user}:{password}@localhost:${{PROXIMA_DEV_POSTGRES_PORT:-5434}}/proxima")
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::{dev_database_url, shell_single_quote};
+
+    #[test]
+    fn printed_database_urls_use_the_split_non_superuser_roles() {
+        assert_eq!(
+            dev_database_url("proxima_runtime", "proxima-runtime-dev"),
+            "postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+        );
+        assert_eq!(
+            dev_database_url("proxima_platform", "proxima-platform-dev"),
+            "postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+        );
+    }
+
+    #[test]
+    fn generated_json_is_shell_quoted_at_the_output_boundary() {
+        let json = r#"[{"iss":"https://issuer.test","sub":"o'b","user_id":"00000000-0000-7000-8000-000000000001"}]"#;
+        assert_eq!(
+            shell_single_quote(json),
+            "'[{\"iss\":\"https://issuer.test\",\"sub\":\"o'\\''b\",\"user_id\":\"00000000-0000-7000-8000-000000000001\"}]'"
+        );
+    }
 }
 
 #[tokio::main]

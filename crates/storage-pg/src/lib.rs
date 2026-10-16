@@ -32,17 +32,13 @@ use std::sync::Arc;
 pub use verbs::fact_embeddings::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
-pub use verbs::maintenance::{
-    ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
-    PruneOwnerOutcome,
-};
+pub use verbs::maintenance::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome};
 
 use crate::error::internal;
 use crate::pgvector::set_hnsw_search_sql;
 
 #[doc(hidden)]
 pub mod access;
-mod change_event;
 mod delegated_authority;
 mod error;
 mod owner_scope;
@@ -97,14 +93,14 @@ pub use access::owner_columns::{
 /// what the resolver answers, for a host that already holds a transaction.
 pub use access::{group_role, roles_for_subject};
 pub use delegated_authority::PgDelegationStore;
-pub use owner_scope::{begin_compatible_owner_transaction, begin_owner_transaction};
+pub use owner_scope::begin_owner_transaction;
 pub use platform_scope::{PgPlatformScope, begin_migration_transaction};
 pub use pool_config::PgPoolConfig;
 pub use ports::{
     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
     PgHostStateLifecyclePort, PgHostStateParticipant,
 };
-pub use rls_guard::{assert_runtime_rls, owner_rls_enforced};
+pub use rls_guard::assert_runtime_rls;
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -119,7 +115,7 @@ pub use tuning::{HnswIterativeScan, PgTuning};
 /// the core lane and must be accounted for by the embedded core migrator —
 /// that invariant is what lets the preflight below detect draft and retired
 /// versions *generically*, with no enumerated version lists (see
-/// docs/how-to/migrations.md).
+/// docs/contributing.md).
 pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
@@ -127,7 +123,7 @@ pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 /// `ignore_missing = true` forgives ledger rows the embedded set does not
 /// account for: flavor rows in the shared `public._sqlx_migrations` table,
 /// and the orphaned draft rows the squash workflow
-/// (docs/how-to/migrations.md) leaves behind. Both are forgiven rather than
+/// (docs/contributing.md) leaves behind. Both are forgiven rather than
 /// enumerated.
 #[must_use]
 pub fn core_migrator() -> sqlx::migrate::Migrator {
@@ -148,7 +144,7 @@ fn embedded_core_checksums() -> std::collections::BTreeMap<i64, Vec<u8>> {
 /// migration set.
 ///
 /// The check is generic — there is deliberately no list of known-bad versions
-/// (see docs/how-to/migrations.md: if writing a migration ever seems to
+/// (see docs/contributing.md: if writing a migration ever seems to
 /// require adding a version list here, the migration workflow is being
 /// violated). Two invariants are enforced over every successful
 /// core-namespace ledger row (`version <= CORE_MIGRATION_VERSION_CEILING`):
@@ -285,20 +281,12 @@ pub async fn ensure_core_ledger_compatible_on_connection(
              (recorded checksum no longer matches the embedded file)"
         ));
     }
-    // No "if the schema already matches" judgement is asked of the operator:
-    // after an in-place amendment the markers all match while the routine
-    // bodies do not. `--stamp` proves the match itself (a rolled-back replay
-    // of the embedded lane, diffed against the live catalog) and refuses on
-    // any difference.
     Err(StorageError::Internal(format!(
         "database core-migration ledger does not reconcile with this binary: {}. \
-         `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>` records the \
-         embedded checksums only if the live catalog equals what the embedded migrations \
-         create, and refuses otherwise. A migration amended after this database applied \
-         it usually left the old objects in place: restore the database from before that \
-         migration and re-run it, or reset (dev/staging only) with \
+         Restore a backup from before the mismatched migration and re-run it. \
+         Disposable development databases can instead be reset with \
          `PROXIMA_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
-         then re-register and re-index. See docs/how-to/migrations.md",
+         then re-register and re-index. See docs/contributing.md",
         details.join("; ")
     )))
 }
@@ -363,7 +351,7 @@ async fn ensure_core_schema_current_on_connection(
         .map_err(internal)?;
         if max_version.unwrap_or(0) < min_required {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {min_required}+ required — run the pending core migrations under crates/storage-pg/migrations/ (they are additive over the v008 baseline, so an existing database upgrades in place; a fresh one starts at 0001_v008.sql). In a split-role deploy that is the DDL-role init step, not this process (see docs/how-to/migrations.md and docs/15-deployment.md)",
+                "database core migrations at version {}; version {min_required}+ required — run the pending core migrations under crates/storage-pg/migrations/ (they are additive over the v008 baseline, so an existing database upgrades in place; a fresh one starts at 0001_v008.sql). In a split-role deploy that is the DDL-role init step, not this process (see docs/contributing.md and docs/operate.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -374,11 +362,8 @@ async fn ensure_core_schema_current_on_connection(
 
 /// The structural half of [`ensure_core_schema_current`]: probe the schema
 /// artifacts each release lane introduced, without consulting the migration
-/// ledger at all. `tools/dev-migrate --stamp` gates on this first — a
-/// database that ran a since-squashed draft lane has the *schema* of the
-/// current lane but a ledger that cannot yet say so. Markers alone do not make
-/// stamping honest (an amended routine body carries every marker); the stamp's
-/// catalog proof (`tools/dev-migrate/src/catalog_proof.rs`) decides that.
+/// ledger. Structural markers complement checksum validation; they do not
+/// authorize rewriting an existing migration ledger.
 ///
 /// # Errors
 ///
@@ -483,8 +468,6 @@ const CORE_RELATION_MARKERS: &str = r"SELECT CASE
            THEN 'missing relation proxima_core.memory_head'
          WHEN to_regclass('proxima_core.ingest_keys') IS NULL
            THEN 'missing relation proxima_core.ingest_keys'
-         WHEN to_regclass('proxima_core.announce') IS NULL
-           THEN 'missing relation proxima_core.announce'
          WHEN to_regclass('proxima_core.goal') IS NULL
            THEN 'missing relation proxima_core.goal'
          WHEN to_regclass('proxima_core.goal_replay_declaration') IS NULL
@@ -629,8 +612,6 @@ const BLOB_UPLOAD_HASH_MARKERS: &str = r"SELECT CASE
 
 /// Relations the later per-table marker groups probe columns of.
 const SUPPORT_RELATION_MARKERS: &str = r"SELECT CASE
-         WHEN to_regclass('proxima_core.wake_config') IS NULL
-           THEN 'missing relation proxima_core.wake_config'
          WHEN to_regclass('proxima_core.embeddings') IS NULL
            THEN 'missing relation proxima_core.embeddings'
          WHEN to_regclass('proxima_core.embedding_jobs') IS NULL
@@ -1140,22 +1121,6 @@ const TRIGGER_WIRING_MARKERS: &str = r"SELECT CASE
                     JOIN pg_class r ON r.oid = tr.tgrelid
                     JOIN pg_namespace n ON n.oid = r.relnamespace
                    WHERE n.nspname = 'proxima_core'
-                     AND r.relname = 'wake_config'
-                     AND tr.tgname = 'wake_pin_target_checks'
-                     AND tr.tgenabled = 'O'
-                     AND (tr.tgtype & 2) = 2
-                     AND (tr.tgtype & 4) = 4
-                     AND (tr.tgtype & 16) = 16
-                     AND lower(pg_get_triggerdef(tr.oid)) LIKE
-                         '%execute function proxima_core.wake_pin_target_checks%'
-                )
-           THEN 'wake target trigger timing or wiring is incorrect'
-         WHEN NOT EXISTS (
-                  SELECT 1
-                    FROM pg_trigger tr
-                    JOIN pg_class r ON r.oid = tr.tgrelid
-                    JOIN pg_namespace n ON n.oid = r.relnamespace
-                   WHERE n.nspname = 'proxima_core'
                      AND r.relname = 'memory'
                      AND tr.tgname = 'memory_erased_pin_target'
                      AND tr.tgenabled = 'O'
@@ -1324,15 +1289,6 @@ const ENUM_ORDER_MARKERS: &str = r"SELECT CASE
                      AND t.typname = 'embedding_job_status'
                 ), ARRAY[]::text[]) <> ARRAY['pending', 'processing', 'failed', 'failed_permanent']
            THEN 'embedding_job_status labels/order must be pending, processing, failed, failed_permanent'
-         WHEN COALESCE((
-                  SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
-                    FROM pg_enum e
-                    JOIN pg_type t ON t.oid = e.enumtypid
-                    JOIN pg_namespace n ON n.oid = t.typnamespace
-                   WHERE n.nspname = 'proxima_core'
-                     AND t.typname = 'announce_op'
-                ), ARRAY[]::text[]) <> ARRAY['append', 'forget', 'erase', 'transfer']
-           THEN 'announce_op labels/order must be append, forget, erase, transfer'
          ELSE NULL
        END";
 
@@ -1747,7 +1703,10 @@ fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 #[derive(Clone)]
 pub struct PgStorage {
     pool: PgPool,
-    platform_scope: Option<PgPlatformScope>,
+    /// Fixture setup/inspection only; runtime operations always use `pool`.
+    #[cfg(feature = "test-fixtures")]
+    test_admin_pool: Option<PgPool>,
+    platform_scope: PgPlatformScope,
     sidecars: PgSidecarRegistryFrozen,
     /// The declared surfaces, resolved into legs once.
     ///
@@ -1781,6 +1740,91 @@ pub struct PgStorage {
     /// [`proxima_core::engine::UnitOfWork`] Fact behavior with no extra
     /// configuration.
     host_state: Option<RegisteredHostStateParticipant>,
+}
+
+/// Migration-only connection. It has no serving authority and therefore does
+/// not carry a platform scope; the host creates serving storage only after
+/// migrations have committed and a platform role has been validated.
+///
+/// Serving storage cannot run schema migrations:
+/// ```compile_fail
+/// async fn migrate(storage: &proxima_storage_pg::PgStorage) {
+///     storage.run_migrations().await.unwrap();
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PgMigrationStorage {
+    pool: PgPool,
+    tuning: PgTuning,
+}
+
+async fn run_migrations_on_pool(pool: &PgPool, tuning: &PgTuning) -> Result<(), StorageError> {
+    ensure_core_ledger_compatible(pool).await?;
+    let mut conn = pool.acquire().await.map_err(internal)?;
+    sqlx::query("SET statement_timeout = 0")
+        .execute(&mut *conn)
+        .await
+        .map_err(internal)?;
+    let migrated = async {
+        let mut transaction = begin_migration_transaction(&mut conn).await?;
+        core_migrator()
+            .run(transaction.as_mut())
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)
+    }
+    .await;
+    conn.detach();
+    migrated?;
+    ensure_pgvector_runtime_compatible(pool, tuning).await
+}
+
+impl PgMigrationStorage {
+    /// Connect the separately configured schema-management lane.
+    ///
+    /// # Errors
+    /// Returns pool configuration or database connection errors. Migration
+    /// authority is validated when [`Self::run_migrations`] starts its transaction.
+    pub async fn connect_with_config(
+        url: &str,
+        pool_config: PgPoolConfig,
+        tuning: PgTuning,
+    ) -> Result<Self, StorageError> {
+        let pool_config = pool_config.validate()?;
+        let pool = pool_config
+            .pool_options()
+            .connect_with(pool_config.connect_options(url)?)
+            .await
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        sqlx::query("SELECT 1")
+            .execute(&pool)
+            .await
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        Ok(Self { pool, tuning })
+    }
+
+    /// The migration runner's pool. Serving code cannot use this as a
+    /// `PgStorage` without supplying a validated platform capability.
+    #[cfg(any(feature = "backend-api", feature = "test-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_pool_for_backend(&self) -> PgPool {
+        self.pool.clone()
+    }
+
+    /// # Errors
+    ///
+    /// Returns migration or database compatibility errors.
+    pub async fn run_migrations(&self) -> Result<(), StorageError> {
+        run_migrations_on_pool(&self.pool, &self.tuning).await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the installed pgvector cannot serve this deployment.
+    pub async fn ensure_pgvector_compatible(&self) -> Result<(), StorageError> {
+        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
+    }
 }
 
 /// Participant instance and the exact metadata snapshot captured when it
@@ -2025,12 +2069,6 @@ fn env_int_or<T: std::str::FromStr>(
         .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PoolPurpose {
-    Runtime,
-    Migration,
-}
-
 impl PgStorage {
     /// Connect using `url`, build a tuned pool, and verify
     /// connectivity by acquiring one connection.
@@ -2042,8 +2080,14 @@ impl PgStorage {
     ///
     /// Returns `StorageError::Unavailable` on connection or
     /// query failure, or on a malformed tuning variable.
-    pub async fn connect(url: &str) -> Result<Self, StorageError> {
-        Self::connect_with_config(url, PgPoolConfig::from_env()?, PgTuning::from_env()?).await
+    pub async fn connect(url: &str, platform_scope: PgPlatformScope) -> Result<Self, StorageError> {
+        Self::connect_with_config(
+            url,
+            PgPoolConfig::from_env()?,
+            PgTuning::from_env()?,
+            platform_scope,
+        )
+        .await
     }
 
     /// Connect using `url` with tuning supplied by the caller.
@@ -2057,8 +2101,12 @@ impl PgStorage {
     ///
     /// Returns `StorageError::Unavailable` on connection or
     /// query failure.
-    pub async fn connect_with_tuning(url: &str, tuning: PgTuning) -> Result<Self, StorageError> {
-        Self::connect_with_config(url, PgPoolConfig::from_env()?, tuning).await
+    pub async fn connect_with_tuning(
+        url: &str,
+        tuning: PgTuning,
+        platform_scope: PgPlatformScope,
+    ) -> Result<Self, StorageError> {
+        Self::connect_with_config(url, PgPoolConfig::from_env()?, tuning, platform_scope).await
     }
 
     /// Connect with fully resolved pool and query policy.
@@ -2073,28 +2121,16 @@ impl PgStorage {
         url: &str,
         pool_config: PgPoolConfig,
         tuning: PgTuning,
+        platform_scope: PgPlatformScope,
     ) -> Result<Self, StorageError> {
-        Self::connect_for_purpose(url, pool_config, tuning, PoolPurpose::Runtime).await
-    }
-
-    /// Connect the separately configured schema-management lane.
-    ///
-    /// # Errors
-    /// Refuses unsafe migration authority after RLS activation and propagates
-    /// pool configuration and database errors.
-    pub async fn connect_for_migrations_with_config(
-        url: &str,
-        pool_config: PgPoolConfig,
-        tuning: PgTuning,
-    ) -> Result<Self, StorageError> {
-        Self::connect_for_purpose(url, pool_config, tuning, PoolPurpose::Migration).await
+        Self::connect_for_purpose(url, pool_config, tuning, platform_scope).await
     }
 
     async fn connect_for_purpose(
         url: &str,
         pool_config: PgPoolConfig,
         tuning: PgTuning,
-        purpose: PoolPurpose,
+        platform_scope: PgPlatformScope,
     ) -> Result<Self, StorageError> {
         let pool_config = pool_config.validate()?;
         // A conservative per-statement timeout bounds
@@ -2117,23 +2153,13 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        if owner_rls_enforced(&pool, &["proxima_core"]).await? {
-            match purpose {
-                PoolPurpose::Runtime => assert_runtime_rls(&pool, &["proxima_core"]).await?,
-                PoolPurpose::Migration => {
-                    let mut connection = pool.acquire().await.map_err(map_err)?;
-                    begin_migration_transaction(&mut connection)
-                        .await?
-                        .rollback()
-                        .await
-                        .map_err(map_err)?;
-                }
-            }
-        }
+        assert_runtime_rls(&pool, &["proxima_core"]).await?;
 
         Ok(Self {
             pool,
-            platform_scope: None,
+            #[cfg(feature = "test-fixtures")]
+            test_admin_pool: None,
+            platform_scope,
             sidecars: core_pg_sidecars(),
             surfaces: flavor_0_surfaces(),
             scopes: crate::access::scope_surfaces::ScopeSurfaces::default(),
@@ -2147,26 +2173,16 @@ impl PgStorage {
         })
     }
 
-    /// Attach the separately validated platform database capability at boot.
-    #[must_use]
-    pub fn with_platform_scope(mut self, scope: PgPlatformScope) -> Self {
-        self.platform_scope = Some(scope);
-        self
-    }
-
     /// Host-only platform capability for authority resolution and maintenance.
     #[must_use]
-    pub fn platform_scope_for_host(&self) -> Option<PgPlatformScope> {
+    pub fn platform_scope_for_host(&self) -> PgPlatformScope {
         self.platform_scope.clone()
     }
 
     pub(crate) async fn platform_transaction(
         &self,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
-        match &self.platform_scope {
-            Some(scope) => scope.begin().await,
-            None => begin_compatible_owner_transaction(&self.pool, None).await,
-        }
+        self.platform_scope.begin().await
     }
 
     /// Fixed lifecycle algorithms need global referential evidence, but their
@@ -2177,7 +2193,7 @@ impl PgStorage {
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
         crate::platform_scope::begin_owner_lifecycle_transaction(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             permit,
         )
         .await
@@ -2237,7 +2253,21 @@ impl PgStorage {
     #[doc(hidden)]
     #[must_use]
     pub fn pool_for_tests(&self) -> &PgPool {
+        #[cfg(feature = "test-fixtures")]
+        if let Some(pool) = &self.test_admin_pool {
+            return pool;
+        }
         &self.pool
+    }
+
+    /// Attach an independent fixture setup/inspection pool. Serving ports
+    /// keep using the separately validated runtime connection.
+    #[cfg(feature = "test-fixtures")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_admin_pool_for_tests(mut self, pool: PgPool) -> Self {
+        self.test_admin_pool = Some(pool);
+        self
     }
 
     #[cfg(any(feature = "backend-api", feature = "test-fixtures"))]
@@ -2361,7 +2391,6 @@ impl PgStorage {
     pub fn storage_ports_builder(self: Arc<Self>) -> StoragePortsBuilder {
         StoragePorts::builder()
             .fact_ingest(self.clone())
-            .mcp_call_read(self.clone())
             .memory_authoring(self.clone())
             .memory_read(self.clone())
             .memory_inspect(self.clone())
@@ -2371,8 +2400,6 @@ impl PgStorage {
             .embedding_maintenance(self.clone())
             .goal_write(self.clone())
             .goal_read(self.clone())
-            .goal_wake_candidate(self.clone())
-            .change_event(self.clone())
             .citation(self.clone())
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())
@@ -2393,7 +2420,7 @@ impl PgStorage {
     ) -> Result<EmbeddingReconcileOutcome, StorageError> {
         verbs::fact_embeddings::reconcile_embeddings_with_platform(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             options,
             self.embedding_runtime_policy.stale_claim_timeout_seconds(),
         )
@@ -2412,11 +2439,7 @@ impl PgStorage {
     pub async fn sweep_orphan_embedding_rows(
         &self,
     ) -> Result<proxima_core::EmbeddingOrphanSweepOutcome, StorageError> {
-        verbs::fact_embeddings::sweep_orphan_embedding_rows(
-            &self.pool,
-            self.platform_scope.as_ref(),
-        )
-        .await
+        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope).await
     }
 
     /// Owner-agnostic embedding ANN health signals (backlog, orphan counts,
@@ -2431,7 +2454,7 @@ impl PgStorage {
     ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.embedding_runtime_policy.stale_claim_timeout_seconds(),
         )
         .await
@@ -2498,26 +2521,6 @@ impl PgStorage {
         Ok(locked.then_some(conn))
     }
 
-    /// Delete change-log rows older than an explicit age horizon. Log
-    /// rotation, not a retention promise: the horizon is an operator choice
-    /// with no default, and the rows are `proxima_core.announce`, the
-    /// substrate's own change log.
-    ///
-    /// Operator surface for the maintenance CLI; see
-    /// [`Self::sweep_orphan_embedding_rows`] for the authority note.
-    ///
-    /// # Errors
-    ///
-    /// Returns storage errors from the prune transactions, and
-    /// `ConstraintViolation` for a non-positive horizon or batch size.
-    pub async fn prune_change_log(
-        &self,
-        options: ChangeEventPruneOptions,
-    ) -> Result<ChangeEventPruneOutcome, StorageError> {
-        verbs::maintenance::prune_change_log(&self.pool, self.platform_scope.as_ref(), options)
-            .await
-    }
-
     /// Retry a bounded batch of durable exact-key cold/object-store purge debts.
     /// Object deletion occurs without an open database transaction; successful
     /// keys are reconciled afterward in short idempotent transactions.
@@ -2532,7 +2535,7 @@ impl PgStorage {
     ) -> Result<ColdPurgeRetryOutcome, StorageError> {
         verbs::maintenance::retry_cold_object_purges(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             self.cold.as_ref(),
             options,
         )
@@ -2542,8 +2545,8 @@ impl PgStorage {
     /// Refuse a pgvector that cannot serve this deployment's semantic
     /// search: below 0.8.0, or rejecting its HNSW session settings.
     ///
-    /// [`Self::run_migrations`] runs this itself; a host that migrates
-    /// through another path calls it once at boot.
+    /// [`PgMigrationStorage::run_migrations`] runs this itself; a host that
+    /// migrates through another path calls it once at boot.
     ///
     /// # Errors
     ///
@@ -2551,51 +2554,6 @@ impl PgStorage {
     /// or refuses the settings.
     pub async fn ensure_pgvector_compatible(&self) -> Result<(), StorageError> {
         ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
-    }
-
-    /// Apply all pending migrations under
-    /// `crates/storage-pg/migrations/`. Idempotent — sqlx tracks
-    /// applied migrations in `_sqlx_migrations`. Call once
-    /// at process start before any verb dispatch.
-    ///
-    /// `ignore_missing = true` forgives ledger rows the embedded set does
-    /// not account for: flavor rows in the shared table, and orphaned draft
-    /// rows left behind when a dev-cycle lane is squashed under a fresh
-    /// version number (docs/how-to/migrations.md). The core version-set is
-    /// still checksum-validated — both by `SQLx` and, more legibly, by
-    /// [`ensure_core_ledger_compatible`] first.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Internal` on any sqlx
-    /// migration failure (broken file, conflict with the
-    /// recorded checksum, etc.).
-    pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        ensure_core_ledger_compatible(&self.pool).await?;
-        // The pool's default `statement_timeout`
-        // bounds request-serving queries, but a schema migration (CREATE INDEX,
-        // backfill) may legitimately run longer than that — aborting one
-        // mid-flight would leave the schema half-migrated. Run migrations on a
-        // dedicated connection with the timeout disabled, then detach it so the
-        // override is never returned to the shared pool.
-        let mut conn = self.pool.acquire().await.map_err(internal)?;
-        sqlx::query("SET statement_timeout = 0")
-            .execute(&mut *conn)
-            .await
-            .map_err(internal)?;
-        let migrated = async {
-            let mut transaction = begin_migration_transaction(&mut conn).await?;
-            core_migrator()
-                .run(transaction.as_mut())
-                .await
-                .map_err(internal)?;
-            transaction.commit().await.map_err(internal)
-        }
-        .await;
-        conn.detach();
-        migrated?;
-        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await?;
-        Ok(())
     }
 }
 
@@ -2612,7 +2570,7 @@ mod tests {
             versions,
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24, 25, 26, 27, 28, 29, 30,
+                24, 25, 26, 27, 28, 29, 30, 31,
             ],
             "v0.0.8 is one frozen file (0001_v008.sql) and every release after it appends: \
              v0.0.9 is 0002_v009_declaration_triggers.sql, v0.0.10 is \
@@ -2632,7 +2590,7 @@ mod tests {
              0025_v031_goal_text_outbox_receipt.sql and \
              0026_v032_outbox_consumers.sql, 0027_v033_owner_id.sql and \
              0028_v034_nested_groups.sql and 0029_v035_cross_store_origins.sql, \
-             0030_v036_fact_occurred_at.sql"
+             0030_v036_fact_occurred_at.sql and 0031_v036_remove_legacy_surfaces.sql"
         );
     }
 

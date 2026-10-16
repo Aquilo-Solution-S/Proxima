@@ -1,6 +1,6 @@
 //! Credential material consumed by the host [`Authenticator`](crate::Authenticator).
 //!
-//! See docs/14-protocol-surface.md §"Auth model".
+//! See docs/protocol.md §"Auth model".
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Credentials {

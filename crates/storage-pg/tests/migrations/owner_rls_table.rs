@@ -13,7 +13,7 @@ async fn schema_markers_name_a_missing_per_table_installer_piece()
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&db_url(&db_name)).await?;
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         super::apply_current_migrations(&pg).await?;
         super::assert_current_markers(pg.pool_for_tests()).await?;
 

@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_FILE = re.compile(r"^(?P<version>\d+)_[A-Za-z0-9][A-Za-z0-9_-]*\.sql$")
 
-# The release tag AGENTS.md and docs/how-to/migrations.md both specify:
+# The release tag AGENTS.md and docs/contributing.md#migrations both specify:
 # `000N_v0XY_<what>.sql` for core, one dated `_v0XY_` file per flavor. Stated
 # in prose in two places and enforced in neither, it had already drifted — five
 # core files carry no tag, and `0006_v013_` predates `0011_v012_` by ten days,
@@ -105,7 +105,7 @@ RELEASE_TAG = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
 # The first release of the current migration lane. v0.0.8 shipped the
 # destructive baseline (`0001_v008.sql`, `20260818000020_v008_baseline.sql`)
 # and deliberately deleted every file the tags before it shipped
-# (docs/how-to/migrations.md rule 3), so those tags pin nothing. A future
+# (docs/contributing.md#migrations rule 3), so those tags pin nothing. A future
 # destructive baseline bumps RELEASE_VERSION and moves this to that release in
 # the same reviewed change: until the merge cuts its tag, the epoch names the
 # pending release and no earlier tag pins anything.
@@ -131,7 +131,7 @@ RELEASED_EDIT_GRANDFATHERED = frozenset(
 
 RELEASED_REMEDY = (
     "released migrations are immutable; revert the file and ship the fix as a NEW "
-    "migration (docs/how-to/migrations.md)"
+    "migration (docs/contributing.md#migrations)"
 )
 
 
@@ -303,7 +303,7 @@ def collect(root: Path, lanes: list[VersionLane] = LANES) -> tuple[list[Migratio
             if not RELEASE_TAGGED.fullmatch(path.name) and str(rel) not in UNTAGGED_GRANDFATHERED:
                 diagnostics.append(
                     f"{rel}: migration filename must name its release, "
-                    f"<version>_v0XY_<description>.sql (AGENTS.md, docs/how-to/migrations.md)"
+                    f"<version>_v0XY_<description>.sql (AGENTS.md, docs/contributing.md#migrations)"
                 )
             version = int(match.group("version"))
             item = MigrationVersion(lane.source, path, version, lane)
@@ -576,7 +576,7 @@ def released_self_test() -> list[str]:
     }:
         failures.append(
             "released: RELEASED_EDIT_GRANDFATHERED only shrinks from its one v0.0.15 entry "
-            "(docs/how-to/migrations.md rule 2)"
+            "(docs/contributing.md#migrations rule 2)"
         )
     if pending_release(ROOT) is None:
         failures.append(f"released: no RELEASE_VERSION in {RELEASE_VERSION_SOURCE}")

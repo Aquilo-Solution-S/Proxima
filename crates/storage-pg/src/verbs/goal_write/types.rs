@@ -1,11 +1,8 @@
-use super::{
-    EntityKind, GoalId, GoalState, GoalWakeConfigWrite, MemoryId, SchemaId, SchemaVersion,
-};
+use super::{EntityKind, GoalId, GoalState, MemoryId, SchemaId, SchemaVersion};
 
 #[derive(Debug)]
 pub(super) struct InsertedGoal {
     pub(super) goal_id: GoalId,
-    pub(super) change_event_seq: uuid::Uuid,
     pub(super) idempotent_replay: bool,
 }
 
@@ -26,12 +23,6 @@ pub(super) struct StoredGoal {
 pub(super) struct EvidenceTarget {
     pub(super) kind: EntityKind,
     pub(super) memory_id: MemoryId,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum WakeWrite<'a> {
-    Explicit(Option<&'a GoalWakeConfigWrite>),
-    CarryFrom(GoalId),
 }
 
 /// The columns of a Goal row that its [`GoalDraft`] does not decide.

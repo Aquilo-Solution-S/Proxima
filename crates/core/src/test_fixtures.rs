@@ -2,17 +2,34 @@
 
 use async_trait::async_trait;
 use proxima_core::llm::{EmbeddingClient, EmbeddingDim, LlmError};
-use proxima_core::{OwnerId, UserId};
+use proxima_core::{AuthPath, AuthzContext, OwnerId, OwnerScope, Role, UserId};
 
 /// Fixture embeddings sit on the default 1024-wide lane.
 const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
+
+/// Synthetic verified administrator scope for named graph-test owners.
+/// Authorization/RLS tests supply their own restricted roles instead.
+///
+/// # Panics
+/// Panics if the synthetic verifier fails to seal its owner roles.
+#[must_use]
+pub fn owner_scope_for_tests(owners: &[OwnerId]) -> OwnerScope {
+    authenticated_context(AuthzContext::for_subject_with_role(
+        UserId::new(uuid::Uuid::now_v7()),
+        owners.iter().copied().map(|owner| (owner, Role::admin())),
+        AuthPath::HostBearer,
+    ))
+    .owner_scope()
+    .expect("fixture verifier seals the supplied roles")
+    .clone()
+}
 
 /// Model a successful verifier for a synthetic fixture principal.
 ///
 /// # Panics
 /// The supplied fixture must already contain server-resolved owner roles.
 #[must_use]
-pub fn authenticated_context(context: crate::AuthzContext) -> crate::AuthzContext {
+pub fn authenticated_context(context: AuthzContext) -> AuthzContext {
     struct FixtureVerifier(proxima_core::AuthzContext);
     #[async_trait]
     impl proxima_core::Authenticator for FixtureVerifier {

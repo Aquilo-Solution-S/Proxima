@@ -81,15 +81,21 @@ async fn observe_recovery(
     config: &S3RuntimeConfig,
     client: &Client,
 ) -> TestResult<RecoveryObserved> {
-    let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(database)).await?;
     let result: TestResult<_> = async {
-        let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+        let store = CitedBlobStore::new(
+            pg.clone_pool_for_backend(),
+            config.clone(),
+            pg.platform_scope_for_host(),
+        )?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let stale_ids: Vec<_> = (0..STALE_ROWS).map(|_| Uuid::now_v7()).collect();
         // These rows model old lost objects, with valid canonical identities.
@@ -235,15 +241,21 @@ async fn distinct_live_uploads_cross_pages_and_missing_samples_follow_completion
 }
 
 async fn observe_live_pages(database: &str, config: &S3RuntimeConfig) -> TestResult<PageObserved> {
-    let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(database)).await?;
     let result: TestResult<_> = async {
-        let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+        let store = CitedBlobStore::new(
+            pg.clone_pool_for_backend(),
+            config.clone(),
+            pg.platform_scope_for_host(),
+        )?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let source = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let mut ids: Vec<_> = (0..DISTINCT_LOSSES).map(|_| Uuid::now_v7()).collect();
         ids.sort_unstable();
@@ -365,15 +377,21 @@ async fn observe_resolution_order(
     config: &S3RuntimeConfig,
     client: &Client,
 ) -> TestResult<OrderingObserved> {
-    let pg = PgStorage::connect(&db_url(database)).await?;
-    pg.run_before_owner_rls_migrations().await?;
+    let pg = PgStorage::connect_for_tests(db_url(database)).await?;
     let result: TestResult<_> = async {
-        let store = CitedBlobStore::new(pg.pool_for_tests().clone(), config.clone())?;
+        let store = CitedBlobStore::new(
+            pg.clone_pool_for_backend(),
+            config.clone(),
+            pg.platform_scope_for_host(),
+        )?;
         let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let second = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         if first.0 >= second.0 || first.1 != second.1 {

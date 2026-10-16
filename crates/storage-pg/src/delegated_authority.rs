@@ -8,7 +8,7 @@ use proxima_core::storage_ports::{
     DelegationStorePort,
 };
 use proxima_core::{AccessCeiling, ActionName, OwnerId, Role, StorageError, UserId};
-use sqlx::{PgPool, Row as _};
+use sqlx::Row as _;
 use time::OffsetDateTime;
 
 use crate::error::{internal, map_err};
@@ -51,8 +51,7 @@ impl From<PgAccessCeiling> for AccessCeiling {
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct PgDelegationStore {
-    pool: PgPool,
-    platform: Option<crate::PgPlatformScope>,
+    platform: crate::PgPlatformScope,
 }
 
 impl std::fmt::Debug for PgDelegationStore {
@@ -66,17 +65,8 @@ impl std::fmt::Debug for PgDelegationStore {
 impl PgDelegationStore {
     #[doc(hidden)]
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            platform: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_platform_scope(mut self, platform: crate::PgPlatformScope) -> Self {
-        self.platform = Some(platform);
-        self
+    pub fn new(platform: crate::PgPlatformScope) -> Self {
+        Self { platform }
     }
 }
 
@@ -91,11 +81,7 @@ impl DelegationStorePort for PgDelegationStore {
         let auth_epoch = i64::try_from(grant.auth_epoch()).map_err(|_| {
             StorageError::ConstraintViolation("delegation auth epoch exceeds i64".into())
         })?;
-        let mut tx = if let Some(platform) = &self.platform {
-            platform.begin().await?
-        } else {
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
-        };
+        let mut tx = self.platform.begin().await?;
         sqlx::query(
             "INSERT INTO proxima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id,
@@ -127,11 +113,7 @@ impl DelegationStorePort for PgDelegationStore {
         expected_owner: OwnerId,
     ) -> Result<Option<DelegationGrant>, StorageError> {
         let owner_id = expected_owner.into_inner();
-        let mut tx = if let Some(platform) = &self.platform {
-            platform.begin().await?
-        } else {
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
-        };
+        let mut tx = self.platform.begin().await?;
         let row = sqlx::query(
             "SELECT delegation_id, subject_user_id, owner_id,
                     tool_name, action_name, read_ceiling, write_ceiling,
@@ -163,11 +145,7 @@ impl DelegationStorePort for PgDelegationStore {
         revoked_by: UserId,
     ) -> Result<bool, StorageError> {
         let owner_id = expected_owner.into_inner();
-        let mut tx = if let Some(platform) = &self.platform {
-            platform.begin().await?
-        } else {
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None).await?
-        };
+        let mut tx = self.platform.begin().await?;
         let result = sqlx::query(
             "UPDATE proxima_core.delegated_authority_grants
                 SET revoked_at = $2,

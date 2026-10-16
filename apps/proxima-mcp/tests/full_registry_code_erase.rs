@@ -29,7 +29,7 @@ use proxima_core::{
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant, PgStorage};
+use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
 use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -265,7 +265,12 @@ async fn exercise_full_registry_erase(
         .clear();
 
     let (runtime_url, platform_url) = common::split_roles(database_url).await?;
-    let migration_storage = PgStorage::connect(&platform_url).await?;
+    let migration_storage = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::from_env()?,
+        proxima_storage_pg::PgTuning::from_env()?,
+    )
+    .await?;
     proxima::run_core_and_flavor_migrations(
         &migration_storage,
         <FullRegistryApp as FlavorBundle>::migrators(),
@@ -314,7 +319,7 @@ async fn exercise_full_registry_erase(
     let repo_id = Uuid::now_v7();
     register_repo(
         &pool,
-        Some(&owner_scope),
+        &owner_scope,
         &owner,
         repo_id,
         &format!("/tmp/proxima-full-registry-{repo_id}"),

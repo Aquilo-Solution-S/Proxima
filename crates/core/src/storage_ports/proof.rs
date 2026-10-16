@@ -222,12 +222,42 @@ impl OwnerWritePermit {
     /// Test-only constructor. Engine remains the production mint.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub const fn new_for_tests(owner: OwnerId, access_kind: AccessKind) -> Self {
+    pub fn new_for_tests(owner: OwnerId, access_kind: AccessKind) -> Self {
+        let roles = crate::OwnerRoles::scoped_to(
+            crate::UserId::new(uuid::Uuid::now_v7()),
+            owner,
+            crate::Role::admin(),
+        );
         Self {
             owner,
             access_kind,
-            owner_scope: None,
+            owner_scope: Some(OwnerScope::from_verified_roles(roles, None)),
             transfer_destination: None,
+            delegated: None,
+            _private: (),
+        }
+    }
+
+    /// Synthetic two-owner consent for storage transfer fixtures. Production
+    /// permits are minted only after the engine authorizes both owners.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn transfer_for_tests(
+        owner: OwnerId,
+        access_kind: AccessKind,
+        destination: OwnerId,
+    ) -> Self {
+        let roles = crate::OwnerRoles::scoped_to(
+            crate::UserId::new(uuid::Uuid::now_v7()),
+            owner,
+            crate::Role::admin(),
+        )
+        .with_group_role(destination.as_group(), crate::Role::admin());
+        Self {
+            owner,
+            access_kind,
+            owner_scope: Some(OwnerScope::from_verified_roles(roles, None)),
+            transfer_destination: Some(destination),
             delegated: None,
             _private: (),
         }

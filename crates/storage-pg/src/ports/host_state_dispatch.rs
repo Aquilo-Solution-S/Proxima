@@ -64,7 +64,7 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// every command a handler receives had its owners compared with a permit; the
 /// dispatcher passes that same permit. It still stamps `permit.owner()` and
 /// touches only the tables the command declares
-/// (`docs/19-host-state-maintenance.md`).
+/// (`docs/host-integration.md`).
 #[async_trait]
 pub trait HostStateHandler<C: HostStateCommand>: Send + Sync + 'static {
     /// Run `command` on `tx`.

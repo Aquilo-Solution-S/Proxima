@@ -71,11 +71,9 @@ impl OwnerAccessReadPort for PgStorage {
             }
         } else {
             // Refuse missing authority after activation before opening platform access.
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, None)
-                .await?
-                .rollback()
-                .await
-                .map_err(crate::error::map_err)?;
+            return Err(proxima_core::StorageError::ConstraintViolation(
+                "owner scope required".into(),
+            ));
         }
         let mut tx = self.platform_transaction().await?;
         let result = access::owner_columns::resolve_membership(tx.as_mut(), member).await;
@@ -88,8 +86,11 @@ impl OwnerAccessReadPort for PgStorage {
         entity: EntityId,
         read_owners: &[OwnerId],
     ) -> Result<Option<(OwnerId, proxima_core::AccessKind)>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result =
             access::owner_columns::visible_home_owner(tx.as_mut(), entity, read_owners).await;
         crate::owner_scope::finish_transaction(tx, result).await
@@ -100,8 +101,11 @@ impl OwnerAccessReadPort for PgStorage {
         owner_scope: Option<&proxima_core::OwnerScope>,
         entity: EntityId,
     ) -> Result<Option<OwnerId>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = access::owner_columns::home_owner(tx.as_mut(), entity).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
@@ -117,7 +121,7 @@ impl OwnerMembershipAdminPort for PgStorage {
     ) -> Result<(), StorageError> {
         access::owner_columns::bootstrap_group_admin(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             group_id,
             first_admin_user_id,
             granted_by,
@@ -211,8 +215,11 @@ impl OwnerMembershipAdminPort for PgStorage {
         owner_scope: Option<&proxima_core::OwnerScope>,
         group_id: GroupId,
     ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = access::owner_columns::list_group_members(tx.as_mut(), group_id).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
@@ -224,8 +231,11 @@ impl OwnerMembershipAdminPort for PgStorage {
         after: Option<(OwnerId, Relation)>,
         limit: i64,
     ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result =
             access::owner_columns::list_group_members_page(tx.as_mut(), group_id, after, limit)
                 .await;
@@ -250,7 +260,7 @@ impl OwnerTransferPort for PgStorage {
         }
         access::owner_columns::transfer_to_owner(
             &self.pool,
-            self.platform_scope.as_ref(),
+            &self.platform_scope,
             permit,
             surfaces,
             entity,
@@ -272,8 +282,11 @@ impl SourceCursorPort for PgStorage {
         owner: &OwnerId,
         source: &str,
     ) -> Result<Option<Cursor>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::source_cursors::load_source_cursor(tx.as_mut(), owner, source).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
@@ -284,9 +297,9 @@ impl SourceCursorPort for PgStorage {
         source: &str,
         cursor: &Cursor,
     ) -> Result<(), StorageError> {
-        let mut tx = crate::owner_scope::begin_compatible_owner_transaction(
+        let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
-            permit.owner_scope(),
+            crate::owner_scope::require_owner_scope(permit.owner_scope())?,
         )
         .await?;
         let result =
@@ -300,8 +313,11 @@ impl SourceCursorPort for PgStorage {
         owner: &OwnerId,
         source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {
-        let mut tx =
-            crate::owner_scope::begin_compatible_owner_transaction(&self.pool, owner_scope).await?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
         let result = verbs::source_cursors::source_cursor_age(tx.as_mut(), owner, source).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }

@@ -1,5 +1,5 @@
 //! `UnitOfWork::erase_own_series` against real Postgres, through the code
-//! flavor's own schemas (docs/13 §Flavor-scoped erase).
+//! flavor's own schemas (see `docs/data-and-erasure.md`).
 //!
 //! Every Fact here is admitted and forgotten through the Engine, so the rows
 //! the erase must reach — sidecar, head, cooled locator, cold object — are
@@ -10,7 +10,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::migrated_db;
+use common::{migrated_db, owner_scope};
 use proxima::flavor::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
     SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
@@ -51,7 +51,10 @@ fn personal() -> (OwnerId, AuthzContext) {
     let user = UserId::new(Uuid::now_v7());
     (
         OwnerId::from(user),
-        AuthzContext::for_subject(user, AuthPath::HostBearer),
+        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
+            user,
+            AuthPath::HostBearer,
+        )),
     )
 }
 
@@ -86,7 +89,7 @@ async fn registered_repo(pool: &sqlx::PgPool, owner: &OwnerId) -> Uuid {
     let repo_id = Uuid::now_v7();
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         &format!("/tmp/proxima-erase-own-series-{repo_id}"),
@@ -449,10 +452,12 @@ async fn a_selection_outside_the_flavor_the_owner_or_the_role_is_refused_before_
 
         let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         for role in [Role::ingest(), Role::editor()] {
-            let below_admin = AuthzContext::for_subject_with_role(
-                UserId::new(Uuid::now_v7()),
-                [(group, role)],
-                AuthPath::HostBearer,
+            let below_admin = proxima_core::test_fixtures::authenticated_context(
+                AuthzContext::for_subject_with_role(
+                    UserId::new(Uuid::now_v7()),
+                    [(group, role)],
+                    AuthPath::HostBearer,
+                ),
             );
             match erase(
                 &h.engine,

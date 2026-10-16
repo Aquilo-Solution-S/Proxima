@@ -11,16 +11,17 @@
 
 mod common;
 
-use common::{code_pg_sidecars, migrated_db, test_owner};
+use common::{code_pg_sidecars, migrated_db, owner_scope, test_owner};
 use proxima::flavor::{lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx};
 use proxima_code::testkit::{build_engine, erase_repo, ingest_commit, register_repo};
 use proxima_code::{CODE_REPO_SCOPE, CodeFlavorStore, CommitSummaryV1, CommitV1, RepoScope};
+use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{
     AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, Engine, MemoryId, MemoryTarget,
     OperatorId, OwnerId, ProtocolError, SeriesHandle,
 };
 use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::{PgPlatformScope, PgStorage};
 use uuid::Uuid;
 
 /// Every `proxima_code` row filed under `repo_id`, whatever table it lives
@@ -97,7 +98,7 @@ async fn register(
 ) -> Result<(), Box<dyn std::error::Error>> {
     register_repo(
         pool,
-        None,
+        &owner_scope(owner),
         owner,
         repo_id,
         &format!("/tmp/proxima-repo-fence-{repo_id}"),
@@ -161,7 +162,16 @@ async fn wait_for_count(pool: &sqlx::PgPool, probe: Probe, at_least: i64) -> boo
 /// connection for as long as it blocks, and taking that connection from the
 /// pool the test's own probes run on would starve the probes.
 async fn connect_storage(db_name: &str) -> Result<PgStorage, String> {
-    Ok(PgStorage::connect(&db_url(db_name))
+    let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(db_name)
+        .await
+        .map_err(|err| err.to_string())?;
+    let platform_pool = sqlx::PgPool::connect(&platform_url)
+        .await
+        .map_err(|err| err.to_string())?;
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_code"])
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(PgStorage::connect(&runtime_url, platform_scope)
         .await
         .map_err(|err| err.to_string())?
         .with_sidecars(code_pg_sidecars())
@@ -179,11 +189,16 @@ fn spawn_ingest(
     let payload = commit_payload(repo_id, sha);
     tokio::spawn(async move {
         let pg = connect_storage(&db_name).await?;
-        let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        ingest_commit(&engine, &authz, &payload, time::OffsetDateTime::now_utc())
-            .await
-            .map_err(|err| err.to_string())
+        tokio::task::block_in_place(move || {
+            let engine = build_engine(pg);
+            let authz =
+                authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
+            tokio::runtime::Handle::current().block_on(async move {
+                ingest_commit(&engine, &authz, &payload, time::OffsetDateTime::now_utc())
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        })
     })
 }
 
@@ -196,12 +211,17 @@ fn spawn_erase(
 ) -> tokio::task::JoinHandle<Result<proxima_code::RepoEraseReceipt, String>> {
     tokio::spawn(async move {
         let pg = connect_storage(&db_name).await?;
-        let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
-        erase_repo(&engine, &authz, &store, &owner, repo_id)
-            .await
-            .map_err(|err| err.to_string())
+        tokio::task::block_in_place(move || {
+            let engine = build_engine(pg.clone());
+            let authz =
+                authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
+            let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+            tokio::runtime::Handle::current().block_on(async move {
+                erase_repo(&engine, &authz, &store, &owner, repo_id)
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        })
     })
 }
 
@@ -225,7 +245,7 @@ async fn a_same_repo_ingest_waits_for_the_erase_and_is_then_refused() {
         register(pool, &owner, repo_id).await?;
 
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         ingest_commit(
             &engine,
             &authz,
@@ -534,7 +554,7 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         // pin at least one Fact, which is the Model's rule and not this
         // test's.
         let engine = build_engine(pg.clone());
-        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let authz = authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         let commit = ingest_commit(
             &engine,
             &authz,
@@ -589,18 +609,23 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         let late_db = db_name.clone();
         let late = tokio::spawn(async move {
             let pg = connect_storage(&late_db).await?;
-            let engine = build_engine(pg.clone());
-            let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-            host_write_commit_summary(
-                &engine,
-                &authz,
-                owner,
-                repo_id,
-                "late00001",
-                surviving_commit,
-            )
-            .await
-            .map_err(|err| err.to_string())
+            tokio::task::block_in_place(move || {
+                let engine = build_engine(pg);
+                let authz =
+                    authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
+                tokio::runtime::Handle::current().block_on(async move {
+                    host_write_commit_summary(
+                        &engine,
+                        &authz,
+                        owner,
+                        repo_id,
+                        "late00001",
+                        surviving_commit,
+                    )
+                    .await
+                    .map_err(|err| err.to_string())
+                })
+            })
         });
         assert!(
             wait_for_count(pool, Probe::Advisory, 1).await,
