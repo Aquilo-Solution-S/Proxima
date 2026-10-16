@@ -29,6 +29,11 @@ recheck access. Server-issued memory-space keys are selectors resolved through
 the same context. Missing and unreadable entity references have the same public
 result. A readable source keeps its pins even when their target is redacted.
 
+Session retention is scoped to the authenticated principal, independently of
+the selected owner. Opening more sessions can evict only that principal's own
+oldest binding; a full global binding store refuses a new principal instead
+of evicting another principal's sessions.
+
 Enforcers: [`AuthzContext`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/authz.rs),
 the engine command ports, and PostgreSQL owner RLS. See [concepts](concepts.md)
 and [host integration](host-integration.md).

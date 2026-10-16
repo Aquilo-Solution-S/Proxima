@@ -19,6 +19,10 @@ use crate::{build_client, embedding_endpoint};
 /// [`OpenAiCompatConfig::with_timeout`] for unusually slow local models.
 pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQUEST_TIMEOUT;
 
+const RESPONSE_ENVELOPE_BYTES: usize = 64 * 1024;
+const BYTES_PER_FLOAT_HEADROOM: usize = 32;
+const ERROR_BODY_PREFIX_BYTES: usize = 512;
+
 #[derive(Clone)]
 pub struct OpenAiCompatConfig {
     /// Provider base URL. `/embeddings` is appended to its path; query
@@ -26,8 +30,8 @@ pub struct OpenAiCompatConfig {
     pub base_url: String,
     pub timeout: Duration,
     pub bearer_token: Option<String>,
-    /// Hosts, besides loopback, that `base_url` (and any redirect hop) may
-    /// name over plaintext `http://`. Empty by default; a host reads it from
+    /// Hosts, besides loopback, that `base_url` may name over plaintext
+    /// `http://`. Redirects are refused. Empty by default; a host reads it from
     /// `PROXIMA_PLAINTEXT_HOSTS` with [`PlaintextHosts::from_lookup`].
     pub plaintext_hosts: PlaintextHosts,
 }
@@ -129,7 +133,7 @@ impl OpenAiCompatEmbeddingClient {
                 )));
             }
         }
-        let client = build_client(config.timeout, &config.plaintext_hosts)?;
+        let client = build_client(config.timeout)?;
         Ok(Self {
             config,
             client,
@@ -239,6 +243,56 @@ fn embed_http_error(status: reqwest::StatusCode, body: &str) -> LlmError {
     }
 }
 
+fn response_body_limit(batch_size: usize, dimensions: u32) -> usize {
+    RESPONSE_ENVELOPE_BYTES.saturating_add(
+        batch_size
+            .saturating_mul(dimensions as usize)
+            .saturating_mul(BYTES_PER_FLOAT_HEADROOM),
+    )
+}
+
+async fn read_body(response: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>, LlmError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| LlmError::Embed(format!("HTTP body read: {error}")))?
+    {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(LlmError::Embed(format!(
+                "HTTP response body exceeded the {limit}-byte limit"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_error_prefix(response: &mut reqwest::Response) -> Result<Vec<u8>, LlmError> {
+    let mut prefix = Vec::new();
+    while prefix.len() < ERROR_BODY_PREFIX_BYTES {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| LlmError::Embed(format!("HTTP body read: {error}")))?
+        else {
+            break;
+        };
+        let remaining = ERROR_BODY_PREFIX_BYTES - prefix.len();
+        prefix.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    Ok(prefix)
+}
+
+fn utf8_prefix(bytes: &[u8]) -> &str {
+    let bytes = &bytes[..bytes.len().min(ERROR_BODY_PREFIX_BYTES)];
+    match std::str::from_utf8(bytes) {
+        Ok(prefix) => prefix,
+        Err(error) => std::str::from_utf8(&bytes[..error.valid_up_to()])
+            .expect("valid_up_to identifies a valid UTF-8 prefix"),
+    }
+}
+
 impl OpenAiCompatEmbeddingClient {
     /// The capabilities this client was built with.
     ///
@@ -299,24 +353,36 @@ impl OpenAiCompatEmbeddingClient {
         if let Some(token) = &self.config.bearer_token {
             req = req.bearer_auth(token);
         }
-        let resp = req
+        let mut resp = req
             .send()
             .await
-            .map_err(|e| LlmError::Embed(format!("HTTP send: {e}")))?;
+            .map_err(|error| LlmError::Embed(format!("HTTP send: {error}")))?;
 
         let status = resp.status();
-        let text_body = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Embed(format!("HTTP body read: {e}")))?;
-
+        if status.is_redirection() {
+            return Err(LlmError::Embed(
+                "HTTP redirect refused: embedding client does not follow redirects".into(),
+            ));
+        }
         if !status.is_success() {
-            return Err(embed_http_error(status, &text_body));
+            let prefix = read_error_prefix(&mut resp).await?;
+            return Err(embed_http_error(status, utf8_prefix(&prefix)));
         }
 
-        let parsed: OpenAiEmbeddingResponse = serde_json::from_str(&text_body).map_err(|e| {
+        let body_limit = response_body_limit(inputs.len(), self.caps.dim);
+        let body = read_body(&mut resp, body_limit).await?;
+        let text_body = std::str::from_utf8(&body).map_err(|error| {
             LlmError::Embed(format!(
-                "decode OpenAI-compatible envelope: {e}; body: {text_body}"
+                "decode OpenAI-compatible envelope as UTF-8: {error}"
+            ))
+        })?;
+        let parsed: OpenAiEmbeddingResponse = serde_json::from_str(text_body).map_err(|e| {
+            LlmError::Embed(format!(
+                "decode OpenAI-compatible envelope: {:?} at line {} column {}; body: {}",
+                e.classify(),
+                e.line(),
+                e.column(),
+                utf8_prefix(&body),
             ))
         })?;
         parsed.into_embeddings(inputs.len(), self.caps)
@@ -826,7 +892,6 @@ mod redirect_tests {
     use super::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 
     enum Target {
-        Loopback,
         RemoteHttp,
         Loop,
     }
@@ -868,6 +933,24 @@ mod redirect_tests {
         }
     }
 
+    async fn spawn_body_server(
+        status: u16,
+        body: String,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let _ = read_request(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+        (addr, task)
+    }
+
     async fn spawn_redirect_server(status: u16, target: Target) -> RedirectServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
         let addr = listener.local_addr().expect("server address");
@@ -895,7 +978,6 @@ mod redirect_tests {
                         "/intermediate".to_string()
                     } else {
                         match target {
-                            Target::Loopback => format!("http://{addr}/target"),
                             Target::RemoteHttp => {
                                 format!("http://redirect.example:{}/target", addr.port())
                             }
@@ -931,7 +1013,8 @@ mod redirect_tests {
         let mut client = OpenAiCompatEmbeddingClient::new(
             "test-embed",
             EmbedCaps::new(2, false),
-            OpenAiCompatConfig::new(format!("http://{}/v1", server.addr), None),
+            OpenAiCompatConfig::new(format!("http://{}/v1", server.addr), None)
+                .with_plaintext_hosts(hosts.clone()),
         )
         .expect("loopback embedding endpoint");
         client.client = crate::build_http_client(
@@ -939,7 +1022,6 @@ mod redirect_tests {
                 .timeout(Duration::from_secs(5))
                 .no_proxy()
                 .resolve("redirect.example", server.addr),
-            hosts,
         )
         .expect("build test client with production redirect policy");
         client
@@ -1022,7 +1104,6 @@ mod redirect_tests {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .no_proxy(),
-            &PlaintextHosts::none(),
         )
         .expect("test client with production response handling");
         let result = client.embed("test text").await;
@@ -1036,27 +1117,126 @@ mod redirect_tests {
     }
 
     #[tokio::test]
+    async fn successful_response_larger_than_derived_limit_is_refused() {
+        let body = format!(
+            "{{\"data\":[{{\"embedding\":[1.0,0.0]}}]}}{}",
+            " ".repeat(70_000)
+        );
+        let (addr, task) = spawn_body_server(200, body).await;
+        let client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .expect("loopback embedding endpoint");
+        let result = client.embed("test text").await;
+        task.await.expect("server completes");
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("exceeded the 65600-byte limit")),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_success_body_is_limited_to_a_utf8_safe_prefix() {
+        for (body, expected) in [
+            (
+                format!("{}€{}", "x".repeat(510), "y".repeat(1024 * 1024 - 513)),
+                "x".repeat(510),
+            ),
+            (
+                format!(r#"{{"data":"{}"}}"#, "x".repeat(1024 * 1024 - 11)),
+                format!("{{\"data\":\"{}", "x".repeat(503)),
+            ),
+        ] {
+            let (addr, task) = spawn_body_server(200, body).await;
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(32_768, false),
+                OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+            )
+            .expect("loopback embedding endpoint");
+            let result = client.embed("test text").await;
+            task.await.expect("server completes");
+            let Err(LlmError::Embed(message)) = result else {
+                panic!("expected bounded decode error: {result:?}");
+            };
+            let (_, detail) = message.split_once("; body: ").expect("JSON decode error");
+            assert!(detail.len() <= super::ERROR_BODY_PREFIX_BYTES);
+            assert_eq!(detail, expected);
+            assert!(message.len() < 700);
+        }
+    }
+
+    #[tokio::test]
+    async fn non_success_body_is_limited_to_a_utf8_safe_prefix() {
+        let body = format!("{}€{}", "a".repeat(510), "b".repeat(1024 * 1024 - 513));
+        let (addr, task) = spawn_body_server(500, body).await;
+        let client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .expect("loopback embedding endpoint");
+        let result = client.embed("test text").await;
+        task.await.expect("server completes");
+        let Err(LlmError::Embed(message)) = result else {
+            panic!("expected bounded HTTP error: {result:?}");
+        };
+        let detail = message
+            .strip_prefix("openai-compatible /embeddings returned 500 Internal Server Error: ")
+            .expect("HTTP error prefix");
+        assert!(detail.len() <= super::ERROR_BODY_PREFIX_BYTES);
+        assert_eq!(detail, "a".repeat(510));
+    }
+
+    #[tokio::test]
+    async fn every_redirect_status_is_refused_without_reading_its_body() {
+        for status in [300, 301, 302, 303, 304, 305, 306, 307, 308, 399] {
+            let (addr, task) = spawn_body_server(status, "x".repeat(1_048_576)).await;
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+            )
+            .expect("loopback embedding endpoint");
+            let result = client.embed("test text").await;
+            task.await.expect("server completes");
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                "status {status}: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn nonloopback_plaintext_redirect_cannot_receive_embedding_input() {
         for status in [307, 308] {
             let server = spawn_redirect_server(status, Target::RemoteHttp).await;
             let result = client_for(&server).embed("private memory text").await;
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
-            assert_eq!(server.requests.load(Ordering::SeqCst), 2);
-            assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
+            assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                "{result:?}"
+            );
         }
     }
 
     #[tokio::test]
-    async fn a_redirect_to_a_named_plaintext_host_is_followed_and_to_another_is_not() {
+    async fn redirects_are_refused_even_for_named_plaintext_hosts() {
         for status in [307, 308] {
             let server = spawn_redirect_server(status, Target::RemoteHttp).await;
             let named = PlaintextHosts::parse("redirect.example").unwrap();
-            let vector = client_for_hosts(&server, &named)
+            let result = client_for_hosts(&server, &named)
                 .embed("private memory text")
-                .await
-                .expect("redirect to the named host");
-            assert_eq!(vector, vec![1.0, 0.0]);
-            assert_eq!(server.target_requests.load(Ordering::SeqCst), 1);
+                .await;
+            assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
+            assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                "{result:?}"
+            );
 
             let server = spawn_redirect_server(status, Target::RemoteHttp).await;
             let other = PlaintextHosts::parse("gateway").unwrap();
@@ -1064,29 +1244,72 @@ mod redirect_tests {
                 .embed("private memory text")
                 .await;
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
-            assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
+            assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                "{result:?}"
+            );
         }
     }
 
     #[tokio::test]
-    async fn valid_loopback_redirects_preserve_embedding_input() {
+    async fn loopback_redirects_are_refused() {
         for status in [307, 308] {
-            let server = spawn_redirect_server(status, Target::Loopback).await;
-            let vector = client_for(&server)
-                .embed("private memory text")
+            let target = TcpListener::bind("127.0.0.1:0")
                 .await
-                .expect("valid relative and absolute loopback redirects");
-            assert_eq!(vector, vec![1.0, 0.0]);
-            assert_eq!(server.target_requests.load(Ordering::SeqCst), 1);
+                .expect("loopback target");
+            let target_addr = target.local_addr().expect("target address");
+            let source = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("provider stub");
+            let source_addr = source.local_addr().expect("source address");
+            let task = tokio::spawn(async move {
+                let (mut stream, _) = source.accept().await.expect("provider request");
+                let _ = read_request(&mut stream).await;
+                let response = format!(
+                    "HTTP/1.1 {status} Redirect\r\nLocation: http://{target_addr}/target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("redirect");
+            });
+            let mut client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{source_addr}/v1"), None),
+            )
+            .expect("provider stub endpoint");
+            client.client = crate::build_http_client(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_millis(500))
+                    .no_proxy(),
+            )
+            .expect("production redirect policy");
+            let result = client.embed("private memory text").await;
+            task.await.expect("provider responded");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), target.accept())
+                    .await
+                    .is_err(),
+                "redirect target must receive no connection"
+            );
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                "{result:?}"
+            );
         }
     }
 
     #[tokio::test]
-    async fn redirect_loops_keep_the_default_ten_hop_limit() {
+    async fn redirect_loops_are_refused_without_hops() {
         let server = spawn_redirect_server(307, Target::Loop).await;
         let result = client_for(&server).embed("private memory text").await;
-        assert!(matches!(result, Err(LlmError::Embed(_))), "{result:?}");
-        assert_eq!(server.requests.load(Ordering::SeqCst), 11);
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+            "{result:?}"
+        );
+        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
         assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
     }
 }

@@ -17,6 +17,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_PUBLIC_URL | public OAuth URL | OIDC/public serving | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_OIDC_ISSUER | OIDC issuer | OIDC serving | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
 | PROXIMA_OIDC_AUDIENCE | token audience | OIDC serving | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
+| PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP | require an access-token JWT type | issuers using RFC 9068 | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
 | PROXIMA_OIDC_JWKS_URI | explicit JWKS endpoint | pinned discovery override | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
 | PROXIMA_OIDC_JWKS_JSON | pinned JWKS document | issuer network unavailable | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
 | PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS | OIDC request timeout | tune issuer requests | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |
@@ -38,7 +39,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_TOOL_PROFILE | tool palette | deployment surface selection | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_TOOL_ALLOW | palette additions | extend selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_TOOL_DENY | palette removals | narrow selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
-| PROXIMA_EMBED_BASE_URL | embedding endpoint | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
+| PROXIMA_EMBED_BASE_URL | embedding endpoint; redirects are refused, so configure the provider's final endpoint directly | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_API_KEY | embedding bearer | hosted embedding endpoint | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_MODEL | embedding model | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_DIM | embedding vector width | non-default model width | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |

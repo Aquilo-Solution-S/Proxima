@@ -282,9 +282,29 @@ fn a_token_goes_over_http_only_to_loopback_or_a_named_host() {
             "{url}: {error}"
         );
     }
-    // Without a token the rule is unchanged: plaintext to any host.
-    HttpIntake::new("http://other:9090/events", None, None, &none)
-        .expect("no token, no credential on the wire");
+}
+
+#[test]
+fn tokenless_http_is_only_allowed_to_loopback_or_a_named_host() {
+    let none = PlaintextHosts::none();
+    let named = PlaintextHosts::parse("gateway").expect("a host name");
+    for (url, hosts) in [
+        ("http://127.0.0.1:9090/events", &none),
+        ("http://[::1]:9090/events", &none),
+        ("http://localhost/events", &none),
+        ("http://gateway:9090/events", &named),
+    ] {
+        HttpIntake::new(url, None, None, hosts)
+            .unwrap_or_else(|error| panic!("{url} with {hosts:?}: {error}"));
+    }
+    for (url, hosts) in [
+        ("http://gateway:9090/events", &none),
+        ("http://other:9090/events", &named),
+    ] {
+        let error = HttpIntake::new(url, None, None, hosts)
+            .expect_err("memory events require trusted plaintext hosts without a token too");
+        assert!(error.to_string().contains("PROXIMA_PLAINTEXT_HOSTS"));
+    }
 }
 
 fn event(delivered_count: u64) -> ReceivedEvent {

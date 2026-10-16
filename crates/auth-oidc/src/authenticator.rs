@@ -105,6 +105,8 @@ pub enum OidcRejection {
     ExpiryOutOfRange,
     #[error("token claims do not match the host's claim type: {0}")]
     CustomClaims(String),
+    #[error("token typ must be at+jwt or application/at+jwt")]
+    WrongTokenType,
     /// The binding's [`AuthorizedPartyPolicy`] is set, `aud` names several
     /// audiences and the token has no `azp`.
     #[error("token has several audiences and no authorized party (azp)")]
@@ -151,6 +153,7 @@ pub struct OidcTokenValidator {
     leeway_secs: u64,
     keys: Arc<dyn KeyResolver>,
     authorized_party: Option<AuthorizedPartyPolicy>,
+    require_access_token_typ: bool,
 }
 
 impl std::fmt::Debug for OidcTokenValidator {
@@ -179,6 +182,7 @@ impl OidcTokenValidator {
             leeway_secs: config.leeway_secs,
             keys,
             authorized_party: None,
+            require_access_token_typ: false,
         })
     }
 
@@ -188,6 +192,13 @@ impl OidcTokenValidator {
     #[must_use]
     pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
         self.authorized_party = Some(policy);
+        self
+    }
+
+    /// Require the RFC 9068 access-token media type in the JWT header.
+    #[must_use]
+    pub fn require_access_token_typ(mut self) -> Self {
+        self.require_access_token_typ = true;
         self
     }
 
@@ -255,6 +266,14 @@ impl OidcTokenValidator {
 
         let data = decode::<serde_json::Value>(token, &key, &validation)
             .map_err(|err| OidcRejection::from_jwt(&err, &self.issuer, &self.audience))?;
+        if self.require_access_token_typ {
+            let valid = header.typ.as_deref().is_some_and(|typ| {
+                typ.eq_ignore_ascii_case("at+jwt") || typ.eq_ignore_ascii_case("application/at+jwt")
+            });
+            if !valid {
+                return Err(OidcRejection::WrongTokenType);
+            }
+        }
         if let Some(policy) = &self.authorized_party {
             policy.check(&data.claims)?;
         }
@@ -327,6 +346,13 @@ impl OidcAuthenticator {
     #[must_use]
     pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
         self.validator = self.validator.with_authorized_party_policy(policy);
+        self
+    }
+
+    /// Require the RFC 9068 access-token media type in the JWT header.
+    #[must_use]
+    pub fn require_access_token_typ(mut self) -> Self {
+        self.validator = self.validator.require_access_token_typ();
         self
     }
 }
@@ -436,7 +462,22 @@ mod tests {
         sub: &str,
         exp: u64,
     ) -> String {
-        let header = serde_json::json!({"alg": "RS256", "kid": kid, "typ": "JWT"});
+        token_with_typ(keys, kid, issuer, audience, sub, exp, Some("JWT"))
+    }
+
+    fn token_with_typ(
+        keys: &TestKeys,
+        kid: &str,
+        issuer: &str,
+        audience: &str,
+        sub: &str,
+        exp: u64,
+        typ: Option<&str>,
+    ) -> String {
+        let mut header = serde_json::json!({"alg": "RS256", "kid": kid});
+        if let Some(typ) = typ {
+            header["typ"] = serde_json::Value::String(typ.to_owned());
+        }
         let claims = TestClaims {
             sub: sub.to_owned(),
             iss: issuer.to_owned(),
@@ -622,6 +663,57 @@ mod tests {
         assert_eq!(claims.audience, AUDIENCE);
         assert_eq!(claims.subject, "subject-1");
         assert_eq!(claims.expires_at, UNIX_EPOCH + Duration::from_secs(exp));
+    }
+
+    #[tokio::test]
+    async fn access_token_typ_requirement_accepts_rfc9068_values_and_rejects_id_tokens() {
+        let keys = test_keys();
+        let validator = OidcTokenValidator::new(config(), resolver(KID, keys.decoding.clone()))
+            .expect("valid oidc config")
+            .require_access_token_typ();
+        for typ in [
+            "at+jwt",
+            "AT+JWT",
+            "application/at+jwt",
+            "APPLICATION/AT+JWT",
+        ] {
+            let token = token_with_typ(
+                &keys,
+                KID,
+                ISSUER,
+                AUDIENCE,
+                "subject-1",
+                future_exp(),
+                Some(typ),
+            );
+            validator
+                .validate(&token)
+                .await
+                .expect("valid access token typ");
+        }
+        for typ in [Some("JWT"), None] {
+            let token =
+                token_with_typ(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp(), typ);
+            assert_eq!(
+                validator.validate_with::<serde_json::Value>(&token).await,
+                Err(OidcRejection::WrongTokenType)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn access_token_typ_requirement_is_opt_in() {
+        let keys = test_keys();
+        let validator = OidcTokenValidator::new(config(), resolver(KID, keys.decoding.clone()))
+            .expect("valid oidc config");
+        for typ in [Some("JWT"), None] {
+            let token =
+                token_with_typ(&keys, KID, ISSUER, AUDIENCE, "subject-1", future_exp(), typ);
+            validator
+                .validate(&token)
+                .await
+                .expect("default remains compatible");
+        }
     }
 
     #[tokio::test]

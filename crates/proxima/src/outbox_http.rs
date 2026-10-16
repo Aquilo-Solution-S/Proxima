@@ -1,12 +1,11 @@
-//! The built-in HTTP outbox sink (docs/host-integration.md §Built-in HTTP sink): one
+//! The built-in HTTP outbox sink (docs/host-integration.md §Fact publication outbox): one
 //! [`DurableIntake`] that `POST`s each captured event, verbatim, to one URL.
 //!
 //! Configured from the environment only, and registered as the consumer
 //! `http` only when `PROXIMA_OUTBOX_HTTP_URL` is set:
 //!
-//! - `PROXIMA_OUTBOX_HTTP_URL`: `https://…`, or `http://…` without a token.
-//!   With a token, `http://` only to loopback or a host named in
-//!   `PROXIMA_PLAINTEXT_HOSTS`, the rule every credential lane shares
+//! - `PROXIMA_OUTBOX_HTTP_URL`: `https://…`, or `http://…` only to loopback
+//!   or a host named in `PROXIMA_PLAINTEXT_HOSTS`, with or without a token
 //!   ([`validate_endpoint_url_for_hosts`]).
 //! - `PROXIMA_OUTBOX_HTTP_TOKEN_FILE`: re-read on every delivery and sent as
 //!   `Authorization: Bearer <token>`, so a rotated token is picked up without
@@ -91,9 +90,7 @@ impl HttpIntake {
             .map_err(|err| ProximaError::Config(format!("{ENV_URL} is not a URL: {err}")))?;
         match url.scheme() {
             "https" => {}
-            "http" if token_file.is_none() => {}
-            // A bearer goes over plaintext only where every other credential
-            // lane may: loopback, or a host the operator named.
+            // Every event carries memory content, even without a bearer.
             "http" => validate_endpoint_url_for_hosts(
                 url.as_str(),
                 EndpointUrlPolicy::AllowLoopbackHttp,
@@ -101,9 +98,8 @@ impl HttpIntake {
             )
             .map_err(|_| {
                 ProximaError::Config(format!(
-                    "{ENV_URL} must be https:// when {ENV_TOKEN_FILE} is set, unless its host \
-                     is loopback or named in {PROXIMA_PLAINTEXT_HOSTS}: the bearer token never \
-                     crosses a network in clear text"
+                    "{ENV_URL} must be https:// unless its host is loopback or named in \
+                     {PROXIMA_PLAINTEXT_HOSTS}: memory events require a trusted plaintext host"
                 ))
             })?,
             other => {

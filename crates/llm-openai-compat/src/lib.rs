@@ -17,33 +17,16 @@ pub mod openai_compat;
 
 pub use openai_compat::*;
 
-pub(crate) fn build_client(
-    timeout: Duration,
-    plaintext_hosts: &PlaintextHosts,
-) -> Result<reqwest::Client, LlmError> {
-    build_http_client(reqwest::Client::builder().timeout(timeout), plaintext_hosts)
+pub(crate) fn build_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
+    build_http_client(reqwest::Client::builder().timeout(timeout))
 }
 
-fn build_http_client(
-    builder: reqwest::ClientBuilder,
-    plaintext_hosts: &PlaintextHosts,
-) -> Result<reqwest::Client, LlmError> {
-    // Redirects can resend the embedding input even when credentials are
-    // stripped. Enforce the base URL's transport policy, named plaintext
-    // hosts included, before every hop.
-    let plaintext_hosts = plaintext_hosts.clone();
-    let policy = reqwest::redirect::Policy::custom(move |attempt| {
-        if let Err(error) = validate_endpoint_url_for_hosts(
-            attempt.url().as_str(),
-            EndpointUrlPolicy::AllowLoopbackHttp,
-            &plaintext_hosts,
-        ) {
-            return attempt.error(error);
-        }
-        reqwest::redirect::Policy::default().redirect(attempt)
-    });
+fn build_http_client(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, LlmError> {
     builder
-        .redirect(policy)
+        // An embedding request carries memory content. Following a redirect
+        // would resend it to a provider-selected endpoint, so redirects are
+        // refused at the HTTP client boundary.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| LlmError::Internal(format!("reqwest builder: {e}")))
 }

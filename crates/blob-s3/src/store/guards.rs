@@ -27,8 +27,14 @@ pub(super) fn validate_prepare(
     if req.filename.trim().is_empty() {
         return Err(BlobError::State("filename is required".into()));
     }
+    if req.filename.len() > 255 {
+        return Err(BlobError::State("filename exceeds 255 bytes".into()));
+    }
     if req.mime.trim().is_empty() {
         return Err(BlobError::State("mime is required".into()));
+    }
+    if req.mime.len() > 127 {
+        return Err(BlobError::State("mime exceeds 127 bytes".into()));
     }
     if req.byte_len > i64::MAX as u64 {
         return Err(BlobError::State("byte_len exceeds Postgres bigint".into()));
@@ -94,6 +100,28 @@ mod tests {
 
     use super::super::testkit::prepare_req;
     use super::*;
+
+    #[test]
+    fn validate_prepare_bounds_filename_bytes() {
+        let mut req = prepare_req(1);
+        req.filename = format!("{}x", "é".repeat(127));
+        validate_prepare(&req, None).expect("255-byte filename accepted");
+        req.filename.push('x');
+        let err = validate_prepare(&req, None).expect_err("256-byte filename refused");
+        assert!(matches!(err, BlobError::State(_)));
+        assert!(err.to_string().contains("filename exceeds 255 bytes"));
+    }
+
+    #[test]
+    fn validate_prepare_bounds_media_type_bytes() {
+        let mut req = prepare_req(1);
+        req.mime = format!("{}x", "é".repeat(63));
+        validate_prepare(&req, None).expect("127-byte media type accepted");
+        req.mime.push('x');
+        let err = validate_prepare(&req, None).expect_err("128-byte media type refused");
+        assert!(matches!(err, BlobError::State(_)));
+        assert!(err.to_string().contains("mime exceeds 127 bytes"));
+    }
 
     #[test]
     fn validate_prepare_rejects_byte_len_over_cap() {

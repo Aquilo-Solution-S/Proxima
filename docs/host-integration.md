@@ -102,6 +102,12 @@ actor attribution. The typed `PublicationRecord`, `DurableIntake`, and delivery 
 CloudEvents envelope and retry contract in rustdoc. Scheduling, execution, and
 call logging belong to the host; the outbox is its change channel.
 
+The built-in HTTP sink reads `PROXIMA_OUTBOX_HTTP_URL` and delivers each event
+to that receiver without following redirects. Plaintext HTTP requires loopback
+or an exact host entry in `PROXIMA_PLAINTEXT_HOSTS`, whether or not a token is
+configured. See [configuration](configuration.md) for the token-file and CA
+settings.
+
 ## Host-state participant
 
 Register one `PgHostStateParticipant` with

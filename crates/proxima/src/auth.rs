@@ -21,6 +21,7 @@ use proxima_core::Authenticator;
 use proxima_mcp_server::ResourceServerMetadata;
 
 use crate::OwnerAccessPort;
+use crate::config::parse_bool_value;
 use crate::runtime_config::ProximaError;
 
 const SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
@@ -32,6 +33,7 @@ const JWKS_JSON: &str = "PROXIMA_OIDC_JWKS_JSON";
 
 /// Complete-request timeout for OIDC discovery and JWKS HTTP requests.
 const OIDC_HTTP_TIMEOUT_SECONDS: &str = "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS";
+const OIDC_REQUIRE_ACCESS_TOKEN_TYP: &str = "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP";
 
 /// How much clock skew a token may carry, in seconds.
 const LEEWAY_SECS: u64 = 60;
@@ -39,7 +41,7 @@ const LEEWAY_SECS: u64 = 60;
 /// Every variable [`oidc_from_lookup`] reads. The runtime environment layer
 /// captures exactly these, so the authenticator it builds at resolve sees
 /// the environment the builder was given.
-pub(crate) const OIDC_ENV_KEYS: [&str; 8] = [
+pub(crate) const OIDC_ENV_KEYS: [&str; 9] = [
     "PROXIMA_OIDC_ISSUER",
     "PROXIMA_OIDC_AUDIENCE",
     "PROXIMA_PUBLIC_URL",
@@ -48,6 +50,7 @@ pub(crate) const OIDC_ENV_KEYS: [&str; 8] = [
     "PROXIMA_OIDC_ALLOWED_SUBJECTS",
     OIDC_HTTP_TIMEOUT_SECONDS,
     SUBJECT_MAP_JSON,
+    OIDC_REQUIRE_ACCESS_TOKEN_TYP,
 ];
 
 /// What a host needs to serve authenticated MCP: who validates a bearer
@@ -96,6 +99,8 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// - `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` — optional complete-request timeout;
 ///   default 10 seconds, maximum 300 seconds.
 /// - `PROXIMA_OIDC_ALLOWED_SUBJECTS` — optional comma-separated allowlist.
+/// - `PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP` — optional boolean; when
+///   `true`, require JWT `typ` to be `at+jwt` or `application/at+jwt`.
 ///
 /// # Errors
 ///
@@ -160,6 +165,7 @@ pub fn oidc_from_lookup(
         .validate()
         .map_err(|err| ProximaError::Config(err.to_string()))?;
     let request_timeout = oidc_http_timeout(lookup)?;
+    let require_access_token_typ = oidc_require_access_token_typ(lookup)?;
     // The issuer/JWKS URL boundary is validated BEFORE the subject map and
     // before storage, so an insecure-URL rejection short-circuits rather
     // than being reported after two other things have already been parsed.
@@ -182,6 +188,11 @@ pub fn oidc_from_lookup(
     let authenticator =
         proxima_auth_oidc::OidcAuthenticator::new(config, resolver, subject_map, owner_access)
             .map_err(|err| ProximaError::Config(err.to_string()))?;
+    let authenticator = if require_access_token_typ {
+        authenticator.require_access_token_typ()
+    } else {
+        authenticator
+    };
     Ok(Some((
         Arc::new(authenticator),
         ResourceServerMetadata {
@@ -189,6 +200,15 @@ pub fn oidc_from_lookup(
             authorization_servers: vec![issuer],
         },
     )))
+}
+
+fn oidc_require_access_token_typ(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<bool, ProximaError> {
+    let Some(raw) = proxima_core::env_value(lookup, OIDC_REQUIRE_ACCESS_TOKEN_TYP) else {
+        return Ok(false);
+    };
+    parse_bool_value(OIDC_REQUIRE_ACCESS_TOKEN_TYP, &raw)
 }
 
 fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duration, ProximaError> {
@@ -234,7 +254,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{non_empty, oidc_from_lookup, oidc_http_timeout};
+    use super::{non_empty, oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ};
 
     /// A lookup over a fixed map, so none of this touches the process
     /// environment — which is what lets these run in parallel with every
@@ -310,6 +330,48 @@ mod tests {
                 .expect("valid override"),
             std::time::Duration::from_secs(17)
         );
+    }
+
+    #[test]
+    fn access_token_typ_setting_uses_shared_boolean_parser_and_defaults_off() {
+        assert!(!oidc_require_access_token_typ(&env(&[])).expect("default off"));
+        for value in ["", " \t\n "] {
+            assert!(
+                !oidc_require_access_token_typ(&env(&[(
+                    "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP",
+                    value,
+                )]))
+                .expect("blank is unset")
+            );
+        }
+        for value in ["1", "true", "TRUE", "yes", "On", " true \n"] {
+            assert!(
+                oidc_require_access_token_typ(&env(&[(
+                    "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP",
+                    value,
+                )]))
+                .expect("true value")
+            );
+        }
+        for value in ["0", "false", "FALSE", "no", "OFF", " off \t"] {
+            assert!(
+                !oidc_require_access_token_typ(&env(&[(
+                    "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP",
+                    value,
+                )]))
+                .expect("false value")
+            );
+        }
+        for invalid in ["maybe", "truthy"] {
+            assert!(
+                oidc_require_access_token_typ(&env(&[(
+                    "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP",
+                    invalid,
+                )]))
+                .is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
     }
 
     #[tokio::test]
@@ -534,6 +596,36 @@ mod tests {
                 .expect("an issuer yields a bundle");
             assert_eq!(metadata.authorization_servers, [issuer]);
             authenticator
+        }
+
+        #[tokio::test]
+        async fn access_token_typ_setting_reaches_the_authenticator() {
+            let issuer = SilentIssuer::bind();
+            let key = signing_key();
+            let keys = jwks(KID, &key);
+            let user = Uuid::now_v7();
+            let subject_map = format!(
+                r#"[{{"iss":"{}","sub":"{CALLER}","user_id":"{user}"}}]"#,
+                issuer.url
+            );
+            for (setting, accepted) in [("true", false), ("false", true)] {
+                let (auth, _) = oidc_from_lookup(
+                    &env(&[
+                        ("PROXIMA_OIDC_ISSUER", &issuer.url),
+                        ("PROXIMA_OIDC_AUDIENCE", FLEET),
+                        ("PROXIMA_PUBLIC_URL", "https://flavor.test"),
+                        ("PROXIMA_OIDC_SUBJECT_MAP_JSON", &subject_map),
+                        (JWKS_JSON, &keys),
+                        ("PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP", setting),
+                    ]),
+                    Arc::new(OneSubject(UserId::new(user))),
+                )
+                .expect("valid pinned configuration")
+                .expect("configured authenticator");
+                let credentials = token(&key, KID, &issuer.url);
+                assert_eq!(auth.authenticate(&credentials).await.is_ok(), accepted);
+            }
+            issuer.assert_never_contacted();
         }
 
         #[tokio::test]
