@@ -42,6 +42,7 @@ pub mod action {
 }
 
 pub mod resource {
+    pub const HOW_TO: &str = "resource:how-to";
     pub const MEMORY: &str = "resource:memory";
     pub const MEMORIES: &str = "resource:memories";
     pub const MEMORY_LINEAGE: &str = "resource:memory-lineage";

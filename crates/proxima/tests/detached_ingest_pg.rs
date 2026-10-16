@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
-use proxima::{AppInfo, BuiltProxima, FactWrite, FlavorApp, Proxima, QueryRequest, ToolScope};
+use proxima::{AppInfo, BuiltProxima, FactWrite, FlavorApp, Proxima, QueryRequest, ServedSurface};
 use proxima_core::{AgentNoteV1, AuthPath, AuthzContext, OwnerId, ToolCtx, ToolServices, UserId};
 use proxima_pg_testkit::SplitRoleDb;
 use proxima_storage_pg::PgPoolConfig;
@@ -42,7 +42,7 @@ async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxima {
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .pg_pool_config(PgPoolConfig::default())
         .build()
         .await

@@ -36,9 +36,9 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_MCP_SSE_RETRY_SECS | SSE retry hint | client reconnect tuning | [MCP transport](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MCP_SESSIONS | server-side session switch | stateful MCP clients | [MCP transport](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MCP_JSON_RESPONSE | JSON response switch | stateless MCP clients | [MCP transport](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
-| PROXIMA_TOOL_PROFILE | tool palette | deployment surface selection | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
-| PROXIMA_TOOL_ALLOW | palette additions | extend selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
-| PROXIMA_TOOL_DENY | palette removals | narrow selected palette | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
+| PROXIMA_TOOL_PROFILE | served-surface profile | deployment commands plus mandatory reads | `served_surface_from_env` |
+| PROXIMA_TOOL_ALLOW | served-surface additions | extend deployment commands | `served_surface_from_env` |
+| PROXIMA_TOOL_DENY | served-surface removals | narrow commands; mandatory reads cannot be denied | `served_surface_from_env` |
 | PROXIMA_CODE_REPO_ROOTS | OS path list of repository root directories (`:` on Unix, `;` on Windows); each canonicalized at boot, missing or non-directory roots fail boot | Code repository access; see [operate](operate.md#container-and-network-boundary) | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_BASE_URL | embedding endpoint; redirects are refused, so configure the provider's final endpoint directly | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_API_KEY | embedding bearer | hosted embedding endpoint | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |

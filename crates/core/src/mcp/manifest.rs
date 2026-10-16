@@ -1,6 +1,6 @@
 use crate::flavor::FLAVOR_0;
 use crate::flavor::contract::ResourceContract;
-use crate::{ScopeKey, ToolName};
+use crate::{ResourceKey, ScopeKey, ToolName};
 
 use super::core_tools;
 
@@ -159,6 +159,27 @@ pub fn all_core_resources() -> impl Iterator<Item = &'static ResourceContract> {
     FLAVOR_0.resources.iter()
 }
 
+/// The synthesized guide's canonical key. Its existing transport route
+/// supplies the body; it does not add another resource dispatch route.
+///
+/// # Panics
+///
+/// If the static guide key is changed to a non-resource scope key.
+#[must_use]
+pub fn how_to_resource_key() -> ResourceKey {
+    let ScopeKey::Resource(key) = ScopeKey::parse(crate::protocol::resource::HOW_TO)
+        .expect("the guide resource constant is a resource scope key")
+    else {
+        unreachable!("the guide resource constant has the resource prefix")
+    };
+    key
+}
+
+#[must_use]
+pub const fn how_to_resource_declaration() -> super::KeyDeclaration {
+    super::KeyDeclaration::shared(Some(ToolEffect::ReadOnly))
+}
+
 #[must_use = "iterators are lazy and must be consumed"]
 pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
     core_tools::goal::CORE_GOAL_ACTIONS
@@ -198,7 +219,8 @@ pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<Scope
 ///
 /// Exclusion is applied to the *tool name* before its actions are expanded, so
 /// naming a dispatcher removes all of its leaves in one step and an action
-/// added to it later cannot silently re-enter the palette. Resource keys are
+/// added to it later cannot silently re-enter the palette. An exact action
+/// key removes only that leaf. Resource keys are
 /// excluded by their exact scope key. An entry of `exclude` that is no scope
 /// key, or names no registered tool or resource, excludes nothing.
 ///
@@ -222,38 +244,44 @@ pub fn canonical_scope_keys_excluding(
         if excluded.contains(&ScopeKey::Tool(name)) {
             continue;
         }
-        keys.extend(tool.palette_keys());
+        keys.extend(
+            tool.palette_keys()
+                .into_iter()
+                .filter(|key| !excluded.contains(key)),
+        );
     }
     keys.extend(
         all_core_resources()
             .map(|resource| ScopeKey::Resource(resource.key()))
             .filter(|key| !excluded.contains(key)),
     );
+    let guide = ScopeKey::Resource(how_to_resource_key());
+    if !excluded.contains(&guide) {
+        keys.push(guide);
+    }
     keys.sort();
     keys.dedup();
     keys
 }
 
-/// The subset of [`canonical_scope_keys`] no palette narrows: every
-/// registered tool's [open reads](crate::mcp::KeyDeclaration::is_open_read)
-/// and every read-only core resource. Removing one of these from a palette
-/// changes nothing a caller may do, so a configuration that names one to
-/// narrow it is refused where it is read.
+/// The canonical keys every deployment serves: all declared reads and core
+/// resources, including the synthesized guide. Caller scopes remain exact.
 ///
 /// # Panics
 ///
 /// As [`canonical_scope_keys`].
 #[must_use]
-pub fn canonical_open_read_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
+pub fn canonical_served_read_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
     let mut keys: Vec<ScopeKey> = registry
         .list_mcp_tools()
         .iter()
-        .flat_map(crate::mcp::McpToolDescriptor::open_read_keys)
+        .flat_map(crate::mcp::McpToolDescriptor::served_read_keys)
         .chain(
             all_core_resources()
-                .filter(|resource| resource.declaration().is_open_read())
+                .filter(|resource| resource.declaration().is_read())
                 .map(|resource| ScopeKey::Resource(resource.key())),
         )
+        .chain(std::iter::once(ScopeKey::Resource(how_to_resource_key())))
         .collect();
     keys.sort();
     keys.dedup();
@@ -263,6 +291,45 @@ pub fn canonical_open_read_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<S
 #[cfg(test)]
 mod effect_tests {
     use super::{McpToolAnnotations, Replay, ToolEffect};
+
+    #[test]
+    fn mandatory_served_reads_include_owner_reads_resources_and_the_guide() {
+        let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let mandatory = super::canonical_served_read_keys(&registry);
+        let canonical = super::canonical_scope_keys(&registry);
+        for key in &mandatory {
+            assert!(canonical.contains(key), "{key}");
+        }
+        for text in [
+            crate::protocol::tool::CORE_SEARCH_MEMORIES,
+            "core_membership:list_members",
+            crate::protocol::resource::MEMORY,
+            crate::protocol::resource::HOW_TO,
+        ] {
+            let key = crate::ScopeKey::parse(text).expect("canonical key");
+            assert!(mandatory.contains(&key), "{text}");
+        }
+        assert!(!mandatory.contains(
+            &crate::ScopeKey::parse(crate::protocol::tool::CORE_REMEMBER).expect("write key")
+        ));
+        for resource in super::all_core_resources() {
+            let key = crate::ScopeKey::Resource(resource.key());
+            assert_eq!(
+                mandatory.contains(&key),
+                crate::ServedSurface::Palette(Vec::new()).admits(&key, resource.declaration()),
+                "mandatory inventory and empty deployment admission agree for {key}"
+            );
+        }
+        let excluded = super::canonical_scope_keys_excluding(
+            &registry,
+            &[
+                crate::protocol::tool::CORE_MEMBERSHIP,
+                crate::protocol::resource::HOW_TO,
+            ],
+        );
+        assert!(!excluded.contains(&crate::ScopeKey::Resource(super::how_to_resource_key())));
+        assert!(!excluded.iter().any(|key| matches!(key, crate::ScopeKey::Action { tool, .. } if tool.as_str() == crate::protocol::tool::CORE_MEMBERSHIP)));
+    }
 
     const ALL: [ToolEffect; 5] = [
         ToolEffect::ReadOnly,
@@ -383,6 +450,22 @@ mod scope_key_tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(spelled, sorted, "key order is the order of the strings");
+    }
+
+    #[test]
+    fn excluding_an_exact_action_key_keeps_its_siblings() {
+        let registry = default_registry();
+        let excluded = "core_membership:list_members";
+        let sibling = "core_membership:add_member";
+        let all = canonical_scope_keys(&registry);
+        let excluded = ScopeKey::parse(excluded).expect("read action key");
+        let sibling = ScopeKey::parse(sibling).expect("sibling action key");
+        assert!(all.contains(&excluded));
+        assert!(all.contains(&sibling));
+        let without = canonical_scope_keys_excluding(&registry, &["core_membership:list_members"]);
+        assert!(!without.contains(&excluded));
+        assert!(without.contains(&sibling));
+        assert_eq!(without.len() + 1, all.len());
     }
 
     /// Excluding a dispatcher removes its leaves; an entry that is no key, or

@@ -9,7 +9,7 @@ use super::core_tools::memory_spaces::{ResolvedMemorySpace, SpaceDefault, resolv
 use super::{
     KeyDeclaration, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
 };
-use crate::{ActionName, ScopeKey, ToolScope};
+use crate::{ActionName, ScopeKey};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -240,7 +240,7 @@ impl ScopeGateBehavior {
         args: &serde_json::Value,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
-        let scope = ctx.authz.tool_scope();
+        let capabilities = ctx.authz.capabilities();
         // The request name is parsed once, here. A name that is no key is in
         // no palette (`All` holds everything, as ever), and every comparison
         // below is between keys.
@@ -252,6 +252,9 @@ impl ScopeGateBehavior {
         // `flavor_tool:action` would deny the tool outright, and an unknown
         // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
+        if descriptor.is_some_and(|descriptor| !descriptor.advertised_by(capabilities)) {
+            return Err(McpToolError::NotAuthorized(tool.to_string()));
+        }
         // Every branch ends with the declaration of exactly the key it judged
         // — a dispatcher's action, a flat tool's, a host tool's, a core
         // resource's — and the owner-role gate reads that same value.
@@ -263,11 +266,6 @@ impl ScopeGateBehavior {
                 };
                 let requested = args.get("action").and_then(serde_json::Value::as_str);
                 let declared = descriptor.declaration(requested);
-                // An open read passes whatever the palette holds; anything
-                // else needs the dispatcher in the palette at all.
-                if !declared.is_open_read() && !scope.allows_group_advertisement(tool_name) {
-                    return Err(McpToolError::NotAuthorized(tool.to_string()));
-                }
                 let Some(action) = requested else {
                     return Err(McpToolError::InvalidInput(format!(
                         "tool {tool} requires string action"
@@ -286,7 +284,7 @@ impl ScopeGateBehavior {
                         "unknown action {action:?} for tool {tool}"
                     )));
                 };
-                if !scope.admits_action(tool_name, &action, declared) {
+                if !capabilities.admits_action(tool_name, &action, declared) {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 }
                 declared
@@ -301,14 +299,11 @@ impl ScopeGateBehavior {
                 // rather than sailing past into the tool.
                 let resolved = super::resolve_argv_action(tool, descriptor.argv_action_specs, args);
                 let declared = descriptor.declaration(resolved.as_ref().ok().copied());
-                if !declared.is_open_read() && !scope.allows_group_advertisement(tool_name) {
-                    return Err(McpToolError::NotAuthorized(tool.to_string()));
-                }
                 let action = resolved?;
                 let Ok(action_name) = ActionName::parse(action) else {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 };
-                if !scope.admits_action(tool_name, &action_name, declared) {
+                if !capabilities.admits_action(tool_name, &action_name, declared) {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 }
                 declared
@@ -316,8 +311,11 @@ impl ScopeGateBehavior {
             _ => {
                 let declared = Self::flat_declaration(tool, key.as_ref().ok(), descriptor, ctx);
                 let allowed = match &key {
-                    Ok(key) => scope.admits(key, declared),
-                    Err(_) => matches!(scope, ToolScope::All),
+                    Ok(key) => capabilities.admits(key, declared),
+                    Err(_) => {
+                        matches!(capabilities.tool_scope, crate::ToolScope::All)
+                            && matches!(capabilities.served_surface, crate::ServedSurface::All)
+                    }
                 };
                 if !allowed {
                     return Err(McpToolError::NotAuthorized(tool.to_string()));
@@ -391,6 +389,11 @@ impl ScopeGateBehavior {
         ctx: &McpToolCtx,
     ) -> KeyDeclaration {
         match (key, descriptor) {
+            (Some(ScopeKey::Resource(resource)), _)
+                if *resource == super::how_to_resource_key() =>
+            {
+                super::how_to_resource_declaration()
+            }
             (Some(ScopeKey::Resource(resource)), _) => crate::flavor::FLAVOR_0
                 .resource_by_scope_key(resource)
                 .map_or(KeyDeclaration::UNDECLARED, |resource| {
@@ -518,8 +521,7 @@ mod tests {
         );
     }
 
-    /// A write outside the palette is refused before the terminal runs.
-    /// (A read would be admitted: a palette narrows writes only, #462.)
+    /// A command outside caller scope is refused before the terminal runs.
     #[tokio::test]
     async fn scope_gate_denies_out_of_palette_before_terminal() {
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
@@ -604,10 +606,7 @@ mod tests {
         }
     }
 
-    /// The bare dispatcher name is listed with its actions and a call of one
-    /// is refused: the asymmetry the typed predicates pin
-    /// (`the_three_predicates_answer_as_the_string_matchers_did`), seen at
-    /// the gate.
+    /// A bare dispatcher key cannot grant one of its executable leaves.
     #[test]
     fn a_bare_dispatcher_entry_does_not_admit_a_call_of_its_action() {
         let args = serde_json::json!({ "action": "set" });
@@ -619,28 +618,61 @@ mod tests {
         )
         .expect_err("the bare name is not the leaf");
         assert!(
-            matches!(err, McpToolError::NotAuthorized(ref denied) if denied == "core_goal:set"),
+            matches!(err, McpToolError::NotAuthorized(ref denied) if denied == protocol_tool::CORE_GOAL),
             "got {err:?}"
         );
     }
 
-    /// #462: a palette narrows writes only. A read-only flat tool and a core
-    /// resource pass the gate under an empty palette; a write does not.
     #[test]
-    fn an_empty_palette_admits_reads_and_refuses_writes() {
-        let ctx = test_ctx(ToolScope::Palette(Vec::new()));
+    fn an_undisclosed_dispatcher_refuses_before_action_diagnostics() {
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"action": 7}),
+            serde_json::json!({"action": "undeclared"}),
+        ] {
+            for keys in [vec![], vec!["core_goal"], vec!["core_goal:undeclared"]] {
+                let result = ScopeGateBehavior::enforce_scope(
+                    protocol_tool::CORE_GOAL,
+                    &args,
+                    &test_ctx(palette(&keys)),
+                );
+                assert!(
+                    matches!(result, Err(McpToolError::NotAuthorized(_))),
+                    "{keys:?} {args}: {result:?}"
+                );
+            }
+            let result = ScopeGateBehavior::enforce_scope(
+                protocol_tool::CORE_GOAL,
+                &args,
+                &test_ctx(palette(&["core_goal:set"])),
+            );
+            assert!(
+                matches!(result, Err(McpToolError::InvalidInput(_))),
+                "admitted caller keeps useful diagnostics: {result:?}"
+            );
+        }
+    }
+
+    /// A deployment serves declared reads even when it configures no writes.
+    #[test]
+    fn an_empty_served_palette_admits_reads_and_refuses_writes() {
+        let mut ctx = test_ctx(ToolScope::All);
+        ctx.authz = ctx
+            .authz
+            .with_served_surface(crate::ServedSurface::Palette(Vec::new()));
         ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_SEARCH_MEMORIES,
             &serde_json::json!({ "query": "x" }),
             &ctx,
         )
-        .expect("a read-only flat tool is admitted under every palette");
-        ScopeGateBehavior::enforce_scope(
+        .expect("a read-only flat tool is served under every deployment palette");
+        for resource in [
             crate::protocol::resource::MEMORY,
-            &serde_json::json!({}),
-            &ctx,
-        )
-        .expect("a core resource is admitted under every palette");
+            crate::protocol::resource::HOW_TO,
+        ] {
+            ScopeGateBehavior::enforce_scope(resource, &serde_json::json!({}), &ctx)
+                .expect("core resources and the guide are served under every deployment palette");
+        }
         let err = ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_REMEMBER,
             &serde_json::json!({ "title": "t", "body": "b" }),
@@ -656,7 +688,10 @@ mod tests {
     /// join. `core_upload:read_url` reads, `core_upload:prepare` writes.
     #[test]
     fn a_mixed_dispatcher_admits_only_its_read_action_outside_the_palette() {
-        let ctx = test_ctx(ToolScope::Palette(Vec::new()));
+        let mut ctx = test_ctx(ToolScope::All);
+        ctx.authz = ctx
+            .authz
+            .with_served_surface(crate::ServedSurface::Palette(Vec::new()));
         ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_UPLOAD,
             &serde_json::json!({ "action": "read_url" }),
@@ -672,10 +707,7 @@ mod tests {
         assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
     }
 
-    /// #462: a read for the owner alone stays with the palette.
-    /// `core_membership` is `McpToolAudience::Owner`, so its read
-    /// `list_members` passes only a palette that holds it — the partition a
-    /// host's non-owner surface relies on.
+    /// An owner-audience read still needs its exact caller key.
     #[test]
     fn an_owner_audience_read_needs_the_palette() {
         let args = serde_json::json!({ "action": "list_members" });
@@ -684,7 +716,7 @@ mod tests {
             &args,
             &test_ctx(ToolScope::Palette(Vec::new())),
         )
-        .expect_err("an owner-audience read outside the palette is refused");
+        .expect_err("an owner-audience read omitted by the caller is refused");
         assert!(matches!(err, McpToolError::NotAuthorized(_)), "got {err:?}");
         ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_MEMBERSHIP,
@@ -692,6 +724,48 @@ mod tests {
             &test_ctx(palette(&["core_membership:list_members"])),
         )
         .expect("the palette holds it");
+    }
+
+    #[test]
+    fn an_exact_caller_omits_reads_resources_and_the_guide() {
+        let mut ctx = test_ctx(palette(&[protocol_tool::CORE_REMEMBER]));
+        ctx.authz = ctx
+            .authz
+            .with_served_surface(crate::ServedSurface::Palette(Vec::new()));
+        for (tool, args) in [
+            (
+                protocol_tool::CORE_SEARCH_MEMORIES,
+                serde_json::json!({"query":"x"}),
+            ),
+            (crate::protocol::resource::MEMORY, serde_json::json!({})),
+            (crate::protocol::resource::HOW_TO, serde_json::json!({})),
+            (
+                protocol_tool::CORE_UPLOAD,
+                serde_json::json!({"action":"read_url"}),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ScopeGateBehavior::enforce_scope(tool, &args, &ctx),
+                    Err(McpToolError::NotAuthorized(_))
+                ),
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn deployment_serves_an_owner_read_when_the_caller_holds_it() {
+        let mut ctx = test_ctx(palette(&["core_membership:list_members"]));
+        ctx.authz = ctx
+            .authz
+            .with_served_surface(crate::ServedSurface::Palette(Vec::new()));
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_MEMBERSHIP,
+            &serde_json::json!({"action":"list_members"}),
+            &ctx,
+        )
+        .expect("a declared owner read is mandatory deployment surface");
     }
 
     /// #462: undeclared is a write. A name nothing declares takes no read
@@ -797,8 +871,7 @@ mod tests {
         }
     }
 
-    /// The read exemption is keyed on the `resource:` namespace, so it must
-    /// not hand a viewer a writing tool.
+    /// Deployment read admission never grants a viewer a writing tool.
     #[tokio::test]
     async fn a_viewer_still_may_not_write() {
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
@@ -970,6 +1043,92 @@ mod argv_scope_tests {
                 if key == &format!("{}:approval-decide", ArgvTool::NAME)),
             "got {err:?}",
         );
+    }
+
+    #[test]
+    fn an_undisclosed_dispatcher_refuses_before_argv_diagnostics() {
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"argv": 7}),
+            serde_json::json!({"argv": ["undeclared"]}),
+        ] {
+            for keys in [
+                vec![],
+                vec![ArgvTool::NAME],
+                vec!["proxima-stub_cli:undeclared"],
+            ] {
+                let result = ScopeGateBehavior::enforce_scope(
+                    ArgvTool::NAME,
+                    &args,
+                    &argv_ctx(palette(&keys)),
+                );
+                assert!(
+                    matches!(result, Err(McpToolError::NotAuthorized(_))),
+                    "{keys:?} {args}: {result:?}"
+                );
+            }
+            let result = ScopeGateBehavior::enforce_scope(
+                ArgvTool::NAME,
+                &args,
+                &argv_ctx(palette(&["proxima-stub_cli:approval"])),
+            );
+            assert!(
+                matches!(result, Err(McpToolError::InvalidInput(_))),
+                "admitted caller keeps useful diagnostics: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn argv_delegated_commands_require_registered_leaf_keys() {
+        let ctx = argv_ctx(ToolScope::All);
+        for leaf in ["approval", "approval-decide"] {
+            let key = format!("{}:{leaf}", ArgvTool::NAME);
+            let command = crate::DelegatedCommand::parse(&key, &ctx.registry)
+                .expect("a registered argv leaf can be delegated");
+            assert_eq!(command.action().map(crate::ActionName::as_str), Some(leaf));
+        }
+        for invalid in [
+            ArgvTool::NAME.to_owned(),
+            format!("{}:unknown", ArgvTool::NAME),
+        ] {
+            assert!(crate::DelegatedCommand::parse(invalid, &ctx.registry).is_err());
+        }
+    }
+
+    #[test]
+    fn argv_listing_and_calls_share_exact_caller_and_served_leaf_admission() {
+        let read = format!("{}:approval", ArgvTool::NAME);
+        let unknown = format!("{}:unknown", ArgvTool::NAME);
+        for (scope, allowed) in [
+            (ToolScope::All, true),
+            (palette(&[&read]), true),
+            (palette(&[ArgvTool::NAME]), false),
+            (palette(&[&unknown]), false),
+            (palette(&[]), false),
+        ] {
+            let mut ctx = argv_ctx(scope);
+            ctx.authz = ctx
+                .authz
+                .with_served_surface(crate::ServedSurface::Palette(Vec::new()));
+            let descriptor = ctx
+                .registry
+                .mcp_tool(ArgvTool::NAME)
+                .expect("registered argv tool");
+            assert_eq!(descriptor.advertised_by(ctx.authz.capabilities()), allowed);
+            assert_eq!(
+                descriptor.action_advertised_by(ctx.authz.capabilities(), "approval"),
+                allowed
+            );
+            assert!(!descriptor.action_advertised_by(ctx.authz.capabilities(), "approval-decide"));
+            assert!(!descriptor.action_advertised_by(ctx.authz.capabilities(), "unknown"));
+            let result = ScopeGateBehavior::enforce_scope(
+                ArgvTool::NAME,
+                &serde_json::json!({"argv":["approval"]}),
+                &ctx,
+            );
+            assert_eq!(result.is_ok(), allowed, "{result:?}");
+        }
     }
 
     /// A read-capable-only owner keeps the read commands of a writable argv

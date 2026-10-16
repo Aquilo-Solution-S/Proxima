@@ -15,7 +15,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient, EmbeddingRouter,
-    FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig, ToolScope,
+    FlavorRegistryFrozen, FlavorServices, OwnerAccessPort, RevalidationConfig, ServedSurface,
 };
 use proxima_core::{EngineHandle, OwnerId};
 use proxima_mcp_server::{
@@ -195,9 +195,11 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Configure the deployment's served commands. Declared reads remain
+    /// served; each caller must independently hold its exact scope keys.
     #[must_use]
-    pub fn tool_scope(mut self, tool_scope: ToolScope) -> Self {
-        self.overlay = self.overlay.tool_scope(tool_scope);
+    pub fn served_surface(mut self, served_surface: ServedSurface) -> Self {
+        self.overlay = self.overlay.served_surface(served_surface);
         self
     }
 
@@ -545,7 +547,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let services = assemble_services::<A>(
             &app_ctx,
             &booted.registry,
-            &config.tool_scope,
+            &config.served_surface,
             parts.authenticator.as_ref(),
             &owner_access,
             &booted.delegation_runtime_authority,
@@ -1076,7 +1078,7 @@ fn runtime_owner_access(
 fn assemble_services<A: FlavorApp>(
     app_ctx: &AppContext,
     registry: &Arc<FlavorRegistryFrozen>,
-    deployment_tool_scope: &ToolScope,
+    deployment_served_surface: &ServedSurface,
     authenticator: Option<&Arc<dyn Authenticator>>,
     owner_access: &Arc<dyn OwnerAccessPort>,
     runtime_authority: &DelegationRuntimeAuthority,
@@ -1111,7 +1113,7 @@ fn assemble_services<A: FlavorApp>(
             owner_access.clone(),
             authenticator.clone(),
             registry.clone(),
-            deployment_tool_scope.clone(),
+            deployment_served_surface.clone(),
             runtime_authority,
         ))?;
     }
@@ -1140,7 +1142,7 @@ fn resolve_mcp_edge(
 ) -> crate::McpEdge {
     let engine = app_ctx.host().engine.clone();
     let services = app_ctx.host().services.clone();
-    let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
+    let mut edge_auth = McpEdgeAuth::headless().with_served_surface(config.served_surface.clone());
     if let Some(authenticator) = parts.authenticator.clone() {
         // The runtime's one owner-access port resolves ordinary memberships
         // and a forwarder's verified owner claim. Registration comes from
@@ -1362,7 +1364,7 @@ mod tests {
         let services = assemble_services::<AlphaApp>(
             &app_ctx,
             &registry,
-            &ToolScope::All,
+            &ServedSurface::All,
             None,
             &runtime_owner_access(&app_ctx, None, None),
             &delegation_runtime,
@@ -1408,7 +1410,7 @@ mod tests {
         let services = assemble_services::<AlphaApp>(
             &app_ctx,
             &registry,
-            &ToolScope::All,
+            &ServedSurface::All,
             Some(&authenticator),
             &runtime_owner_access(&app_ctx, None, None),
             &delegation_runtime,
@@ -1465,7 +1467,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
@@ -1485,7 +1487,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_hosts(vec!["proxy.example.com:8443".to_string()])
             .authenticator(Arc::new(StubAuth { owner }))
@@ -1508,7 +1510,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_origins(vec!["https://app.example.com".to_string()])
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
@@ -1542,7 +1544,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -1573,7 +1575,7 @@ mod tests {
             .database_url("postgres://unused/db")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -1604,7 +1606,7 @@ mod tests {
                     })
             })
             .expect("injected pool lookup")
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .resolve()
             .expect("resolved runtime config");
 
@@ -1617,7 +1619,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .build()
             .await
@@ -1632,7 +1634,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allow_insecure_single_owner()
             .expose_network(true)
@@ -1650,7 +1652,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("0.0.0.0:31415".parse().unwrap())
             .allow_insecure_single_owner()
             .build()
@@ -1667,7 +1669,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .expose_network(true)
             .authenticator(Arc::new(StubAuth { owner }))
@@ -1694,7 +1696,7 @@ mod tests {
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:31415".parse().unwrap())
             .allowed_origins(vec!["*".to_string()])
             .authenticator(Arc::new(StubAuth { owner }))
@@ -1709,10 +1711,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_refuses_missing_tool_scope_with_config_error() {
+    async fn build_refuses_missing_served_surface_with_config_error() {
         // Fail-closed default: an embedding host that never calls
-        // `.tool_scope(...)` gets a config error instead of silently
-        // advertising `ToolScope::All`.
+        // `.served_surface(...)` gets a config error instead of silently
+        // advertising `ServedSurface::All`.
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
             .platform_database_url("postgres://unused/platform")
@@ -1722,6 +1724,6 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ProximaError::Config(_)));
-        assert!(err.to_string().contains("tool_scope is required"));
+        assert!(err.to_string().contains("served_surface is required"));
     }
 }

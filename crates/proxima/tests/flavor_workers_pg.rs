@@ -13,7 +13,7 @@ use proxima::flavor::{
     FlavorBundle, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext,
     NamedMigrator,
 };
-use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owner};
+use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ServedSurface, company_owner};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerId, Role, UserId,
 };
@@ -91,7 +91,7 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind(occupied.local_addr()?)
             .run()
             .await

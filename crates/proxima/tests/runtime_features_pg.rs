@@ -15,7 +15,7 @@ use proxima::flavor::{
 };
 use proxima::{
     AppInfo, BootReport, DurableIntake, Feature, FeatureControl, FeatureControlError, FeatureState,
-    FeatureStatus, FlavorApp, Intake, IntakeError, Proxima, ReceivedEvent, ToolScope,
+    FeatureStatus, FlavorApp, Intake, IntakeError, Proxima, ReceivedEvent, ServedSurface,
     company_owner,
 };
 use proxima_core::publication::{PublicationConfig, PublicationSource};
@@ -257,7 +257,7 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect("bare boot");
@@ -304,7 +304,7 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
             .platform_database_url(db.platform_url())
             .owner(owner)
             .authenticator(Arc::new(StubAuth { subject, owner }))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:0".parse().expect("loopback bind"))
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 "features-embed",
@@ -381,7 +381,7 @@ async fn a_retention_without_a_publisher_is_off_and_says_so() {
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .published_retention(Duration::from_mins(1))
         .build()
         .await

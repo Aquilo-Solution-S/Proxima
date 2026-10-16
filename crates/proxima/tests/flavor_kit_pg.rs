@@ -12,7 +12,7 @@ use std::borrow::Cow;
 
 use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry};
 use proxima::testkit::{SplitRoleDb, assert_trigger_migrations, scoped_authz};
-use proxima::{AppInfo, FlavorApp, Proxima, QueryRequest, ToolScope, company_owner};
+use proxima::{AppInfo, FlavorApp, Proxima, QueryRequest, ServedSurface, company_owner};
 use proxima_core::flavor::{
     EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
     SearchProjectionDecl, TransferRule,
@@ -318,7 +318,7 @@ mod kit_full {
     }
 
     fn configure(builder: proxima::RuntimeBuilder) -> proxima::RuntimeBuilder {
-        builder.tool_scope(proxima::ToolScope::All)
+        builder.served_surface(proxima::ServedSurface::All)
     }
 
     #[allow(clippy::unnecessary_wraps, reason = "FlavorApp::services signature")]
@@ -452,7 +452,7 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect("an installer-only owner-RLS migration passes the runtime RLS guard");
@@ -514,7 +514,7 @@ async fn per_table_installer_calls_boot_under_the_runtime_rls_guard() {
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect("a schema of per-table owner-RLS calls passes the runtime RLS guard");
@@ -559,7 +559,7 @@ async fn a_table_added_without_a_call_refuses_boot() {
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect_err("a table without the policies must refuse the boot");
@@ -583,7 +583,7 @@ async fn the_census_refuses_a_migration_that_forgot_a_table() {
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect_err("the census must refuse a table without the policies");
@@ -604,7 +604,7 @@ async fn an_unclassified_table_refuses_the_migration() {
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect_err("an unclassified table must refuse the boot");
@@ -625,7 +625,7 @@ async fn a_flavor_definer_view_refuses_boot_and_names_the_view() {
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect_err("an ordinary definer view must refuse split-role boot");
@@ -646,7 +646,7 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .build()
         .await
         .expect("a security_invoker view passes split-role boot");

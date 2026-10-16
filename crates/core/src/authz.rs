@@ -70,11 +70,10 @@ pub enum TrustedModelIdError {
     TooLong { chars: usize, max: usize },
 }
 
-/// WHAT: tool palette + access scope, separate from identity.
+/// The exact keys one caller may reach, including reads and resources.
 ///
-/// A palette holds typed [`ScopeKey`]s. Text becomes a key where it enters
-/// ([`ScopeKey::parse`]); every question below compares keys, and a request
-/// name that is no key is held by no palette.
+/// Text becomes a typed key at its boundary ([`ScopeKey::parse`]). A bare
+/// dispatcher name grants none of its action leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolScope {
     All,
@@ -82,37 +81,6 @@ pub enum ToolScope {
 }
 
 impl ToolScope {
-    /// The admission predicate a palette applies to a flat key, in a call or
-    /// a listing: `declared` is an
-    /// [open read](crate::mcp::KeyDeclaration::is_open_read), **or** the
-    /// palette holds `key`.
-    ///
-    /// A palette narrows what a caller may *change*, and the owner's own
-    /// keys; it never narrows a read for every audience. `declared` is the
-    /// declaration of exactly the key judged — a flat tool's, a host tool's,
-    /// a core resource's — never a tool-level join. Undeclared takes no read
-    /// path: silence is a write. Owner authorization is a separate gate that
-    /// still runs after this one.
-    #[must_use]
-    pub fn admits(&self, key: &ScopeKey, declared: crate::mcp::KeyDeclaration) -> bool {
-        declared.is_open_read() || self.allows(key)
-    }
-
-    /// [`Self::admits`] for one `action` of dispatcher `tool`: `declared` is
-    /// the action's own declaration, and membership is the leaf
-    /// ([`Self::allows_action`]).
-    #[must_use]
-    pub fn admits_action(
-        &self,
-        tool: &ToolName,
-        action: &ActionName,
-        declared: crate::mcp::KeyDeclaration,
-    ) -> bool {
-        declared.is_open_read() || self.allows_action(tool, action)
-    }
-
-    /// Exact membership: whether the palette holds `key`. A bare dispatcher
-    /// name does not hold its leaves, and a leaf does not hold its tool.
     #[must_use]
     pub fn allows(&self, key: &ScopeKey) -> bool {
         match self {
@@ -121,8 +89,7 @@ impl ToolScope {
         }
     }
 
-    /// The call gate: whether a call of `action` on dispatcher `tool` may
-    /// run. Needs the leaf `tool:action`; the bare tool is not enough.
+    /// An action requires its exact `tool:action` leaf.
     #[must_use]
     pub fn allows_action(&self, tool: &ToolName, action: &ActionName) -> bool {
         self.holds(|entry| {
@@ -131,95 +98,117 @@ impl ToolScope {
         })
     }
 
-    /// Advertisement: whether a listing may show `action` of dispatcher
-    /// `tool`. Either the bare `tool` or the leaf `tool:action` is enough.
-    ///
-    /// Wider than [`Self::allows_action`] for a hand-built palette that holds
-    /// a bare dispatcher name: the listing shows its actions and a call of
-    /// one is refused. Canonical palettes never hold one
-    /// ([`canonical_scope_keys`](crate::canonical_scope_keys)); whether the
-    /// call gate should follow the listing is an authorization decision of
-    /// its own.
     #[must_use]
     pub fn advertises_action(&self, tool: &ToolName, action: &ActionName) -> bool {
-        self.holds_tool(tool) || self.allows_action(tool, action)
+        self.allows_action(tool, action)
     }
 
-    /// Delegation: whether a delegated command (a flat tool, or one action of
-    /// a dispatcher) lies inside this scope. As [`Self::advertises_action`],
-    /// the bare tool or the leaf is enough for an action; a flat tool needs
-    /// its own key.
+    /// Delegation requires the same exact key as invocation.
     #[must_use]
     pub fn covers_command(&self, tool: &ToolName, action: Option<&ActionName>) -> bool {
         match action {
-            Some(action) => self.advertises_action(tool, action),
-            None => self.holds_tool(tool),
+            Some(action) => self.allows_action(tool, action),
+            None => self.allows(&ScopeKey::Tool(tool.clone())),
         }
     }
 
-    /// Whether a dispatcher `tool` may be advertised at all: its bare name or
-    /// any one of its leaves.
+    /// Whether any action leaf of this dispatcher is held. Descriptor
+    /// advertisement also checks that the leaf is actually registered.
     #[must_use]
     pub fn allows_group_advertisement(&self, tool: &ToolName) -> bool {
-        self.holds(|entry| match entry {
-            ScopeKey::Tool(held) | ScopeKey::Action { tool: held, .. } => held == tool,
-            ScopeKey::Resource(_) => false,
-        })
+        self.holds(|entry| matches!(entry, ScopeKey::Action { tool: held, .. } if held == tool))
     }
 
-    /// Whether a descriptor may be advertised from this palette.
-    ///
-    /// Flat tools require their exact id. Dispatchers may also be visible
-    /// through one admitted `tool:action` leaf. Treating a flat tool as a
-    /// dispatcher would let a bogus `flat:unknown` entry advertise a tool
-    /// that the invocation gate correctly denies.
     #[must_use]
     pub fn allows_tool_advertisement(&self, tool: &ToolName, has_actions: bool) -> bool {
         if has_actions {
             self.allows_group_advertisement(tool)
         } else {
-            self.holds_tool(tool)
+            self.allows(&ScopeKey::Tool(tool.clone()))
         }
     }
 
-    /// Narrow `self` by `other`, never widening it. Used to layer a
-    /// deployment-wide surface over a caller's own scope: `All` is the
-    /// identity element, and two palettes intersect to the keys both hold,
-    /// by equality: a bare tool does not intersect with its leaves.
-    /// A deployment palette applied to an `All` caller yields the palette;
-    /// applied to an already-narrower caller it keeps only the common keys.
+    /// Restrict one caller scope by another, using exact key equality.
     #[must_use]
-    pub fn intersect(&self, other: &ToolScope) -> ToolScope {
+    pub fn intersect(&self, other: &Self) -> Self {
         match (self, other) {
             (Self::All, scope) | (scope, Self::All) => scope.clone(),
-            (Self::Palette(a), Self::Palette(b)) => {
-                let permitted: HashSet<&ScopeKey> = b.iter().collect();
-                Self::Palette(
-                    a.iter()
-                        .filter(|key| permitted.contains(key))
-                        .cloned()
-                        .collect(),
-                )
+            (Self::Palette(left), Self::Palette(right)) => {
+                Self::Palette(intersect_keys(left, right))
             }
         }
     }
 
-    /// `All` holds every key; a palette holds the ones `matches` accepts.
     fn holds(&self, matches: impl Fn(&ScopeKey) -> bool) -> bool {
         match self {
             Self::All => true,
             Self::Palette(allowed) => allowed.iter().any(matches),
         }
     }
+}
 
-    fn holds_tool(&self, tool: &ToolName) -> bool {
-        self.holds(|entry| matches!(entry, ScopeKey::Tool(held) if held == tool))
+/// What the deployment serves: configured commands and every declared read.
+///
+/// This policy never grants a caller a key. [`CapabilitySet`] also checks the
+/// caller's exact [`ToolScope`], including for resources and owner reads.
+///
+/// ```compile_fail,E0308
+/// use proxima_core::{ServedSurface, ToolScope};
+/// let _: ServedSurface = ToolScope::All;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServedSurface {
+    All,
+    Palette(Vec<ScopeKey>),
+}
+
+impl ServedSurface {
+    /// Judge the declaration of this exact registered key. An undeclared
+    /// name receives no automatic read admission.
+    #[must_use]
+    pub fn admits(&self, key: &ScopeKey, declared: crate::mcp::KeyDeclaration) -> bool {
+        declared.is_read()
+            || match self {
+                Self::All => true,
+                Self::Palette(keys) => keys.contains(key),
+            }
+    }
+
+    #[must_use]
+    pub fn admits_action(
+        &self,
+        tool: &ToolName,
+        action: &ActionName,
+        declared: crate::mcp::KeyDeclaration,
+    ) -> bool {
+        ScopeKey::action(tool.clone(), action.clone()).is_ok_and(|key| self.admits(&key, declared))
+    }
+
+    /// Restrict configured commands, retaining mandatory declared reads.
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::All, surface) | (surface, Self::All) => surface.clone(),
+            (Self::Palette(left), Self::Palette(right)) => {
+                Self::Palette(intersect_keys(left, right))
+            }
+        }
     }
 }
 
+fn intersect_keys(left: &[ScopeKey], right: &[ScopeKey]) -> Vec<ScopeKey> {
+    let permitted: HashSet<&ScopeKey> = right.iter().collect();
+    left.iter()
+        .filter(|key| permitted.contains(key))
+        .cloned()
+        .collect()
+}
+
+/// Caller authority and deployment policy, kept distinct through admission.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilitySet {
     pub tool_scope: ToolScope,
+    pub served_surface: ServedSurface,
 }
 
 impl CapabilitySet {
@@ -227,7 +216,24 @@ impl CapabilitySet {
     pub fn all() -> Self {
         Self {
             tool_scope: ToolScope::All,
+            served_surface: ServedSurface::All,
         }
+    }
+
+    #[must_use]
+    pub fn admits(&self, key: &ScopeKey, declared: crate::mcp::KeyDeclaration) -> bool {
+        self.tool_scope.allows(key) && self.served_surface.admits(key, declared)
+    }
+
+    #[must_use]
+    pub fn admits_action(
+        &self,
+        tool: &ToolName,
+        action: &ActionName,
+        declared: crate::mcp::KeyDeclaration,
+    ) -> bool {
+        self.tool_scope.allows_action(tool, action)
+            && self.served_surface.admits_action(tool, action, declared)
     }
 }
 
@@ -662,6 +668,16 @@ impl AuthzContext {
     }
 
     #[must_use]
+    pub const fn capabilities(&self) -> &CapabilitySet {
+        &self.capabilities
+    }
+
+    #[must_use]
+    pub const fn served_surface(&self) -> &ServedSurface {
+        &self.capabilities.served_surface
+    }
+
+    #[must_use]
     pub fn can_access_owner(&self, owner: &OwnerId) -> bool {
         self.identity.can_access_principal(owner)
     }
@@ -822,6 +838,16 @@ impl AuthzContext {
     #[must_use]
     pub fn with_tool_scope(mut self, tool_scope: ToolScope) -> Self {
         self.capabilities.tool_scope = tool_scope;
+        self
+    }
+
+    /// Restrict deployment policy without widening an existing restriction.
+    #[must_use]
+    pub fn with_served_surface(mut self, served_surface: ServedSurface) -> Self {
+        self.capabilities.served_surface = match self.capabilities.served_surface {
+            ServedSurface::All => served_surface,
+            current @ ServedSurface::Palette(_) => current.intersect(&served_surface),
+        };
         self
     }
 
@@ -1066,6 +1092,7 @@ impl AuthzContext {
             },
             capabilities: CapabilitySet {
                 tool_scope: ToolScope::Palette(Vec::new()),
+                served_surface: ServedSurface::Palette(Vec::new()),
             },
             auth_path: AuthPath::Denied,
             owner_roles: None,
@@ -2035,28 +2062,74 @@ mod tests {
         assert!(!scope.allows(&key(protocol_action::CORE_GOAL_SET)));
     }
 
-    /// #462: `admits` is membership or a read for every audience;
-    /// undeclared, writes and the owner's own reads need membership.
     #[test]
-    fn admits_shared_reads_under_every_palette_and_the_rest_only_by_membership() {
+    fn deployment_admits_declared_reads_but_callers_require_exact_keys() {
         use crate::mcp::KeyDeclaration;
         use crate::{McpToolAudience, Replay, ToolEffect};
-        let empty = ToolScope::Palette(Vec::new());
-        let key = ScopeKey::Tool(tool(protocol_tool::CORE_REMEMBER));
+        let empty = ServedSurface::Palette(Vec::new());
+        let search_key = key(protocol_tool::CORE_SEARCH_MEMORIES);
+        let read = KeyDeclaration::shared(Some(ToolEffect::ReadOnly));
         let owner_read = KeyDeclaration {
-            effect: Some(ToolEffect::ReadOnly),
+            effect: read.effect,
             audience: McpToolAudience::Owner,
         };
-        assert!(empty.admits(&key, KeyDeclaration::shared(Some(ToolEffect::ReadOnly))));
-        assert!(!empty.admits(&key, KeyDeclaration::UNDECLARED));
+        assert!(empty.admits(&search_key, read));
+        assert!(empty.admits(&search_key, owner_read));
+        assert!(!empty.admits(&search_key, KeyDeclaration::UNDECLARED));
         assert!(!empty.admits(
-            &key,
+            &search_key,
             KeyDeclaration::shared(Some(ToolEffect::Additive(Replay::Idempotent)))
         ));
-        assert!(!empty.admits(&key, owner_read));
-        let holding = ToolScope::Palette(vec![key.clone()]);
-        assert!(holding.admits(&key, KeyDeclaration::UNDECLARED));
-        assert!(holding.admits(&key, owner_read));
+        let holding = ServedSurface::Palette(vec![search_key.clone()]);
+        assert!(holding.admits(&search_key, KeyDeclaration::UNDECLARED));
+        assert!(holding.admits(&search_key, owner_read));
+        let mut capabilities = CapabilitySet {
+            tool_scope: palette(&[]),
+            served_surface: empty,
+        };
+        for declaration in [read, owner_read, KeyDeclaration::UNDECLARED] {
+            assert!(!capabilities.admits(&search_key, declaration));
+        }
+        capabilities.tool_scope = palette(&[
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            protocol_resource::MEMORY,
+        ]);
+        assert!(capabilities.admits(&search_key, read));
+        assert!(capabilities.admits(&search_key, owner_read));
+        assert!(!capabilities.admits(&search_key, KeyDeclaration::UNDECLARED));
+        assert!(capabilities.admits(&key(protocol_resource::MEMORY), read));
+        assert!(!capabilities.admits(&key(protocol_resource::GRAPH), read));
+    }
+
+    #[test]
+    fn deployment_restrictions_survive_narrowing_and_cannot_be_reopened() {
+        let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let surface = ServedSurface::Palette(vec![key(protocol_tool::CORE_REMEMBER)]);
+        let context = AuthzContext::single_owner(&owner, AuthPath::HostBearer)
+            .with_tool_scope(palette(&[protocol_tool::CORE_SEARCH_MEMORIES]))
+            .with_served_surface(surface.clone())
+            .with_served_surface(ServedSurface::All);
+        assert_eq!(context.served_surface(), &surface);
+        assert_eq!(
+            context.capabilities().tool_scope,
+            palette(&[protocol_tool::CORE_SEARCH_MEMORIES])
+        );
+        let narrowed = context
+            .clone()
+            .narrowed_to_owner(owner)
+            .expect("the authenticated owner");
+        assert_eq!(narrowed.capabilities(), context.capabilities());
+        let disjoint = narrowed.with_served_surface(ServedSurface::Palette(vec![key(
+            protocol_tool::CORE_FORGET,
+        )]));
+        assert_eq!(
+            disjoint.served_surface(),
+            &ServedSurface::Palette(Vec::new())
+        );
+        assert!(disjoint.capabilities().admits(
+            &key(protocol_tool::CORE_SEARCH_MEMORIES),
+            crate::mcp::KeyDeclaration::shared(Some(crate::ToolEffect::ReadOnly))
+        ));
     }
 
     #[test]
@@ -2069,7 +2142,7 @@ mod tests {
     }
 
     #[test]
-    fn allows_group_advertisement_accepts_flat_or_leaf_key() {
+    fn allows_group_advertisement_requires_a_leaf_key() {
         let leaf = palette(&[protocol_action::CORE_GOAL_SET]);
         let flat = palette(&[protocol_tool::CORE_GOAL]);
         let unrelated = palette(&[protocol_resource::MEMORY]);
@@ -2077,7 +2150,7 @@ mod tests {
 
         assert!(ToolScope::All.allows_group_advertisement(&goal));
         assert!(leaf.allows_group_advertisement(&goal));
-        assert!(flat.allows_group_advertisement(&goal));
+        assert!(!flat.allows_group_advertisement(&goal));
         assert!(!unrelated.allows_group_advertisement(&goal));
     }
 
@@ -2105,13 +2178,12 @@ mod tests {
         assert_eq!(mem.intersect(&ToolScope::All), mem);
         assert_eq!(ToolScope::All.intersect(&ToolScope::All), ToolScope::All);
 
-        // Two palettes intersect to only the ids both allow — a deployment
-        // scope can never re-add an id the caller's scope omitted.
+        // One caller restriction cannot re-add keys another omitted.
         let caller = palette(&[protocol_resource::MEMORY, protocol_action::CORE_GOAL_SET]);
         let result = mem.intersect(&caller);
         assert!(result.allows(&key(protocol_resource::MEMORY)));
         assert!(!result.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES))); // caller lacked it
-        assert!(!result.allows(&key(protocol_action::CORE_GOAL_SET))); // deployment lacked it
+        assert!(!result.allows(&key(protocol_action::CORE_GOAL_SET))); // the other restriction lacked it
 
         // Disjoint palettes intersect to empty (deny-all), never widening.
         assert_eq!(
@@ -2136,13 +2208,9 @@ mod tests {
         assert_eq!(wide.intersect(&narrow), palette(&["c", "b"]));
     }
 
-    /// The call gate, the advertisement and the delegation rule give the
-    /// answers the three string predicates gave, for the five shapes of
-    /// palette the issue names. The bare dispatcher row pins the asymmetry:
-    /// listed with its actions, refused when one is called. Changing it is a
-    /// one-line edit in `allows_action` and a new row here.
+    /// Invocation, advertisement and delegation all require the same leaf.
     #[test]
-    fn the_three_predicates_answer_as_the_string_matchers_did() {
+    fn caller_invocation_advertisement_and_delegation_require_the_same_key() {
         // The questions, in the column order of the table below.
         const COLUMNS: [&str; 5] = [
             // `allows_action(core_goal, set)`: the call gate.
@@ -2171,7 +2239,7 @@ mod tests {
             (
                 "bare dispatcher",
                 palette(&[protocol_tool::CORE_GOAL]),
-                [false, true, true, false, true],
+                [false; 5],
             ),
             (
                 "flat tool",
@@ -2214,8 +2282,8 @@ mod tests {
         assert!(!scope.covers_command(&tool("resource"), Some(&action("core_goal"))));
     }
 
-    /// The string matchers `ToolScope` used before the keys were typed, kept
-    /// verbatim as the oracle for [`typed_matching_equals_the_string_matchers`].
+    /// An independent string model of exact caller keys, used by
+    /// [`typed_matching_equals_the_string_matchers`].
     mod string_matchers {
         pub(super) fn allows(palette: &[&str], name: &str) -> bool {
             palette.contains(&name)
@@ -2229,7 +2297,7 @@ mod tests {
             let action_prefix = format!("{tool}:");
             palette
                 .iter()
-                .any(|entry| *entry == tool || entry.starts_with(&action_prefix))
+                .any(|entry| entry.starts_with(&action_prefix))
         }
 
         pub(super) fn allows_tool_advertisement(
@@ -2246,13 +2314,13 @@ mod tests {
 
         /// `scope_permits_action`, the listing predicate.
         pub(super) fn advertises_action(palette: &[&str], tool: &str, action: &str) -> bool {
-            palette.contains(&tool) || allows_action(palette, tool, action)
+            allows_action(palette, tool, action)
         }
 
         /// `DelegatedAuthorityService::validate_scopes`' closure.
         pub(super) fn covers_command(palette: &[&str], tool: &str, action: Option<&str>) -> bool {
             match action {
-                Some(action) => allows(palette, tool) || allows_action(palette, tool, action),
+                Some(action) => allows_action(palette, tool, action),
                 None => allows(palette, tool),
             }
         }

@@ -20,7 +20,7 @@ use proxima::flavor::{
     FactPayload, FlavorBundle, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError, NamedMigrator,
 };
-use proxima::{AppInfo, FlavorApp, Proxima, ToolScope, company_owner};
+use proxima::{AppInfo, FlavorApp, Proxima, ServedSurface, company_owner};
 use proxima_core::flavor::{
     EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
     SearchProjectionDecl, TransferRule,
@@ -251,7 +251,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
             .platform_database_url(platform_url.clone())
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await
             .err()
@@ -268,7 +268,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
             .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .publication(PublicationConfig::new(source()))
             .build()
             .await?;
@@ -326,7 +326,7 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
             .platform_database_url(platform_url)
             .owner(company_owner(Uuid::now_v7()))
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let limits = built.host().engine().publication_config().limits;
@@ -366,7 +366,7 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .publication(PublicationConfig::new(source()))
             .build()
             .await?;
@@ -470,7 +470,7 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .publication(
                 PublicationConfig::new(source()).with_limits(PublicationLimits {
                     max_pending: proxima_core::publication::DEFAULT_MAX_PENDING,

@@ -23,7 +23,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, OwnerAccessPort, OwnerId,
-    Relation, Role, ToolScope, UserId,
+    Relation, Role, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use proxima_storage_pg::PgStorage;
@@ -73,7 +73,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
-        .tool_scope(ToolScope::All)
+        .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
@@ -258,7 +258,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     // deployment palette has to be the full surface for it to be served at
     // all — the first thing that must hold for the verb to be reachable.
     let running = Proxima::<ProximaMcpApp>::app()
-        .tool_scope(ToolScope::All)
+        .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))

@@ -123,6 +123,32 @@ fn host_api_builds_a_palette_from_typed_scope_keys() {
 }
 
 #[test]
+fn caller_scope_and_deployment_surface_are_named_through_the_facade() {
+    use proxima::host::{CapabilitySet, RuntimeBuilder, RuntimeConfig, ServedSurface, ToolScope};
+
+    let _: fn(RuntimeBuilder, ServedSurface) -> RuntimeBuilder = RuntimeBuilder::served_surface;
+    let _: fn(&RuntimeConfig) -> &ServedSurface = |config| &config.served_surface;
+    let capabilities = CapabilitySet {
+        tool_scope: ToolScope::Palette(Vec::new()),
+        served_surface: ServedSurface::All,
+    };
+    assert_eq!(capabilities.tool_scope, ToolScope::Palette(Vec::new()));
+    assert_eq!(capabilities.served_surface, ServedSurface::All);
+
+    let key = proxima::flavor::ScopeKey::parse("core_search_memories").expect("a tool key");
+    let sdk_capabilities = proxima::flavor::CapabilitySet {
+        tool_scope: proxima::flavor::ToolScope::Palette(vec![key.clone()]),
+        served_surface: proxima::flavor::ServedSurface::Palette(Vec::new()),
+    };
+    let read = proxima::flavor::KeyDeclaration::shared(Some(proxima::flavor::ToolEffect::ReadOnly));
+    assert!(sdk_capabilities.admits(&key, read));
+    assert!(!sdk_capabilities.admits(
+        &proxima::flavor::ScopeKey::parse("resource:how-to").expect("a resource key"),
+        read,
+    ));
+}
+
+#[test]
 fn delegated_worker_surface_is_available_from_both_supported_facades() {
     fn needs_authority<T: proxima::EngineAuthority + ?Sized>() {}
     fn needs_flavor_authority<T: proxima::flavor::EngineAuthority + ?Sized>() {}

@@ -112,7 +112,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .services(proxima::FlavorServices::with(
             proxima_code::CodeRepoRoots::new(vec![std::env::temp_dir()])?,
         ))
-        .tool_scope(ToolScope::All)
+        .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .s3(s3)
@@ -538,6 +538,33 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 #[allow(clippy::too_many_lines)] // linear e2e: auth + two surfaces read best in one flow
 async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug)]
+    struct CallerScopeBySubject;
+    impl proxima_auth_oidc::OidcRoleShaper for CallerScopeBySubject {
+        fn shape(
+            &self,
+            context: AuthzContext,
+            token: &proxima_auth_oidc::ValidatedOidcToken<proxima_auth_oidc::OidcClaimMap>,
+        ) -> Result<AuthzContext, proxima_core::AuthError> {
+            let names: &[&str] = match token.claims.subject.as_str() {
+                "rest-operator-sub" => return Ok(context),
+                "exact-command-sub" => &["proxima-code_list_repos"],
+                "exact-reads-sub" => &[
+                    "proxima-code_list_repos",
+                    "core_search_memories",
+                    "resource:memory",
+                ],
+                _ => return Err(proxima_core::AuthError::InvalidCredentials),
+            };
+            Ok(context.with_tool_scope(ToolScope::Palette(
+                names
+                    .iter()
+                    .map(|name| proxima_core::ScopeKey::parse(name).unwrap())
+                    .collect(),
+            )))
+        }
+    }
+
     let (database_url, created_db) = live_database_url().await?;
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
@@ -546,10 +573,12 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let owner_key = owner_header(owner);
     let (enc, resolver) = keypair();
     let mut subject_map = OidcSubjectMap::new();
-    subject_map.insert(ISSUER, "rest-operator-sub", subject)?;
+    for name in ["rest-operator-sub", "exact-command-sub", "exact-reads-sub"] {
+        subject_map.insert(ISSUER, name, subject)?;
+    }
     let owner_access: Arc<dyn OwnerAccessPort> =
         Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
-    let authn = OidcAuthenticator::new(
+    let binding = proxima_auth_oidc::OidcBinding::with_role_shape(
         OidcAuthConfig {
             issuer: ISSUER.to_string(),
             jwks_uri: None,
@@ -560,7 +589,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         Arc::new(resolver),
         subject_map,
         owner_access,
+        proxima_auth_oidc::OidcRoleShape::Host(Arc::new(CallerScopeBySubject)),
     )?;
+    let authn = proxima_auth_oidc::OidcBindingSet::new([binding])?;
 
     let allowed_tools = BTreeSet::from([
         "core_remember".to_string(),
@@ -569,7 +600,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     let running = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .rest_enabled(true)
-        .tool_scope(ToolScope::Palette(
+        .served_surface(proxima_core::ServedSurface::Palette(
             allowed_tools
                 .iter()
                 .map(|tool| {
@@ -737,6 +768,187 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     assert_eq!(list_repos_body["has_more"], false);
     assert_eq!(list_repos_body["next_cursor"], serde_json::Value::Null);
 
+    // #489: the same mounted deployment admits only each caller's exact keys.
+    let remembered = post_rpc(
+        &client,
+        &mcp_url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc":"2.0","id":20,"method":"tools/call","params":{
+                "name":"core_remember","arguments":{
+                    "title":"Scoped memory", "body":"Exact caller scope observation",
+                    "idempotency_key":format!("exact-scope-{}", Uuid::now_v7())
+                }
+            }
+        }),
+    )
+    .await?;
+    let remembered: serde_json::Value = serde_json::from_str(&mcp_text(&remembered))?;
+    let memory = remembered["handle"]
+        .as_str()
+        .ok_or("missing memory handle")?;
+    for (name, reads) in [("exact-command-sub", false), ("exact-reads-sub", true)] {
+        let scoped_bearer = format!("Bearer {}", mint(&enc, name));
+        let scoped_session = initialize(&client, &mcp_url, &scoped_bearer, &owner_key).await?;
+        initialized(&client, &mcp_url, &scoped_session, &scoped_bearer).await?;
+        let listed = post_rpc(
+            &client,
+            &mcp_url,
+            Some(&scoped_session),
+            &scoped_bearer,
+            json!({"jsonrpc":"2.0","id":21,"method":"tools/list","params":{}}),
+        )
+        .await?;
+        let names: BTreeSet<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        let mut expected = BTreeSet::from(["proxima-code_list_repos"]);
+        if reads {
+            expected.insert("core_search_memories");
+        }
+        assert_eq!(names, expected);
+        let resources = post_rpc(
+            &client,
+            &mcp_url,
+            Some(&scoped_session),
+            &scoped_bearer,
+            json!({"jsonrpc":"2.0","id":22,"method":"resources/list","params":{}}),
+        )
+        .await?;
+        assert_eq!(resources["result"]["resources"], json!([]));
+        let templates = post_rpc(
+            &client,
+            &mcp_url,
+            Some(&scoped_session),
+            &scoped_bearer,
+            json!({"jsonrpc":"2.0","id":23,"method":"resources/templates/list","params":{}}),
+        )
+        .await?;
+        let templates = templates["result"]["resourceTemplates"].as_array().unwrap();
+        assert_eq!(templates.len(), usize::from(reads));
+        if reads {
+            assert!(
+                templates[0]["uriTemplate"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("proxima://memory/")
+            );
+        }
+        let response = client
+            .get(&openapi_url)
+            .header("Origin", "http://localhost")
+            .header("Authorization", &scoped_bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let spec: serde_json::Value = response.json().await?;
+        let paths = spec["paths"].as_object().unwrap();
+        let tool_paths: BTreeSet<String> = paths
+            .keys()
+            .filter(|path| {
+                path.strip_prefix("/v1/tools/")
+                    .is_some_and(|rest| !rest.contains('/'))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            tool_paths,
+            expected
+                .iter()
+                .map(|tool| format!("/v1/tools/{tool}"))
+                .collect()
+        );
+        assert!(!paths.contains_key("/v1/how-to"));
+        let resource_paths: Vec<_> = paths
+            .keys()
+            .filter(|path| path.starts_with("/v1/resources/"))
+            .collect();
+        assert_eq!(resource_paths.len(), usize::from(reads));
+        let search = post_rpc(&client, &mcp_url, Some(&scoped_session), &scoped_bearer,
+            json!({"jsonrpc":"2.0","id":24,"method":"tools/call","params":{
+                "name":"core_search_memories","arguments":{"query":"Scoped","mode":"lexical","limit":5}
+            }})).await?;
+        let resource = post_rpc(
+            &client,
+            &mcp_url,
+            Some(&scoped_session),
+            &scoped_bearer,
+            json!({"jsonrpc":"2.0","id":25,"method":"resources/read","params":{
+                "uri":format!("proxima://memory/{memory}")
+            }}),
+        )
+        .await?;
+        if reads {
+            assert!(search.get("error").is_none(), "{search}");
+            assert_ne!(search["result"]["isError"], true, "{search}");
+            let found: serde_json::Value = serde_json::from_str(&mcp_text(&search))?;
+            assert!(
+                found["memories"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|hit| hit["memory"] == memory)
+            );
+            let read: serde_json::Value = serde_json::from_str(
+                resource["result"]["contents"][0]["text"]
+                    .as_str()
+                    .ok_or("missing memory content")?,
+            )?;
+            assert_eq!(read["memory"], memory);
+        } else {
+            assert_eq!(search["error"]["code"], -32600, "{search}");
+            assert_eq!(resource["error"]["code"], -32600, "{resource}");
+        }
+        let repos = client
+            .post(format!("{base}/v1/tools/proxima-code_list_repos"))
+            .header("Origin", "http://localhost")
+            .header("Authorization", &scoped_bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .json(&json!({"limit":5}))
+            .send()
+            .await?;
+        assert_eq!(repos.status(), reqwest::StatusCode::OK);
+        let search = client
+            .post(format!("{base}/v1/tools/core_search_memories"))
+            .header("Origin", "http://localhost")
+            .header("Authorization", &scoped_bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .json(&json!({"query":"Scoped","mode":"lexical","limit":5}))
+            .send()
+            .await?;
+        let resource = client
+            .get(format!("{base}/v1/resources/memory/{memory}"))
+            .header("Origin", "http://localhost")
+            .header("Authorization", &scoped_bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .send()
+            .await?;
+        let expected_status = if reads {
+            reqwest::StatusCode::OK
+        } else {
+            reqwest::StatusCode::FORBIDDEN
+        };
+        assert_eq!(search.status(), expected_status);
+        assert_eq!(resource.status(), expected_status);
+        if reads {
+            let resource: serde_json::Value = resource.json().await?;
+            assert_eq!(resource["memory"], memory);
+        }
+        let guide = client
+            .get(format!("{base}/v1/how-to"))
+            .header("Origin", "http://localhost")
+            .header("Authorization", &scoped_bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .send()
+            .await?;
+        assert_eq!(guide.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
     running.shutdown().await;
     if let Some(name) = created_db {
         let _ = proxima_pg_testkit::drop_db(&name).await;
@@ -780,7 +992,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
-        .tool_scope(ToolScope::All)
+        .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .platform_database_url(platform_url.clone())
         .owner(group_owner)

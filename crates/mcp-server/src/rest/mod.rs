@@ -33,8 +33,8 @@ use proxima_core::mcp::{
 
 use crate::handler::{
     Caller, action_allowed_for_auth, advertised_resource_scope_keys, advertised_tool_ids,
-    annotations_for_auth, project_dispatcher_actions_for_auth, resource_allowed_for_auth,
-    tool_allowed_for_auth,
+    annotations_for_auth, how_to_allowed_for_auth, project_dispatcher_actions_for_auth,
+    resource_allowed_for_auth, tool_allowed_for_auth,
 };
 use crate::rest::context::{RestAuth, author_from_headers, reject_reserved_arguments};
 use crate::rest::error::{Problem, problem_for};
@@ -167,6 +167,16 @@ async fn how_to(
     extensions: axum::http::Extensions,
     RestAuth(auth): RestAuth,
 ) -> Response {
+    if !how_to_allowed_for_auth(Some(&auth)) {
+        return problem_for(
+            &proxima_core::McpToolError::NotAuthorized(
+                proxima_core::protocol::resource::HOW_TO.into(),
+            )
+            .into(),
+            &format!("{PREFIX}/how-to"),
+        )
+        .into_response();
+    }
     let ctx = match listing_ctx(
         &state,
         &auth,
@@ -187,7 +197,7 @@ async fn how_to(
     response
 }
 
-/// The document reflects this caller's `ToolScope`, exactly as `tools/list`
+/// The document reflects both caller and deployment policy, as `tools/list`
 /// does, which is why it is token-specific and never shared-cacheable.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
 async fn openapi(

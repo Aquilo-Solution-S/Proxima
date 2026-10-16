@@ -143,7 +143,7 @@ impl World {
             .database_url(db_url)
             .platform_database_url(platform_url)
             .owner(owner)
-            .tool_scope(crate::ToolScope::All)
+            .served_surface(crate::ServedSurface::All)
             .allow_insecure_single_owner()
             .publication(PublicationConfig::new(
                 PublicationSource::new(PROBE_SOURCE).expect("publication source"),
@@ -470,7 +470,7 @@ async fn an_intake_without_a_publication_source_fails_boot_naming_the_goal_chang
         .database_url(db_url)
         .platform_database_url(platform_url)
         .owner(crate::company_owner(Uuid::now_v7()))
-        .tool_scope(crate::ToolScope::All)
+        .served_surface(crate::ServedSurface::All)
         .allow_insecure_single_owner()
         .outbox_intake(Arc::new(TestIntake::default()))
         .build()

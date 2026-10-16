@@ -38,8 +38,8 @@ pub use handles::{
 };
 pub use manifest::{
     CoreActionMeta, McpToolAnnotations, Replay, ToolEffect, all_core_actions, all_core_resources,
-    canonical_open_read_keys, canonical_scope_keys, canonical_scope_keys_excluding,
-    core_action_meta,
+    canonical_scope_keys, canonical_scope_keys_excluding, canonical_served_read_keys,
+    core_action_meta, how_to_resource_declaration, how_to_resource_key,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolPresentation};

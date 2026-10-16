@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock};
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::host::MigrationError;
 use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily, admin_url, drop_db};
-use proxima::{AppInfo, BuiltProxima, FlavorApp, Proxima, ToolScope};
+use proxima::{AppInfo, BuiltProxima, FlavorApp, Proxima, ServedSurface};
 use proxima_core::{OwnerId, UserId};
 use proxima_storage_pg::PgPoolConfig;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -209,7 +209,7 @@ async fn boot(db: &SplitRoleDb, owner: OwnerId, skip_migrations: bool) -> BuiltP
         .database_url(db.runtime_url())
         .platform_database_url(db.platform_url())
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .pg_pool_config(PgPoolConfig::default());
     let builder = if skip_migrations {
         builder.skip_migrations()

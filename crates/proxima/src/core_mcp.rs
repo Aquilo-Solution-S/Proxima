@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use proxima_core::{
-    AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
-    McpToolDescriptor, McpToolErrorKind, OwnerId, ToolEffect, ToolScope, provider_safe_tool_name,
-    resolve_operator_label, tool_name_matches,
+    AuthzContext, CapabilitySet, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
+    McpToolDescriptor, McpToolErrorKind, OwnerId, ServedSurface, ToolEffect, ToolScope,
+    provider_safe_tool_name, resolve_operator_label, tool_name_matches,
 };
 use proxima_mcp_server::{
     DynamicHandler, McpAuthContext, McpToolHost, ToolInvocationError, ToolListNotifier,
@@ -143,20 +143,24 @@ impl CoreMcpTools {
             .collect::<Vec<_>>()
     }
 
-    /// List registered MCP tools visible under `scope`, each as `scope` sees
-    /// it: a dispatcher's `args_schema` and `effect` cover only the actions
-    /// `scope` admits, so a tool listed for its reads does not offer its
-    /// writes. The palette predicate the MCP surface uses
-    /// ([`McpToolDescriptor::advertised_by`]); no owner role is applied.
+    /// List registered MCP tools held by the caller's exact `scope`.
+    ///
+    /// A dispatcher's schema and effect cover only the held action keys.
+    /// Deployment policy is unrestricted here; no owner role is applied.
     #[must_use]
     pub fn list_core_tools_for_scope(&self, scope: &ToolScope) -> Vec<CoreToolInfo> {
+        let capabilities = CapabilitySet {
+            tool_scope: scope.clone(),
+            served_surface: ServedSurface::All,
+        };
         self.host
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| descriptor.advertised_by(scope))
+            .filter(|descriptor| descriptor.advertised_by(&capabilities))
             .map(|descriptor| {
-                let admitted = |action: &str| descriptor.action_advertised_by(scope, action);
+                let admitted =
+                    |action: &str| descriptor.action_advertised_by(&capabilities, action);
                 CoreToolInfo {
                     args_schema: descriptor.input_schema(admitted),
                     effect: descriptor.effect_over(admitted),

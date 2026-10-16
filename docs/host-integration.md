@@ -81,6 +81,22 @@ scope. It is not an authorization proof.
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.
 
+Tool admission combines two distinct policies. `ServedSurface` configures a
+deployment through `RuntimeBuilder::served_surface`; every declared read-only
+tool/action and core resource remains served. `ToolScope` is the authenticated
+caller's exact key set, including reads and resources. `CapabilitySet` applies
+both policies before the independent owner-role gate. Neither policy supplies
+owner authority.
+
+A dispatcher requires its declared action key, such as `core_upload:read_url`.
+A resource requires its template or static key, such as `resource:memory`;
+`resource:how-to` controls the guide too. A bare dispatcher does not grant its
+actions. Listings and calls use the same actual declaration, including dynamic
+host tools. Custom role shaping may narrow each policy without converting one
+into the other. Replace deployment `.tool_scope(...)` calls with
+`.served_surface(ServedSurface::...)` and `tool_palette_excluding` with
+`served_surface_excluding`; retain `ToolScope` for caller scopes.
+
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor

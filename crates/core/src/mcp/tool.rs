@@ -1,6 +1,6 @@
 use futures::future::BoxFuture;
 
-use crate::{ActionName, ScopeKey, ScopeKeyError, ToolCaller, ToolCtx, ToolName, ToolScope};
+use crate::{ActionName, CapabilitySet, ScopeKey, ScopeKeyError, ToolCaller, ToolCtx, ToolName};
 
 use super::{McpToolCtx, McpToolError, McpToolPresentation};
 
@@ -13,12 +13,9 @@ pub enum McpToolOrigin {
 /// Who a tool or action is for.
 ///
 /// Hosts that compute separate tool surfaces per audience partition on this
-/// declaration instead of hardcoding tool names: a non-owner palette leaves
-/// the owner's keys out. The scope gate reads it for one thing only: a
-/// palette admits every read *for every audience* whatever it holds, and an
-/// owner-audience read stays with the palette
-/// ([`KeyDeclaration::is_open_read`]), so that partition keeps holding for
-/// reads. An enum rather than a flag so the declaration site names its
+/// declaration instead of hardcoding tool names: a non-owner caller scope
+/// leaves the owner's keys out, including reads. An enum rather than a flag
+/// so the declaration site names its
 /// meaning, and a future audience is a new variant instead of a second bool
 /// that has to be read together with the first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -34,7 +31,7 @@ pub enum McpToolAudience {
 
 /// What one scope key declares: what it does and who it is for. The scope
 /// gate, the owner-role gate and every listing judge a key by this one
-/// value ([`ToolScope::admits`], [`McpToolDescriptor::declaration`]).
+/// value ([`CapabilitySet::admits`], [`McpToolDescriptor::declaration`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyDeclaration {
     /// `None` for a name nothing declares, which every gate reads as a write.
@@ -62,9 +59,8 @@ impl KeyDeclaration {
             .is_some_and(crate::mcp::ToolEffect::is_read_only)
     }
 
-    /// Whether every palette admits this key: a read for every audience. An
-    /// owner-audience read stays with the palette, so a host's non-owner
-    /// surface keeps it out.
+    /// Whether this read is declared for every audience. Caller scope
+    /// membership is still required for both shared and owner reads.
     #[must_use]
     pub fn is_open_read(self) -> bool {
         self.is_read() && self.audience == McpToolAudience::Shared
@@ -362,14 +358,14 @@ impl McpToolDescriptor {
             .collect()
     }
 
-    /// The subset of [`Self::palette_keys`] every palette admits: its
-    /// [open reads](KeyDeclaration::is_open_read), judged per action.
+    /// The subset of [`Self::palette_keys`] every deployment serves: declared
+    /// reads, judged per action and including owner-audience reads.
     ///
     /// # Panics
     ///
     /// As [`Self::palette_keys`].
     #[must_use]
-    pub fn open_read_keys(&self) -> Vec<ScopeKey> {
+    pub fn served_read_keys(&self) -> Vec<ScopeKey> {
         self.palette_keys()
             .into_iter()
             .filter(|key| {
@@ -378,7 +374,7 @@ impl McpToolDescriptor {
                     ScopeKey::Action { action, .. } => self.declaration(Some(action.as_str())),
                     ScopeKey::Resource(_) => KeyDeclaration::UNDECLARED,
                 }
-                .is_open_read()
+                .is_read()
             })
             .collect()
     }
@@ -427,47 +423,34 @@ impl McpToolDescriptor {
             .into_iter()
     }
 
-    /// Whether `scope` lets a listing show this tool: one of its keys is an
-    /// [open read](KeyDeclaration::is_open_read), which every palette admits
-    /// (per action, never the tool-level join); or the palette holds a flat
-    /// tool's own key, or a dispatcher's bare name or any one leaf
-    /// ([`ToolScope::allows_tool_advertisement`]). A name that is no key is
-    /// in no palette.
+    /// Whether any actual command of this descriptor is admitted. Dispatchers
+    /// are listed only when at least one registered leaf can be invoked.
     #[must_use]
-    pub fn advertised_by(&self, scope: &ToolScope) -> bool {
-        match scope {
-            ToolScope::All => true,
-            ToolScope::Palette(_) => {
-                let dispatches =
-                    !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty();
-                let open_read = if dispatches {
-                    self.actions()
-                        .any(|(action, _)| self.declaration(Some(action)).is_open_read())
-                } else {
-                    self.declaration(None).is_open_read()
-                };
-                open_read
-                    || ToolName::parse(self.name)
-                        .is_ok_and(|tool| scope.allows_tool_advertisement(&tool, dispatches))
-            }
+    pub fn advertised_by(&self, capabilities: &CapabilitySet) -> bool {
+        let dispatches = !self.action_arg_specs.is_empty() || !self.argv_action_specs.is_empty();
+        if dispatches {
+            self.actions()
+                .any(|(action, _)| self.action_advertised_by(capabilities, action))
+        } else {
+            ToolName::parse(self.name).is_ok_and(|tool| {
+                capabilities.admits(&ScopeKey::Tool(tool), self.declaration(None))
+            })
         }
     }
 
-    /// Whether `scope` lets a listing show one `action` of this dispatcher:
-    /// the action is an [open read](KeyDeclaration::is_open_read), or the
-    /// palette advertises it ([`ToolScope::advertises_action`]). An action
-    /// name that is no key is in no palette.
+    /// Listing and invocation judge the same registered leaf declaration.
     #[must_use]
-    pub fn action_advertised_by(&self, scope: &ToolScope, action: &str) -> bool {
-        match scope {
-            ToolScope::All => true,
-            ToolScope::Palette(_) => {
-                self.declaration(Some(action)).is_open_read()
-                    || ToolName::parse(self.name)
-                        .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
-                        .is_ok_and(|(tool, action)| scope.advertises_action(&tool, &action))
-            }
-        }
+    pub fn action_advertised_by(&self, capabilities: &CapabilitySet, action: &str) -> bool {
+        self.actions().any(|(known, _)| known == action)
+            && ToolName::parse(self.name)
+                .and_then(|tool| ActionName::parse(action).map(|action| (tool, action)))
+                .is_ok_and(|(tool, action)| {
+                    capabilities.admits_action(
+                        &tool,
+                        &action,
+                        self.declaration(Some(action.as_str())),
+                    )
+                })
     }
 }
 

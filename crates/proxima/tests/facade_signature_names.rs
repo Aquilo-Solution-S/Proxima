@@ -282,11 +282,11 @@ facade_names! {
         both_tiers: [],
     }
 
-    // Needed by `ToolScope::Palette`, its matchers, `canonical_scope_keys*` and
+    // Needed by exact caller scopes, deployment surfaces, and their shared admission.
     // `McpToolDescriptor::{palette_keys, owner_only_keys}`.
     scope_keys {
-        host_only: [ActionName, ResourceKey, ScopeKey, ScopeKeyError, ToolName],
-        both_tiers: [],
+        host_only: [],
+        both_tiers: [ActionName, CapabilitySet, KeyDeclaration, ResourceKey, ScopeKey, ScopeKeyError, ServedSurface, ToolName, ToolScope],
     }
 
     // Needed by `pending_migrations`, the read-only plan beside the runner.

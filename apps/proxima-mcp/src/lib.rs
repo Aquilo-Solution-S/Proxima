@@ -27,7 +27,8 @@ use proxima_core::llm::{
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
-    FlavorRegistry, FlavorRegistryError, ScopeKey, ToolScope, all_core_actions, all_core_resources,
+    FlavorRegistry, FlavorRegistryError, ScopeKey, ServedSurface, all_core_actions,
+    all_core_resources,
 };
 use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
 use proxima_storage_pg::{
@@ -218,10 +219,10 @@ impl FlavorApp for BlobMaintenanceApp {
         }
     }
 
-    /// Serves no tools: the empty palette satisfies the required scope
-    /// without granting any.
+    /// Supply the required deployment policy for this maintenance runtime,
+    /// which starts without an MCP listener.
     fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
-        builder.tool_scope(ToolScope::Palette(Vec::new()))
+        builder.served_surface(ServedSurface::Palette(Vec::new()))
     }
 }
 
@@ -591,12 +592,12 @@ fn build_app(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
     let registered = registered_tool_ids()?;
-    let tool_scope = tool_scope_from_env(&lookup, &registered)?;
+    let served_surface = served_surface_from_env(&lookup, &registered)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_lookup(&lookup)?
         .database_url(config.database_url)
-        .tool_scope(tool_scope)
+        .served_surface(served_surface)
         .embedding_runtime_policy(embedding_policy);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
@@ -725,8 +726,8 @@ enum ToolProfile {
     Code,
 }
 
-/// Every scope key a token may name: one id per flat tool, one `tool:action`
-/// leaf per dispatcher action, plus the resource keys.
+/// Every key deployment configuration may name: one id per flat tool, one
+/// `tool:action` leaf per dispatcher action, plus the resource keys.
 ///
 /// The descriptor's `action_arg_specs` are the enumeration, so a flavor
 /// dispatcher contributes one leaf per action rather than a single bare id.
@@ -742,7 +743,7 @@ fn registered_tool_ids() -> Result<RegisteredKeys, CliError> {
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
     Ok(RegisteredKeys {
         all: proxima_core::canonical_scope_keys(&frozen),
-        open_reads: proxima_core::canonical_open_read_keys(&frozen),
+        served_reads: proxima_core::canonical_served_read_keys(&frozen),
     })
 }
 
@@ -752,16 +753,16 @@ struct RegisteredKeys {
     /// Every canonical key: what `PROXIMA_TOOL_ALLOW` and `PROXIMA_TOOL_DENY`
     /// may name.
     all: Vec<ScopeKey>,
-    /// The keys no palette narrows (reads for every audience): a
+    /// Every declared read and core resource: a
     /// `PROXIMA_TOOL_DENY` entry naming one is refused.
-    open_reads: Vec<ScopeKey>,
+    served_reads: Vec<ScopeKey>,
 }
 
-fn tool_scope_from_env(
+fn served_surface_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     registered: &RegisteredKeys,
-) -> Result<ToolScope, CliError> {
-    resolve_tool_scope(
+) -> Result<ServedSurface, CliError> {
+    resolve_served_surface(
         lookup_non_empty(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
         lookup_non_empty(lookup, PROXIMA_TOOL_ALLOW).as_deref(),
         lookup_non_empty(lookup, PROXIMA_TOOL_DENY).as_deref(),
@@ -769,15 +770,15 @@ fn tool_scope_from_env(
     )
 }
 
-fn resolve_tool_scope(
+fn resolve_served_surface(
     profile_name: Option<&str>,
     allow_raw: Option<&str>,
     deny_raw: Option<&str>,
     registered: &RegisteredKeys,
-) -> Result<ToolScope, CliError> {
+) -> Result<ServedSurface, CliError> {
     // Fail closed. With no PROXIMA_TOOL_PROFILE set, default to `memory` —
-    // which excludes core_transfer (owner transfer of a memory series)
-    // and core_membership. Operators opt into the dangerous surface with
+    // which excludes owner transfer and membership changes. Declared reads
+    // remain served. Operators opt into the dangerous surface with
     // an explicit PROXIMA_TOOL_PROFILE=full.
     let profile = match profile_name {
         Some(name) => parse_tool_profile(name)?,
@@ -788,15 +789,15 @@ fn resolve_tool_scope(
     let deny = parse_tool_id_csv(deny_raw, PROXIMA_TOOL_DENY)?;
     reject_unknown_tool_ids(&allow, registered_ids, PROXIMA_TOOL_ALLOW)?;
     reject_unknown_tool_ids(&deny, registered_ids, PROXIMA_TOOL_DENY)?;
-    reject_open_read_denials(&deny, &registered.open_reads)?;
+    reject_served_read_denials(&deny, &registered.served_reads)?;
 
     if profile == ToolProfile::Full && allow.is_empty() && deny.is_empty() {
         tracing::warn!(
             "PROXIMA_TOOL_PROFILE=full advertises the whole tool surface, including \
-             core_transfer (owner transfer of a memory series) and core_membership; \
+             core_transfer (owner transfer of a memory series) and membership changes; \
              set PROXIMA_TOOL_PROFILE=memory for agent-facing hosts"
         );
-        return Ok(ToolScope::All);
+        return Ok(ServedSurface::All);
     }
 
     let mut palette: BTreeSet<ScopeKey> = match profile {
@@ -809,7 +810,7 @@ fn resolve_tool_scope(
     for key in deny {
         palette.remove(&key);
     }
-    Ok(ToolScope::Palette(palette.into_iter().collect()))
+    Ok(ServedSurface::Palette(palette.into_iter().collect()))
 }
 
 fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
@@ -888,15 +889,16 @@ fn reject_unknown_tool_ids(
     Ok(())
 }
 
-/// Fail closed on a `PROXIMA_TOOL_DENY` entry that names a read for every
-/// audience. Every palette admits such a read (12 §Scope keys), so removing
-/// it narrows nothing: accepted, the entry would be the operator believing a
-/// read is disabled when it never was.
-fn reject_open_read_denials(deny: &[ScopeKey], open_reads: &[ScopeKey]) -> Result<(), CliError> {
-    match deny.iter().find(|id| open_reads.contains(id)) {
+/// Refuse a deployment deny entry naming a mandatory declared read or resource.
+/// Accepting it would imply the deployment had disabled an operation it serves.
+fn reject_served_read_denials(
+    deny: &[ScopeKey],
+    served_reads: &[ScopeKey],
+) -> Result<(), CliError> {
+    match deny.iter().find(|id| served_reads.contains(id)) {
         Some(id) => Err(CliError::Runtime(ProximaError::Config(format!(
-            "{PROXIMA_TOOL_DENY} contains {:?}, a read: a tool profile narrows writes, never \
-             reads, so denying it would disable nothing",
+            "{PROXIMA_TOOL_DENY} contains {:?}, a mandatory read: a served surface narrows configured commands, never \
+             declared reads, so denying it would disable nothing",
             id.to_string()
         )))),
         None => Ok(()),
@@ -1120,23 +1122,27 @@ mod tests {
         registry.try_freeze().expect("freeze")
     }
 
-    /// Every registered key the scope gate admits under `scope`, each judged
-    /// by its own declaration as a call of it is.
+    /// Every registered key served to an unrestricted caller, judged by the
+    /// same combined policy and exact declaration as invocation.
     fn admitted(
         frozen: &proxima_core::FlavorRegistryFrozen,
-        scope: &ToolScope,
+        scope: &ServedSurface,
     ) -> BTreeSet<String> {
+        let capabilities = proxima_core::CapabilitySet {
+            tool_scope: proxima_core::ToolScope::All,
+            served_surface: scope.clone(),
+        };
         proxima_core::canonical_scope_keys(frozen)
             .into_iter()
             .filter(|key| match key {
-                ScopeKey::Tool(tool) => scope.admits(
+                ScopeKey::Tool(tool) => capabilities.admits(
                     key,
                     frozen
                         .mcp_tool(tool.as_str())
                         .expect("registered")
                         .declaration(None),
                 ),
-                ScopeKey::Action { tool, action, .. } => scope.admits_action(
+                ScopeKey::Action { tool, action, .. } => capabilities.admits_action(
                     tool,
                     action,
                     frozen
@@ -1144,7 +1150,12 @@ mod tests {
                         .expect("registered")
                         .declaration(Some(action.as_str())),
                 ),
-                ScopeKey::Resource(resource) => scope.admits(
+                ScopeKey::Resource(resource)
+                    if *resource == proxima_core::mcp::how_to_resource_key() =>
+                {
+                    capabilities.admits(key, proxima_core::mcp::how_to_resource_declaration())
+                }
+                ScopeKey::Resource(resource) => capabilities.admits(
                     key,
                     all_core_resources()
                         .find(|contract| contract.key() == *resource)
@@ -1156,11 +1167,28 @@ mod tests {
             .collect()
     }
 
+    fn configured(surface: &ServedSurface, key: &ScopeKey) -> bool {
+        match surface {
+            ServedSurface::All => true,
+            ServedSurface::Palette(keys) => keys.contains(key),
+        }
+    }
+
+    fn configured_group(surface: &ServedSurface, tool: &proxima_core::ToolName) -> bool {
+        match surface {
+            ServedSurface::All => true,
+            ServedSurface::Palette(keys) => keys.iter().any(|key| match key {
+                ScopeKey::Tool(held) | ScopeKey::Action { tool: held, .. } => held == tool,
+                ScopeKey::Resource(_) => false,
+            }),
+        }
+    }
+
     /// Hand-built registered keys, none of them a read no palette narrows.
     fn registered(all: Vec<ScopeKey>) -> RegisteredKeys {
         RegisteredKeys {
             all,
-            open_reads: Vec::new(),
+            served_reads: Vec::new(),
         }
     }
 
@@ -1191,7 +1219,7 @@ mod tests {
             .platform_database_url(DEFAULT_DATABASE_URL)
             .resolve()
             .expect("maintain-blobs resolves");
-        assert_eq!(config.tool_scope, ToolScope::Palette(Vec::new()));
+        assert_eq!(config.served_surface, ServedSurface::Palette(Vec::new()));
         assert!(config.mcp.is_none());
     }
 
@@ -1215,6 +1243,12 @@ mod tests {
 
         for id in &ids {
             match id {
+                ScopeKey::Resource(resource)
+                    if *resource == proxima_core::mcp::how_to_resource_key() =>
+                {
+                    assert_eq!(id.to_string(), protocol_resource::HOW_TO);
+                    assert!(proxima_core::mcp::how_to_resource_declaration().is_read());
+                }
                 ScopeKey::Resource(_) => {
                     assert!(
                         all_core_resources().any(|resource| resource.scope_key == id.to_string()),
@@ -1427,59 +1461,84 @@ mod tests {
 
         // No PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
         let default_scope =
-            resolve_tool_scope(None, None, None, &registered_ids).expect("default profile");
-        assert!(default_scope.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
-        assert!(!default_scope.allows(&key(protocol_tool::CORE_TRANSFER)));
-        assert!(!default_scope.allows(&key(protocol_tool::CORE_MEMBERSHIP)));
-        assert!(!default_scope.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
+            resolve_served_surface(None, None, None, &registered_ids).expect("default profile");
+        for (name, expected) in [
+            (protocol_tool::CORE_SEARCH_MEMORIES, true),
+            (protocol_tool::CORE_TRANSFER, false),
+            (protocol_tool::CORE_MEMBERSHIP, false),
+            (protocol_action::CORE_TRANSFER_TO_OWNER, false),
+        ] {
+            assert_eq!(
+                configured(&default_scope, &key(name)),
+                expected,
+                "default: {name}"
+            );
+        }
 
         // Explicit `full` still yields the whole surface.
-        let full = resolve_tool_scope(Some(protocol_profile::FULL), None, None, &registered_ids)
-            .expect("full profile");
-        assert_eq!(full, ToolScope::All);
+        let full =
+            resolve_served_surface(Some(protocol_profile::FULL), None, None, &registered_ids)
+                .expect("full profile");
+        assert_eq!(full, ServedSurface::All);
 
         let memory =
-            resolve_tool_scope(Some(protocol_profile::MEMORY), None, None, &registered_ids)
+            resolve_served_surface(Some(protocol_profile::MEMORY), None, None, &registered_ids)
                 .expect("memory profile");
-        assert!(memory.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
-        assert!(memory.allows(&key(protocol_tool::CORE_MEMORY_SPACES)));
-        assert!(memory.allows(&key(protocol_resource::MEMORY)));
-        assert!(memory.allows(&key(protocol_resource::SCHEMAS)));
-        assert!(memory.allows(&key(protocol_action::CORE_FACT_CITATION_OF_FACT)));
-        assert!(memory.allows(&key(protocol_action::CORE_FACT_FACTS_CITING_OBJECT)));
-        assert!(memory.allows(&key(protocol_tool::CORE_FORGET)));
-        assert!(!memory.allows(&key(protocol_tool::CORE_MEMBERSHIP)));
-        assert!(!memory.allows(&key(protocol_tool::CORE_TRANSFER)));
-        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER)));
-        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER)));
-        assert!(!memory.allows(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS)));
-        assert!(!memory.allows(&key(protocol_action::CORE_TRANSFER_TO_OWNER)));
-        assert!(!memory.allows_group_advertisement(&tool(protocol_tool::CORE_MEMBERSHIP)));
-        assert!(!memory.allows_group_advertisement(&tool(protocol_tool::CORE_TRANSFER)));
+        for (name, expected) in [
+            (protocol_tool::CORE_SEARCH_MEMORIES, true),
+            (protocol_tool::CORE_MEMORY_SPACES, true),
+            (protocol_resource::MEMORY, true),
+            (protocol_resource::SCHEMAS, true),
+            (protocol_action::CORE_FACT_CITATION_OF_FACT, true),
+            (protocol_action::CORE_FACT_FACTS_CITING_OBJECT, true),
+            (protocol_tool::CORE_FORGET, true),
+            (protocol_tool::CORE_MEMBERSHIP, false),
+            (protocol_tool::CORE_TRANSFER, false),
+            (protocol_action::CORE_MEMBERSHIP_ADD_MEMBER, false),
+            (protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER, false),
+            (protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS, false),
+            (protocol_action::CORE_TRANSFER_TO_OWNER, false),
+        ] {
+            assert_eq!(configured(&memory, &key(name)), expected, "memory: {name}");
+        }
+        assert!(!configured_group(
+            &memory,
+            &tool(protocol_tool::CORE_MEMBERSHIP)
+        ));
+        assert!(!configured_group(
+            &memory,
+            &tool(protocol_tool::CORE_TRANSFER)
+        ));
 
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
         // consts under the same cfg).
         #[cfg(feature = "code")]
-        assert!(!memory.allows(&key("proxima-code_register_repo")));
-        assert!(memory.allows(&key(protocol_action::CORE_GOAL_SET)));
-        assert!(!memory.allows(&key("proxima-code_emit_execution_request")));
+        assert!(!configured(&memory, &key("proxima-code_register_repo")));
+        assert!(configured(&memory, &key(protocol_action::CORE_GOAL_SET)));
+        assert!(!configured(
+            &memory,
+            &key("proxima-code_emit_execution_request")
+        ));
 
-        let overridden = resolve_tool_scope(
+        let overridden = resolve_served_surface(
             Some(protocol_profile::MEMORY),
             Some("proxima-code_emit_execution_request"),
             Some(protocol_resource::MEMORY),
             &registered_ids,
         )
         .expect("overridden memory profile");
-        assert!(!overridden.allows(&key(protocol_resource::MEMORY)));
-        assert!(overridden.allows(&key("proxima-code_emit_execution_request")));
+        assert!(!configured(&overridden, &key(protocol_resource::MEMORY)));
+        assert!(configured(
+            &overridden,
+            &key("proxima-code_emit_execution_request")
+        ));
     }
 
     #[test]
     fn default_tools_list_excludes_repository_administration() {
         let registered = registered_tool_ids().expect("registered code tools");
-        let scope = resolve_tool_scope(None, None, None, &registered).expect("default palette");
+        let scope = resolve_served_surface(None, None, None, &registered).expect("default palette");
         let listed = admitted(&frozen_registry(), &scope);
         for name in [
             "proxima-code_register_repo",
@@ -1487,16 +1546,18 @@ mod tests {
             "proxima-code_start_ingest_head_snapshot",
             "proxima-code_get_ingest_run",
         ] {
-            assert!(
-                !listed.contains(name),
-                "default tools/list advertises {name}"
+            let mandatory_read = name == "proxima-code_get_ingest_run" && cfg!(feature = "code");
+            assert_eq!(
+                listed.contains(name),
+                mandatory_read,
+                "default tools/list: {name}"
             );
             #[cfg(feature = "code")]
             {
-                let full = resolve_tool_scope(Some("full"), None, None, &registered)
+                let full = resolve_served_surface(Some("full"), None, None, &registered)
                     .expect("full palette");
                 assert!(admitted(&frozen_registry(), &full).contains(name));
-                let explicit = resolve_tool_scope(None, Some(name), None, &registered)
+                let explicit = resolve_served_surface(None, Some(name), None, &registered)
                     .expect("explicit administration grant");
                 assert!(admitted(&frozen_registry(), &explicit).contains(name));
             }
@@ -1505,7 +1566,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_profile_fails_closed() {
-        let err = resolve_tool_scope(Some("unknown"), None, None, &RegisteredKeys::default())
+        let err = resolve_served_surface(Some("unknown"), None, None, &RegisteredKeys::default())
             .expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
     }
@@ -1562,8 +1623,8 @@ mod tests {
     fn code_profile_admits_reads_and_no_write() {
         let frozen = frozen_registry();
         let registered = registered_tool_ids().expect("registered ids");
-        let open_reads: BTreeSet<String> = registered
-            .open_reads
+        let served_reads: BTreeSet<String> = registered
+            .served_reads
             .iter()
             .map(ToString::to_string)
             .collect();
@@ -1573,21 +1634,21 @@ mod tests {
             "proxima-code_search_chunks",
             "proxima-code_search_commits",
         ] {
-            assert!(open_reads.contains(code_read), "{code_read} is a read");
+            assert!(served_reads.contains(code_read), "{code_read} is a read");
         }
 
-        let code = resolve_tool_scope(Some(protocol_profile::CODE), None, None, &registered)
+        let code = resolve_served_surface(Some(protocol_profile::CODE), None, None, &registered)
             .expect("code profile");
-        assert_eq!(admitted(&frozen, &code), open_reads);
+        assert_eq!(admitted(&frozen, &code), served_reads);
 
-        let administered = resolve_tool_scope(
+        let administered = resolve_served_surface(
             Some(protocol_profile::CODE),
             Some("proxima-code_register_repo,proxima-code_start_ingest_head_snapshot"),
             None,
             &registered,
         )
         .expect("code profile with administration");
-        let mut expected = open_reads;
+        let mut expected = served_reads;
         expected.extend([
             "proxima-code_register_repo".to_string(),
             "proxima-code_start_ingest_head_snapshot".to_string(),
@@ -1595,10 +1656,8 @@ mod tests {
         assert_eq!(admitted(&frozen, &administered), expected);
     }
 
-    /// A deny entry naming a read for every audience would narrow nothing,
-    /// so it fails startup instead of being accepted. The owner's own read
-    /// `core_membership:list_members` stays with the palette and is
-    /// deniable.
+    /// Deployment policy always serves declared reads, including Owner
+    /// audience and resources, so a deny entry must fail at startup.
     #[test]
     fn a_denied_read_fails_closed() {
         let registered = registered_tool_ids().expect("registered ids");
@@ -1606,8 +1665,10 @@ mod tests {
             protocol_tool::CORE_SEARCH_MEMORIES,
             "core_upload:read_url",
             protocol_resource::MEMORY,
+            protocol_resource::HOW_TO,
+            protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
         ] {
-            let err = resolve_tool_scope(None, None, Some(read), &registered)
+            let err = resolve_served_surface(None, None, Some(read), &registered)
                 .expect_err("a denied read is refused");
             let message = err.to_string();
             assert!(
@@ -1615,19 +1676,17 @@ mod tests {
                 "{message}"
             );
         }
-        resolve_tool_scope(
-            None,
-            None,
-            Some(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS),
-            &registered,
-        )
-        .expect("an owner-audience read is deniable");
+        assert!(
+            registered
+                .served_reads
+                .contains(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS))
+        );
     }
 
     #[cfg(not(feature = "code"))]
     #[test]
     fn code_profile_needs_the_code_flavor() {
-        let err = resolve_tool_scope(
+        let err = resolve_served_surface(
             Some(protocol_profile::CODE),
             None,
             None,
@@ -1640,7 +1699,7 @@ mod tests {
     #[test]
     fn unknown_deny_entry_typo_fails_closed() {
         let registered_ids = registered(keys([protocol_tool::CORE_SEARCH_MEMORIES]));
-        let err = resolve_tool_scope(None, None, Some("core_memroy"), &registered_ids)
+        let err = resolve_served_surface(None, None, Some("core_memroy"), &registered_ids)
             .expect_err("typo'd deny entry must be rejected, not silently ignored");
         assert!(
             err.to_string().contains(PROXIMA_TOOL_DENY),
@@ -1652,7 +1711,7 @@ mod tests {
     #[test]
     fn unknown_allow_entry_typo_fails_closed() {
         let registered_ids = registered(keys([protocol_tool::CORE_SEARCH_MEMORIES]));
-        let err = resolve_tool_scope(
+        let err = resolve_served_surface(
             Some(protocol_profile::MEMORY),
             Some("core_memroy"),
             None,
@@ -1698,7 +1757,7 @@ mod tests {
                     PROXIMA_TOOL_DENY,
                 ),
             ] {
-                let err = resolve_tool_scope(
+                let err = resolve_served_surface(
                     Some(protocol_profile::MEMORY),
                     allow.as_deref(),
                     deny.as_deref(),
@@ -1726,45 +1785,60 @@ mod tests {
     fn known_deny_entry_still_narrows_scope() {
         let registered_ids = registered(keys([
             protocol_tool::CORE_SEARCH_MEMORIES,
-            protocol_tool::CORE_MEMORY_SPACES,
+            protocol_tool::CORE_FORGET,
         ]));
-        let scope = resolve_tool_scope(
+        let scope = resolve_served_surface(
             None,
             None,
-            Some(protocol_tool::CORE_MEMORY_SPACES),
+            Some(protocol_tool::CORE_FORGET),
             &registered_ids,
         )
         .expect("known deny entry is accepted");
-        assert!(scope.allows(&key(protocol_tool::CORE_SEARCH_MEMORIES)));
-        assert!(!scope.allows(&key(protocol_tool::CORE_MEMORY_SPACES)));
+        assert!(configured(
+            &scope,
+            &key(protocol_tool::CORE_SEARCH_MEMORIES)
+        ));
+        assert!(!configured(&scope, &key(protocol_tool::CORE_FORGET)));
     }
 
-    /// A grouped deny narrows what the gate admits and what a listing shows,
-    /// judged by the runtime predicates. `core_membership` is the owner's
-    /// own tool, so even its read `list_members` stays with the palette.
+    /// Grouped write denials narrow invocation and listing; the membership
+    /// read remains served independently of the configured command keys.
     #[test]
     fn grouped_action_deny_narrows_scope_and_advertisement() {
         let frozen = frozen_registry();
-        let scope = resolve_tool_scope(
+        let scope = resolve_served_surface(
             Some(protocol_profile::FULL),
             None,
-            Some("core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_transfer:transfer_to_owner"),
+            Some("core_membership:add_member,core_membership:remove_member,core_transfer:transfer_to_owner"),
             &registered_tool_ids().expect("registered ids"),
         )
         .expect("known grouped deny entries are accepted");
 
         let admitted = admitted(&frozen, &scope);
+        let capabilities = proxima_core::CapabilitySet {
+            tool_scope: proxima_core::ToolScope::All,
+            served_surface: scope,
+        };
         for tool in [protocol_tool::CORE_MEMBERSHIP, protocol_tool::CORE_TRANSFER] {
             let descriptor = frozen.mcp_tool(tool).expect("registered");
-            assert!(!descriptor.advertised_by(&scope), "{tool} is not listed");
+            let has_read = tool == protocol_tool::CORE_MEMBERSHIP;
+            assert_eq!(
+                descriptor.advertised_by(&capabilities),
+                has_read,
+                "{tool} listing"
+            );
             for (action, _) in descriptor.actions() {
-                assert!(
-                    !descriptor.action_advertised_by(&scope, action),
-                    "{tool}:{action} is not listed"
+                let read =
+                    format!("{tool}:{action}") == protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS;
+                assert_eq!(
+                    descriptor.action_advertised_by(&capabilities, action),
+                    read,
+                    "{tool}:{action} listing"
                 );
-                assert!(
-                    !admitted.contains(&format!("{tool}:{action}")),
-                    "{tool}:{action} is not admitted"
+                assert_eq!(
+                    admitted.contains(&format!("{tool}:{action}")),
+                    read,
+                    "{tool}:{action} admission"
                 );
             }
         }

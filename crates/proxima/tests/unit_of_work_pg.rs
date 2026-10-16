@@ -5,7 +5,7 @@
 mod split_core_db;
 
 use proxima::flavor::{FlavorBundle, NamedMigrator};
-use proxima::{AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, ToolScope, company_owner};
+use proxima::{AppInfo, AuthPath, AuthzContext, FlavorApp, Proxima, ServedSurface, company_owner};
 use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalTopologyWrite,
     IdempotencyKey,
@@ -94,7 +94,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let authz = built.single_owner_authz().expect("single owner");
@@ -313,7 +313,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
             .platform_database_url(platform_url.clone())
             .owner(owner_a)
             .allow_insecure_single_owner()
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let authz = proxima_core::test_fixtures::authenticated_context(

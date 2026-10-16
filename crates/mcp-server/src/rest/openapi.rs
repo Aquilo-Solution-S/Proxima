@@ -25,8 +25,8 @@ use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
 use crate::handler::{
-    Caller, action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
-    resource_allowed_for_auth, tool_allowed_for_auth,
+    Caller, action_allowed_for_auth, annotations_for_auth, how_to_allowed_for_auth,
+    project_dispatcher_actions_for_auth, resource_allowed_for_auth, tool_allowed_for_auth,
 };
 
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
@@ -126,7 +126,7 @@ pub(crate) fn document_for_caller(
 
 /// Build the `OpenAPI` 3.2 document for one caller's scope-filtered surface.
 ///
-/// `tools` and `resources` are already filtered by the caller's `ToolScope`,
+/// `tools` and `resources` are already filtered by both capability policies,
 /// exactly as `tools/list` filters — this function applies no gate of its
 /// own. `public_url` becomes the single `servers` entry when the deployment
 /// knows its externally reachable origin.
@@ -155,6 +155,9 @@ fn document_with(
     for resource in resources {
         collect_resource_path(resource, &mut paths);
     }
+    if caller.auth().is_none() || how_to_allowed_for_auth(caller.auth()) {
+        collect_how_to_path(&mut paths);
+    }
 
     let mut root = Map::new();
     root.insert("openapi".to_string(), json!(OPENAPI_VERSION));
@@ -181,6 +184,24 @@ fn document_with(
     );
     root.insert("components".to_string(), components());
     Value::Object(root)
+}
+
+fn collect_how_to_path(paths: &mut BTreeMap<String, Value>) {
+    let mut operation = Operation {
+        target: OperationTarget::Resource(crate::selfdoc::HOW_TO_NAME),
+        summary: crate::selfdoc::HOW_TO_TITLE.to_string(),
+        description: crate::selfdoc::HOW_TO_DESCRIPTION,
+        parameters: context_parameter_refs(),
+        request_schema: None,
+        produces_schema_ids: &[],
+        output_schema: None,
+        annotations: McpToolAnnotations::registered(ToolEffect::ReadOnly),
+    }
+    .render("get");
+    operation["responses"]["200"]["content"] = json!({
+        "text/markdown": { "schema": { "type": "string" } },
+    });
+    paths.insert("/v1/how-to".into(), json!({ "get": operation }));
 }
 
 /// One generated operation. The only thing that differs between the two

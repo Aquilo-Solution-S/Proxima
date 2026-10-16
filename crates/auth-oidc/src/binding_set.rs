@@ -127,7 +127,8 @@ fn narrowed_by_host(
     let tool_scope = shaped.tool_scope().intersect(resolved.tool_scope());
     Ok(shaped
         .with_expires_at(Some(expires_at))
-        .with_tool_scope(tool_scope))
+        .with_tool_scope(tool_scope)
+        .with_served_surface(resolved.served_surface().clone()))
 }
 
 /// One OIDC route: validator, identity map, owner-role resolver, authz shape.
@@ -374,6 +375,23 @@ impl Authenticator for OidcBindingSet {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_shaping_cannot_widen_either_tool_policy() {
+        use proxima_core::{ScopeKey, ServedSurface};
+        let subject = proxima_core::UserId::new(uuid::Uuid::now_v7());
+        let search = ScopeKey::parse("core_search_memories").unwrap();
+        let caller = ToolScope::Palette(vec![search.clone()]);
+        let served = ServedSurface::Palette(vec![search]);
+        let resolved = AuthzContext::for_subject(subject, AuthPath::HostBearer)
+            .with_tool_scope(caller.clone())
+            .with_served_surface(served.clone());
+        let shaped = AuthzContext::for_subject(subject, AuthPath::HostBearer);
+        let expiry = std::time::SystemTime::now() + std::time::Duration::from_mins(1);
+        let narrowed = super::narrowed_by_host(&resolved, shaped, expiry).unwrap();
+        assert_eq!(narrowed.tool_scope(), &caller);
+        assert_eq!(narrowed.served_surface(), &served);
+    }
+
     use std::collections::HashMap;
 
     use async_trait::async_trait;

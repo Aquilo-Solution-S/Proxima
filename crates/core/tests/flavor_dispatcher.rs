@@ -19,7 +19,8 @@ use proxima_core::mcp::{
 };
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId, OwnerId,
-    ScopeKey, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
+    ScopeKey, ServedSurface, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role,
+    proxima_flavor,
 };
 
 /// `CARGO_PKG_NAME` is `proxima-core` inside core's own `tests/`, so the
@@ -339,4 +340,44 @@ async fn a_flavor_dispatcher_validates_arguments_per_action_before_decode() {
         matches!(err, McpToolError::InvalidInput(ref message) if message.contains("id")),
         "got {err:?}",
     );
+}
+
+#[tokio::test]
+async fn deployment_reads_do_not_expand_the_callers_dispatcher_scope() {
+    let registry = frozen();
+    let descriptor = registry.mcp_tool(DISPATCH).expect("registered dispatcher");
+    let read_key = ScopeKey::parse(&format!("{DISPATCH}:look")).expect("read leaf");
+    let surface = ServedSurface::Palette(Vec::new());
+    for (scope, advertised, permitted) in [
+        (ToolScope::All, true, true),
+        (ToolScope::Palette(vec![read_key]), true, true),
+        (
+            ToolScope::Palette(vec![ScopeKey::parse(DISPATCH).expect("bare name")]),
+            false,
+            false,
+        ),
+        (
+            ToolScope::Palette(vec![
+                ScopeKey::parse(&format!("{DISPATCH}:unknown")).expect("unknown leaf"),
+            ]),
+            false,
+            false,
+        ),
+        (ToolScope::Palette(Vec::new()), false, false),
+    ] {
+        let mut context = ctx(&registry, scope);
+        context.authz = context.authz.with_served_surface(surface.clone());
+        assert_eq!(
+            descriptor.advertised_by(context.authz.capabilities()),
+            advertised
+        );
+        assert_eq!(
+            descriptor.action_advertised_by(context.authz.capabilities(), "look"),
+            advertised
+        );
+        assert!(!descriptor.action_advertised_by(context.authz.capabilities(), "touch"));
+        assert!(!descriptor.action_advertised_by(context.authz.capabilities(), "unknown"));
+        let result = run_gate(context, serde_json::json!({"action":"look", "id":"x"})).await;
+        assert_eq!(result.is_ok(), permitted, "{result:?}");
+    }
 }

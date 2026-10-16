@@ -13,7 +13,7 @@ use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload,
     FlavorRegistry, FlavorRegistryError, MemoryId, OwnerId, Role, SchemaId, SchemaVersion,
-    ToolScope, UserId,
+    ServedSurface, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use proxima_storage_pg::PgSidecarKey;
@@ -265,7 +265,7 @@ async fn unknown_pre_reset_ledger_surfaces_typed_reset_error_through_boot() {
             .database_url(db_url.clone())
             .platform_database_url(db_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await
             .expect_err("stale ledger must fail closed through build()");
@@ -305,7 +305,7 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
             .platform_database_url(platform_url)
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .mcp_bind("127.0.0.1:0".parse()?)
             .run()
             .await?;
@@ -370,7 +370,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
             .database_url(runtime_url.clone())
             .platform_database_url(platform_url.clone())
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .build()
             .await?;
         let payload = drain_note("a dropped person's fact");
@@ -401,7 +401,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
             .database_url(runtime_url)
             .platform_database_url(platform_url)
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .owner_drop_proof(Arc::new(DroppedPerson {
                 user,
                 drop_event_id: "drop-1",
@@ -452,7 +452,7 @@ async fn facade_boot_exposes_pg_sidecars_and_drains_embedding_jobs_with_no_extra
             .database_url(runtime_url)
             .platform_database_url(platform_url)
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .embed_client(Arc::new(ConstantEmbedding::prefixed(
                 model_id,
                 &[0.25, 0.5, 0.75],
@@ -517,7 +517,7 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
                 .database_url(runtime_url.clone())
                 .platform_database_url(platform_url.clone())
                 .owner(owner)
-                .tool_scope(ToolScope::All)
+                .served_surface(ServedSurface::All)
         };
 
         // A width no lane indexes must fail fast at boot with Config,

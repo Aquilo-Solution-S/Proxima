@@ -14,7 +14,7 @@ use host_state_fixture::{
 };
 use proxima::{
     AuthPath, AuthzContext, ErrorCode, HostStateOutcome, PgHostStateParticipant, Proxima, Role,
-    ToolScope, company_owner,
+    ServedSurface, company_owner,
 };
 use proxima_core::{AgentNoteV1, GroupId, OwnerId, UserId};
 use proxima_pg_testkit::db_url;
@@ -56,7 +56,7 @@ async fn boot_fixture(
         .platform_database_url(platform_url)
         .owner(owner)
         .allow_insecure_single_owner()
-        .tool_scope(ToolScope::All);
+        .served_surface(ServedSurface::All);
     if let Some(participant) = participant {
         app = app.host_state_participant(participant);
     }

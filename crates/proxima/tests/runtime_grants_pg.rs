@@ -4,7 +4,8 @@
 
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
-    AppInfo, FactWrite, FlavorApp, Proxima, ProximaError, QueryRequest, ToolScope, company_owner,
+    AppInfo, FactWrite, FlavorApp, Proxima, ProximaError, QueryRequest, ServedSurface,
+    company_owner,
 };
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerId, Role, UserId,
@@ -169,7 +170,7 @@ async fn build(
         .database_url(fixture.runtime_url.clone())
         .platform_database_url(fixture.platform_url.clone())
         .owner(owner)
-        .tool_scope(ToolScope::All)
+        .served_surface(ServedSurface::All)
         .runtime_grants(runtime_grants);
     if skip_migrations {
         app = app.skip_migrations();
@@ -421,7 +422,7 @@ async fn runtime_grants_refuse_without_split_roles() {
         let app = Proxima::<CodeGrantsApp>::app()
             .database_url(database_url)
             .owner(owner)
-            .tool_scope(ToolScope::All)
+            .served_surface(ServedSurface::All)
             .runtime_grants(true);
         match platform_database_url {
             Some(url) => app.platform_database_url(url),

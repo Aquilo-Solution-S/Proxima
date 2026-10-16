@@ -125,7 +125,7 @@ pub(super) fn substrate_tool_actions(
 /// Palette, owner role, then every request behavior's `visible`, which only
 /// narrows.
 fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> bool {
-    tool.action_advertised_by(ctx.authz.tool_scope(), action)
+    tool.action_advertised_by(ctx.authz.capabilities(), action)
         && owner_role_permits(ctx, tool.action_is_read_only(action))
         && ctx.behaviors_show(&ToolDescriptorView::registry(tool, Some(action)))
 }
@@ -136,7 +136,7 @@ fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> b
 /// mostly-read CLI tool from a read-capable-only owner because one of its
 /// commands writes. Same rule the MCP server's `tools/list` applies.
 fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
-    if !tool.advertised_by(ctx.authz.tool_scope()) {
+    if !tool.advertised_by(ctx.authz.capabilities()) {
         return false;
     }
     if !tool.action_arg_specs.is_empty() {
