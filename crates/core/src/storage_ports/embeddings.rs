@@ -137,11 +137,13 @@ pub struct EmbeddingAnnObservability {
 #[async_trait::async_trait]
 pub trait EmbeddingJobPort: Send + Sync {
     /// Claim up to `limit` pending jobs in queue order, across every
-    /// space, skipping `skip_owners`' jobs. Each claim carries its space.
+    /// space. Skip entire Owners whose routes failed, and exact Owner/space
+    /// pairs whose clients are paused or waiting. Each claim carries its space.
     async fn claim_pending_embedding_jobs(
         &self,
         limit: i64,
         skip_owners: &[crate::OwnerId],
+        skip_owner_spaces: &[(crate::OwnerId, EmbeddingSpace)],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;

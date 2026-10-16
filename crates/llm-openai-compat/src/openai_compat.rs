@@ -1,8 +1,13 @@
-use std::time::Duration;
+use std::fmt::Write as _;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use proxima_core::PlaintextHosts;
-use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
+use proxima_core::llm::{
+    EmbeddingClient, EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError,
+    MIN_EMBED_INPUT_CAP_CHARS,
+};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
@@ -163,7 +168,7 @@ impl OpenAiEmbeddingResponse {
         caps: EmbedCaps,
     ) -> Result<Vec<Vec<f32>>, LlmError> {
         if self.data.len() != expected_count {
-            return Err(LlmError::Embed(format!(
+            return Err(LlmError::retryable(format!(
                 "requested {} embeddings, response carried {}",
                 expected_count,
                 self.data.len()
@@ -177,7 +182,7 @@ impl OpenAiEmbeddingResponse {
             data.sort_by_key(|d| d.index);
             for (expected_index, datum) in data.iter().enumerate() {
                 if datum.index != Some(expected_index) {
-                    return Err(LlmError::Embed(format!(
+                    return Err(LlmError::retryable(format!(
                         "invalid embedding response index {:?}; expected {expected_index} after \
                          sorting a complete set of {expected_count} input indices",
                         datum.index,
@@ -192,7 +197,7 @@ impl OpenAiEmbeddingResponse {
         // deserializing, even though NaN/Infinity are not JSON number tokens.
         for datum in &data {
             if datum.embedding.len() != expected {
-                return Err(LlmError::Embed(format!(
+                return Err(LlmError::retryable(format!(
                     "expected dim {} (matryoshka={}), got {}",
                     expected,
                     caps.matryoshka,
@@ -204,7 +209,7 @@ impl OpenAiEmbeddingResponse {
             .enumerate()
             .map(|(embedding_index, datum)| {
                 if let Some(component_index) = datum.embedding.iter().position(|value| !value.is_finite()) {
-                    Err(LlmError::Embed(format!(
+                    Err(LlmError::retryable(format!(
                         "embedding {embedding_index} has non-finite component at position {component_index}"
                     )))
                 } else {
@@ -215,32 +220,45 @@ impl OpenAiEmbeddingResponse {
     }
 }
 
-/// Whether a non-success `/embeddings` status is evidence of a request that
-/// retries cannot fix.
-///
-/// Only statuses that unambiguously identify the submitted entity as the
-/// rejected cause are permanent. 400 is deliberately ambiguous: compatible
-/// endpoints use it for input limits, malformed requests, authentication,
-/// routing, and provider failures alike. Liveness probes at the drain and
-/// per-item rescue boundaries handle that ambiguity without fencing a
-/// repairable job forever.
-/// Every other non-success status remains retryable, including auth, routing,
-/// policy, and server responses.
-///
-/// Classification deliberately depends only on the HTTP status. Compatible
-/// endpoints may format error bodies differently, and free-text bodies cannot
-/// establish whether the input or the service caused a failure.
-fn permanent_embed_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 413 | 422)
+/// Classify the provider status independently of its diagnostic text.
+fn embed_http_error(
+    status: reqwest::StatusCode,
+    retry_after: Option<Duration>,
+    body: &str,
+) -> LlmError {
+    match status.as_u16() {
+        413 => LlmError::InputRefused(EmbeddingInputRefusal::PayloadTooLarge),
+        422 => LlmError::InputRefused(EmbeddingInputRefusal::UnprocessableContent),
+        400 => LlmError::Configuration(EmbeddingConfigurationFault::BadRequest),
+        401 => LlmError::Configuration(EmbeddingConfigurationFault::Unauthorized),
+        403 => LlmError::Configuration(EmbeddingConfigurationFault::Forbidden),
+        404 => LlmError::Configuration(EmbeddingConfigurationFault::NotFound),
+        _ => LlmError::Retryable {
+            status: Some(status.as_u16()),
+            retry_after,
+            message: format!("openai-compatible /embeddings returned {status}: {body}"),
+        },
+    }
 }
 
-fn embed_http_error(status: reqwest::StatusCode, body: &str) -> LlmError {
-    let message = format!("openai-compatible /embeddings returned {status}: {body}");
-    if permanent_embed_status(status) {
-        LlmError::EmbedPermanent(message)
-    } else {
-        LlmError::Embed(message)
+fn retry_after_delay(headers: &reqwest::header::HeaderMap, now: SystemTime) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if value.is_empty() {
+        return None;
     }
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(
+            value
+                .parse::<u64>()
+                .map_or(Duration::MAX, Duration::from_secs),
+        );
+    }
+    let deadline = httpdate::parse_http_date(value).ok()?;
+    Some(deadline.duration_since(now).unwrap_or(Duration::ZERO))
 }
 
 fn response_body_limit(batch_size: usize, dimensions: u32) -> usize {
@@ -256,10 +274,10 @@ async fn read_body(response: &mut reqwest::Response, limit: usize) -> Result<Vec
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| LlmError::Embed(format!("HTTP body read: {error}")))?
+        .map_err(|error| LlmError::retryable(format!("HTTP body read: {}", error.without_url())))?
     {
         if chunk.len() > limit.saturating_sub(body.len()) {
-            return Err(LlmError::Embed(format!(
+            return Err(LlmError::retryable(format!(
                 "HTTP response body exceeded the {limit}-byte limit"
             )));
         }
@@ -268,14 +286,10 @@ async fn read_body(response: &mut reqwest::Response, limit: usize) -> Result<Vec
     Ok(body)
 }
 
-async fn read_error_prefix(response: &mut reqwest::Response) -> Result<Vec<u8>, LlmError> {
+async fn read_error_prefix(response: &mut reqwest::Response) -> Result<Vec<u8>, reqwest::Error> {
     let mut prefix = Vec::new();
     while prefix.len() < ERROR_BODY_PREFIX_BYTES {
-        let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| LlmError::Embed(format!("HTTP body read: {error}")))?
-        else {
+        let Some(chunk) = response.chunk().await? else {
             break;
         };
         let remaining = ERROR_BODY_PREFIX_BYTES - prefix.len();
@@ -310,19 +324,8 @@ impl OpenAiCompatEmbeddingClient {
         self.config.timeout
     }
 
-    /// Refuse over-cap input *before* it is sent, naming the bound it broke.
-    ///
-    /// Returned as [`LlmError::EmbedPermanent`] on two counts. It is true —
-    /// no retry of this text at this length can succeed — and it is what
-    /// routes a batch into per-input isolation and a single input into
-    /// [`proxima_core::llm::embed_in_chunks`], so an over-long memory is
-    /// still embedded, in pieces, without a request ever leaving the
-    /// process.
-    ///
-    /// The message names the length that was sent and the cap, and never
-    /// quotes a bound the input satisfies: a caller shortening a body needs
-    /// to know by how much, and one told a limit they already meet reads it
-    /// as a server fault and retries unchanged.
+    /// Refuse over-cap input before sending it. The typed local refusal
+    /// carries the actual length and configured bound into chunk rescue.
     fn refuse_over_cap(&self, inputs: &[&str]) -> Result<(), LlmError> {
         let Some(max) = self.caps.max_input_chars else {
             return Ok(());
@@ -331,11 +334,10 @@ impl OpenAiCompatEmbeddingClient {
         for input in inputs {
             let chars = input.chars().count();
             if chars > max {
-                return Err(LlmError::EmbedPermanent(format!(
-                    "input of {chars} chars exceeds the {max}-char limit configured for \
-                     model {}; not sent",
-                    self.model_id,
-                )));
+                return Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap {
+                    actual_chars: chars,
+                    max_chars: max,
+                }));
             }
         }
         Ok(())
@@ -356,28 +358,42 @@ impl OpenAiCompatEmbeddingClient {
         let mut resp = req
             .send()
             .await
-            .map_err(|error| LlmError::Embed(format!("HTTP send: {error}")))?;
+            .map_err(|error| LlmError::retryable(format!("HTTP send: {}", error.without_url())))?;
 
         let status = resp.status();
+        let retry_after = retry_after_delay(resp.headers(), SystemTime::now());
         if status.is_redirection() {
-            return Err(LlmError::Embed(
-                "HTTP redirect refused: embedding client does not follow redirects".into(),
+            return Err(embed_http_error(
+                status,
+                retry_after,
+                "HTTP redirect refused: embedding client does not follow redirects",
             ));
         }
         if !status.is_success() {
-            let prefix = read_error_prefix(&mut resp).await?;
-            return Err(embed_http_error(status, utf8_prefix(&prefix)));
+            let mut error = embed_http_error(status, retry_after, "");
+            if let LlmError::Retryable { message, .. } = &mut error {
+                // Diagnostics cannot delay an already known provider refusal.
+                match read_error_prefix(&mut resp).now_or_never() {
+                    Some(Ok(prefix)) => message.push_str(utf8_prefix(&prefix)),
+                    Some(Err(error)) => {
+                        write!(message, "HTTP body read: {}", error.without_url())
+                            .expect("write to String is infallible");
+                    }
+                    None => {}
+                }
+            }
+            return Err(error);
         }
 
         let body_limit = response_body_limit(inputs.len(), self.caps.dim);
         let body = read_body(&mut resp, body_limit).await?;
         let text_body = std::str::from_utf8(&body).map_err(|error| {
-            LlmError::Embed(format!(
+            LlmError::retryable(format!(
                 "decode OpenAI-compatible envelope as UTF-8: {error}"
             ))
         })?;
         let parsed: OpenAiEmbeddingResponse = serde_json::from_str(text_body).map_err(|e| {
-            LlmError::Embed(format!(
+            LlmError::retryable(format!(
                 "decode OpenAI-compatible envelope: {:?} at line {} column {}; body: {}",
                 e.classify(),
                 e.line(),
@@ -394,7 +410,7 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let mut vecs = self.embed_call(&[text]).await?;
         vecs.pop()
-            .ok_or_else(|| LlmError::Embed("OpenAI-compatible response had no embeddings".into()))
+            .ok_or_else(|| LlmError::retryable("OpenAI-compatible response had no embeddings"))
     }
 
     async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
@@ -419,7 +435,10 @@ mod tests {
     use std::num::NonZeroU32;
 
     use proxima_core::PlaintextHosts;
-    use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
+    use proxima_core::llm::{
+        EmbeddingClient, EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError,
+        MIN_EMBED_INPUT_CAP_CHARS,
+    };
     use proxima_core::models::EmbedCaps;
 
     fn decode_vectors(
@@ -443,7 +462,7 @@ mod tests {
                 2,
             );
             assert!(
-                matches!(result, Err(LlmError::Embed(_))),
+                matches!(result, Err(LlmError::Retryable { .. })),
                 "invalid indices {indices:?} must not assign vectors to inputs: {result:?}",
             );
         }
@@ -460,7 +479,7 @@ mod tests {
                 2,
             );
             assert!(
-                matches!(result, Err(LlmError::Embed(_))),
+                matches!(result, Err(LlmError::Retryable { .. })),
                 "partial indices must not silently fall back to array order: {result:?}",
             );
         }
@@ -473,7 +492,7 @@ mod tests {
                 serde_json::json!([{ "index": 1, "embedding": [1.0, 0.0] }]),
                 1,
             ),
-            Err(LlmError::Embed(_))
+            Err(LlmError::Retryable { .. })
         ));
     }
 
@@ -487,13 +506,16 @@ mod tests {
                 { "index": 1, "embedding": [1.0] }
             ]),
         ] {
-            assert!(matches!(decode_vectors(data, 2), Err(LlmError::Embed(_))));
+            assert!(matches!(
+                decode_vectors(data, 2),
+                Err(LlmError::Retryable { .. })
+            ));
         }
     }
 
     fn decode_raw_vectors(body: &str, expected_count: usize) -> Result<Vec<Vec<f32>>, LlmError> {
         let response: super::OpenAiEmbeddingResponse = serde_json::from_str(body)
-            .map_err(|err| LlmError::Embed(format!("decode response: {err}")))?;
+            .map_err(|err| LlmError::retryable(format!("decode response: {err}")))?;
         response.into_embeddings(expected_count, EmbedCaps::new(2, false))
     }
 
@@ -535,7 +557,7 @@ mod tests {
         ] {
             assert!(matches!(
                 decode_raw_vectors(body, count),
-                Err(LlmError::Embed(_))
+                Err(LlmError::Retryable { .. })
             ));
         }
         let observed: Vec<_> = ["1e39", "-1e39", "1e100", "-1e100"]
@@ -547,7 +569,7 @@ mod tests {
             .collect();
         for (number, result) in observed {
             assert!(
-                matches!(result, Err(LlmError::Embed(_))),
+                matches!(result, Err(LlmError::Retryable { .. })),
                 "out-of-range component {number} must be a retryable malformed response: {result:?}",
             );
         }
@@ -563,7 +585,7 @@ mod tests {
         ] {
             let result = decode_raw_vectors(body, 2);
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message))
+                matches!(result, Err(LlmError::Retryable { ref message, .. })
                     if message == "embedding 1 has non-finite component at position 1"),
                 "later invalid values must reject the whole batch with bounded context: {result:?}",
             );
@@ -591,7 +613,7 @@ mod tests {
         ] {
             let result = decode_raw_vectors(body, count);
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.starts_with(expected_error)),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.starts_with(expected_error)),
                 "existing shape error takes precedence over overflow: {result:?}",
             );
         }
@@ -603,8 +625,8 @@ mod tests {
 
     /// An endpoint that cannot answer. Any request that actually leaves the
     /// process fails here, which is what makes "the input was refused before
-    /// it was sent" observable: the guard returns `EmbedPermanent`, a request
-    /// returns a transport `Embed`.
+    /// it was sent" observable: the guard returns a typed local input refusal,
+    /// while a request returns a retryable transport failure.
     const UNREACHABLE: &str = "http://127.0.0.1:9/v1";
 
     fn floor_u32() -> u32 {
@@ -626,27 +648,14 @@ mod tests {
         let too_long = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS + 1);
 
         match client.embed(&too_long).await {
-            Err(LlmError::EmbedPermanent(message)) => {
-                // The rejection must name what was sent and the limit, and
-                // must not quote a bound the input already satisfies: a
-                // caller told a limit they meet reads it as a server fault
-                // and retries the same input unchanged, which is the loop
-                // this whole guard exists to break.
-                assert!(
-                    message.contains(&(MIN_EMBED_INPUT_CAP_CHARS + 1).to_string()),
-                    "the length that was refused is missing: {message}",
-                );
-                assert!(
-                    message.contains(&MIN_EMBED_INPUT_CAP_CHARS.to_string()),
-                    "the limit is missing: {message}",
-                );
+            Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap {
+                actual_chars,
+                max_chars,
+            })) => {
+                assert_eq!(actual_chars, MIN_EMBED_INPUT_CAP_CHARS + 1);
+                assert_eq!(max_chars, MIN_EMBED_INPUT_CAP_CHARS);
             }
-            Err(LlmError::Embed(message)) => panic!(
-                "the input reached the network before being judged: {message}. \
-                 A provider that dies on over-long input is exactly the one \
-                 that must never receive it."
-            ),
-            other => panic!("expected a permanent refusal, got {other:?}"),
+            other => panic!("expected a local input refusal before sending, got {other:?}"),
         }
     }
 
@@ -661,7 +670,14 @@ mod tests {
             .await
             .expect_err("the endpoint is unreachable");
         assert!(
-            matches!(err, LlmError::Embed(_)),
+            matches!(
+                err,
+                LlmError::Retryable {
+                    status: None,
+                    retry_after: None,
+                    ..
+                }
+            ),
             "an in-bounds input must reach the transport, got {err:?}",
         );
     }
@@ -680,7 +696,9 @@ mod tests {
         assert!(
             matches!(
                 client.embed_many(&batch).await,
-                Err(LlmError::EmbedPermanent(_))
+                Err(LlmError::InputRefused(
+                    EmbeddingInputRefusal::LocalCap { .. }
+                ))
             ),
             "an over-cap member must refuse the batch before it is sent",
         );
@@ -704,7 +722,14 @@ mod tests {
             .await
             .expect_err("the endpoint is unreachable");
         assert!(
-            matches!(err, LlmError::Embed(_)),
+            matches!(
+                err,
+                LlmError::Retryable {
+                    status: None,
+                    retry_after: None,
+                    ..
+                }
+            ),
             "with no cap the input must still be offered, got {err:?}",
         );
     }
@@ -810,9 +835,51 @@ mod tests {
         }
     }
 
+    pub(super) fn assert_http_failure(
+        error: &LlmError,
+        status: u16,
+        retry_after: Option<std::time::Duration>,
+    ) {
+        let input = match status {
+            413 => Some(EmbeddingInputRefusal::PayloadTooLarge),
+            422 => Some(EmbeddingInputRefusal::UnprocessableContent),
+            _ => None,
+        };
+        if let Some(expected) = input {
+            assert!(
+                matches!(error, LlmError::InputRefused(actual) if *actual == expected),
+                "{error:?}"
+            );
+            return;
+        }
+        let configuration = match status {
+            400 => Some(EmbeddingConfigurationFault::BadRequest),
+            401 => Some(EmbeddingConfigurationFault::Unauthorized),
+            403 => Some(EmbeddingConfigurationFault::Forbidden),
+            404 => Some(EmbeddingConfigurationFault::NotFound),
+            _ => None,
+        };
+        if let Some(expected) = configuration {
+            assert!(
+                matches!(error, LlmError::Configuration(actual) if *actual == expected),
+                "{error:?}"
+            );
+            return;
+        }
+        let LlmError::Retryable {
+            status: actual_status,
+            retry_after: actual_delay,
+            ..
+        } = error
+        else {
+            panic!("status {status} must retain work: {error:?}");
+        };
+        assert_eq!(*actual_status, Some(status));
+        assert_eq!(*actual_delay, retry_after);
+    }
+
     #[test]
     fn status_policy_is_independent_of_error_body() {
-        use reqwest::StatusCode;
         let bodies = [
             "",
             "EOF",
@@ -820,59 +887,100 @@ mod tests {
             r#"{"message":"temporary service condition"}"#,
             "arbitrary text with no protocol meaning",
         ];
-        let policy = [
-            (400, false),
-            (401, false),
-            (402, false),
-            (403, false),
-            (404, false),
-            (405, false),
-            (406, false),
-            (407, false),
-            (408, false),
-            (409, false),
-            (410, false),
-            (411, false),
-            (412, false),
-            (413, true),
-            (414, false),
-            (415, false),
-            (416, false),
-            (417, false),
-            (418, false),
-            (421, false),
-            (422, true),
-            (423, false),
-            (424, false),
-            (425, false),
-            (426, false),
-            (428, false),
-            (429, false),
-            (431, false),
-            (451, false),
-            (500, false),
-            (501, false),
-            (502, false),
-            (503, false),
-            (504, false),
-            (505, false),
-            (506, false),
-            (507, false),
-            (508, false),
-            (510, false),
-            (511, false),
-        ];
-        for (code, expected_permanent) in policy {
-            let status = StatusCode::from_u16(code).expect("valid HTTP status");
+        let retry_after = Some(std::time::Duration::from_mins(2));
+        for code in (100..200).chain(300..1_000) {
+            let status = reqwest::StatusCode::from_u16(code).expect("valid HTTP status");
             for body in bodies {
-                let error = super::embed_http_error(status, body);
-                assert_eq!(
-                    matches!(error, LlmError::EmbedPermanent(_)),
-                    expected_permanent,
-                    "status {status} was classified from its body: {body:?}",
-                );
+                let error = super::embed_http_error(status, retry_after, body);
+                assert_http_failure(&error, code, retry_after);
+                if let LlmError::Retryable { message, .. } = error {
+                    assert!(message.ends_with(body));
+                }
             }
         }
+    }
+
+    fn retry_after(value: Option<&str>, now: std::time::SystemTime) -> Option<std::time::Duration> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(value) = value {
+            headers.insert(
+                reqwest::header::RETRY_AFTER,
+                value.parse().expect("test header"),
+            );
+        }
+        super::retry_after_delay(&headers, now)
+    }
+
+    #[test]
+    fn retry_after_parses_delta_seconds_with_conservative_overflow() {
+        use std::time::{Duration, SystemTime};
+        for (value, expected) in [
+            ("0", Duration::ZERO),
+            ("123", Duration::from_secs(123)),
+            (" 00120 ", Duration::from_mins(2)),
+            ("18446744073709551615", Duration::from_secs(u64::MAX)),
+            ("18446744073709551616", Duration::MAX),
+            (&"9".repeat(300), Duration::MAX),
+        ] {
+            assert_eq!(
+                retry_after(Some(value), SystemTime::UNIX_EPOCH),
+                Some(expected),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_parses_http_dates_against_the_supplied_clock() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_mins(13_068_529);
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(retry_after(Some(value), now), Some(Duration::from_secs(37)));
+            assert_eq!(
+                retry_after(Some(value), now + Duration::from_secs(37)),
+                Some(Duration::ZERO)
+            );
+            assert_eq!(
+                retry_after(Some(value), now + Duration::from_mins(1)),
+                Some(Duration::ZERO)
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_missing_or_invalid_is_absent() {
+        use std::time::SystemTime;
+        for value in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("-1"),
+            Some("+1"),
+            Some("1.5"),
+            Some("tomorrow"),
+            Some("123, 456"),
+            Some("１２３"),
+            Some("Sun, 40 Nov 1994 08:49:37 GMT"),
+        ] {
+            assert_eq!(
+                retry_after(value, SystemTime::UNIX_EPOCH),
+                None,
+                "{value:?}"
+            );
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_bytes(&[0xff]).expect("opaque header bytes"),
+        );
+        assert_eq!(
+            super::retry_after_delay(&headers, SystemTime::UNIX_EPOCH),
+            None
+        );
     }
 }
 
@@ -933,22 +1041,83 @@ mod redirect_tests {
         }
     }
 
-    async fn spawn_body_server(
-        status: u16,
-        body: String,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    const PATIENCE: Duration = Duration::from_secs(30);
+
+    struct ResponseTask(tokio::task::JoinHandle<()>);
+
+    impl ResponseTask {
+        async fn complete(mut self) {
+            tokio::time::timeout(PATIENCE, &mut self.0)
+                .await
+                .expect("server completes before deadline")
+                .expect("server task completes");
+        }
+    }
+
+    impl Drop for ResponseTask {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    async fn spawn_response_server(response: String) -> (SocketAddr, ResponseTask) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
         let addr = listener.local_addr().expect("server address");
         let task = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept request");
-            let _ = read_request(&mut stream).await;
-            let response = format!(
-                "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes()).await;
+            tokio::time::timeout(PATIENCE, async {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let _ = read_request(&mut stream).await;
+                let _ = stream.write_all(response.as_bytes()).await;
+            })
+            .await
+            .expect("response finishes before deadline");
         });
-        (addr, task)
+        (addr, ResponseTask(task))
+    }
+
+    async fn spawn_body_server(status: u16, body: String) -> (SocketAddr, ResponseTask) {
+        spawn_response_server(format!(
+            "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+        .await
+    }
+
+    struct HeldResponse {
+        addr: SocketAddr,
+        headers_sent: tokio::sync::oneshot::Receiver<()>,
+        release_body: tokio::sync::oneshot::Sender<()>,
+        task: ResponseTask,
+    }
+
+    async fn spawn_held_response(status: u16) -> HeldResponse {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind held server");
+        let addr = listener.local_addr().expect("server address");
+        let (headers_tx, headers_sent) = tokio::sync::oneshot::channel();
+        let (release_body, body_released) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(PATIENCE * 2, async {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let _ = read_request(&mut stream).await;
+                let headers = format!(
+                    "HTTP/1.1 {status} Response\r\nRetry-After: 120\r\nContent-Length: 4\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(headers.as_bytes()).await.expect("write headers");
+                stream.flush().await.expect("flush headers");
+                headers_tx.send(()).expect("announce headers");
+                if body_released.await.is_ok() {
+                    let _ = stream.write_all(b"body").await;
+                }
+            }).await.expect("held response deadline");
+        });
+        HeldResponse {
+            addr,
+            headers_sent,
+            release_body,
+            task: ResponseTask(task),
+        }
     }
 
     async fn spawn_redirect_server(status: u16, target: Target) -> RedirectServer {
@@ -1110,7 +1279,7 @@ mod redirect_tests {
         let request = request_task.await.expect("request captured");
         assert!(request.starts_with("POST /v1/embeddings HTTP/1.1\r\n"));
         assert!(
-            matches!(result, Err(LlmError::Embed(ref message))
+            matches!(result, Err(LlmError::Retryable { ref message, .. })
                 if message == "embedding 0 has non-finite component at position 1"),
             "HTTP success must not accept an invalid vector: {result:?}",
         );
@@ -1130,9 +1299,9 @@ mod redirect_tests {
         )
         .expect("loopback embedding endpoint");
         let result = client.embed("test text").await;
-        task.await.expect("server completes");
+        task.complete().await;
         assert!(
-            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("exceeded the 65600-byte limit")),
+            matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("exceeded the 65600-byte limit")),
             "{result:?}"
         );
     }
@@ -1157,8 +1326,8 @@ mod redirect_tests {
             )
             .expect("loopback embedding endpoint");
             let result = client.embed("test text").await;
-            task.await.expect("server completes");
-            let Err(LlmError::Embed(message)) = result else {
+            task.complete().await;
+            let Err(LlmError::Retryable { message, .. }) = result else {
                 panic!("expected bounded decode error: {result:?}");
             };
             let (_, detail) = message.split_once("; body: ").expect("JSON decode error");
@@ -1169,7 +1338,7 @@ mod redirect_tests {
     }
 
     #[tokio::test]
-    async fn non_success_body_is_limited_to_a_utf8_safe_prefix() {
+    async fn error_body_reader_is_limited_to_a_utf8_safe_prefix() {
         let body = format!("{}€{}", "a".repeat(510), "b".repeat(1024 * 1024 - 513));
         let (addr, task) = spawn_body_server(500, body).await;
         let client = OpenAiCompatEmbeddingClient::new(
@@ -1178,16 +1347,139 @@ mod redirect_tests {
             OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
         )
         .expect("loopback embedding endpoint");
-        let result = client.embed("test text").await;
-        task.await.expect("server completes");
-        let Err(LlmError::Embed(message)) = result else {
-            panic!("expected bounded HTTP error: {result:?}");
+        let mut response = client
+            .client
+            .post(client.endpoint.clone())
+            .send()
+            .await
+            .expect("HTTP response");
+        let prefix = tokio::time::timeout(PATIENCE, super::read_error_prefix(&mut response))
+            .await
+            .expect("bounded reader finishes")
+            .expect("complete body");
+        assert_eq!(prefix.len(), super::ERROR_BODY_PREFIX_BYTES);
+        let status = response.status();
+        drop(response);
+        task.complete().await;
+        let error = super::embed_http_error(status, None, super::utf8_prefix(&prefix));
+        let LlmError::Retryable { message, .. } = error else {
+            panic!("expected bounded HTTP error: {error:?}");
         };
         let detail = message
             .strip_prefix("openai-compatible /embeddings returned 500 Internal Server Error: ")
             .expect("HTTP error prefix");
         assert!(detail.len() <= super::ERROR_BODY_PREFIX_BYTES);
         assert_eq!(detail, "a".repeat(510));
+    }
+
+    #[tokio::test]
+    async fn http_failures_keep_status_and_retry_after_when_diagnostics_fail() {
+        for status in [400, 401, 403, 404, 413, 422, 429, 451, 503] {
+            for content_length in [4, 100] {
+                let response = format!(
+                    "HTTP/1.1 {status} Response\r\nRetry-After: 120\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\nbody"
+                );
+                let (addr, task) = spawn_response_server(response).await;
+                let client = OpenAiCompatEmbeddingClient::new(
+                    "test-embed",
+                    EmbedCaps::new(2, false),
+                    OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+                )
+                .expect("loopback embedding endpoint");
+                let error = client.embed("test text").await.expect_err("HTTP refusal");
+                task.complete().await;
+                super::tests::assert_http_failure(&error, status, Some(Duration::from_mins(2)));
+                if let LlmError::Retryable { message, .. } = error {
+                    assert!(message.len() < 700, "diagnostic remains bounded: {message}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn error_body_reader_distinguishes_complete_and_truncated_bodies() {
+        for content_length in [4, 100] {
+            let response = format!(
+                "HTTP/1.1 503 Response\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\nbody"
+            );
+            let (addr, task) = spawn_response_server(response).await;
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+            )
+            .expect("loopback embedding endpoint");
+            let mut response = client
+                .client
+                .post(client.endpoint.clone())
+                .send()
+                .await
+                .expect("HTTP headers");
+            let prefix = tokio::time::timeout(PATIENCE, super::read_error_prefix(&mut response))
+                .await
+                .expect("reader finishes within deadline");
+            task.complete().await;
+            if content_length == 4 {
+                assert_eq!(prefix.expect("complete body"), b"body");
+            } else {
+                assert!(
+                    prefix.is_err(),
+                    "truncated diagnostic must surface a body-read error"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_error_bodies_cannot_overwrite_captured_status_or_retry_after() {
+        for status in [401, 413, 429] {
+            let HeldResponse {
+                addr,
+                headers_sent,
+                release_body,
+                task,
+            } = spawn_held_response(status).await;
+            let client = OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                EmbedCaps::new(2, false),
+                OpenAiCompatConfig::new(format!("http://{addr}/v1"), None)
+                    .with_timeout(PATIENCE * 2),
+            )
+            .expect("loopback embedding endpoint");
+            let (result, marker) = tokio::join!(
+                proxima_core::llm::embed_with_timeout(&client, "test text", PATIENCE),
+                tokio::time::timeout(PATIENCE, headers_sent),
+            );
+            marker
+                .expect("headers sent before deadline")
+                .expect("positive headers marker");
+            let error = result.expect_err("HTTP refusal before diagnostic body is released");
+            super::tests::assert_http_failure(&error, status, Some(Duration::from_mins(2)));
+            release_body
+                .send(())
+                .expect("body was held until classification finished");
+            task.complete().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_failure_keeps_headers_without_consuming_the_body() {
+        let response = "HTTP/1.1 307 Temporary Redirect\r\nRetry-After: 90\r\nLocation: http://redirect.example/target\r\nContent-Length: 100\r\nConnection: close\r\n\r\nx".to_owned();
+        let (addr, task) = spawn_response_server(response).await;
+        let client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .expect("loopback embedding endpoint");
+        let error = client
+            .embed("test text")
+            .await
+            .expect_err("redirect refusal");
+        task.complete().await;
+        super::tests::assert_http_failure(&error, 307, Some(Duration::from_secs(90)));
+        assert!(error.to_string().contains("redirect refused"), "{error}");
+        assert!(!error.to_string().contains("HTTP body read:"), "{error}");
     }
 
     #[tokio::test]
@@ -1201,9 +1493,9 @@ mod redirect_tests {
             )
             .expect("loopback embedding endpoint");
             let result = client.embed("test text").await;
-            task.await.expect("server completes");
+            task.complete().await;
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
                 "status {status}: {result:?}"
             );
         }
@@ -1217,7 +1509,7 @@ mod redirect_tests {
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
             assert_eq!(server.requests.load(Ordering::SeqCst), 1);
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
                 "{result:?}"
             );
         }
@@ -1234,7 +1526,7 @@ mod redirect_tests {
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
             assert_eq!(server.requests.load(Ordering::SeqCst), 1);
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
                 "{result:?}"
             );
 
@@ -1246,7 +1538,7 @@ mod redirect_tests {
             assert_eq!(server.target_requests.load(Ordering::SeqCst), 0);
             assert_eq!(server.requests.load(Ordering::SeqCst), 1);
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
                 "{result:?}"
             );
         }
@@ -1295,7 +1587,7 @@ mod redirect_tests {
                 "redirect target must receive no connection"
             );
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
                 "{result:?}"
             );
         }
@@ -1306,7 +1598,7 @@ mod redirect_tests {
         let server = spawn_redirect_server(307, Target::Loop).await;
         let result = client_for(&server).embed("private memory text").await;
         assert!(
-            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("redirect refused")),
+            matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("redirect refused")),
             "{result:?}"
         );
         assert_eq!(server.requests.load(Ordering::SeqCst), 1);

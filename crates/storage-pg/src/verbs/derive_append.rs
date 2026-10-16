@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId,
-    SchemaVersion, SidecarPayload, StorageError,
+    EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion,
+    SidecarPayload, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -40,12 +40,8 @@ pub(crate) struct DerivedDraft<'a> {
     /// language at all, which a `LanguagePolicy::PerRow` schema refuses
     /// (see `PgSidecarWriter::insert_memory_sidecar`).
     pub lexical_language: Option<&'a str>,
-    /// Vector to write inline, embedding job to enqueue, or neither — see
-    /// [`DerivedEmbedding`]. Whichever it is happens inside this write's
-    /// transaction.
-    pub embedding: DerivedEmbedding,
-    /// Spaces queued beside `embedding` in this transaction — see
-    /// [`proxima_core::AuthorDerivedRequest::queued_spaces`].
+    /// Spaces selected by the schema and write route. Jobs are queued in
+    /// this memory transaction; an empty slice requests no work.
     pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
 }
 
@@ -159,7 +155,7 @@ async fn append_derived_timeseries(
     };
     sidecar(tx, &outcome).await?;
     if !outcome.idempotent_replay {
-        settle_derived_embedding(tx, draft, outcome.memory_id).await?;
+        enqueue_derived_embedding_jobs(tx, draft, outcome.memory_id).await?;
     }
     Ok(outcome)
 }
@@ -243,31 +239,16 @@ fn derived_memory_command(
     }
 }
 
-async fn settle_derived_embedding(
+async fn enqueue_derived_embedding_jobs(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     memory_id: MemoryId,
 ) -> Result<(), StorageError> {
-    let deferred = match &draft.embedding {
-        DerivedEmbedding::None => None,
-        DerivedEmbedding::Ready { vectors } => {
-            crate::verbs::fact_embeddings::insert_memory_embedding(
-                tx,
-                &draft.owner,
-                draft.kind,
-                memory_id,
-                vectors,
-            )
-            .await?;
-            None
-        }
-        DerivedEmbedding::Deferred { space } => Some(space),
-    };
     crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
         tx,
         draft.owner.into_inner(),
         memory_id.into_inner(),
-        deferred.into_iter().chain(draft.queued_spaces),
+        draft.queued_spaces,
     )
     .await
 }

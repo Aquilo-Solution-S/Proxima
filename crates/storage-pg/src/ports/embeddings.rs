@@ -127,11 +127,16 @@ impl EmbeddingJobPort for PgStorage {
         &self,
         limit: i64,
         skip_owners: &[OwnerId],
+        skip_owner_spaces: &[(OwnerId, EmbeddingSpace)],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        let rows =
-            verbs::fact_embeddings::claim_pending_embedding_jobs(tx.as_mut(), limit, skip_owners)
-                .await?;
+        let rows = verbs::fact_embeddings::claim_pending_embedding_jobs(
+            tx.as_mut(),
+            limit,
+            skip_owners,
+            skip_owner_spaces,
+        )
+        .await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(rows)
     }

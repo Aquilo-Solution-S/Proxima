@@ -137,12 +137,10 @@ pub use proxima_core::{
 /// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
 /// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
 /// `MemoryTarget` distinguishes a new series from a revision. Always retain the returned row ID.
-/// `UnitOfWork::derive_memories` embeds each text (one request per text) before opening
-/// its transaction; an already-open transaction or `EmbeddingMode::Deferred` queues it
-/// instead (bulk writers: the drain batches), reported in `DerivedMemoryOutcome`.
+/// Derived writes queue embedding jobs in the same transaction as the memory.
+/// Admission never calls the provider; `DerivedMemoryOutcome` reports queued work.
 pub use proxima_core::{
-    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, EntityKind,
-    MemoryTarget, SeriesHandle,
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
 };
 /// The connection vocabulary a flavor is allowed to speak (docs/concepts.md).
 ///

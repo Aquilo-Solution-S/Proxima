@@ -6,7 +6,7 @@
 //! intervals, so only the gate's wake-ups can end an idle sleep.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,6 +27,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 const MODEL: &str = "feature-control-embed";
+const PATIENCE: Duration = Duration::from_secs(30);
 
 struct BareApp;
 
@@ -117,6 +118,30 @@ impl EmbeddingClient for GatedEmbedding {
     }
 }
 
+#[derive(Debug)]
+struct MisconfiguredEmbedding {
+    inner: Arc<GatedEmbedding>,
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl EmbeddingClient for MisconfiguredEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(LlmError::Configuration(
+            proxima_core::EmbeddingConfigurationFault::Unauthorized,
+        ))
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+}
+
 struct World {
     db: SplitRoleDb,
     inspection: sqlx::PgPool,
@@ -151,6 +176,11 @@ impl World {
     }
 
     fn app(&self, worker_interval: Duration) -> Proxima<BareApp> {
+        self.base_app(worker_interval)
+            .embed_client(self.client.clone())
+    }
+
+    fn base_app(&self, worker_interval: Duration) -> Proxima<BareApp> {
         Proxima::<BareApp>::app()
             .database_url(self.db.runtime_url())
             .platform_database_url(self.db.platform_url())
@@ -160,7 +190,6 @@ impl World {
                 owner: self.owner,
             }))
             .tool_scope(ToolScope::All)
-            .embed_client(self.client.clone())
             .embedding_runtime_policy(
                 proxima::EmbeddingRuntimePolicy::new(
                     Duration::from_mins(2),
@@ -276,9 +305,104 @@ async fn serving(
 
 /// A settlement that never comes fails the test instead of hanging it.
 async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_secs(30), future)
+    tokio::time::timeout(PATIENCE, future)
         .await
-        .expect("the quiesce settles")
+        .expect("the operation settles")
+}
+
+#[tokio::test]
+async fn configuration_fault_health_tracks_the_worker_and_clears_after_rebinding() {
+    use proxima_core::llm::BoundEmbeddingClient;
+    use proxima_core::test_fixtures::TestEmbeddingRouter;
+
+    let world = World::new("feature_control_configuration_health").await;
+    let refused = Arc::new(MisconfiguredEmbedding {
+        inner: world.client.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let router = Arc::new(TestEmbeddingRouter::default());
+    router.set_owner(
+        world.owner,
+        Some(BoundEmbeddingClient::bind(refused.clone()).unwrap()),
+    );
+    let running = world
+        .base_app(Duration::from_hours(1))
+        .embedding_router(router.clone())
+        .mcp_bind("127.0.0.1:0".parse().unwrap())
+        .health_endpoints(true)
+        .run()
+        .await
+        .expect("host runs with a configured client");
+    let control = running.feature_control(Feature::EmbeddingWorker).unwrap();
+    let base = format!("http://{}", running.mcp_addr().unwrap());
+    let http = reqwest::Client::new();
+    assert_eq!(within(control.quiesce()).await, Ok(()));
+    let engine = running.host().engine();
+    world
+        .write_note(engine, "accepted before configuration refusal")
+        .await;
+    assert_eq!(refused.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(control.resume(), Ok(()));
+    within(async {
+        loop {
+            let ready = http.get(format!("{base}/readyz")).send().await.unwrap();
+            if ready.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                assert_eq!(
+                    ready.text().await.unwrap(),
+                    "embedding configuration fault: HTTP 401"
+                );
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        http.get(format!("{base}/healthz"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(within(control.quiesce()).await, Ok(()));
+    world
+        .write_note(engine, "accepted while client is paused")
+        .await;
+    assert_eq!(
+        world.queue().await,
+        Queue {
+            pending: 2,
+            processing: 0,
+            embedded: 0
+        }
+    );
+    assert_eq!(refused.calls.load(Ordering::SeqCst), 1);
+
+    router.set_owner(
+        world.owner,
+        Some(BoundEmbeddingClient::bind(world.client.clone()).unwrap()),
+    );
+    assert_eq!(control.resume(), Ok(()));
+    within(async {
+        while world.queue().await
+            != (Queue {
+                pending: 0,
+                processing: 0,
+                embedded: 2,
+            })
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let ready = http.get(format!("{base}/readyz")).send().await.unwrap();
+    assert_eq!(ready.status(), reqwest::StatusCode::OK);
+    assert_eq!(ready.text().await.unwrap(), "ready");
+    assert!(engine.embedding_configuration_faults().is_empty());
+    assert_eq!(refused.calls.load(Ordering::SeqCst), 1);
+    running.shutdown().await;
+    world.close().await;
 }
 
 /// The acceptance path: after `quiesce()` returns, a write enqueues its job

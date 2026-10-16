@@ -17,17 +17,86 @@ pub use space::{
     VectorWidthMismatch,
 };
 
+/// A submitted input was refused; isolation and chunk rescue may still succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EmbeddingInputRefusal {
+    #[error("HTTP 413: embedding input is too large")]
+    PayloadTooLarge,
+    #[error("HTTP 422: embedding input cannot be processed")]
+    UnprocessableContent,
+    #[error(
+        "embedding input has {actual_chars} characters, exceeding the local cap of {max_chars}"
+    )]
+    LocalCap {
+        actual_chars: usize,
+        max_chars: usize,
+    },
+}
+
+impl EmbeddingInputRefusal {
+    /// The provider's refusing status, or no HTTP status for a local cap.
+    #[must_use]
+    pub const fn status(self) -> Option<u16> {
+        match self {
+            Self::PayloadTooLarge => Some(413),
+            Self::UnprocessableContent => Some(422),
+            Self::LocalCap { .. } => None,
+        }
+    }
+}
+
+/// A client configuration fault pauses that original client until rebinding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
+pub enum EmbeddingConfigurationFault {
+    #[error("embedding configuration fault: HTTP 400")]
+    BadRequest,
+    #[error("embedding configuration fault: HTTP 401")]
+    Unauthorized,
+    #[error("embedding configuration fault: HTTP 403")]
+    Forbidden,
+    #[error("embedding configuration fault: HTTP 404")]
+    NotFound,
+}
+
+impl EmbeddingConfigurationFault {
+    /// The configuration refusal's HTTP status, safe for health projection.
+    #[must_use]
+    pub const fn status(self) -> u16 {
+        match self {
+            Self::BadRequest => 400,
+            Self::Unauthorized => 401,
+            Self::Forbidden => 403,
+            Self::NotFound => 404,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    #[error("embedding call failed: {0}")]
-    Embed(String),
-    /// Embedding rejected for a cause retries cannot fix (e.g. input over
-    /// the model's token limit — HTTP 413/422). Jobs hitting this must
-    /// fail terminally instead of burning retry attempts forever.
-    #[error("embedding permanently rejected: {0}")]
-    EmbedPermanent(String),
+    #[error("{0}")]
+    InputRefused(EmbeddingInputRefusal),
+    #[error("{0}")]
+    Configuration(EmbeddingConfigurationFault),
+    #[error("embedding call failed: {message}")]
+    Retryable {
+        status: Option<u16>,
+        retry_after: Option<Duration>,
+        message: String,
+    },
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl LlmError {
+    /// An ordinary non-HTTP failure with no provider retry timing.
+    #[must_use]
+    pub fn retryable(message: impl Into<String>) -> Self {
+        Self::Retryable {
+            status: None,
+            retry_after: None,
+            message: message.into(),
+        }
+    }
 }
 
 pub const PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
@@ -283,7 +352,7 @@ pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
 ///
 /// # Errors
 ///
-/// Returns the client's error, or retryable [`LlmError::Embed`] when the
+/// Returns the client's error, or retryable [`LlmError::Retryable`] when the
 /// deadline elapses.
 pub async fn embed_with_timeout(
     client: &dyn EmbeddingClient,
@@ -293,7 +362,7 @@ pub async fn embed_with_timeout(
     tokio::time::timeout(request_timeout, client.embed(text))
         .await
         .map_err(|_| {
-            LlmError::Embed(format!(
+            LlmError::retryable(format!(
                 "request timed out after {} seconds",
                 request_timeout.as_secs()
             ))
@@ -305,7 +374,7 @@ pub async fn embed_with_timeout(
 ///
 /// # Errors
 ///
-/// Returns the client's error, or retryable [`LlmError::Embed`] when the
+/// Returns the client's error, or retryable [`LlmError::Retryable`] when the
 /// deadline elapses.
 pub async fn embed_many_with_timeout(
     client: &dyn EmbeddingClient,
@@ -315,182 +384,110 @@ pub async fn embed_many_with_timeout(
     tokio::time::timeout(request_timeout, client.embed_many(texts))
         .await
         .map_err(|_| {
-            LlmError::Embed(format!(
+            LlmError::retryable(format!(
                 "request timed out after {} seconds",
                 request_timeout.as_secs()
             ))
         })?
 }
 
-/// Trivial liveness probe after a provider refuses a real input.
-/// Short enough that no cap, context window, or token limit can refuse it.
-#[doc(hidden)]
-pub const EMBED_LIVENESS_PROBE: &str = "ok";
-
-/// Whether an embedding failure is the input's fault.
-///
-/// [`LlmError::EmbedPermanent`]: the provider refused this input. Every
-/// other variant is ambiguous (a runner that dies on the input looks like
-/// a runner that was already down). Probe [`EMBED_LIVENESS_PROBE`]: if it
-/// succeeds, blame the input; if it fails, the provider is down.
-/// Same question [`crate::Engine::drain_embedding_jobs`] asks of a batch.
-pub(crate) async fn embed_failure_blames_the_input(
-    client: &dyn EmbeddingClient,
-    err: &LlmError,
-) -> bool {
-    if matches!(err, LlmError::EmbedPermanent(_)) {
-        return true;
-    }
-    client.embed(EMBED_LIVENESS_PROBE).await.is_ok()
-}
-
-/// Smallest piece, in bytes, the chunked-embedding rescue is willing to
-/// produce. A segment whose halves would fall below this is not split
-/// further: at that size a rejection is read as genuinely invalid input
-/// rather than an over-limit one, so the effective floor on a segment the
-/// rescue will still bisect is twice this value.
+/// Smallest piece, in bytes, the chunked-embedding rescue can produce.
+/// A rejected segment is split only if both halves reach this floor.
 pub const CHUNKED_EMBED_MIN_BYTES: usize = 2048;
 
 /// Lowest [`crate::models::EmbedCaps::max_input_chars`] [`embed_in_chunks`]
-/// can still satisfy. Coupled to the cap: over-long input is
-/// [`LlmError::EmbedPermanent`], which triggers bisection — a cap below
-/// this floor turns a rescuable input terminal.
+/// can satisfy. A cap below this floor can turn a rescuable input terminal.
 ///
 /// Floor = largest piece the split can emit. A segment is cut only when
-/// each half is still ≥ [`CHUNKED_EMBED_MIN_BYTES`], so a piece is at most
-/// `2 * CHUNKED_EMBED_MIN_BYTES - 1` bytes. Character count ≤ byte count.
-/// The `- 1` is load-bearing (test: halves land exactly on the boundary).
+/// each half is still at least [`CHUNKED_EMBED_MIN_BYTES`], so a piece is at
+/// most `2 * CHUNKED_EMBED_MIN_BYTES - 1` bytes. Characters never exceed bytes.
 pub const MIN_EMBED_INPUT_CAP_CHARS: usize = 2 * CHUNKED_EMBED_MIN_BYTES - 1;
 
-/// Bisect an over-limit input into pieces the provider accepts.
-///
-/// A permanent rejection, or an ambiguous rejection followed by a successful
-/// liveness probe, starts embedding once pieces are short enough. An
-/// ambiguous rejection whose probe fails remains retryable. Halves below
-/// [`CHUNKED_EMBED_MIN_BYTES`] abort — partial coverage would mask poison
-/// input.
-///
-/// Lives here, not on `Engine`, so every drainer rescues the same way.
-///
-/// `Ok(Some(vectors))` in text order, `Ok(None)` if a live provider refuses
-/// every length, `Err` on a failed liveness probe or another transient
-/// provider error.
+/// Complete chunk coverage or the final refusal at the minimum split size.
+#[derive(Debug, PartialEq)]
+pub enum ChunkedEmbedding {
+    Embedded(Vec<Vec<f32>>),
+    InputRefused(EmbeddingInputRefusal),
+}
+
+/// Bisect explicitly refused input into accepted pieces in text order.
+/// Only [`LlmError::InputRefused`] enters rescue. Partial coverage is never
+/// returned: a later non-input error discards earlier successful pieces.
 ///
 /// # Errors
 ///
-/// First non-content-attributed provider error.
+/// Returns the first provider failure that is not an input refusal.
 pub async fn embed_in_chunks(
     client: &dyn EmbeddingClient,
     text: &str,
-) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(
-        client,
-        text,
-        None,
-        |client, segment| Box::pin(client.embed(segment)),
-        |client| Box::pin(client.embed(EMBED_LIVENESS_PROBE)),
-    )
+) -> Result<ChunkedEmbedding, LlmError> {
+    embed_in_chunks_with(client, text, None, |client, segment| {
+        Box::pin(client.embed(segment))
+    })
     .await
 }
 
-/// [`embed_in_chunks`] with a deadline around every provider request.
-///
-/// One rescue can legitimately issue several calls; each individual call,
-/// rather than the whole rescue, receives the configured request budget.
+/// [`embed_in_chunks`] with the deadline applied separately to every call.
 ///
 /// # Errors
 ///
-/// Returns the first non-content-attributed client error, including
-/// retryable [`LlmError::Embed`] when an individual request deadline elapses
-/// or its liveness probe fails.
+/// Returns the first non-input failure, including a request timeout.
 pub async fn embed_in_chunks_with_timeout(
     client: &dyn EmbeddingClient,
     text: &str,
     request_timeout: Duration,
-) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(
-        client,
-        text,
-        None,
-        |client, segment| Box::pin(embed_with_timeout(client, segment, request_timeout)),
-        |client| {
-            Box::pin(embed_with_timeout(
-                client,
-                EMBED_LIVENESS_PROBE,
-                request_timeout,
-            ))
-        },
-    )
+) -> Result<ChunkedEmbedding, LlmError> {
+    embed_in_chunks_with(client, text, None, |client, segment| {
+        Box::pin(embed_with_timeout(client, segment, request_timeout))
+    })
     .await
 }
 
-/// Rescue a failed embedding request by attributing an ambiguous provider
-/// failure to the submitted content only when a trivial liveness probe still
-/// succeeds. A failed probe returns the original retryable error; it never
-/// turns a provider outage into a terminal job failure.
+/// Rescue a known input refusal without submitting the full input again.
 ///
 /// # Errors
 ///
-/// Returns the original error when the liveness probe fails, or the first
-/// later provider error that is not content-attributed.
+/// Returns the first later provider failure that is not an input refusal.
 pub async fn embed_in_chunks_after_failure(
     client: &dyn EmbeddingClient,
     text: &str,
-    error: LlmError,
-) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(
-        client,
-        text,
-        Some(error),
-        |client, segment| Box::pin(client.embed(segment)),
-        |client| Box::pin(client.embed(EMBED_LIVENESS_PROBE)),
-    )
+    refusal: EmbeddingInputRefusal,
+) -> Result<ChunkedEmbedding, LlmError> {
+    embed_in_chunks_with(client, text, Some(refusal), |client, segment| {
+        Box::pin(client.embed(segment))
+    })
     .await
 }
 
-/// Timeout-bounded form of [`embed_in_chunks_after_failure`]. Every segment
-/// and every liveness probe receives the same configured request budget.
+/// Timeout-bounded form of [`embed_in_chunks_after_failure`].
 ///
 /// # Errors
 ///
-/// Returns the original error when the timeout-bounded liveness probe fails,
-/// or the first later provider error that is not content-attributed.
+/// Returns the first later non-input failure, including a request timeout.
 pub async fn embed_in_chunks_after_failure_with_timeout(
     client: &dyn EmbeddingClient,
     text: &str,
-    error: LlmError,
+    refusal: EmbeddingInputRefusal,
     request_timeout: Duration,
-) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(
-        client,
-        text,
-        Some(error),
-        |client, segment| Box::pin(embed_with_timeout(client, segment, request_timeout)),
-        |client| {
-            Box::pin(embed_with_timeout(
-                client,
-                EMBED_LIVENESS_PROBE,
-                request_timeout,
-            ))
-        },
-    )
+) -> Result<ChunkedEmbedding, LlmError> {
+    embed_in_chunks_with(client, text, Some(refusal), |client, segment| {
+        Box::pin(embed_with_timeout(client, segment, request_timeout))
+    })
     .await
 }
 
-/// Queue both halves of a split onto a LIFO stack so the left one is taken
-/// next, which is what keeps chunk vectors in text order.
+/// A LIFO stack takes the left half first, preserving text order.
 fn push_left_half_first<'a>(pending: &mut Vec<&'a str>, left: &'a str, right: &'a str) {
     pending.push(right);
     pending.push(left);
 }
 
-async fn embed_in_chunks_with<'a, F, P>(
+async fn embed_in_chunks_with<'a, F>(
     client: &'a dyn EmbeddingClient,
     text: &'a str,
-    initial_error: Option<LlmError>,
+    initial_refusal: Option<EmbeddingInputRefusal>,
     mut embed: F,
-    mut probe: P,
-) -> Result<Option<Vec<Vec<f32>>>, LlmError>
+) -> Result<ChunkedEmbedding, LlmError>
 where
     F: for<'b> FnMut(
         &'b dyn EmbeddingClient,
@@ -498,42 +495,30 @@ where
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'b>,
     >,
-    P: for<'b> FnMut(
-        &'b dyn EmbeddingClient,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'b>,
-    >,
 {
-    // Depth-first, left-to-right bisection keeps chunk vectors in text
-    // order without recursion (async fns don't recurse).
-    let mut pending: Vec<&str> = Vec::with_capacity(1);
-    let mut vectors: Vec<Vec<f32>> = Vec::new();
-
-    if let Some(error) = initial_error {
-        if !failure_is_content_attributed(client, &error, &mut probe).await {
-            return Err(error);
-        }
+    let mut pending = Vec::new();
+    let mut vectors = Vec::new();
+    if let Some(refusal) = initial_refusal {
         let Some((left, right)) = split_segment(text) else {
-            return Ok(None);
+            return Ok(ChunkedEmbedding::InputRefused(refusal));
         };
         push_left_half_first(&mut pending, left, right);
     } else {
         pending.push(text);
     }
-
     while let Some(segment) = pending.pop() {
         match embed(client, segment).await {
             Ok(vector) => vectors.push(vector),
-            Err(error) if failure_is_content_attributed(client, &error, &mut probe).await => {
+            Err(LlmError::InputRefused(refusal)) => {
                 let Some((left, right)) = split_segment(segment) else {
-                    return Ok(None);
+                    return Ok(ChunkedEmbedding::InputRefused(refusal));
                 };
                 push_left_half_first(&mut pending, left, right);
             }
             Err(error) => return Err(error),
         }
     }
-    Ok(Some(vectors))
+    Ok(ChunkedEmbedding::Embedded(vectors))
 }
 
 fn split_segment(segment: &str) -> Option<(&str, &str)> {
@@ -547,31 +532,14 @@ fn split_segment(segment: &str) -> Option<(&str, &str)> {
     Some((&segment[..cut], &segment[cut..]))
 }
 
-async fn failure_is_content_attributed<P>(
-    client: &dyn EmbeddingClient,
-    error: &LlmError,
-    probe: &mut P,
-) -> bool
-where
-    P: for<'a> FnMut(
-        &'a dyn EmbeddingClient,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'a>,
-    >,
-{
-    if matches!(error, LlmError::EmbedPermanent(_)) {
-        return true;
-    }
-    probe(client).await.is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        CHUNKED_EMBED_MIN_BYTES, DEFAULT_EMBED_BATCH_SIZE, DEFAULT_EMBED_REQUEST_TIMEOUT,
-        DEFAULT_EMBED_STALE_CLAIM_TIMEOUT, DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient,
-        EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
-        PROXIMA_EMBED_BATCH_SIZE, PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+        CHUNKED_EMBED_MIN_BYTES, ChunkedEmbedding, DEFAULT_EMBED_BATCH_SIZE,
+        DEFAULT_EMBED_REQUEST_TIMEOUT, DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
+        DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient, EmbeddingConfigurationFault,
+        EmbeddingInputRefusal, EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError,
+        MIN_EMBED_INPUT_CAP_CHARS, PROXIMA_EMBED_BATCH_SIZE, PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
         PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
         embed_in_chunks, embed_in_chunks_after_failure, embed_in_chunks_after_failure_with_timeout,
         embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
@@ -716,7 +684,7 @@ mod tests {
                 .map(|_| ()),
         ] {
             assert!(
-                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+                matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("timed out")),
                 "timeout must be a retryable embedding error: {result:?}"
             );
         }
@@ -731,7 +699,9 @@ mod tests {
     impl EmbeddingClient for RescueThenHang {
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
             if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                return Err(LlmError::EmbedPermanent("split me".into()));
+                return Err(LlmError::InputRefused(
+                    EmbeddingInputRefusal::PayloadTooLarge,
+                ));
             }
             std::future::pending().await
         }
@@ -757,7 +727,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+            matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("timed out")),
             "a hung chunk request must be retryable: {result:?}"
         );
     }
@@ -801,10 +771,10 @@ mod tests {
                 .expect("no test holds this across a panic")
                 .push(chars);
             if chars > self.max_chars {
-                return Err(LlmError::EmbedPermanent(format!(
-                    "input of {chars} chars exceeds the {}-char limit",
-                    self.max_chars
-                )));
+                return Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap {
+                    actual_chars: chars,
+                    max_chars: self.max_chars,
+                }));
             }
             Ok(vec![0.0; 4])
         }
@@ -826,10 +796,12 @@ mod tests {
         let client = CappedEmbedding::new(MIN_EMBED_INPUT_CAP_CHARS);
         let text = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 5);
 
-        let vectors = embed_in_chunks(&client, &text)
+        let ChunkedEmbedding::Embedded(vectors) = embed_in_chunks(&client, &text)
             .await
             .expect("a cap refusal is not a transient error")
-            .expect("an over-cap input is splittable, not invalid");
+        else {
+            panic!("an over-cap input is splittable, not invalid");
+        };
 
         assert!(vectors.len() > 1, "an over-cap input must come back split");
         assert_eq!(
@@ -846,93 +818,163 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct AmbiguousCappedEmbedding {
-        max_chars: usize,
-        provider_down: bool,
-        offered: Mutex<Vec<usize>>,
+    struct ScriptedEmbedding {
+        replies: Mutex<std::collections::VecDeque<Result<Vec<f32>, LlmError>>>,
+        offered: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedEmbedding {
+        fn new(replies: impl IntoIterator<Item = Result<Vec<f32>, LlmError>>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().collect()),
+                offered: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     #[async_trait]
-    impl EmbeddingClient for AmbiguousCappedEmbedding {
+    impl EmbeddingClient for ScriptedEmbedding {
         async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-            if self.provider_down {
-                return Err(LlmError::Embed("provider unavailable".into()));
+            self.offered.lock().expect("offered").push(text.into());
+            if text == "ok" {
+                return Ok(vec![0.0; 4]);
             }
-            let chars = text.chars().count();
-            self.offered
+            self.replies
                 .lock()
-                .expect("no test holds this across a panic")
-                .push(chars);
-            if chars > self.max_chars {
-                return Err(LlmError::Embed("400 EOF".into()));
-            }
-            Ok(vec![0.0; 4])
+                .expect("replies")
+                .pop_front()
+                .expect("unexpected provider request")
         }
-
         fn model_id(&self) -> &'static str {
-            "ambiguous-capped"
+            "scripted"
         }
-
         fn dim(&self) -> usize {
             4
         }
     }
 
     #[tokio::test]
-    async fn live_ambiguous_rejection_is_rescued_into_chunks() {
-        let client = AmbiguousCappedEmbedding {
-            max_chars: MIN_EMBED_INPUT_CAP_CHARS,
-            provider_down: false,
-            offered: Mutex::new(Vec::new()),
-        };
-        let text = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 5);
-        let initial = client.embed(&text).await.expect_err("over-limit input");
-        let vectors = embed_in_chunks_after_failure(&client, &text, initial)
-            .await
-            .expect("live provider rejection should be content-attributed")
-            .expect("over-limit input should be splittable");
-
-        assert!(vectors.len() > 1, "long input must be chunked");
-        assert!(
-            client
-                .offered
-                .lock()
-                .expect("no test holds this across a panic")
-                .iter()
-                .any(|chars| *chars <= MIN_EMBED_INPUT_CAP_CHARS),
-            "rescue must submit provider-acceptable pieces"
-        );
+    async fn non_input_refusals_never_probe_or_split_even_when_a_probe_would_succeed() {
+        for length in [10, MIN_EMBED_INPUT_CAP_CHARS * 5] {
+            let errors = [
+                LlmError::retryable("network unavailable"),
+                LlmError::Internal("client fault".into()),
+                LlmError::Configuration(EmbeddingConfigurationFault::BadRequest),
+                LlmError::Configuration(EmbeddingConfigurationFault::Unauthorized),
+                LlmError::Configuration(EmbeddingConfigurationFault::Forbidden),
+                LlmError::Configuration(EmbeddingConfigurationFault::NotFound),
+            ]
+            .into_iter()
+            .chain(
+                [408, 429, 500, 502, 503, 504].map(|status| LlmError::Retryable {
+                    status: Some(status),
+                    retry_after: None,
+                    message: "provider failure".into(),
+                }),
+            );
+            for error in errors {
+                let expected = error.to_string();
+                let client = ScriptedEmbedding::new([Err(error)]);
+                let text = "a".repeat(length);
+                let result = embed_in_chunks(&client, &text)
+                    .await
+                    .expect_err("non-input failure");
+                assert_eq!(
+                    result.to_string(),
+                    expected,
+                    "preserve original non-input failure"
+                );
+                assert_eq!(
+                    *client.offered.lock().expect("offered"),
+                    [text],
+                    "no probe or rescue"
+                );
+            }
+        }
     }
 
     #[tokio::test]
-    async fn failed_liveness_probe_keeps_ambiguous_rejection_retryable() {
-        let client = AmbiguousCappedEmbedding {
-            max_chars: MIN_EMBED_INPUT_CAP_CHARS,
-            provider_down: true,
-            offered: Mutex::new(Vec::new()),
-        };
-        let text = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 5);
-        let initial = client.embed(&text).await.expect_err("provider is down");
-        let result = embed_in_chunks_after_failure_with_timeout(
+    async fn later_non_input_failure_discards_partial_chunk_coverage() {
+        for error in [
+            LlmError::Retryable {
+                status: Some(429),
+                retry_after: Some(Duration::from_secs(90)),
+                message: "busy".into(),
+            },
+            LlmError::Configuration(EmbeddingConfigurationFault::Unauthorized),
+            LlmError::retryable("network unavailable"),
+        ] {
+            let expected = error.to_string();
+            let client = ScriptedEmbedding::new([Ok(vec![1.0; 4]), Err(error)]);
+            let text = "a".repeat(CHUNKED_EMBED_MIN_BYTES * 2);
+            let result = embed_in_chunks_after_failure(
+                &client,
+                &text,
+                EmbeddingInputRefusal::PayloadTooLarge,
+            )
+            .await
+            .expect_err("partial chunks must not escape");
+            assert_eq!(result.to_string(), expected);
+            assert_eq!(
+                client.offered.lock().expect("offered").len(),
+                2,
+                "no full-text replay or probe"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chunk_rescue_preserves_utf8_order_and_final_refusing_status() {
+        let text = format!(
+            "{}{}",
+            "é".repeat(CHUNKED_EMBED_MIN_BYTES / 2),
+            "界".repeat(CHUNKED_EMBED_MIN_BYTES)
+        );
+        let client = ScriptedEmbedding::new([Ok(vec![1.0; 4]), Ok(vec![2.0; 4])]);
+        let coverage =
+            embed_in_chunks_after_failure(&client, &text, EmbeddingInputRefusal::PayloadTooLarge)
+                .await
+                .expect("UTF-8 rescue");
+        assert_eq!(
+            coverage,
+            ChunkedEmbedding::Embedded(vec![vec![1.0; 4], vec![2.0; 4]])
+        );
+        assert_eq!(
+            client.offered.lock().expect("offered").concat(),
+            text,
+            "left-to-right complete coverage"
+        );
+
+        let client = ScriptedEmbedding::new([Err(LlmError::InputRefused(
+            EmbeddingInputRefusal::UnprocessableContent,
+        ))]);
+        let coverage = embed_in_chunks_after_failure(
             &client,
-            &text,
-            initial,
+            &"a".repeat(CHUNKED_EMBED_MIN_BYTES * 2),
+            EmbeddingInputRefusal::PayloadTooLarge,
+        )
+        .await
+        .expect("input refusal");
+        assert_eq!(
+            coverage,
+            ChunkedEmbedding::InputRefused(EmbeddingInputRefusal::UnprocessableContent)
+        );
+        assert_eq!(client.offered.lock().expect("offered").len(), 1);
+
+        let client = ScriptedEmbedding::new([]);
+        let coverage = embed_in_chunks_after_failure_with_timeout(
+            &client,
+            "short",
+            EmbeddingInputRefusal::PayloadTooLarge,
             Duration::from_secs(1),
         )
-        .await;
-
-        assert!(
-            matches!(result, Err(LlmError::Embed(ref message)) if message == "provider unavailable"),
-            "a failed probe must preserve a retryable error: {result:?}"
+        .await
+        .expect("known refusal requires no provider call below split floor");
+        assert_eq!(
+            coverage,
+            ChunkedEmbedding::InputRefused(EmbeddingInputRefusal::PayloadTooLarge)
         );
-        assert!(
-            client
-                .offered
-                .lock()
-                .expect("no test holds this across a panic")
-                .is_empty(),
-            "the provider-down mock must not reach chunk rescue"
-        );
+        assert!(client.offered.lock().expect("offered").is_empty());
     }
 
     /// Floor is a real bound: rescued at the floor, terminal one char below.
@@ -948,18 +990,19 @@ mod tests {
         assert_eq!(
             embed_in_chunks(&at_floor, &text)
                 .await
-                .expect("not a transient error")
-                .map(|vectors| vectors.len()),
-            Some(2),
+                .expect("not a transient error"),
+            ChunkedEmbedding::Embedded(vec![vec![0.0; 4]; 2]),
             "at the floor the widest piece is acceptable, so the rescue finishes",
         );
 
         let under_floor = CappedEmbedding::new(MIN_EMBED_INPUT_CAP_CHARS - 1);
         assert!(
-            embed_in_chunks(&under_floor, &text)
-                .await
-                .expect("not a transient error")
-                .is_none(),
+            matches!(
+                embed_in_chunks(&under_floor, &text)
+                    .await
+                    .expect("not a transient error"),
+                ChunkedEmbedding::InputRefused(_)
+            ),
             "one char lower, that piece is refused and is too small to split \
              again, so a rescuable input goes terminal — which is why a cap \
              under MIN_EMBED_INPUT_CAP_CHARS is refused at construction",
@@ -977,7 +1020,7 @@ mod tests {
                 let rescued = embed_in_chunks(&client, &"a".repeat(len))
                     .await
                     .expect("not a transient error");
-                if rescued.is_none() {
+                if matches!(rescued, ChunkedEmbedding::InputRefused(_)) {
                     return false;
                 }
             }
@@ -995,7 +1038,7 @@ mod tests {
         );
     }
 
-    /// A cap is not the only reason a provider says `EmbedPermanent`. Input
+    /// A cap is not the only typed input refusal. Invalid input
     /// that is invalid rather than long is refused all the way down, and the
     /// caller must see that as "no rescue" so the job goes terminal instead
     /// of cycling — the behaviour the cap must not change.
@@ -1005,6 +1048,15 @@ mod tests {
         let outcome = embed_in_chunks(&client, &"a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 4))
             .await
             .expect("not a transient error");
-        assert!(outcome.is_none(), "nothing was acceptable at any length");
+        assert!(
+            matches!(
+                outcome,
+                ChunkedEmbedding::InputRefused(EmbeddingInputRefusal::LocalCap {
+                    max_chars: 0,
+                    ..
+                })
+            ),
+            "nothing was acceptable at any length"
+        );
     }
 }

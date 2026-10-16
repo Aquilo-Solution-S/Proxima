@@ -641,18 +641,26 @@ fn spawn_embedding_worker(
                     return;
                 }
                 match engine.drain_embedding_jobs(policy.batch_size()).await {
-                    Ok(outcome) if outcome.processed > 0 => {
+                    Ok(outcome) => {
+                        if !outcome.configuration_faults.is_empty() {
+                            tracing::warn!(
+                                faults = ?outcome.configuration_faults,
+                                "embedding clients paused for configuration faults"
+                            );
+                        }
                         processed += outcome.processed;
                         failed += outcome.failed;
+                        if outcome.processed == 0 {
+                            break;
+                        }
                     }
-                    Ok(_) => break,
                     Err(err) => {
                         tracing::warn!(error = %err, "embedding drain failed");
                         break;
                     }
                 }
             }
-            if processed > 0 {
+            if processed > 0 || failed > 0 {
                 tracing::info!(processed, failed, "drained embedding jobs");
             }
             tokio::select! {

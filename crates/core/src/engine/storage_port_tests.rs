@@ -321,6 +321,7 @@ mod storage_port_tests_support {
             &self,
             _limit: i64,
             _skip_owners: &[crate::OwnerId],
+            _skip_owner_spaces: &[(crate::OwnerId, crate::EmbeddingSpace)],
         ) -> Result<Vec<crate::storage::EmbeddingJobClaim>, StorageError> {
             Ok(Vec::new())
         }

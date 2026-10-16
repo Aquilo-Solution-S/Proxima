@@ -44,7 +44,6 @@ impl MemoryAuthoringPort for PgStorage {
                 operator_kind: req.operator_kind,
                 supersedes: req.supersedes,
                 lexical_language: req.lexical_language,
-                embedding: req.embedding.clone(),
                 queued_spaces: req.queued_spaces,
             };
             // Share origin validation with the write-session authoring path.
@@ -131,7 +130,7 @@ impl MemoryAuthoringPort for PgStorage {
                 // A replay wrote nothing, so it deferred nothing: the row it
                 // found already carries whatever vector (or job) the write
                 // that minted it left behind.
-                embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
+                embedding_deferred: !req.queued_spaces.is_empty() && !outcome.idempotent_replay,
             })
         })
         .await

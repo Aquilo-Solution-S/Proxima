@@ -1,7 +1,6 @@
 use proxima_core::storage_ports::EmbeddingWriteProof;
 use proxima_core::{
-    EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, EntityKind, MemoryId, OwnerId,
-    SpaceVector, StorageError,
+    EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, OwnerId, SpaceVector, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -56,34 +55,6 @@ async fn lock_embedding_job_claim_fields(
         ));
     }
     Ok(())
-}
-
-/// Append one complete memory embedding version inside an existing tx.
-///
-/// Crate-private: this is a raw-owner write below the proof gate. External
-/// writers go through `EmbeddingWritePort`, which requires an
-/// `EmbeddingWriteProof` only `proxima-core` can construct.
-///
-/// # Errors
-///
-/// Maps SQL failures through the shared mapper.
-pub(crate) async fn insert_memory_embedding(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
-    entity_kind: EntityKind,
-    memory_id: MemoryId,
-    vectors: &[SpaceVector],
-) -> Result<EmbeddingWriteOutcome, StorageError> {
-    insert_embedding(
-        tx,
-        owner,
-        EmbeddableEntityRef::Memory {
-            kind: entity_kind,
-            memory_id,
-        },
-        vectors,
-    )
-    .await
 }
 
 /// Append one embedding version and advance the independent latest head.

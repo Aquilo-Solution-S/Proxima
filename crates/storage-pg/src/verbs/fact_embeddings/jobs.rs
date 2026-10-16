@@ -9,8 +9,8 @@ use super::{ensure_nonnegative_limit, nonnegative_count};
 
 /// Claim pending jobs across every embedding space, ordered by `job_id`.
 ///
-/// One arm: `status = 'pending'`, minus the Owners the drainer is backing
-/// off. Rides `embedding_jobs_pending_claim_idx (job_id) WHERE status =
+/// One arm: `status = 'pending'`, minus failed-route Owners and exact
+/// Owner/space pairs whose clients are blocked. Rides `embedding_jobs_pending_claim_idx (job_id) WHERE status =
 /// 'pending'`. Locked unclaimed rows release with the statement's
 /// transaction. `claimed_at` is what makes a crashed drainer's row
 /// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
@@ -24,6 +24,13 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
                FROM proxima_core.embedding_jobs
               WHERE status = 'pending'
                 AND owner_id <> ALL($2::uuid[])
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest($3::uuid[], $4::text[], $5::smallint[])
+                        AS blocked(owner_id, model_id, dim)
+                    WHERE blocked.owner_id = embedding_jobs.owner_id
+                      AND blocked.model_id = embedding_jobs.model_id
+                      AND blocked.dim = embedding_jobs.dim
+                )
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
               LIMIT $1
@@ -172,6 +179,7 @@ pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
     pool: E,
     limit: i64,
     skip_owners: &[OwnerId],
+    skip_owner_spaces: &[(OwnerId, EmbeddingSpace)],
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
@@ -182,11 +190,22 @@ pub async fn claim_pending_embedding_jobs<'e, E: PgExecutor<'e>>(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
+    let mut blocked_owners = Vec::with_capacity(skip_owner_spaces.len());
+    let mut blocked_models = Vec::with_capacity(skip_owner_spaces.len());
+    let mut blocked_dims = Vec::with_capacity(skip_owner_spaces.len());
+    for (owner, space) in skip_owner_spaces {
+        blocked_owners.push(owner.into_inner());
+        blocked_models.push(space.model_id());
+        blocked_dims.push(crate::pgvector::Lane::of(space.dim()).width);
+    }
     // SQL-POLICY: fixed-fragment — the compile-time claim constant above;
     // every value is bound.
     let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(CLAIM_EMBEDDING_JOBS_SQL)
         .bind(limit)
         .bind(&skip_owner_ids)
+        .bind(&blocked_owners)
+        .bind(&blocked_models)
+        .bind(&blocked_dims)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;

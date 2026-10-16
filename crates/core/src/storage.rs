@@ -441,45 +441,6 @@ fn no_scope(_value: &dyn Any) -> Option<ScopeRef> {
     None
 }
 
-/// What storage must do about a derived memory's vector, decided by the
-/// engine before the write opens its transaction.
-///
-/// The three cases are mutually exclusive and each one names its own
-/// consequence, so "no vector was written" can never again be confused with
-/// "no vector was wanted". A pair of `Option`s could spell the same states,
-/// but it could also spell the two that mean nothing (a vector with no model
-/// id, a model id with neither a vector nor a deferral) — and it was the
-/// silent version of the third case that made an unembeddable derived text a
-/// permanently failing write.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DerivedEmbedding {
-    /// No embedding client is configured. Storage writes no vector and
-    /// enqueues nothing; a later `reconcile_embeddings` is what covers
-    /// these rows.
-    None,
-    /// The client embedded the text. Storage writes every chunk in text order,
-    /// in the same transaction as the row, then advances the version head.
-    Ready { vectors: Vec<crate::SpaceVector> },
-    /// The client could not embed this text at any length, or the chunked
-    /// rescue itself failed, while the provider is up — so the input, not
-    /// the provider, is what failed. Storage writes no vector and enqueues
-    /// a durable embedding job for `space` **in the same transaction as
-    /// the row**, so the drain (which owns terminal failures and retries)
-    /// picks the memory up. Losing the whole write, and every model call
-    /// upstream of it, is not the right answer to an input one provider
-    /// call refused.
-    Deferred { space: crate::EmbeddingSpace },
-}
-
-impl DerivedEmbedding {
-    /// Whether storage is expected to enqueue an embedding job instead of
-    /// writing a vector.
-    #[must_use]
-    pub const fn is_deferred(&self) -> bool {
-        matches!(self, Self::Deferred { .. })
-    }
-}
-
 #[derive(Debug)]
 pub struct AuthorDerivedRequest<'a> {
     /// `PostgreSQL` uses this UUID as the series handle when `supersedes` is
@@ -504,11 +465,9 @@ pub struct AuthorDerivedRequest<'a> {
     /// `None` applies the database default. Storage verifies the name
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
-    pub embedding: DerivedEmbedding,
-    /// Further spaces this memory is queued for, in the same transaction
-    /// as the row: the `next` space of an Owner moving to another model.
-    /// They never make the write deferred — search reads the `embedding`
-    /// space until the host flips the route.
+    /// Every space selected by the schema and owner write route (current
+    /// and next). Jobs are queued in the same transaction as the memory;
+    /// an empty slice requests no embedding work.
     pub queued_spaces: &'a [crate::EmbeddingSpace],
     /// What this memory was made from. Storage stores the entries in the
     /// row's own `origins` pin column, in the same transaction as the
@@ -535,13 +494,9 @@ pub struct AuthorDerivedOutcome {
     /// list: pins live in the row's own columns, so replaying the write
     /// re-asserts the same values and there is no pin id to hand back.
     pub edge_count: usize,
-    /// The memory landed without a vector and carries a pending embedding
-    /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the
-    /// memory is lexically findable and semantically invisible — a caller
-    /// that needs it searchable now must say so, which it cannot do if the
-    /// only record is a log line. An over-limit text rescued inline as
-    /// [`DerivedEmbedding::Ready`] is *not* deferred: its vector landed
-    /// with the row.
+    /// This newly admitted row queued embedding work in its memory
+    /// transaction. Nonembeddable schemas, routes with no clients, and
+    /// idempotent replays report false; vectors become available after a drain.
     pub embedding_deferred: bool,
 }
 

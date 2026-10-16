@@ -41,8 +41,7 @@ pub use goal_write::{
 };
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{
-    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EmbeddingMode, MemoryTarget,
-    SeriesHandle,
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
 pub use pipeline::WritePermit;
 pub use read_verbs::{
@@ -65,9 +64,8 @@ pub struct Engine {
     storage: EngineStoragePorts,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
-    /// Owners whose route or provider failed recently; the drain skips
-    /// their jobs until the delay passes.
-    embedding_backoff: embeddings::EmbeddingBackoff,
+    /// Shared original-client pause/retry state and observed owner routes.
+    embedding_control: embeddings::EmbeddingControl,
     /// Producer identity and capture bounds for listenable Fact schemas
     /// (docs/host-integration.md). Default-constructed means "no source bound", which is
     /// correct for the overwhelming majority of deployments: nothing is

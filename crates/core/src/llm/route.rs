@@ -11,10 +11,9 @@ use super::{BoundEmbeddingClient, EmbeddingClient, EmbeddingSpace, UnsupportedEm
 /// queries only through the route's clients, so a route naming no client
 /// means no jobs, no vectors and lexical-only search for the Owner.
 ///
-/// A route has up to two clients. `current` embeds new memories inline and
-/// serves search. `next`, set while the Owner moves to another model, is
-/// queued for every new memory and filled by backfill; search stays on
-/// `current` until the host flips the route to `current(next)`.
+/// A route has up to two clients. New memories queue work for both through
+/// [`Self::write_spaces`], without a provider request. Search uses `current`
+/// while `next` fills during a model move, until the host switches the route.
 #[derive(Debug, Clone, Default)]
 pub struct EmbeddingRoute {
     current: Option<BoundEmbeddingClient>,
@@ -67,7 +66,7 @@ impl EmbeddingRoute {
         })
     }
 
-    /// The client that embeds new memories inline and search queries.
+    /// The current client used by durable work and search queries.
     #[must_use]
     pub const fn current_client(&self) -> Option<&BoundEmbeddingClient> {
         self.current.as_ref()
@@ -88,16 +87,6 @@ impl EmbeddingRoute {
             .collect()
     }
 
-    /// Spaces a new memory of this Owner is queued for without an inline
-    /// embed: `next`'s, while a move is under way.
-    #[must_use]
-    pub fn queued_spaces(&self) -> Vec<EmbeddingSpace> {
-        self.next
-            .iter()
-            .map(|client| client.space().clone())
-            .collect()
-    }
-
     /// The client that embeds `space` for this owner, or `None` when the
     /// route no longer names it: a job queued for such a space is stale.
     #[must_use]
@@ -109,16 +98,17 @@ impl EmbeddingRoute {
         self.current.iter().chain(self.next.iter())
     }
 
-    /// The same route with every client wrapped by `wrap`, which is handed
-    /// the client it wraps (the engine's request-timeout layer). Each
-    /// binding keeps its space and origin, so wrapping cannot move a route.
+    /// Wrap clients without allowing the wrapper to change their bindings.
     pub(crate) fn wrap_clients(
         self,
-        wrap: impl Fn(std::sync::Arc<dyn EmbeddingClient>) -> std::sync::Arc<dyn EmbeddingClient>,
+        mut wrap: impl FnMut(
+            &BoundEmbeddingClient,
+            std::sync::Arc<dyn EmbeddingClient>,
+        ) -> std::sync::Arc<dyn EmbeddingClient>,
     ) -> Self {
         Self {
-            current: self.current.map(|bound| bound.wrapped(&wrap)),
-            next: self.next.map(|bound| bound.wrapped(&wrap)),
+            current: self.current.map(|bound| bound.wrapped(&mut wrap)),
+            next: self.next.map(|bound| bound.wrapped(wrap)),
         }
     }
 }

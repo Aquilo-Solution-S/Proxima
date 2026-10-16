@@ -23,7 +23,7 @@ impl Engine {
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             embedding_router: None,
             embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
-            embedding_backoff: super::embeddings::EmbeddingBackoff::default(),
+            embedding_control: super::embeddings::EmbeddingControl::default(),
             publication: crate::publication::PublicationConfig::default(),
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
             mcp_listener: None,
@@ -238,7 +238,7 @@ mod tests {
             .embed_many(&["one".to_owned(), "two".to_owned()])
             .await;
         assert!(
-            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+            matches!(result, Err(LlmError::Retryable { ref message, .. }) if message.contains("timed out")),
             "engine timeout must remain retryable: {result:?}"
         );
     }

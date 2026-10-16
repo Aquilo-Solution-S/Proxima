@@ -1,11 +1,13 @@
-// Raw-owner write behavior tests live in-crate: `insert_embedding` /
-// `insert_memory_embedding` are `pub(crate)` (below the proof gate), so
+// Raw-owner write behavior tests live in-crate: `insert_embedding` is
+// `pub(crate)` (below the proof gate), so
 // external test binaries cannot reach them without a forgeable-proof surface.
 #[cfg(test)]
 mod pg_tests {
     use std::sync::Arc;
 
-    use proxima_core::llm::{EmbeddingClient, EmbeddingRuntimePolicy, LlmError};
+    use proxima_core::llm::{
+        EmbeddingClient, EmbeddingInputRefusal, EmbeddingRuntimePolicy, LlmError,
+    };
     use proxima_core::storage_ports::{
         EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort, OwnerWritePermit,
     };
@@ -14,18 +16,16 @@ mod pg_tests {
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
-        AccessKind, AuthPath, AuthzContext, EmbeddingMode, Engine, EntityId, EntityKind,
-        FactIngestPort, FlavorRegistry, GroupId, InputContractId, MemoryTarget, OwnerId,
-        ProtocolError, SchemaId, SchemaVersion, SourceId, StorageError,
+        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
+        FlavorRegistry, GroupId, InputContractId, MemoryTarget, OwnerId, ProtocolError, SchemaId,
+        SchemaVersion, SourceId, StorageError,
     };
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
 
     use proxima_core::EmbeddableEntityRef;
     use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-    use proxima_core::llm::{
-        CHUNKED_EMBED_MIN_BYTES, EMBED_LIVENESS_PROBE, MIN_EMBED_INPUT_CAP_CHARS,
-    };
+    use proxima_core::llm::{CHUNKED_EMBED_MIN_BYTES, MIN_EMBED_INPUT_CAP_CHARS};
     use proxima_core::llm::{EmbeddingDim, SingleClientRouter};
     use proxima_core::{
         AgentDerivationV1, DerivationIdentity, DerivedMemory, MemoryId, OperatorId, SeriesHandle,
@@ -35,13 +35,33 @@ mod pg_tests {
     use super::super::{
         EmbeddingReconcileOptions, EmbeddingReconcileScope, claim_pending_embedding_jobs,
         complete_embedding_job, count_embedding_job_status, embedding_ann_observability,
-        fail_embedding_job, fail_embedding_job_permanently, insert_memory_embedding,
-        load_embedding_text, load_embedding_texts, reclaim_stale_embedding_jobs,
-        reconcile_embeddings, release_embedding_jobs, renew_embedding_jobs,
+        fail_embedding_job, fail_embedding_job_permanently, insert_embedding, load_embedding_text,
+        load_embedding_texts, reclaim_stale_embedding_jobs, reconcile_embeddings,
+        release_embedding_jobs, renew_embedding_jobs,
     };
     use crate::core_pg_sidecars;
     use crate::test_fixtures::fresh_pg;
     use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
+
+    // Memory fixture shorthand around the production entity-based writer.
+    async fn insert_memory_embedding(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        owner: &OwnerId,
+        entity_kind: EntityKind,
+        memory_id: MemoryId,
+        vectors: &[SpaceVector],
+    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+        insert_embedding(
+            tx,
+            owner,
+            EmbeddableEntityRef::Memory {
+                kind: entity_kind,
+                memory_id,
+            },
+            vectors,
+        )
+        .await
+    }
 
     fn core_embed_units() -> Vec<MemoryEmbedUnit> {
         FlavorRegistry::new()
@@ -433,7 +453,7 @@ mod pg_tests {
                 .ingest_fact_atomic(&permit, &fact_draft("chunks"), Some("stub-fact-embed"))
                 .await?;
             let pool = pg.pool_for_tests();
-            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(claims.len(), 1);
             let claim = &claims[0];
             insert_claimed_fact_embedding(&pg, claim, [0.1, 0.2, 0.3]).await?;
@@ -607,7 +627,7 @@ mod pg_tests {
                     Some("stub-fact-embed"),
                 )
                 .await?;
-            let claims = claim_pending_embedding_jobs(pg.pool_for_tests(), 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pg.pool_for_tests(), 1, &[], &[]).await?;
             assert_eq!(claims.len(), 1);
             assert_eq!(claims[0].entity_id, outcome.memory_id);
             assert_eq!(
@@ -691,7 +711,7 @@ mod pg_tests {
             let pool = pg.pool_for_tests();
             let entity_id = outcome.memory_id.into_inner();
 
-            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(claims.len(), 1);
             let (status, _, claim_unstamped) = job_state(pool, entity_id).await?;
             assert_eq!(status, "processing");
@@ -748,7 +768,7 @@ mod pg_tests {
                 .await?;
             let pool = pg.pool_for_tests();
 
-            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(claims.len(), 1);
             assert_eq!(claims[0].entity_id, permanently_rejected.memory_id);
             fail_embedding_job_permanently(pool, &claims[0], "provider rejects forever").await?;
@@ -864,7 +884,7 @@ mod pg_tests {
             );
         }
         let pool = pg.pool_for_tests();
-        let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+        let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
         if claims.len() != 1 || claims[0].entity_id != earlier {
             return Err("the real claim must target only the earlier Fact".into());
         }
@@ -1048,7 +1068,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             let claim = &claims[0];
 
             sqlx::query(
@@ -1103,7 +1123,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let old_claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let old_claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             let old_claim = old_claims[0].clone();
 
             sqlx::query(
@@ -1120,7 +1140,7 @@ mod pg_tests {
                 1
             );
 
-            let successor_claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let successor_claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(successor_claims.len(), 1);
             let successor = &successor_claims[0];
             assert_eq!(old_claim.job_id, successor.job_id);
@@ -1205,7 +1225,7 @@ mod pg_tests {
                 )
                 .await?;
             let pool = pg.pool_for_tests();
-            let claims = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             let stale = claims[0].clone();
             let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
             let transfer_permit =
@@ -1266,7 +1286,7 @@ mod pg_tests {
                 1,
                 "the destination can reclaim the abandoned source claim"
             );
-            let successor = claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            let successor = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(successor.len(), 1);
             assert_eq!(successor[0].owner, destination);
             insert_claimed_fact_embedding(&pg, &successor[0], [0.4, 0.5, 0.6]).await?;
@@ -1298,7 +1318,7 @@ mod pg_tests {
                 .await?;
             let pool = pg.pool_for_tests();
             let entity_id = outcome.memory_id.into_inner();
-            claim_pending_embedding_jobs(pool, 1, &[]).await?;
+            claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             sqlx::query(
                 "UPDATE proxima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
@@ -1425,28 +1445,53 @@ mod pg_tests {
     #[derive(Debug)]
     struct CappedEmbedding {
         max_chars: usize,
-        offered: Arc<std::sync::Mutex<Vec<usize>>>,
+        model_id: &'static str,
+        provider: Arc<AdmissionProvider>,
+    }
+
+    #[derive(Debug, Default)]
+    struct AdmissionProvider {
+        enabled: std::sync::atomic::AtomicBool,
+        offered: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl AdmissionProvider {
+        fn open_for_drain(&self) {
+            self.enabled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn offered(&self) -> Vec<usize> {
+            self.offered.lock().expect("provider recording").clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl EmbeddingClient for CappedEmbedding {
         async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+            assert!(
+                self.provider
+                    .enabled
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                "memory admission must not request a provider vector"
+            );
             let chars = text.chars().count();
-            self.offered
+            self.provider
+                .offered
                 .lock()
-                .expect("test lock is not poisoned")
+                .expect("provider recording")
                 .push(chars);
             if chars > self.max_chars {
-                return Err(LlmError::EmbedPermanent(format!(
-                    "input of {chars} chars exceeds the {}-char limit",
-                    self.max_chars
-                )));
+                return Err(LlmError::InputRefused(EmbeddingInputRefusal::LocalCap {
+                    actual_chars: chars,
+                    max_chars: self.max_chars,
+                }));
             }
             Ok(padded_embedding([0.5, 0.6, 0.7]))
         }
 
         fn model_id(&self) -> &'static str {
-            "stub-fact-embed"
+            self.model_id
         }
 
         fn dim(&self) -> usize {
@@ -1459,8 +1504,22 @@ mod pg_tests {
         origins: &[MemoryId],
         text: String,
     ) -> Result<DerivedMemory, ProtocolError> {
-        DerivedMemory::abstraction(
+        derived_request_at(
+            owner,
+            origins,
+            text,
             MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+        )
+    }
+
+    fn derived_request_at(
+        owner: OwnerId,
+        origins: &[MemoryId],
+        text: String,
+        target: MemoryTarget,
+    ) -> Result<DerivedMemory, ProtocolError> {
+        DerivedMemory::abstraction(
+            target,
             owner,
             text.clone(),
             AgentDerivationV1 {
@@ -1488,30 +1547,24 @@ mod pg_tests {
         pg: &crate::PgStorage,
         owner: &OwnerId,
         max_chars: usize,
-    ) -> Result<
-        (
-            Engine,
-            AuthzContext,
-            MemoryId,
-            Arc<std::sync::Mutex<Vec<usize>>>,
-        ),
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<(Engine, AuthzContext, MemoryId, Arc<AdmissionProvider>), Box<dyn std::error::Error>>
+    {
         let user_id = owner.as_user();
         let mut draft = fact_draft("origin");
         draft.schema_id = SchemaId::new("core/agent-note-v1".into());
         let origin = ingest_note_fact(pg, owner, &draft, &[], "origin", "origin").await?;
-        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = Arc::new(AdmissionProvider::default());
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let configured_pg = pg.clone().with_flavors(&registry);
         let engine = Engine::new(registry)
             .with_storage_ports(Arc::new(configured_pg).storage_ports())
             .with_embedding_router(routed(CappedEmbedding {
                 max_chars,
-                offered: offered.clone(),
+                model_id: "stub-fact-embed",
+                provider: provider.clone(),
             }));
         let authz = authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer));
-        Ok((engine, authz, origin.memory_id, offered))
+        Ok((engine, authz, origin.memory_id, provider))
     }
 
     async fn count_jobs(pool: &sqlx::PgPool, entity_id: Uuid) -> Result<i64, sqlx::Error> {
@@ -1525,20 +1578,17 @@ mod pg_tests {
         .await
     }
 
-    /// One long unit used to be refused at authoring, written without a
-    /// vector, and rescued into chunks by a later drain — a warning, a
-    /// second round trip, and a window of semantic invisibility per unit,
-    /// for what is routine in a corpus of long texts. The rescue now runs
-    /// inline: every chunk lands with the row and no job is filed.
+    /// A long derived unit is admitted with a durable job before any provider
+    /// request. The drain retains complete, ordered chunk rescue.
     #[tokio::test]
-    async fn author_derived_embeds_over_limit_text_inline() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn author_derived_queues_before_the_provider_then_drains_all_chunks()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let cap = MIN_EMBED_INPUT_CAP_CHARS;
-            let (engine, authz, origin, offered) =
+            let (engine, authz, origin, provider) =
                 capped_authoring_fixture(&pg, &owner, cap).await?;
             let origins = [origin];
             let pool = pg.pool_for_tests();
@@ -1551,13 +1601,13 @@ mod pg_tests {
                 .await?;
 
             assert!(
-                !outcome.embedding_deferred,
-                "an over-limit text is rescued inline, not deferred"
+                outcome.embedding_deferred,
+                "an admitted embeddable text reports its queued work"
             );
             assert_eq!(
                 count_jobs(pool, outcome.memory_id.into_inner()).await?,
-                0,
-                "no job is filed for a text the chunked rescue covered"
+                1,
+                "the memory and its job land together"
             );
             assert_eq!(
                 load_embedding_head_version(
@@ -1567,10 +1617,15 @@ mod pg_tests {
                     "stub-fact-embed"
                 )
                 .await?,
-                Some(1),
-                "the vector landed in the same write as the row"
+                None,
+                "admission publishes no provider vector"
             );
-            let offered = offered.lock().expect("test lock is not poisoned").clone();
+            assert!(provider.offered().is_empty());
+            provider.open_for_drain();
+            let drained = engine.drain_embedding_jobs(1).await?;
+            assert_eq!((drained.processed, drained.failed), (1, 0));
+            assert_eq!(count_jobs(pool, outcome.memory_id.into_inner()).await?, 0);
+            let offered = provider.offered();
             assert!(
                 offered.iter().any(|chars| *chars > cap),
                 "the whole text is offered first: {offered:?}"
@@ -1583,7 +1638,7 @@ mod pg_tests {
             assert_eq!(
                 count_fact_embeddings(pool, outcome.memory_id).await?,
                 i64::try_from(accepted)?,
-                "every successful provider chunk is stored in the inline version"
+                "every successful provider chunk is stored in the drained version"
             );
             assert_chunk_ordinals(pool, outcome.memory_id, accepted).await?;
             Ok(())
@@ -1594,17 +1649,17 @@ mod pg_tests {
         result
     }
 
-    /// A writer that asks for a queued vector gets no provider call: the
-    /// job lands with the row, and the drain embeds it with the queue.
+    /// Ordinary derived admission never calls the provider. Queued text is
+    /// embedded by the drain after the row has committed.
     #[tokio::test]
-    async fn author_derived_queues_the_vector_on_request() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn author_derived_queues_the_vector_without_a_mode_choice()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let cap = MIN_EMBED_INPUT_CAP_CHARS;
-            let (engine, authz, origin, offered) =
+            let (engine, authz, origin, provider) =
                 capped_authoring_fixture(&pg, &owner, cap).await?;
             let origins = [origin];
             let pool = pg.pool_for_tests();
@@ -1612,17 +1667,13 @@ mod pg_tests {
             let outcome = engine
                 .derive_memory(
                     &authz,
-                    derived_request(owner, &origins, "q".repeat(cap * 3))?
-                        .embedding_mode(EmbeddingMode::Deferred),
+                    derived_request(owner, &origins, "q".repeat(cap * 3))?,
                 )
                 .await?;
 
             assert!(outcome.embedding_deferred, "the write reports the queue");
             assert!(
-                offered
-                    .lock()
-                    .expect("test lock is not poisoned")
-                    .is_empty(),
+                provider.offered().is_empty(),
                 "no provider call before the write"
             );
             assert_eq!(
@@ -1630,11 +1681,11 @@ mod pg_tests {
                 ("pending".to_owned(), None, true),
                 "the job is enqueued with the row"
             );
+            provider.open_for_drain();
             let drained = engine.drain_embedding_jobs(1).await?;
             assert_eq!((drained.processed, drained.failed), (1, 0));
-            let accepted = offered
-                .lock()
-                .expect("test lock is not poisoned")
+            let accepted = provider
+                .offered()
                 .iter()
                 .filter(|chars| **chars <= cap)
                 .count();
@@ -1663,10 +1714,8 @@ mod pg_tests {
         result
     }
 
-    /// The job path is still the right place for a text the provider
-    /// rejects at every length: terminal failures and retries live there.
-    /// The provider answers the liveness probe, so this is the input's
-    /// fault and the write goes through without a vector.
+    /// A provider's eventual input refusal cannot affect admission. Only the
+    /// drain classifies a queued text that is refused at every segment length.
     #[tokio::test]
     async fn author_derived_defers_text_refused_at_every_length()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1674,9 +1723,9 @@ mod pg_tests {
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
-            // Accepts the probe and nothing the bisection can produce.
-            let (engine, authz, origin, _offered) =
-                capped_authoring_fixture(&pg, &owner, EMBED_LIVENESS_PROBE.len()).await?;
+            // Refuses every segment the minimum split floor can produce.
+            let (engine, authz, origin, provider) =
+                capped_authoring_fixture(&pg, &owner, 1).await?;
             let origins = [origin];
             let pool = pg.pool_for_tests();
 
@@ -1707,9 +1756,291 @@ mod pg_tests {
                 None,
                 "no vector was written"
             );
+            assert!(provider.offered().is_empty());
+            provider.open_for_drain();
+            let drained = engine.drain_embedding_jobs(1).await?;
+            assert_eq!((drained.processed, drained.failed), (1, 1));
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?.0,
+                "failed_permanent"
+            );
             Ok(())
         }
         .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+    fn interpretation_request(owner: OwnerId, subject: MemoryId) -> DerivedMemory {
+        DerivedMemory::interpretation(
+            MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+            owner,
+            "a grounded claim",
+            proxima_core::InterpretationV1 {
+                claim: "a grounded claim".into(),
+                confidence: 80,
+                subject_memory_ids: vec![subject.into_inner()],
+                subject_kinds: vec![proxima_core::InterpretationSubjectKind::Abstraction],
+                model_id: "test".into(),
+                client_name: "test".into(),
+                client_version: "1".into(),
+            },
+        )
+    }
+
+    async fn memory_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+            .fetch_one(pool)
+            .await
+    }
+
+    async fn assert_pending_admissions(
+        pool: &sqlx::PgPool,
+        outcomes: &[proxima_core::DerivedMemoryOutcome],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for outcome in outcomes {
+            assert!(outcome.embedding_deferred);
+            assert!(!outcome.idempotent_replay);
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?,
+                ("pending".into(), None, true)
+            );
+            assert_eq!(count_fact_embeddings(pool, outcome.memory_id).await?, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn author_derived_batch_revision_and_open_units_never_call_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let (engine, authz, origin, provider) =
+                capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
+            let pool = pg.pool_for_tests();
+            let request = derived_request(owner, &[origin], "first conclusion".into())?;
+            let first = engine.derive_memory(&authz, request.clone()).await?;
+            let revision = engine
+                .derive_memory(
+                    &authz,
+                    derived_request_at(
+                        owner,
+                        &[origin],
+                        "revised conclusion".into(),
+                        MemoryTarget::Revision(first.memory_id),
+                    )?,
+                )
+                .await?;
+            assert_ne!(first.memory_id, revision.memory_id);
+            assert_eq!((first.edge_count, revision.edge_count), (1, 1));
+            let replay = engine.derive_memory(&authz, request).await?;
+            assert!(replay.idempotent_replay);
+            assert!(!replay.embedding_deferred, "replay queues no new work");
+            assert_eq!(replay.memory_id, revision.memory_id);
+
+            let mut unit = engine.unit_of_work(&authz).await?;
+            let batch = unit
+                .derive_memories([
+                    derived_request(owner, &[origin], "batch one".into())?,
+                    derived_request(owner, &[origin], "batch two".into())?,
+                ])
+                .await?;
+            unit.commit().await?;
+            assert!(batch.iter().all(|outcome| outcome.edge_count == 1));
+
+            let mut unit = engine.unit_of_work(&authz).await?;
+            unit.advisory_xact_lock(487).await?;
+            let open = unit
+                .derive_memory(derived_request(
+                    owner,
+                    &[origin],
+                    "open transaction".into(),
+                )?)
+                .await?;
+            let claim = unit
+                .derive_memory(interpretation_request(owner, open.memory_id))
+                .await?;
+            assert_eq!((open.edge_count, claim.edge_count), (1, 1));
+            unit.commit().await?;
+            let mut accepted = vec![first, revision, open, claim];
+            accepted.extend(batch);
+            assert_pending_admissions(pool, &accepted).await?;
+
+            let mut rollback = engine.unit_of_work(&authz).await?;
+            let abandoned = rollback
+                .derive_memory(derived_request(owner, &[origin], "rolled back".into())?)
+                .await?;
+            assert!(abandoned.embedding_deferred);
+            drop(rollback);
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)",
+            )
+            .bind(abandoned.memory_id.into_inner())
+            .fetch_one(pool)
+            .await?;
+            assert!(!exists);
+            assert_eq!(count_jobs(pool, abandoned.memory_id.into_inner()).await?, 0);
+            assert!(provider.offered().is_empty());
+            provider.open_for_drain();
+            let drained = engine.drain_embedding_jobs(16).await?;
+            assert_eq!((drained.processed, drained.failed), (accepted.len(), 0));
+            for outcome in accepted {
+                assert_eq!(count_fact_embeddings(pool, outcome.memory_id).await?, 1);
+                assert_eq!(count_jobs(pool, outcome.memory_id.into_inner()).await?, 0);
+            }
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    fn moving_admission_router(
+        owner: OwnerId,
+        provider: &Arc<AdmissionProvider>,
+    ) -> Result<Arc<proxima_core::test_fixtures::TestEmbeddingRouter>, Box<dyn std::error::Error>>
+    {
+        let client = |model_id| {
+            proxima_core::BoundEmbeddingClient::bind(Arc::new(CappedEmbedding {
+                max_chars: MIN_EMBED_INPUT_CAP_CHARS,
+                model_id,
+                provider: provider.clone(),
+            }))
+        };
+        let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
+        router.set_route(
+            owner,
+            proxima_core::EmbeddingRoute::moving(
+                Some(client("stub-fact-embed")?),
+                client("next-fact-embed")?,
+            )?,
+        );
+        Ok(router)
+    }
+
+    #[tokio::test]
+    async fn author_derived_and_fact_queue_both_spaces_but_schema_and_no_route_queue_none()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let result: Result<(), Box<dyn std::error::Error>> =
+            async {
+                let owner = owner_fixture();
+                let (engine, authz, origin, provider) =
+                    capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
+                let router = moving_admission_router(owner, &provider)?;
+                let moving = proxima_core::EmbeddingRouter::route(router.as_ref(), &owner).await?;
+                let engine = engine.with_embedding_router(router.clone());
+                let derived = engine
+                    .derive_memory(
+                        &authz,
+                        derived_request(owner, &[origin], "moving conclusion".into())?,
+                    )
+                    .await?;
+                assert!(derived.embedding_deferred);
+                let payload = proxima_core::AgentNoteV1 {
+                    note_id: Uuid::now_v7(),
+                    title: "moving fact".into(),
+                    body: "a fact".into(),
+                    tags: Vec::new(),
+                    idempotency_key: None,
+                };
+                let fact = engine
+                    .ingest_fact(
+                        &authz,
+                        proxima_core::FactWrite::new(owner, "admission", &payload),
+                    )
+                    .await?;
+                let pool = pg.pool_for_tests();
+                for memory_id in [derived.memory_id, fact.memory_id] {
+                    let jobs: Vec<(String, i64, String)> = sqlx::query_as(
+                    "SELECT model_id, dim::bigint, status::text FROM proxima_core.embedding_jobs
+                     WHERE entity_id = $1 ORDER BY model_id",
+                ).bind(memory_id.into_inner()).fetch_all(pool).await?;
+                    assert_eq!(
+                        jobs,
+                        vec![
+                            ("next-fact-embed".into(), 1024, "pending".into()),
+                            ("stub-fact-embed".into(), 1024, "pending".into()),
+                        ]
+                    );
+                }
+                let episode = proxima_core::WriteActV1 {
+                    episode_id: Uuid::now_v7(),
+                };
+                let no_embed = engine
+                    .ingest_fact(
+                        &authz,
+                        proxima_core::FactWrite::new(owner, "admission", &episode),
+                    )
+                    .await?;
+                assert_eq!(count_jobs(pool, no_embed.memory_id.into_inner()).await?, 0);
+                router.set_owner(owner, None);
+                let no_route = engine
+                    .derive_memory(
+                        &authz,
+                        derived_request(owner, &[origin], "lexical only".into())?,
+                    )
+                    .await?;
+                assert!(!no_route.embedding_deferred);
+                assert_eq!(count_jobs(pool, no_route.memory_id.into_inner()).await?, 0);
+                router.refuse(owner, "route policy refuses this owner");
+                let before = memory_count(pool).await?;
+                assert!(engine.derive_memory(&authz,
+                derived_request(owner, &[origin], "refused".into())?,
+            ).await.is_err());
+                assert_eq!(memory_count(pool).await?, before);
+                assert!(provider.offered().is_empty());
+                router.set_route(owner, moving);
+                provider.open_for_drain();
+                let drained = engine.drain_embedding_jobs(16).await?;
+                assert_eq!((drained.processed, drained.failed), (4, 0));
+                Ok(())
+            }
+            .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn author_derived_job_failure_rolls_back_memory_provenance_and_sidecar()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let (engine, authz, origin, provider) =
+                capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
+            let pool = pg.pool_for_tests();
+            sqlx::query("CREATE FUNCTION public.refuse_admission_job() RETURNS trigger
+                         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'job insertion refused'; END $$")
+                .execute(pool).await?;
+            sqlx::query("CREATE TRIGGER refuse_admission_job BEFORE INSERT
+                         ON proxima_core.embedding_jobs FOR EACH ROW
+                         EXECUTE FUNCTION public.refuse_admission_job()")
+                .execute(pool).await?;
+            let before: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM proxima_core.memory),
+                        (SELECT count(*) FROM proxima_core.agent_derivation_v1),
+                        (SELECT count(*) FROM proxima_core.content),
+                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+            ).fetch_one(pool).await?;
+            let refused = engine.derive_memory(&authz,
+                derived_request(owner, &[origin], "atomic conclusion".into())?,
+            ).await;
+            let error = refused.expect_err("the job trigger must refuse this admission");
+            assert!(error.message.contains("job insertion refused"), "{error}");
+            let after: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM proxima_core.memory),
+                        (SELECT count(*) FROM proxima_core.agent_derivation_v1),
+                        (SELECT count(*) FROM proxima_core.content),
+                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+            ).fetch_one(pool).await?;
+            assert_eq!(after, before, "job failure rolls back the entire admission");
+            assert!(provider.offered().is_empty());
+            Ok(())
+        }.await;
         drop(pg);
         drop_db(&db_name).await?;
         result

@@ -1,101 +1,31 @@
-//! How the engine embeds: each Owner's route, the inline embed, the durable
-//! job drain, and the host's backfill, reconcile, coverage and purge.
-
-use std::sync::Arc;
+//! Owner routes, durable embedding work, and host maintenance.
 
 use super::Engine;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{
-    BoundEmbeddingClient, EmbeddingClient, EmbeddingRoute, EmbeddingRouteError, EmbeddingSpace,
-    LlmError,
+    BoundEmbeddingClient, ChunkedEmbedding, EmbeddingConfigurationFault, EmbeddingInputRefusal,
+    EmbeddingRoute, EmbeddingRouteError, EmbeddingSpace, LlmError,
 };
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::EmbeddingJobHandle;
 use crate::{EmbeddableEntityRef, EntityKind, MemoryId, OwnerId};
 
-/// Liveness probe after a provider refuses a batch.
-///
-/// Trivial and constant: a failed probe means the provider is down; a
-/// successful one means the refused batch's contents are at fault. Shared
-/// with [`crate::llm::embed_failure_blames_the_input`] so drain and write
-/// ask the same question.
-const TRANSIENT_BATCH_PROBE: &str = crate::llm::EMBED_LIVENESS_PROBE;
+mod control;
+pub(crate) use control::EmbeddingControl;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
     pub failed: usize,
+    /// Active observed client faults, sorted and deduplicated for health.
+    pub configuration_faults: Vec<EmbeddingConfigurationFault>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmbedStep {
     Embedded,
     NothingToEmbed,
-}
-
-/// Longest a failing Owner's jobs wait between drain attempts.
-const MAX_EMBEDDING_BACKOFF: std::time::Duration = std::time::Duration::from_mins(15);
-
-/// Owners whose route or provider failed, and until when the drain skips
-/// their jobs.
-///
-/// One Owner's broken endpoint must not stall the queue for every other
-/// owner, and must not be hammered either: its claims are released and it
-/// waits `worker_interval`, doubling per consecutive failure up to
-/// [`MAX_EMBEDDING_BACKOFF`]. A successful batch clears it. In memory only:
-/// a restart retries every Owner once.
-#[derive(Debug, Default)]
-pub(crate) struct EmbeddingBackoff {
-    owners: std::sync::Mutex<std::collections::HashMap<OwnerId, OwnerBackoff>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct OwnerBackoff {
-    until: tokio::time::Instant,
-    delay: std::time::Duration,
-}
-
-impl EmbeddingBackoff {
-    fn owners(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<OwnerId, OwnerBackoff>> {
-        self.owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Owners whose delay has not passed.
-    fn blocked(&self) -> Vec<OwnerId> {
-        let now = tokio::time::Instant::now();
-        self.owners()
-            .iter()
-            .filter(|(_, backoff)| backoff.until > now)
-            .map(|(owner, _)| *owner)
-            .collect()
-    }
-
-    /// Record a failure; returns how long the Owner now waits.
-    fn fail(&self, owner: OwnerId, base: std::time::Duration) -> std::time::Duration {
-        let mut owners = self.owners();
-        let cap = MAX_EMBEDDING_BACKOFF.max(base);
-        let delay = owners
-            .get(&owner)
-            .map_or(base, |prior| prior.delay.saturating_mul(2))
-            .min(cap);
-        owners.insert(
-            owner,
-            OwnerBackoff {
-                until: tokio::time::Instant::now() + delay,
-                delay,
-            },
-        );
-        delay
-    }
-
-    fn succeed(&self, owner: &OwnerId) {
-        self.owners().remove(owner);
-    }
 }
 
 struct EmbeddingClaimHeartbeat {
@@ -137,31 +67,6 @@ fn group_claims<T, K: PartialEq>(items: Vec<T>, key: impl Fn(&T) -> K) -> Vec<(K
     groups
 }
 
-#[derive(Debug)]
-struct RequestTimeoutEmbeddingClient {
-    inner: Arc<dyn EmbeddingClient>,
-    request_timeout: std::time::Duration,
-}
-
-#[async_trait::async_trait]
-impl EmbeddingClient for RequestTimeoutEmbeddingClient {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::llm::LlmError> {
-        crate::llm::embed_with_timeout(self.inner.as_ref(), text, self.request_timeout).await
-    }
-
-    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, crate::llm::LlmError> {
-        crate::llm::embed_many_with_timeout(self.inner.as_ref(), texts, self.request_timeout).await
-    }
-
-    fn model_id(&self) -> &str {
-        self.inner.model_id()
-    }
-
-    fn dim(&self) -> usize {
-        self.inner.dim()
-    }
-}
-
 impl Engine {
     /// The route for memories `owner` owns, every client behind the host's
     /// request deadline. No router means [`EmbeddingRoute::none`].
@@ -180,13 +85,32 @@ impl Engine {
         let Some(router) = &self.embedding_router else {
             return Ok(EmbeddingRoute::none());
         };
-        let request_timeout = self.embedding_runtime_policy.request_timeout();
-        Ok(router.route(owner).await?.wrap_clients(|inner| {
-            Arc::new(RequestTimeoutEmbeddingClient {
-                inner,
-                request_timeout,
-            })
-        }))
+        let route = router.route(owner).await?;
+        Ok(self
+            .embedding_control
+            .observe(*owner, route, self.embedding_runtime_policy))
+    }
+
+    /// Configuration faults on currently observed bindings. This snapshot
+    /// never calls a provider or waits for an in-flight embedding request.
+    /// Route changes are observed by ordinary route lookup and the drain.
+    #[must_use]
+    pub fn embedding_configuration_faults(&self) -> Vec<EmbeddingConfigurationFault> {
+        self.embedding_control.configuration_faults()
+    }
+
+    async fn refresh_blocked_embedding_routes(&self) {
+        let now = tokio::time::Instant::now();
+        for owner in self.embedding_control.owners_to_refresh(now) {
+            if let Err(err) = self.embedding_route(&owner).await {
+                self.embedding_control.route_failed(
+                    owner,
+                    self.embedding_runtime_policy.worker_interval(),
+                    tokio::time::Instant::now(),
+                );
+                tracing::warn!(%owner, error = %err, "blocked embedding owner route could not be refreshed");
+            }
+        }
     }
 
     /// `owner`'s route for a write: a route the host refuses refuses the
@@ -347,39 +271,14 @@ impl Engine {
             .map_err(|_| ProtocolError::internal("enqueued count does not fit usize"))
     }
 
-    /// Host-invoked sweep that drains durable pending memory embedding
-    /// jobs, each through the route of the Owner whose memory it embeds.
-    /// This method does not spawn a worker, timer, or model decision loop;
-    /// the caller controls invocation and `limit`. Jobs are claimed in
-    /// batches of up to the host-configured
-    /// [`crate::EmbeddingRuntimePolicy::batch_size`] and sent to each
-    /// Owner's client grouped by Owner and space. Direct core hosts can
-    /// install the policy with [`Engine::with_embedding_runtime_policy`].
+    /// Drain at most `limit` claimed jobs through each Owner's configured
+    /// current and next clients. Stale spaces and missing text complete as
+    /// no-ops. A heartbeat protects live claims; stale claims are reclaimed.
     ///
-    /// Every invocation first returns `processing` claims older than the
-    /// policy's stale-claim timeout to `pending` (one statement, all
-    /// spaces), then claims. A drainer that died holding a claim — a process
-    /// stopped between claim and completion — is recovered here, not only at
-    /// boot.
-    ///
-    /// Routing semantics:
-    /// - a route error releases that Owner's claims and backs the Owner off
-    ///   (from the policy's worker interval, doubling to 15 minutes, reset
-    ///   by a successful batch); other Owners keep draining;
-    /// - a job for a space the Owner's route no longer names is stale and
-    ///   completes without a vector — reconcile queues the route's space.
-    ///
-    /// Failure semantics:
-    /// - a *transient* batch failure (429/5xx/network) releases the Owner's
-    ///   claimed jobs back to `pending` without burning retry attempts — a
-    ///   provider outage is not evidence against any individual job — and
-    ///   backs that Owner off;
-    /// - a batch failure whose liveness probe succeeds re-embeds the batch one
-    ///   text at a time to isolate the content-attributed input(s); an
-    ///   over-limit input is rescued by bisecting it into chunks and storing
-    ///   all chunk vectors atomically; jobs rejected at every length go terminal
-    ///   instead of cycling reject-retry forever, and their batch-mates still embed;
-    ///   when the probe fails, all jobs remain retryable.
+    /// Blocked clients release unsettled work and do not block other spaces.
+    /// Only typed input refusals enter isolation and complete-coverage chunk
+    /// rescue. Their final minimum-size refusal goes terminal; retryable and
+    /// configuration failures retain pending work.
     ///
     /// # Errors
     ///
@@ -388,9 +287,9 @@ impl Engine {
     /// unsettled claims to `pending` (best effort; the stale-claim timeout
     /// is the backstop), so a call that returns leaves none of its claims
     /// `processing`.
-    /// Per-job embedding failures are recorded on their job rows and
-    /// counted in the returned outcome; each job receives at most one
-    /// attempt per invocation.
+    /// Completed jobs and terminal input refusals count as processed;
+    /// released jobs do not. Active observed configuration faults are
+    /// returned even when no job completed.
     pub async fn drain_embedding_jobs(
         &self,
         limit: usize,
@@ -400,16 +299,20 @@ impl Engine {
         }
         let policy = self.embedding_runtime_policy();
         self.reclaim_stale_embedding_claims(policy).await?;
+        self.refresh_blocked_embedding_routes().await;
         let mut outcome = EmbeddingDrainOutcome::default();
         let mut remaining = limit;
         while remaining > 0 {
             let take = i64::try_from(remaining.min(policy.batch_size()))
                 .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+            let now = tokio::time::Instant::now();
+            let skip_owners = self.embedding_control.blocked_owners(now);
+            let skip_owner_spaces = self.embedding_control.blocked_pairs(now);
             let claims = self
                 .storage
                 .ingest
                 .embedding_job
-                .claim_pending_embedding_jobs(take, &self.embedding_backoff.blocked())
+                .claim_pending_embedding_jobs(take, &skip_owners, &skip_owner_spaces)
                 .await?;
             if claims.is_empty() {
                 break;
@@ -428,6 +331,7 @@ impl Engine {
                 return Err(err);
             }
         }
+        outcome.configuration_faults = self.embedding_configuration_faults();
         Ok(outcome)
     }
 
@@ -534,8 +438,7 @@ impl Engine {
                     .await;
             }
         };
-        let mut spaces = group_claims(batch, |(claim, _)| claim.space.clone()).into_iter();
-        while let Some((space, space_batch)) = spaces.next() {
+        for (space, space_batch) in group_claims(batch, |(claim, _)| claim.space.clone()) {
             let Some(client) = route.client_for(&space) else {
                 // The route moved on from this space since the job was
                 // queued; embedding it would write a vector nothing reads.
@@ -544,21 +447,12 @@ impl Engine {
                 }
                 continue;
             };
-            if !self.embed_claim_batch(client, space_batch, outcome).await? {
-                let rest: Vec<EmbeddingJobClaim> = spaces
-                    .flat_map(|(_, rest)| rest.into_iter().map(|(claim, _)| claim))
-                    .collect();
-                return self
-                    .back_off_owner(owner, policy, &rest, "embedding provider unavailable")
-                    .await;
-            }
+            self.embed_claim_batch(client, space_batch, outcome).await?;
         }
-        self.embedding_backoff.succeed(&owner);
         Ok(())
     }
 
-    /// Back `owner` off and release `claims` without burning an attempt:
-    /// its route or provider failed, and none of them was tried.
+    /// A route lookup failure backs off the Owner, independently of clients.
     async fn back_off_owner(
         &self,
         owner: OwnerId,
@@ -566,7 +460,11 @@ impl Engine {
         claims: &[EmbeddingJobClaim],
         reason: &str,
     ) -> Result<(), StorageError> {
-        let retry_in = self.embedding_backoff.fail(owner, policy.worker_interval());
+        let retry_in = self.embedding_control.route_failed(
+            owner,
+            policy.worker_interval(),
+            tokio::time::Instant::now(),
+        );
         tracing::warn!(
             owner = %owner.to_string(),
             ?retry_in,
@@ -598,92 +496,44 @@ impl Engine {
             .await
     }
 
-    /// One provider batch for one Owner and space. `false` when the
-    /// provider is down: the batch's claims are released for a later drain.
+    /// Only a typed input refusal isolates a batch. Other failures release
+    /// unsettled claims; shared client control decides when they may retry.
     async fn embed_claim_batch(
         &self,
         client: &BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
         outcome: &mut EmbeddingDrainOutcome,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<(), StorageError> {
         let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
         match client.embed_many(&texts).await {
-            Ok(vectors) if vectors.len() != batch.len() => {
-                self.release_malformed_embedding_batch(batch, vectors.len())
-                    .await?;
-                Ok(false)
-            }
             Ok(vectors) => {
                 for ((claim, _), vector) in batch.iter().zip(vectors) {
+                    self.store_claim_embeddings(client, claim, vec![vector])
+                        .await?;
                     outcome.processed += 1;
-                    if !self
-                        .store_claim_embeddings(client, claim, vec![vector])
-                        .await?
-                    {
-                        outcome.failed += 1;
-                    }
                 }
-                Ok(true)
+                Ok(())
             }
-            Err(LlmError::EmbedPermanent(_)) => {
-                self.embed_claims_individually(client, batch, outcome)
-                    .await?;
-                Ok(true)
-            }
-            Err(err) => {
-                self.recover_transient_embedding_batch(client, batch, outcome, &err)
+            Err(LlmError::InputRefused(refusal)) => {
+                let known_refusal = (batch.len() == 1).then_some(refusal);
+                self.embed_claims_individually(client, batch, known_refusal, outcome)
                     .await
             }
+            Err(err) => self.release_embedding_batch(batch, &err).await,
         }
     }
 
-    /// A transient batch error is supposed to mean the provider failed
-    /// rather than any input being bad — but the two are indistinguishable
-    /// from the response when the provider fails *because of* an input.
-    /// Observed against a local runner: one scanned page whose OCR
-    /// hallucinated a 300-row CJK table killed the model process, which
-    /// surfaces as `400 {"error": "… EOF"}`, correctly classified transient
-    /// because nothing looked at the input. Released unburned, the whole
-    /// claim of 32 came back every drain and 31 innocent pages of the book
-    /// stayed unembedded indefinitely.
-    ///
-    /// Probing separates the cases. If the provider answers a trivial input
-    /// right after refusing the batch, it is up, and this batch's failure is
-    /// attributable to its contents — so isolate them the same way a
-    /// permanent rejection is isolated, and the drain continues (`true`).
-    /// If the probe also fails, the provider really is down: release
-    /// without burning attempts, exactly as before, for one extra tiny
-    /// call, and the Owner backs off (`false`).
-    async fn recover_transient_embedding_batch(
+    async fn release_embedding_batch(
         &self,
-        client: &BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
-        outcome: &mut EmbeddingDrainOutcome,
-        err: &LlmError,
-    ) -> Result<bool, StorageError> {
-        if client.embed(TRANSIENT_BATCH_PROBE).await.is_ok() {
-            tracing::warn!(
-                error = %err,
-                jobs = batch.len(),
-                "transient embedding batch failure but the provider answers; \
-                 isolating inputs instead of holding the batch"
-            );
-            self.embed_claims_individually(client, batch, outcome)
-                .await?;
-            return Ok(true);
-        }
+        error: &LlmError,
+    ) -> Result<(), StorageError> {
         let claims: Vec<EmbeddingJobClaim> = batch.into_iter().map(|(claim, _)| claim).collect();
-        tracing::warn!(
-            error = %err,
-            jobs = claims.len(),
-            "transient embedding batch failure; releasing claims without burning attempts"
-        );
         self.storage
             .ingest
             .embedding_job
-            .release_embedding_jobs(&claims, &format!("embed memory text: {err}"))
-            .await?;
-        Ok(false)
+            .release_embedding_jobs(&claims, &format!("embed memory text: {error}"))
+            .await
     }
 
     /// Once per drain, not per batch: one UPDATE that frees what a dead
@@ -709,47 +559,14 @@ impl Engine {
         Ok(())
     }
 
-    async fn release_malformed_embedding_batch(
-        &self,
-        batch: Vec<(EmbeddingJobClaim, String)>,
-        received: usize,
-    ) -> Result<(), StorageError> {
-        let error = format!(
-            "embedding batch cardinality mismatch: sent {} texts but received {received} vectors",
-            batch.len(),
-        );
-        tracing::warn!(
-            sent = batch.len(),
-            received,
-            "embedding provider returned malformed batch cardinality"
-        );
-        let claims: Vec<EmbeddingJobClaim> = batch.into_iter().map(|(claim, _)| claim).collect();
-        self.storage
-            .ingest
-            .embedding_job
-            .release_embedding_jobs(&claims, &error)
-            .await
-    }
-
-    /// Store every chunk for its claim and complete the job. Invalid widths
-    /// or an empty batch fail the job before any chunk is stored.
+    /// Publish all chunks atomically, then complete the fenced claim.
     async fn store_claim_embeddings(
         &self,
         client: &BoundEmbeddingClient,
         claim: &EmbeddingJobClaim,
         vectors: Vec<Vec<f32>>,
-    ) -> Result<bool, StorageError> {
-        let vectors = match super::memory_authoring::space_vectors(client, vectors) {
-            Ok(vectors) => vectors,
-            Err(err) => {
-                self.storage
-                    .ingest
-                    .embedding_job
-                    .fail_embedding_job(claim, &err.to_string())
-                    .await?;
-                return Ok(false);
-            }
-        };
+    ) -> Result<(), StorageError> {
+        let vectors = super::memory_authoring::space_vectors(client, vectors)?;
         self.storage
             .ingest
             .embedding_write
@@ -768,81 +585,52 @@ impl Engine {
             .embedding_job
             .complete_embedding_job(claim)
             .await?;
-        Ok(true)
+        Ok(())
     }
 
-    /// Per-item fallback after a live-provider batch rejection: isolate which
-    /// inputs the provider rejects. A rejected input is bisected into
-    /// provider-acceptable chunks ([`crate::llm::embed_in_chunks_after_failure`])
-    /// and every chunk is stored atomically in one version, so the whole
-    /// over-limit input remains semantically searchable.
-    /// An ambiguous per-item failure
-    /// is eligible only after its own liveness probe succeeds.
-    /// Inputs the provider rejects at every length go terminal; other
-    /// errors record one ordinary attempt. Either way each job gets at
-    /// most one attempt in this pass.
+    /// Isolate an input-refused batch. A later non-input failure releases
+    /// the current and remaining jobs, preserving complete coverage.
     async fn embed_claims_individually(
         &self,
         client: &BoundEmbeddingClient,
         batch: Vec<(EmbeddingJobClaim, String)>,
+        mut known_refusal: Option<EmbeddingInputRefusal>,
         outcome: &mut EmbeddingDrainOutcome,
     ) -> Result<(), StorageError> {
-        for (claim, text) in batch {
-            outcome.processed += 1;
-            match client.embed(&text).await {
-                Ok(vector) => {
-                    if !self
-                        .store_claim_embeddings(client, &claim, vec![vector])
-                        .await?
-                    {
-                        outcome.failed += 1;
-                    }
+        let mut pending = batch.into_iter();
+        while let Some((claim, text)) = pending.next() {
+            let attempt = match known_refusal.take() {
+                Some(refusal) => Err(LlmError::InputRefused(refusal)),
+                None => client.embed(&text).await,
+            };
+            let coverage = match attempt {
+                Ok(vector) => Ok(ChunkedEmbedding::Embedded(vec![vector])),
+                Err(LlmError::InputRefused(refusal)) => {
+                    crate::llm::embed_in_chunks_after_failure(client.as_ref(), &text, refusal).await
+                }
+                Err(err) => Err(err),
+            };
+            match coverage {
+                Ok(ChunkedEmbedding::Embedded(vectors)) => {
+                    self.store_claim_embeddings(client, &claim, vectors).await?;
+                    outcome.processed += 1;
+                }
+                Ok(ChunkedEmbedding::InputRefused(refusal)) => {
+                    self.storage
+                        .ingest
+                        .embedding_job
+                        .fail_embedding_job_permanently(
+                            &claim,
+                            &format!("embed memory text: {refusal}"),
+                        )
+                        .await?;
+                    outcome.processed += 1;
+                    outcome.failed += 1;
                 }
                 Err(err) => {
-                    let initial_error = err.to_string();
-                    match crate::llm::embed_in_chunks_after_failure(client.as_ref(), &text, err)
-                        .await
-                    {
-                        Ok(Some(vectors)) => {
-                            tracing::warn!(
-                                entity_id = ?claim.entity_id,
-                                chunks = vectors.len(),
-                                total_bytes = text.len(),
-                                "over-limit embedding input rescued by chunking"
-                            );
-                            let stored =
-                                self.store_claim_embeddings(client, &claim, vectors).await?;
-                            if !stored {
-                                outcome.failed += 1;
-                            }
-                        }
-                        Ok(None) => {
-                            outcome.failed += 1;
-                            tracing::warn!(
-                                entity_id = ?claim.entity_id,
-                                "embedding input permanently rejected at every length; job going terminal"
-                            );
-                            self.storage
-                                .ingest
-                                .embedding_job
-                                .fail_embedding_job_permanently(
-                                    &claim,
-                                    &format!("embed memory text: {initial_error}"),
-                                )
-                                .await?;
-                        }
-                        Err(err) => {
-                            outcome.failed += 1;
-                            self.storage
-                                .ingest
-                                .embedding_job
-                                .fail_embedding_job(
-                                    &claim,
-                                    &format!("embed truncated memory text: {err}"),
-                                )
-                                .await?;
-                        }
-                    }
+                    let mut unsettled = vec![(claim, text)];
+                    unsettled.extend(pending);
+                    return self.release_embedding_batch(unsettled, &err).await;
                 }
             }
         }

@@ -268,7 +268,7 @@ impl BoundEmbeddingClient {
     ///
     /// # Errors
     ///
-    /// The client's [`LlmError`]; [`LlmError::Embed`] when the vector is not
+    /// The client's [`LlmError`]; [`LlmError::Retryable`] when the vector is not
     /// the client's declared width.
     pub async fn embed_query(&self, query: &str, task: QueryTask) -> Result<SpaceVector, LlmError> {
         let values = self
@@ -276,19 +276,26 @@ impl BoundEmbeddingClient {
             .embed(&self.query_instructions.render(query, task))
             .await?;
         self.vector(values)
-            .map_err(|err| LlmError::Embed(err.to_string()))
+            .map_err(|err| LlmError::retryable(err.to_string()))
     }
 
-    /// The same binding with its client replaced by `wrap(client)`. Space
-    /// and origin are kept, so a wrapper cannot move the binding.
-    pub(super) fn wrapped(
+    /// Replace the engine layer around the original host client. Reusing an
+    /// already wrapped binding cannot nest engine dispatch gates. Space and
+    /// query metadata stay with the binding.
+    pub(crate) fn wrapped(
         self,
-        wrap: impl Fn(std::sync::Arc<dyn EmbeddingClient>) -> std::sync::Arc<dyn EmbeddingClient>,
+        wrap: impl FnOnce(
+            &Self,
+            std::sync::Arc<dyn EmbeddingClient>,
+        ) -> std::sync::Arc<dyn EmbeddingClient>,
     ) -> Self {
-        Self {
-            client: wrap(self.client),
-            ..self
-        }
+        let client = wrap(&self, std::sync::Arc::clone(&self.origin));
+        Self { client, ..self }
+    }
+
+    /// Original host identity, retained through all engine wrappers.
+    pub(crate) fn origin(&self) -> &std::sync::Arc<dyn EmbeddingClient> {
+        &self.origin
     }
 
     /// Whether both bindings serve the same host client, so one embedding
@@ -403,7 +410,7 @@ mod tests {
                     .with_instruction(super::QueryTask::DEFAULT, instruction("any: {query}"))
                     .with_instruction(code, instruction("code: {query}")),
             )
-            .wrapped(|inner| inner);
+            .wrapped(|_, inner| inner);
 
         bound.embed("stored text").await.expect("content embeds");
         bound

@@ -302,7 +302,6 @@ impl WriteSession for PgWriteSession {
             operator_kind: req.operator_kind,
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
-            embedding: req.embedding.clone(),
             queued_spaces: req.queued_spaces,
         };
         verbs::derive_append::validate_derived_origins_in_tx(&mut self.tx, &draft, req.origins)
@@ -381,7 +380,7 @@ impl WriteSession for PgWriteSession {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
             edge_count,
-            embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
+            embedding_deferred: !req.queued_spaces.is_empty() && !outcome.idempotent_replay,
         })
     }
 
