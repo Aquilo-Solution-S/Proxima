@@ -41,6 +41,9 @@ mod privileged_objects;
 #[path = "rls_guard_pg/omitted_schema.rs"]
 mod omitted_schema;
 
+#[path = "rls_guard_pg/owner_predicates.rs"]
+mod owner_predicates;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(
