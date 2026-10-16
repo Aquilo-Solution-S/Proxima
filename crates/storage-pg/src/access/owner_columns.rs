@@ -996,6 +996,9 @@ pub(crate) async fn remove_group_member(
         )
         .await?;
         let result = async {
+            #[cfg(test)]
+            crate::pause_point::reach(crate::pause_point::BEFORE_GROUP_LOCK, group_id.into_inner())
+                .await;
             lock_group_membership_write_tx(&mut tx, group_id, member).await?;
             let had_manager = group_has_manager(&mut tx, group_id).await?;
             if had_manager {
@@ -1120,6 +1123,9 @@ pub(crate) async fn remove_group_member_relation(
         )
         .await?;
         let result = async {
+            #[cfg(test)]
+            crate::pause_point::reach(crate::pause_point::BEFORE_GROUP_LOCK, group_id.into_inner())
+                .await;
             lock_group_membership_write_tx(&mut tx, group_id, member).await?;
             let had_manager = group_has_manager(&mut tx, group_id).await?;
             if had_manager {
@@ -1256,6 +1262,9 @@ pub(crate) async fn replace_group_member_relation(
         )
         .await?;
         let result = async {
+            #[cfg(test)]
+            crate::pause_point::reach(crate::pause_point::BEFORE_GROUP_LOCK, group_id.into_inner())
+                .await;
             lock_group_membership_write_tx(&mut tx, group_id, member).await?;
             let had_manager = group_has_manager(&mut tx, group_id).await?;
             if had_manager {
@@ -2828,6 +2837,10 @@ pub(crate) async fn home_owner<'e>(
 
     Ok(row.map(OwnerId::new))
 }
+
+#[cfg(test)]
+#[path = "group_manager_race_pg_tests.rs"]
+mod group_manager_race_pg_tests;
 
 #[cfg(test)]
 mod tests {

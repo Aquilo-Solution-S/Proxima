@@ -11,6 +11,10 @@ use uuid::Uuid;
 /// In a Memory admission, right after its `t` is minted.
 pub(crate) const AFTER_SERIES_MINT: &str = "after-series-mint";
 
+/// In a group membership removal or demotion, inside its transaction and
+/// right before the group-tree lock. Keyed by the group id.
+pub(crate) const BEFORE_GROUP_LOCK: &str = "before-group-lock";
+
 type Armed = (&'static str, Uuid, Arc<Barrier>, Arc<Barrier>);
 
 static ARMED: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
