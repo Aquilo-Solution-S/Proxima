@@ -33,7 +33,7 @@
 //!   owns, so the consumer's lane re-runs instead of trusting stale rows.
 
 use proxima::flavor::FlavorBundle;
-use proxima::run_core_and_flavor_migrations;
+use proxima::{missing_migration_policy_from_lookup, run_core_and_flavor_migrations_with_policy};
 use proxima_storage_pg::{
     CORE_MIGRATION_VERSION_CEILING, PgMigrationStorage, PgPoolConfig, PgTuning,
 };
@@ -49,6 +49,8 @@ const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let missing_policy =
+        missing_migration_policy_from_lookup(&|key| std::env::var(key).ok())?.unwrap_or_default();
     let url = resolve_database_url(&args)?;
     print_target(&url)?;
 
@@ -68,7 +70,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if dependent_lanes == DependentLanes::Reset {
         return Err(format!("{RESET_DEPENDENT_LANES_FLAG} only qualifies {RESET_FLAG}").into());
     }
-    let report = run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+    let report = run_core_and_flavor_migrations_with_policy(
+        &pg,
+        proxima_code::CodeFlavor::migrators(),
+        missing_policy,
+    )
+    .await?;
     for source in report.sources {
         println!("{source} migrations applied");
     }
@@ -214,64 +221,65 @@ fn is_local_postgres_host(host: &str) -> bool {
 /// schemas, but those lanes' ledger rows stay, so their migrator never
 /// re-creates it: the consumer silently loses an FK, a view, a trigger or a
 /// policy. Refuse before anything is dropped, naming each one, unless the
-/// operator opted in; returns the dependents the reset will drop.
+/// operator opted in. An explicit lane reset also needs permission to clear
+/// every lane ledger, including when no foreign objects depend on the schema.
 async fn census_foreign_dependents(
     pool: &sqlx::PgPool,
     dependent_lanes: DependentLanes,
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let dependents: Vec<(String, String)> =
         sqlx::query_as(FOREIGN_DEPENDENTS).fetch_all(pool).await?;
-    if dependents.is_empty() {
-        return Ok(dependents);
+    if !dependents.is_empty() {
+        eprintln!("objects of other lanes that DROP SCHEMA proxima_* .. CASCADE drops:");
+        for (object, on) in &dependents {
+            eprintln!("  - {object} (depends on {on})");
+        }
     }
-    // The detail goes to stderr line by line; the error names the objects on
-    // one line, since `main` prints it through `Debug`.
-    eprintln!("objects of other lanes that DROP SCHEMA proxima_* .. CASCADE drops:");
-    for (object, on) in &dependents {
-        eprintln!("  - {object} (depends on {on})");
+    match dependent_lanes {
+        DependentLanes::Refuse => {
+            if dependents.is_empty() {
+                return Ok(());
+            }
+            let objects: std::collections::BTreeSet<&str> = dependents
+                .iter()
+                .map(|(object, _)| object.as_str())
+                .collect();
+            Err(format!(
+                "dev reset refuses: {} object(s) of other lanes depend on the proxima_* schemas or \
+                 sit on them ({}), and the CASCADE would drop them (and whatever depends on them) \
+                 while their lanes' ledger rows still claim them. Reset those lanes first (drop \
+                 their objects and delete their ledger rows), or pass {RESET_DEPENDENT_LANES_FLAG} \
+                 to drop them here and delete every ledger row no Proxima lane owns \
+                 (public._sqlx_migrations and the other public._sqlx_migrations_* tables), so \
+                 those lanes re-run from scratch",
+                objects.len(),
+                objects.into_iter().collect::<Vec<_>>().join("; ")
+            )
+            .into())
+        }
+        DependentLanes::Reset => {
+            let undeletable: Vec<String> = sqlx::query_scalar(
+                r"SELECT 'public.' || c.relname
+                    FROM pg_catalog.pg_class c
+                   WHERE c.relnamespace = 'public'::regnamespace
+                     AND c.relkind IN ('r', 'p')
+                     AND (c.relname = '_sqlx_migrations'
+                          OR c.relname LIKE '\_sqlx\_migrations\_%' ESCAPE '\')
+                     AND NOT has_table_privilege(c.oid, 'DELETE')
+                   ORDER BY 1",
+            )
+            .fetch_all(pool)
+            .await?;
+            if !undeletable.is_empty() {
+                return Err(format!(
+                    "dev reset refuses {RESET_DEPENDENT_LANES_FLAG}: this role cannot delete from {}, \
+                     so the dependent lanes' rows would outlive their dropped objects; nothing was \
+                     dropped", undeletable.join(", ")
+                ).into());
+            }
+            Ok(())
+        }
     }
-    if dependent_lanes == DependentLanes::Refuse {
-        let objects: std::collections::BTreeSet<&str> = dependents
-            .iter()
-            .map(|(object, _)| object.as_str())
-            .collect();
-        return Err(format!(
-            "dev reset refuses: {} object(s) of other lanes depend on the proxima_* schemas or \
-             sit on them ({}), and the CASCADE would drop them (and whatever depends on them) \
-             while their lanes' ledger rows still claim them. Reset those lanes first (drop \
-             their objects and delete their ledger rows), or pass {RESET_DEPENDENT_LANES_FLAG} \
-             to drop them here and delete every ledger row no Proxima lane owns \
-             (public._sqlx_migrations and the other public._sqlx_migrations_* tables), so \
-             those lanes re-run from scratch",
-            objects.len(),
-            objects.into_iter().collect::<Vec<_>>().join("; ")
-        )
-        .into());
-    }
-    // The opt-in must be able to delete every row it promises to, or it would
-    // stop halfway: dependents dropped, their rows still claiming them.
-    let undeletable: Vec<String> = sqlx::query_scalar(
-        r"SELECT 'public.' || c.relname
-            FROM pg_catalog.pg_class c
-           WHERE c.relnamespace = 'public'::regnamespace
-             AND c.relkind IN ('r', 'p')
-             AND (c.relname = '_sqlx_migrations'
-                  OR c.relname LIKE '\_sqlx\_migrations\_%' ESCAPE '\')
-             AND NOT has_table_privilege(c.oid, 'DELETE')
-           ORDER BY 1",
-    )
-    .fetch_all(pool)
-    .await?;
-    if !undeletable.is_empty() {
-        return Err(format!(
-            "dev reset refuses {RESET_DEPENDENT_LANES_FLAG}: this role cannot delete from {}, \
-             so the dependent lanes' rows would outlive their dropped objects; nothing was \
-             dropped",
-            undeletable.join(", ")
-        )
-        .into());
-    }
-    Ok(dependents)
 }
 
 async fn reset_local_dev_database_confirmed(
@@ -289,7 +297,7 @@ async fn reset_local_dev_database_confirmed(
         return Err("dev reset refuses protected database names".into());
     }
     let pool = pg.clone_pool_for_backend();
-    let dependents = census_foreign_dependents(&pool, dependent_lanes).await?;
+    census_foreign_dependents(&pool, dependent_lanes).await?;
 
     // A `proxima_*` schema this binary's compiled flavors did not create
     // used to REFUSE the reset. That was the right guard while the reset
@@ -324,7 +332,7 @@ async fn reset_local_dev_database_confirmed(
     // tracks in the shared table), plus each compiled flavor's own tracking
     // table. A date-shaped row in the shared table that no compiled migrator
     // recognizes cannot be attributed, so it is left behind and reported —
-    // it is inert under `ignore_missing`.
+    // strict migration refuses it until the operator resets that lane explicitly.
     let mut flavor_versions = Vec::new();
     let mut flavor_ledger_tables = Vec::new();
     for migrator in proxima_code::CodeFlavor::migrators() {
@@ -378,7 +386,7 @@ async fn reset_local_dev_database_confirmed(
             .execute(&pool)
             .await?;
     }
-    if !dependents.is_empty() {
+    if dependent_lanes == DependentLanes::Reset {
         delete_dependent_lane_rows(&pool, &flavor_versions).await?;
     }
     let migration_table_exists: bool =
@@ -403,7 +411,7 @@ async fn reset_local_dev_database_confirmed(
                 .await?;
         if !leftover.is_empty() {
             eprintln!(
-                "leaving {} ledger row(s) no compiled migrator accounts for (inert): {leftover:?}",
+                "leaving {} ledger row(s) no compiled migrator accounts for; strict migration refuses them: {leftover:?}; use --reset --reset-dependent-lanes to discard their ledger rows after resetting any remaining objects of those lanes",
                 leftover.len()
             );
         }
@@ -467,11 +475,12 @@ async fn delete_dependent_lane_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxima::run_core_and_flavor_migrations;
     use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 
     // A date-shaped ledger row no compiled migrator recognizes — e.g. a
     // flavor lane retired before the version-namespace rules existed. The
-    // reset cannot attribute it, so it must survive as an inert leftover
+    // reset cannot attribute it, so it must survive and block strict migration
     // rather than be deleted by guesswork.
     const UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION: i64 = 20_260_622_000_000;
 
@@ -546,6 +555,35 @@ mod tests {
                  unattributable leftover"
             );
 
+            let refused =
+                run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators())
+                    .await
+                    .expect_err("unattributable versions block migration after reset");
+            assert!(
+                matches!(
+                    refused,
+                    proxima::MigrationError::Core(sqlx::migrate::MigrateError::VersionMissing(
+                        UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION
+                    ))
+                ),
+                "{refused:?}"
+            );
+            let core_exists: bool =
+                sqlx::query_scalar("SELECT to_regnamespace('proxima_core') IS NOT NULL")
+                    .fetch_one(&pg.clone_pool_for_backend())
+                    .await?;
+            assert!(
+                !core_exists,
+                "strict refusal recreated no schema after reset"
+            );
+            reset_local_dev_database_confirmed(&pg, &url, DependentLanes::Reset).await?;
+            let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM public._sqlx_migrations")
+                .fetch_one(&pg.clone_pool_for_backend())
+                .await?;
+            assert_eq!(
+                remaining, 0,
+                "explicit lane reset clears unowned versions even without foreign dependents"
+            );
             run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
             Ok(())
         }
@@ -717,5 +755,46 @@ mod tests {
 
         let _ = drop_db(&db_name).await;
         result.expect("dev reset consumer-lane regression failed");
+    }
+    #[tokio::test]
+    async fn explicit_lane_reset_checks_ledger_permissions_without_foreign_dependents() {
+        let db = proxima_pg_testkit::SplitRoleDb::create("proxima_reset_ledger_permission", &[])
+            .await
+            .expect("owned PG required");
+        let pg = PgMigrationStorage::connect_with_config(
+            db.platform_url(),
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await
+        .expect("migration storage");
+        let admin = sqlx::PgPool::connect(&db.admin_url())
+            .await
+            .expect("admin pool");
+        sqlx::query("CREATE SCHEMA proxima_reset_guard")
+            .execute(&pg.clone_pool_for_backend())
+            .await
+            .expect("reset marker");
+        sqlx::query("CREATE TABLE public._sqlx_migrations_guard (version bigint)")
+            .execute(&admin)
+            .await
+            .expect("ledger owned by another role");
+        let refused =
+            reset_local_dev_database_confirmed(&pg, &db.admin_url(), DependentLanes::Reset)
+                .await
+                .expect_err("reset cannot clear the foreign ledger");
+        assert!(
+            refused
+                .to_string()
+                .contains("public._sqlx_migrations_guard"),
+            "{refused}"
+        );
+        let marker_exists: bool =
+            sqlx::query_scalar("SELECT to_regnamespace('proxima_reset_guard') IS NOT NULL")
+                .fetch_one(&admin)
+                .await
+                .expect("marker probe");
+        assert!(marker_exists, "permission refusal dropped the schema");
+        admin.close().await;
     }
 }

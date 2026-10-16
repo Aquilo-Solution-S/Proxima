@@ -13,9 +13,11 @@ pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
-    LedgerConflict, MigrationError, MigrationRunReport, NamedMigrator, PendingMigration,
-    flavor_ledger_table, is_flavor_ledger_id, pending_migrations, preflight_without_migrations,
-    run_core_and_flavor_migrations,
+    LedgerConflict, MigrationError, MigrationRunReport, MissingMigrationPolicy, NamedMigrator,
+    PendingMigration, flavor_ledger_table, is_flavor_ledger_id, pending_migrations,
+    pending_migrations_with_policy, preflight_without_migrations,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
+    run_core_and_flavor_migrations_with_policy,
 };
 pub use crate::owner_access::{ForwarderPolicy, GroupRegistry};
 pub use crate::proxima_host::ProximaHost;
@@ -28,6 +30,7 @@ pub use crate::runtime_config::RuntimeAuthState;
 pub use crate::runtime_config::{
     McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
     RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
+    missing_migration_policy_from_lookup,
 };
 /// The S3-backed cited-blob lane.
 ///

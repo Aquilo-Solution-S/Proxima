@@ -410,7 +410,7 @@ fn the_bundle_is_the_hand_written_one() {
         migrators[0].migrator().table_name,
         "public._sqlx_migrations_kittest"
     );
-    assert!(migrators[0].migrator().ignore_missing);
+    assert!(!migrators[0].migrator().ignore_missing);
     assert_eq!(kit_gap::KitGapFlavor::app_info().id, "kittest");
     assert_eq!(
         kit_full::KitFullFlavor::app_info(),

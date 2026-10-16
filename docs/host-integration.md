@@ -48,6 +48,28 @@ also starts configured listeners and background workers. Authenticated MCP
 requests carry a server-resolved `AuthzContext`; callers never supply a
 resolved owner or role.
 
+Migration ledgers are checked before any schema change. A recorded version
+must be shipped by a composed source using that same ledger; sources sharing
+a ledger are checked as one set. Separate ledgers are never populated from
+another ledger.
+Databases with old copies recorded on both shared and separate ledgers also
+require a reset; there is no copy-cutover compatibility path.
+
+A host that deliberately shares a database between releases can explicitly set
+`RuntimeBuilder::missing_migration_policy(MissingMigrationPolicy::Allow)`.
+The deployable host and its maintenance commands read the same choice from
+`PROXIMA_MISSING_MIGRATION_POLICY`, as does `tools/dev-migrate`. The same
+policy applies when boot skips migrations. Standalone migration and
+planning callers use the corresponding `_with_policy` functions; the ordinary
+functions reject missing versions. Allowing missing versions still rejects
+dirty ledgers, changed checksums, and migration lanes that would replay or
+reorder previously applied work.
+
+Read-only boot and planning share the runner's migration lock so they cannot
+validate between source commits. They fail after a five-second lock wait.
+Complete the out-of-band migration job before starting pods that skip
+migrations; allowing missing versions does not bypass this serialization.
+
 ## Authentication and owner scope
 
 Provide an `Authenticator` through `RuntimeBuilder::authenticator`, or use the

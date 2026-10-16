@@ -9,8 +9,8 @@
 use std::borrow::Cow;
 
 use proxima::{
-    LedgerConflict, MigrationError, NamedMigrator, preflight_without_migrations,
-    run_core_and_flavor_migrations,
+    LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy,
 };
 use proxima_pg_testkit::SplitRoleDb;
 use sqlx::SqlSafeStr;
@@ -99,11 +99,20 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     .await
     .expect("platform storage");
 
-    run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND]))
-        .await
-        .expect("the first release migrates");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[ROOT, SECOND]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("the first release migrates");
 
-    let replaced = run_core_and_flavor_migrations(&pg, lane(&[BASELINE])).await;
+    let replaced = run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[BASELINE]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await;
     let message = replaced.as_ref().map(|_| ()).unwrap_err().to_string();
     assert_eq!(
         conflict(replaced),
@@ -122,18 +131,37 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
         "the refused lane applied nothing"
     );
 
-    run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND, NEWER]))
-        .await
-        .expect("an upgrade migrates");
-    run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND]))
-        .await
-        .expect("the older release's fleet still boots beside the newer one's");
-    run_core_and_flavor_migrations(&pg, lane(&[SECOND, NEWER]))
-        .await
-        .expect("a lane that shed its first file still boots");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[ROOT, SECOND, NEWER]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("an upgrade migrates");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[ROOT, SECOND]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("the older release's fleet still boots beside the newer one's");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[SECOND, NEWER]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("a lane that shed its first file still boots");
 
     assert_eq!(
-        conflict(run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND, SQUASHED_AWAY])).await),
+        conflict(
+            run_core_and_flavor_migrations_with_policy(
+                &pg,
+                lane(&[ROOT, SECOND, SQUASHED_AWAY]),
+                MissingMigrationPolicy::Allow
+            )
+            .await
+        ),
         LedgerConflict::Diverged {
             pending: vec![SQUASHED_AWAY],
             unknown: vec![NEWER],
@@ -156,34 +184,63 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
     .await
     .expect("platform storage");
 
-    run_core_and_flavor_migrations(&pg, Vec::new())
+    run_core_and_flavor_migrations_with_policy(&pg, Vec::new(), MissingMigrationPolicy::Allow)
         .await
         .expect("core migrates without the flavor");
     assert_eq!(
-        conflict(preflight_without_migrations(&pg, lane(&[ROOT])).await),
+        conflict(
+            preflight_without_migrations_with_policy(
+                &pg,
+                lane(&[ROOT]),
+                MissingMigrationPolicy::Allow
+            )
+            .await
+        ),
         LedgerConflict::Unapplied {
             pending: vec![ROOT]
         },
         "a lane never migrated is refused, not served"
     );
 
-    run_core_and_flavor_migrations(&pg, lane(&[ROOT, SECOND]))
-        .await
-        .expect("the migration step");
-    preflight_without_migrations(&pg, lane(&[ROOT, SECOND]))
-        .await
-        .expect("a migrated lane boots");
-    preflight_without_migrations(&pg, lane(&[ROOT]))
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        lane(&[ROOT, SECOND]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("the migration step");
+    preflight_without_migrations_with_policy(
+        &pg,
+        lane(&[ROOT, SECOND]),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("a migrated lane boots");
+    preflight_without_migrations_with_policy(&pg, lane(&[ROOT]), MissingMigrationPolicy::Allow)
         .await
         .expect("so does an older release's");
     assert_eq!(
-        conflict(preflight_without_migrations(&pg, lane(&[ROOT, SECOND, NEWER])).await),
+        conflict(
+            preflight_without_migrations_with_policy(
+                &pg,
+                lane(&[ROOT, SECOND, NEWER]),
+                MissingMigrationPolicy::Allow
+            )
+            .await
+        ),
         LedgerConflict::Unapplied {
             pending: vec![NEWER]
         }
     );
     assert_eq!(
-        conflict(preflight_without_migrations(&pg, lane(&[BASELINE])).await),
+        conflict(
+            preflight_without_migrations_with_policy(
+                &pg,
+                lane(&[BASELINE]),
+                MissingMigrationPolicy::Allow
+            )
+            .await
+        ),
         LedgerConflict::Replaced {
             root: BASELINE,
             unknown: vec![ROOT, SECOND],
