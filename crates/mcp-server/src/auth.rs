@@ -259,7 +259,7 @@ mod tests {
             Self {
                 subject,
                 owner,
-                role: ForwarderRole::new(Role::viewer()).unwrap(),
+                role: ForwarderRole::Viewer,
                 target_probes: AtomicU64::new(0),
                 membership_probes: AtomicU64::new(0),
             }

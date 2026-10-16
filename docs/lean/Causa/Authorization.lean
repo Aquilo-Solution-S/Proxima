@@ -195,12 +195,20 @@ theorem union_grants_each (a b : Group) (r : User) (k : AccessKind) :
 -- Verified request forwarding, separate from stored membership
 -- ============================================================
 
-/-- The trusted policy and registry inputs at a request boundary. Forwarding
-    roles never manage groups; no policy role is a stored membership. -/
+/-- The closed forwarding ceilings. No choice can author Goals or manage. -/
+inductive ForwardingRole where
+  | viewer | ingest | editor
+
+def ForwardingRole.toRole : ForwardingRole → Role
+  | .viewer => Role.viewer
+  | .ingest => Role.ingest
+  | .editor => Role.editor
+
+/-- The trusted policy and registry inputs at a request boundary. No policy
+    role is a stored membership. -/
 structure ForwardingPolicy where
-  roleFor : User → Option Role
+  roleFor : User → Option ForwardingRole
   registered : OwnerRef → Prop
-  no_manage : ∀ (u : User) (role : Role), roleFor u = some role → ¬ role.manages
 
 /-- A claim produced by credential verification. Cryptographic verification is
     a boundary input, not an axiom of this authorization model. -/
@@ -222,7 +230,7 @@ def request_has_role (s : OwnerState) (p : ForwardingPolicy)
   | .membership => s.resolve owner requester = some role
   | .forwarded claim =>
       claim.subject = requester ∧ claim.owner = owner ∧ p.registered owner ∧
-      p.roleFor requester = some role
+      (p.roleFor requester).map ForwardingRole.toRole = some role
 
 def request_may_read (s : OwnerState) (p : ForwardingPolicy) (r : User)
     (a : RequestAuthority) (o : OwnerRef) (k : AccessKind) : Prop :=
@@ -274,7 +282,29 @@ theorem forwarding_unconfigured_subject_denied (s : OwnerState) (p : ForwardingP
 theorem forwarding_role_no_management (s : OwnerState) (p : ForwardingPolicy)
     (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role)
     (h : request_has_role s p r (.forwarded c) o role) : ¬ role.manages := by
-  exact p.no_manage r role h.2.2.2
+  have hrole := h.2.2.2
+  cases hp : p.roleFor r with
+  | none => simp [hp] at hrole
+  | some policyRole =>
+      rw [hp] at hrole
+      have heq : policyRole.toRole = role := Option.some.inj hrole
+      rw [← heq]
+      cases policyRole <;>
+        simp [ForwardingRole.toRole, Role.manages, Role.viewer, Role.ingest, Role.editor]
+
+theorem forwarding_role_no_goal_write (s : OwnerState) (p : ForwardingPolicy)
+    (r : User) (c : VerifiedForwardedOwner) (o : OwnerRef) (role : Role)
+    (h : request_has_role s p r (.forwarded c) o role) : ¬ role.mayWrite .goal := by
+  have hrole := h.2.2.2
+  cases hp : p.roleFor r with
+  | none => simp [hp] at hrole
+  | some policyRole =>
+      rw [hp] at hrole
+      have heq : policyRole.toRole = role := Option.some.inj hrole
+      rw [← heq]
+      cases policyRole <;>
+        simp [ForwardingRole.toRole, Role.mayWrite, AccessKind.rank,
+          Role.viewer, Role.ingest, Role.editor]
 
 theorem forwarding_no_management (s : OwnerState) (r : User)
     (c : VerifiedForwardedOwner) (o : OwnerRef) :
@@ -295,7 +325,7 @@ theorem membership_personal_role (s : OwnerState) (p : ForwardingPolicy) (u r : 
 theorem forwarding_personal_role (s : OwnerState) (p : ForwardingPolicy)
     (r u : User) (role : Role) (h : p.registered (s.own u)) :
     request_has_role s p r (.forwarded ⟨r, s.own u⟩) (s.own u) role ↔
-      p.roleFor r = some role := by
+      (p.roleFor r).map ForwardingRole.toRole = some role := by
   simp [request_has_role, h]
 
 end Causa

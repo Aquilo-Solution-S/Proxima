@@ -38,11 +38,10 @@ pub struct ForwarderPolicy {
 impl ForwarderPolicy {
     /// # Errors
     ///
-    /// [`ProximaError::Config`] when `subjects` is empty or `role` manages
-    /// Groups.
+    /// [`ProximaError::Config`] when `subjects` is empty.
     pub fn new(
         subjects: impl IntoIterator<Item = UserId>,
-        role: Role,
+        role: ForwarderRole,
     ) -> Result<Self, ProximaError> {
         let subjects: BTreeSet<UserId> = subjects.into_iter().collect();
         if subjects.is_empty() {
@@ -50,8 +49,6 @@ impl ForwarderPolicy {
                 "a forwarder policy needs at least one subject".into(),
             ));
         }
-        let role =
-            ForwarderRole::new(role).map_err(|error| ProximaError::Config(error.to_string()))?;
         Ok(Self { subjects, role })
     }
 
@@ -127,9 +124,9 @@ pub(crate) fn forwarder_from_lookup(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let role = match role.to_ascii_lowercase().as_str() {
-                "viewer" => Role::viewer(),
-                "ingest" => Role::ingest(),
-                "editor" => Role::editor(),
+                "viewer" => ForwarderRole::Viewer,
+                "ingest" => ForwarderRole::Ingest,
+                "editor" => ForwarderRole::Editor,
                 other => {
                     return Err(ProximaError::Config(format!(
                         "{FORWARDER_ROLE} must be viewer, ingest, or editor, got {other:?}"
@@ -300,7 +297,7 @@ mod tests {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
         let member = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let port = ForwarderPolicy::new([forwarder], Role::editor())
+        let port = ForwarderPolicy::new([forwarder], ForwarderRole::Editor)
             .unwrap()
             .wrap(
                 Arc::new(Members(
@@ -351,7 +348,7 @@ mod tests {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
         let user = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let port = ForwarderPolicy::new([forwarder], Role::editor())
+        let port = ForwarderPolicy::new([forwarder], ForwarderRole::Editor)
             .unwrap()
             .wrap(
                 Arc::new(Members(OwnerRoles::for_subject(forwarder, []).unwrap())),
@@ -401,7 +398,7 @@ mod tests {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
         let other = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
-        let port = ForwarderPolicy::new([forwarder], Role::viewer())
+        let port = ForwarderPolicy::new([forwarder], ForwarderRole::Viewer)
             .unwrap()
             .wrap(
                 Arc::new(Members(OwnerRoles::for_subject(forwarder, []).unwrap())),
@@ -428,15 +425,18 @@ mod tests {
     }
 
     #[test]
-    fn policy_configuration_accepts_nonmanaging_roles_and_refuses_management() {
+    fn policy_configuration_accepts_closed_roles_and_refuses_empty_subjects() {
         let forwarder = UserId::new(uuid::Uuid::now_v7());
-        for role in [Role::viewer(), Role::ingest(), Role::editor()] {
+        for role in [
+            ForwarderRole::Viewer,
+            ForwarderRole::Ingest,
+            ForwarderRole::Editor,
+        ] {
             let policy = ForwarderPolicy::new([forwarder], role).unwrap();
-            assert_eq!(policy.role(), role);
+            assert_eq!(policy.role(), role.role());
             assert!(!policy.role().manages());
         }
-        assert!(ForwarderPolicy::new([forwarder], Role::admin()).is_err());
-        assert!(ForwarderPolicy::new([], Role::viewer()).is_err());
+        assert!(ForwarderPolicy::new([], ForwarderRole::Viewer).is_err());
     }
 
     #[test]
@@ -479,7 +479,7 @@ mod tests {
                 .is_err()
         );
         late.bind(
-            ForwarderPolicy::new([subject], Role::ingest())
+            ForwarderPolicy::new([subject], ForwarderRole::Ingest)
                 .unwrap()
                 .wrap(
                     Arc::new(Members(OwnerRoles::for_subject(subject, []).unwrap())),

@@ -1149,7 +1149,7 @@ mod tests {
         ) -> Result<Option<ForwarderRole>, AccessError> {
             self.probes.fetch_add(1, Ordering::SeqCst);
             Ok((subject == self.subject && self.owners.contains(&owner))
-                .then(|| ForwarderRole::new(Role::editor()).unwrap()))
+                .then_some(ForwarderRole::Editor))
         }
     }
 

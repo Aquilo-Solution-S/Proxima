@@ -390,24 +390,27 @@ impl OwnerRoles {
     }
 }
 
-/// A forwarding policy ceiling with no group-management authority.
+/// The forwarding ceilings accepted by a host policy.
+///
+/// ```compile_fail
+/// use proxima_core::{ForwarderRole, Role};
+/// let _ = ForwarderRole::new(Role::personal());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ForwarderRole(Role);
+pub enum ForwarderRole {
+    Viewer,
+    Ingest,
+    Editor,
+}
 
 impl ForwarderRole {
-    /// # Errors
-    ///
-    /// Returns [`AccessError::ForwarderMayNotManage`] for a managing role.
-    pub fn new(role: Role) -> Result<Self, AccessError> {
-        if role.manages() {
-            return Err(AccessError::ForwarderMayNotManage);
-        }
-        Ok(Self(role))
-    }
-
     #[must_use]
     pub const fn role(self) -> Role {
-        self.0
+        match self {
+            Self::Viewer => Role::viewer(),
+            Self::Ingest => Role::ingest(),
+            Self::Editor => Role::editor(),
+        }
     }
 }
 
@@ -696,18 +699,15 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_owner_role_rejects_management_at_construction() {
-        assert_eq!(
-            ForwarderRole::new(Role::admin()),
-            Err(AccessError::ForwarderMayNotManage)
-        );
-        for role in [
-            Role::viewer(),
-            Role::ingest(),
-            Role::editor(),
-            Role::personal(),
+    fn forwarded_owner_roles_use_only_their_declared_ceilings() {
+        for (forwarding, role) in [
+            (ForwarderRole::Viewer, Role::viewer()),
+            (ForwarderRole::Ingest, Role::ingest()),
+            (ForwarderRole::Editor, Role::editor()),
         ] {
-            assert_eq!(ForwarderRole::new(role).unwrap().role(), role);
+            assert_eq!(forwarding.role(), role);
+            assert!(!forwarding.role().manages());
+            assert!(!forwarding.role().may_write(AccessKind::Goal));
         }
     }
 

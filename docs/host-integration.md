@@ -94,7 +94,8 @@ header and any live session must agree with it before the target is resolved.
 An unknown owner grants no role. Ordinary subjects ignore the claim.
 
 Forwarding never unions ordinary memberships into the request, grants group
-management, or permits delegation. `ForwarderRole` rejects managing roles;
+management, or permits delegation. `ForwarderRole` is the closed choice
+`Viewer`, `Ingest`, or `Editor`; none writes Goals or manages groups.
 `OwnerRegistry` probes both owner kinds. Custom authenticators use
 `AuthzContext::from_verified_forwarded_owner` only after verifying the
 credential. That pending context grants no roles until the edge resolves its

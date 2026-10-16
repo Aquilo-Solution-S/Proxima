@@ -1347,7 +1347,7 @@ mod tests {
         ) -> Result<Option<crate::ForwarderRole>, AccessError> {
             Ok(
                 (subject == self.0.requested_subject && owner == self.0.owner)
-                    .then(|| crate::ForwarderRole::new(Role::editor()).unwrap()),
+                    .then_some(crate::ForwarderRole::Editor),
             )
         }
     }

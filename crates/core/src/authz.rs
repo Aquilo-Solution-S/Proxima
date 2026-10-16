@@ -1454,11 +1454,16 @@ mod tests {
         let unrelated = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let expires = SystemTime::now() + Duration::from_mins(1);
         for owner in [OwnerId::from(subject), stranger] {
-            for role in [Role::viewer(), Role::ingest(), Role::editor()] {
+            for forwarding_role in [
+                crate::ForwarderRole::Viewer,
+                crate::ForwarderRole::Ingest,
+                crate::ForwarderRole::Editor,
+            ] {
+                let role = forwarding_role.role();
                 let port = ForwardedOwnerAccess {
                     subject,
                     owner,
-                    role: crate::ForwarderRole::new(role).unwrap(),
+                    role: forwarding_role,
                     registered: true,
                     probes: std::sync::atomic::AtomicUsize::new(0),
                 };
@@ -1546,7 +1551,7 @@ mod tests {
         let port = ForwardedOwnerAccess {
             subject,
             owner,
-            role: crate::ForwarderRole::new(Role::editor()).unwrap(),
+            role: crate::ForwarderRole::Editor,
             registered: false,
             probes: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -1590,7 +1595,7 @@ mod tests {
         let port = ForwardedOwnerAccess {
             subject,
             owner,
-            role: crate::ForwarderRole::new(Role::editor()).unwrap(),
+            role: crate::ForwarderRole::Editor,
             registered: true,
             probes: std::sync::atomic::AtomicUsize::new(0),
         };
