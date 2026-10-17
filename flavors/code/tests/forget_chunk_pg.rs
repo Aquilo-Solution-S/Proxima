@@ -35,7 +35,7 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
             *offset += 1;
         }
     }
-    assert_eq!(bytes[0], 9, "the test requires the v9 cold format");
+    assert_eq!(bytes[0], 10, "the test requires the v10 cold format");
     let mut offset = 1 + 16 + 16;
     skip_str(bytes, &mut offset);
     offset += 16 + 16; // owner and recorded writer

@@ -21,7 +21,7 @@ use crate::verbs::fact_embeddings::RouteSpaces;
 
 /// The only accepted cold-object format. Older and future versions return
 /// `MemoryHydrationStatus::UnsupportedColdFormat` with their version.
-pub const COLD_FORMAT_VERSION: u8 = 9;
+pub const COLD_FORMAT_VERSION: u8 = 10;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -3894,8 +3894,12 @@ mod tests {
         let mut record = cold_row(Vec::new(), Vec::new());
         for via in [Some(uuid::Uuid::from_u128(0x510)), None] {
             record.row.via = via;
-            let decoded = super::decode_record(&super::encode_record(&record).expect("encode"))
-                .expect("decode");
+            let encoded = super::encode_record(&record).expect("encode");
+            assert_eq!(
+                encoded[0], 10,
+                "the writer-bearing layout has its own marker"
+            );
+            let decoded = super::decode_record(&encoded).expect("decode");
             assert_eq!(decoded.row.by, record.row.by);
             assert_eq!(decoded.row.via, via);
         }
@@ -3959,7 +3963,7 @@ mod tests {
 
     #[test]
     fn a_released_cold_format_is_refused_with_its_version() {
-        for version in [4_u8, 5, 6, 7, 8] {
+        for version in [4_u8, 5, 6, 7, 8, 9] {
             let err = super::decode_record(&[version]).expect_err("released format is retired");
             assert!(
                 matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unsupported cold format {version}"))),
