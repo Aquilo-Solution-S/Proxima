@@ -134,6 +134,30 @@ impl Engine {
             .await
     }
 
+    /// Other-store edges recorded for `memory_ids` (#480): the rows a
+    /// lineage page reports, read under the same auth shape as `Query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context authorizes no reads, or
+    /// `Internal` when storage fails. An all-vetoed read set reads nothing.
+    pub async fn external_edges(
+        &self,
+        authz: &AuthzContext,
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() || memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.storage
+            .query
+            .memory_read
+            .external_edges(authz.owner_scope(), &read_owners, memory_ids)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
     /// Current owned series handle whose sidecar matches `columns`.
     ///
     /// Owner-only. A transferred series is a miss for the prior

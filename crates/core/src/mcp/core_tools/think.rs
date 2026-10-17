@@ -5,11 +5,11 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::flavor::Provenance;
+use super::ancestry::AncestorTarget;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{EdgeKind, GetMemoriesReadRequest, InboundPinQuery, MemoryId};
+use crate::{EdgeKind, InboundPinQuery, MemoryId};
 
 const MAX_SEEDS: usize = 8;
 const MAX_DEPTH: u32 = 8;
@@ -77,6 +77,23 @@ pub struct ThinkVisit {
     pub kind: String,
     pub sketch: String,
     pub depth: u8,
+    /// Kind of the edge that first reached this visit: `origin` (made
+    /// from) or `reference` (about). Absent on seeds and episode siblings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<String>,
+    /// Set only on a memory of another store: its store number. Such a
+    /// visit is a leaf; the walk does not continue past it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<u16>,
+    /// Set only on an other-store visit that could not be read: `erased`
+    /// or `unavailable`; `kind` and `sketch` are then empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Why an `unavailable` visit was not read, as in
+    /// `walk_memory_lineage`: `not readable`, `store unavailable`,
+    /// `deadline exceeded`, or `origin limit exceeded`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 impl McpTool for ThinkTool {
@@ -157,6 +174,22 @@ struct WalkInput<'a> {
     limit: u32,
 }
 
+/// One visit of a pin walk, before hydration. A remote visit (another
+/// store's memory, ancestors only) has no local kind and is a leaf.
+#[derive(Debug, Clone, Copy)]
+struct Visit {
+    id: MemoryId,
+    kind: Option<crate::EntityKind>,
+    depth: u8,
+    edge: Option<EdgeKind>,
+}
+
+impl Visit {
+    fn is_remote(&self) -> bool {
+        self.kind.is_none()
+    }
+}
+
 async fn pin_bfs(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
@@ -174,13 +207,18 @@ async fn pin_bfs(
             walk.raw_seeds[0]
         )));
     }
-    let mut ordered: Vec<(MemoryId, crate::EntityKind, u8)> = seed_pins
+    let mut ordered: Vec<Visit> = seed_pins
         .iter()
-        .map(|node| (node.id, node.kind, 0))
+        .map(|node| Visit {
+            id: node.id,
+            kind: Some(node.kind),
+            depth: 0,
+            edge: None,
+        })
         .collect();
-    ordered.sort_by_key(|row| std::cmp::Reverse(row.0));
-    let mut seen: std::collections::HashSet<MemoryId> = ordered.iter().map(|row| row.0).collect();
-    let mut frontier: Vec<MemoryId> = ordered.iter().map(|row| row.0).collect();
+    ordered.sort_by_key(|row| std::cmp::Reverse(row.id));
+    let mut seen: std::collections::HashSet<MemoryId> = ordered.iter().map(|row| row.id).collect();
+    let mut frontier: Vec<MemoryId> = ordered.iter().map(|row| row.id).collect();
     for hop in 1..=walk.depth {
         if frontier.is_empty() {
             break;
@@ -188,21 +226,41 @@ async fn pin_bfs(
         if should_stop_walk(&ordered, after.as_ref(), walk.limit) {
             break;
         }
-        let next = next_hop(engine, ctx, walk.direction, &frontier).await?;
-        let mut next: Vec<MemoryId> = next.into_iter().filter(|id| seen.insert(*id)).collect();
-        next.sort_by_key(|id| std::cmp::Reverse(*id));
+        // First edge (in deterministic edge order) to reach a target wins.
+        let mut next: Vec<(MemoryId, bool, EdgeKind)> = Vec::new();
+        for (target, remote, kind) in next_hop(engine, ctx, walk.direction, &frontier).await? {
+            if seen.insert(target) {
+                next.push((target, remote, kind));
+            }
+        }
+        next.sort_by_key(|row| std::cmp::Reverse(row.0));
         if next.is_empty() {
             break;
         }
-        let pins = engine.pin_nodes(&ctx.authz, &next).await?;
+        let local: Vec<MemoryId> = next.iter().filter(|row| !row.1).map(|row| row.0).collect();
+        let pins = if local.is_empty() {
+            Vec::new()
+        } else {
+            engine.pin_nodes(&ctx.authz, &local).await?
+        };
         let kinds: std::collections::HashMap<MemoryId, crate::EntityKind> =
             pins.into_iter().map(|node| (node.id, node.kind)).collect();
-        for id in &next {
-            if let Some(kind) = kinds.get(id) {
-                ordered.push((*id, *kind, hop));
-            }
+        for (id, remote, edge) in &next {
+            let kind = if *remote {
+                None
+            } else if let Some(kind) = kinds.get(id) {
+                Some(*kind)
+            } else {
+                continue;
+            };
+            ordered.push(Visit {
+                id: *id,
+                kind,
+                depth: hop,
+                edge: Some(*edge),
+            });
         }
-        frontier = next;
+        frontier = local;
     }
     let start = walk_start(&ordered, after.as_ref())?;
     let rest = &ordered[start.min(ordered.len())..];
@@ -213,28 +271,12 @@ async fn pin_bfs(
         THINK_CURSOR.encode(
             &fingerprint,
             &ThinkPageCursor {
-                depth: last.2,
-                t: last.0,
+                depth: last.depth,
+                t: last.id,
             },
         )
     });
-    let ids: Vec<MemoryId> = page.iter().map(|row| row.0).collect();
-    let sketches = hydrate_sketches(engine, ctx, &ids).await?;
-    let visits = page
-        .iter()
-        .map(|(id, kind, hop)| {
-            let sketch = sketches
-                .iter()
-                .find(|row| row.id == *id)
-                .map_or_else(|| kind.as_str().to_string(), |row| row.text.clone());
-            ThinkVisit {
-                handle: (*id).into_inner().to_string(),
-                kind: kind.as_str().to_string(),
-                sketch,
-                depth: *hop,
-            }
-        })
-        .collect();
+    let visits = hydrate_visits(engine, ctx, page).await?;
     Ok(ThinkOutput {
         direction: direction_name(walk.direction),
         visits,
@@ -243,19 +285,70 @@ async fn pin_bfs(
     })
 }
 
-fn cursor_index(
-    ordered: &[(MemoryId, crate::EntityKind, u8)],
-    cursor: &ThinkPageCursor,
-) -> Option<usize> {
-    ordered
+/// Render a page: local visits with their sketches, other-store visits
+/// read through the port in one bounded batch.
+async fn hydrate_visits(
+    engine: &crate::Engine,
+    ctx: &McpToolCtx,
+    page: &[Visit],
+) -> Result<Vec<ThinkVisit>, McpToolError> {
+    let local_ids: Vec<MemoryId> = page
         .iter()
-        .position(|(id, _, hop)| *hop == cursor.depth && *id == cursor.t)
+        .filter(|row| !row.is_remote())
+        .map(|row| row.id)
+        .collect();
+    let remote_ids: Vec<uuid::Uuid> = page
+        .iter()
+        .filter(|row| row.is_remote())
+        .map(|row| row.id.into_inner())
+        .collect();
+    let sketches = hydrate_sketches(engine, ctx, &local_ids).await?;
+    let mut remote = super::ancestry::read_remote_targets(ctx, &remote_ids).await;
+    Ok(page
+        .iter()
+        .map(|visit| {
+            let handle = visit.id.into_inner();
+            let edge = visit.edge.map(|edge| edge.as_str().to_string());
+            if let Some(kind) = visit.kind {
+                ThinkVisit {
+                    handle: handle.to_string(),
+                    kind: kind.as_str().to_string(),
+                    sketch: sketches
+                        .iter()
+                        .find(|row| row.id == visit.id)
+                        .map_or_else(|| kind.as_str().to_string(), |row| row.text.clone()),
+                    depth: visit.depth,
+                    edge,
+                    store: None,
+                    status: None,
+                    unavailable_reason: None,
+                }
+            } else {
+                let read = remote
+                    .remove(&handle)
+                    .unwrap_or_else(|| super::ancestry::project_remote_read(None, false));
+                ThinkVisit {
+                    handle: handle.to_string(),
+                    kind: read.kind,
+                    sketch: read.snippet,
+                    depth: visit.depth,
+                    edge,
+                    store: Some(crate::memory_store_number(handle)),
+                    status: read.status.map(ToString::to_string),
+                    unavailable_reason: read.unavailable_reason.map(ToString::to_string),
+                }
+            }
+        })
+        .collect())
 }
 
-fn walk_start(
-    ordered: &[(MemoryId, crate::EntityKind, u8)],
-    after: Option<&ThinkPageCursor>,
-) -> Result<usize, McpToolError> {
+fn cursor_index(ordered: &[Visit], cursor: &ThinkPageCursor) -> Option<usize> {
+    ordered
+        .iter()
+        .position(|visit| visit.depth == cursor.depth && visit.id == cursor.t)
+}
+
+fn walk_start(ordered: &[Visit], after: Option<&ThinkPageCursor>) -> Result<usize, McpToolError> {
     match after {
         None => Ok(0),
         Some(cursor) => cursor_index(ordered, cursor)
@@ -268,11 +361,7 @@ fn walk_start(
     }
 }
 
-fn should_stop_walk(
-    ordered: &[(MemoryId, crate::EntityKind, u8)],
-    after: Option<&ThinkPageCursor>,
-    limit: u32,
-) -> bool {
+fn should_stop_walk(ordered: &[Visit], after: Option<&ThinkPageCursor>, limit: u32) -> bool {
     match after {
         None => page_complete(ordered.len(), 0, limit),
         Some(cursor) => cursor_index(ordered, cursor)
@@ -285,62 +374,36 @@ fn page_complete(ordered_len: usize, start: usize, limit: u32) -> bool {
     ordered_len > start.saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
 }
 
-/// One hop of the lineage walk, and the place `Provenance` is spent.
+/// One hop of the walk: `(target, is another store's memory, edge kind)`.
 ///
-/// The declaration answers "how is this node's provenance REACHABLE", and
-/// the walk has to ask: expanding `origins[]` for every node is right for
-/// the two thirds of the vocabulary that write origins and wrong for the
-/// third that does not. A `PayloadOnly` node has an EMPTY `origins[]` by
-/// construction — its subjects live in payload columns the array never
-/// sees — so an unasking walk makes an interpretation a lineage dead end.
+/// `Ancestors` follow the one ancestor-edge rule `walk_memory_lineage`
+/// also follows ([`super::ancestry::ancestor_edges`]): declared origins,
+/// declared payload subjects, and the edges recorded to other stores'
+/// memories, which are leaves.
 ///
-/// The three arms, and what each costs:
-///
-/// - `OriginEdges` — expand `origins[]`.
-/// - `PayloadOnly { subject_columns }` — load the node's payload and take
-///   the references whose declared FIELD is one of the named columns. No
-///   new statement and no new port: `SidecarPayload::references()` already
-///   carries the field name each reference came from, and
-///   `subject_columns` is what picks the grounding ones out of the rest.
-/// - `None` — nothing. The row cannot have origins anyway when it is a
-///   Fact (`memory_fact_origins_chk`), and when it is not, the declaration
-///   is the claim that it derives from nothing.
-///
-/// A schema no contract declares is treated as `OriginEdges`. That is a
-/// deliberate fail-OPEN: a registration without a contract must not make
-/// its memories invisible to the walk, and showing a pin whose declaration
-/// nobody wrote is a smaller wrong than hiding one.
-///
-/// `Descendants` is deliberately NOT symmetric under the gate. Its inverse
-/// question — "which nodes name me in a declared subject column" — is not
-/// one `refs[]` answers: an inbound `Reference` pin says a node names me in
-/// some declared field, not which one, and picking out the subject columns
-/// would load every such node's payload per hop. The asymmetry is stated
-/// here rather than hidden: descendants find what pinned you, not what named
-/// you.
+/// `Descendants` is deliberately NOT symmetric. Its inverse question —
+/// "which nodes name me in a declared subject column" — is not one `refs[]`
+/// answers: an inbound `Reference` pin says a node names me in some
+/// declared field, not which one, and picking out the subject columns
+/// would load every such node's payload per hop. Nor are there remote
+/// descendants: a store cannot see who names its memories elsewhere. The
+/// asymmetry is stated here rather than hidden: descendants find what
+/// pinned you as an origin, not what named you.
 async fn next_hop(
     engine: &crate::Engine,
     ctx: &McpToolCtx,
     direction: ThinkDirection,
     frontier: &[MemoryId],
-) -> Result<Vec<MemoryId>, McpToolError> {
+) -> Result<Vec<(MemoryId, bool, EdgeKind)>, McpToolError> {
     match direction {
-        ThinkDirection::Ancestors => {
-            let pins = engine.pin_nodes(&ctx.authz, frontier).await?;
-            let mut ancestors = Vec::new();
-            let mut grounded: Vec<(MemoryId, &'static [&'static str])> = Vec::new();
-            for node in pins {
-                match ctx.registry.provenance_of(&node.schema_id, node.kind) {
-                    None | Some(Provenance::OriginEdges) => ancestors.extend(node.origins),
-                    Some(Provenance::PayloadOnly { subject_columns }) => {
-                        grounded.push((node.id, subject_columns));
-                    }
-                    Some(Provenance::None) => {}
-                }
-            }
-            ancestors.extend(payload_subjects(engine, ctx, &grounded).await?);
-            Ok(ancestors)
-        }
+        ThinkDirection::Ancestors => Ok(super::ancestry::ancestor_edges(engine, ctx, frontier)
+            .await?
+            .into_iter()
+            .map(|edge| match edge.target {
+                AncestorTarget::Local(id) => (id, false, edge.kind),
+                AncestorTarget::Remote(id) => (MemoryId::new(id), true, edge.kind),
+            })
+            .collect()),
         ThinkDirection::Descendants => {
             let inbound = engine
                 .inbound_pin_nodes(
@@ -355,52 +418,13 @@ async fn next_hop(
                     },
                 )
                 .await?;
-            Ok(inbound.into_iter().map(|node| node.id).collect())
+            Ok(inbound
+                .into_iter()
+                .map(|node| (node.id, false, EdgeKind::Origin))
+                .collect())
         }
         ThinkDirection::EpisodeSiblings => Ok(Vec::new()),
     }
-}
-
-/// The subjects a `PayloadOnly` node grounds in, read through the payload
-/// fields its schema declares.
-///
-/// `get_memories` is the same owner-scoped read `core_get_memories` uses,
-/// so a subject the caller may not see is not returned and the walk simply
-/// does not reach it — the ordinary shape of an absent node, not a redaction.
-async fn payload_subjects(
-    engine: &crate::Engine,
-    ctx: &McpToolCtx,
-    grounded: &[(MemoryId, &'static [&'static str])],
-) -> Result<Vec<MemoryId>, McpToolError> {
-    if grounded.is_empty() {
-        return Ok(Vec::new());
-    }
-    let response = engine
-        .get_memories(
-            &ctx.authz,
-            &GetMemoriesReadRequest {
-                memory_ids: grounded.iter().map(|(id, _)| *id).collect(),
-            },
-        )
-        .await?;
-    let declared: std::collections::HashMap<MemoryId, &'static [&'static str]> =
-        grounded.iter().copied().collect();
-    let mut subjects = Vec::new();
-    for snapshot in response.memories {
-        let (Some(columns), Some(payload)) =
-            (declared.get(&snapshot.memory_id), snapshot.payload.as_ref())
-        else {
-            continue;
-        };
-        for reference in payload.references() {
-            if columns.contains(&reference.field)
-                && let Some(id) = reference.target.memory_id()
-            {
-                subjects.push(id);
-            }
-        }
-    }
-    Ok(subjects)
 }
 
 async fn hydrate_sketches(
@@ -479,6 +503,10 @@ async fn episode_siblings(
                 kind: node.kind.as_str().to_string(),
                 sketch,
                 depth: 1,
+                edge: None,
+                store: None,
+                status: None,
+                unavailable_reason: None,
             }
         })
         .collect();

@@ -178,6 +178,17 @@ pub trait MemoryReadPort: Send + Sync {
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
+    /// The other-store edges recorded for `memory_ids` that `read_owners`
+    /// hold: `(memory, other-store memory, kind)`, kind `Origin` or
+    /// `Reference` (#480). The same rows a lineage page reports, for the
+    /// ancestor walk `core_think` and lineage share.
+    async fn external_edges(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, StorageError>;
+
     /// Current owned series handle whose sidecar matches `columns`.
     /// Owner-only. A miss after an owner-to-owner transfer is expected.
     async fn owned_series_handle(

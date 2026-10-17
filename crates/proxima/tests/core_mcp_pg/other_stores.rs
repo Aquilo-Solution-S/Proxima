@@ -903,6 +903,34 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
             Some("reference"),
             "{lineage}"
         );
+        // #480: core_think walks the same ancestor edges: both subjects,
+        // each over a reference edge, the remote one a leaf of store 1.
+        let think = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_think",
+            serde_json::json!({"seeds": [perspective], "direction": "ancestors"}),
+        )
+        .await?;
+        let visit = |handle: &str| {
+            think["visits"]
+                .as_array()
+                .expect("visits")
+                .iter()
+                .find(|visit| visit["handle"] == handle)
+                .cloned()
+        };
+        let local_visit = visit(&local_handle).expect("local subject visit");
+        assert_eq!(local_visit["edge"], "reference", "{think}");
+        assert!(local_visit.get("store").is_none(), "{think}");
+        let remote_visit = visit(&remote_id(1, "page-1").to_string()).expect("remote visit");
+        assert_eq!(remote_visit["edge"], "reference", "{think}");
+        assert_eq!(remote_visit["store"], 1, "{think}");
+        assert_eq!(remote_visit["kind"], "Fact", "{think}");
+        assert_eq!(remote_visit["depth"], 1, "{think}");
+        assert!(remote_visit.get("status").is_none(), "{think}");
+        assert!(visit(&perspective).expect("seed").get("edge").is_none());
         assert_replay_pins_external_edge_kinds(
             &tools,
             authz.clone(),
@@ -919,6 +947,23 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
             node(&lineage, remote_id(1, "page-1").to_string()).expect("remote node")["status"],
             "erased"
         );
+        let think = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_think",
+            serde_json::json!({"seeds": [perspective], "direction": "ancestors"}),
+        )
+        .await?;
+        let erased = think["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .find(|visit| visit["handle"] == remote_id(1, "page-1").to_string())
+            .cloned()
+            .expect("erased remote still visited");
+        assert_eq!(erased["status"], "erased", "{think}");
+        assert_eq!(erased["kind"], "", "{think}");
         read_test_model_resource(
             &tools,
             authz,

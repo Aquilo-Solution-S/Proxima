@@ -1,6 +1,6 @@
 //! `core/walk_memory_lineage` — wire-facing memory lineage walk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::MemoryId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::storage_ports::other_stores::{
-    MAX_LINEAGE_REMOTE_ORIGINS, OtherStoresError, RemoteOriginRead,
-};
 use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest};
 
 const MAX_LINEAGE_DEPTH: u32 = 8;
@@ -242,8 +239,6 @@ async fn append_external_edges(
     edges: &mut Vec<LineageEdgeOutput>,
     external: Vec<(MemoryId, uuid::Uuid, crate::EdgeKind)>,
 ) {
-    let service = super::other_stores::service(ctx);
-    let has_service = service.is_some();
     let mut unique = Vec::new();
     let mut seen = HashSet::new();
     for (_, origin, _) in &external {
@@ -251,27 +246,7 @@ async fn append_external_edges(
             unique.push(*origin);
         }
     }
-    let readable = unique.len().min(MAX_LINEAGE_REMOTE_ORIGINS);
-    let reads = match service {
-        Some(service) if readable > 0 => Some(
-            service
-                .read_origins_bounded(super::other_stores::caller(ctx), &unique[..readable])
-                .await,
-        ),
-        _ => None,
-    };
-    // No port wired: every origin is on a store this deployment does not know.
-    let reads = reads.unwrap_or_else(|| {
-        unique[..readable]
-            .iter()
-            .map(|origin| {
-                Err(OtherStoresError::UnknownStore(crate::memory_store_number(
-                    *origin,
-                )))
-            })
-            .collect()
-    });
-    let read_by_handle: HashMap<_, _> = unique.iter().take(readable).copied().zip(reads).collect();
+    let mut projections = super::ancestry::read_remote_targets(ctx, &unique).await;
     for (memory_id, origin, edge_kind) in external {
         let Some(source) = nodes
             .iter()
@@ -283,23 +258,17 @@ async fn append_external_edges(
             continue;
         };
         let distance = source.1.saturating_add(1);
-        let capped = has_service
-            && unique.len() > MAX_LINEAGE_REMOTE_ORIGINS
-            && !read_by_handle.contains_key(&origin);
-        let read = read_by_handle.get(&origin);
         let handle = origin.to_string();
-        let (kind, schema_id, snippet, status, unavailable_reason) =
-            project_remote_read(read, capped);
-        if !nodes.iter().any(|node| node.memory == handle) {
+        if let Some(remote) = projections.remove(&origin) {
             nodes.push(LineageNodeOutput {
                 memory: handle.clone(),
-                kind,
-                schema_id,
-                snippet,
+                kind: remote.kind,
+                schema_id: remote.schema_id,
+                snippet: remote.snippet,
                 distance,
                 store: Some(crate::memory_store_number(origin)),
-                status: status.map(ToString::to_string),
-                unavailable_reason: unavailable_reason.map(ToString::to_string),
+                status: remote.status.map(ToString::to_string),
+                unavailable_reason: remote.unavailable_reason.map(ToString::to_string),
             });
         }
         edges.push(LineageEdgeOutput {
@@ -311,66 +280,6 @@ async fn append_external_edges(
     }
 }
 
-fn project_remote_read(
-    read: Option<&Result<RemoteOriginRead, OtherStoresError>>,
-    capped: bool,
-) -> (
-    String,
-    String,
-    String,
-    Option<&'static str>,
-    Option<&'static str>,
-) {
-    const SNIPPET_CHARS: usize = 200;
-    match read {
-        Some(Ok(RemoteOriginRead::Found(_, memory))) => (
-            memory.kind.as_str().to_string(),
-            memory.schema_id.clone(),
-            memory.body.chars().take(SNIPPET_CHARS).collect(),
-            None,
-            None,
-        ),
-        Some(Ok(RemoteOriginRead::Erased)) => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("erased"),
-            None,
-        ),
-        Some(Err(OtherStoresError::DeadlineExceeded)) => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            Some("deadline exceeded"),
-        ),
-        _ if capped => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            Some("origin limit exceeded"),
-        ),
-        // The store answered that the caller cannot read it, or there is no
-        // such store (also: no other store wired).
-        Some(Ok(RemoteOriginRead::NotFound) | Err(OtherStoresError::UnknownStore(_))) | None => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            Some("not readable"),
-        ),
-        // The store failed or answered for another memory: retry later.
-        Some(Err(_)) => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            Some("store unavailable"),
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -378,11 +287,10 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{
-        LINEAGE_CURSOR, LineageNodeOutput, RemoteOriginRead, append_external_edges,
-        lineage_fingerprint, project_remote_read,
-    };
+    use super::{LINEAGE_CURSOR, LineageNodeOutput, append_external_edges, lineage_fingerprint};
+    use crate::mcp::core_tools::ancestry::project_remote_read;
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
+    use crate::storage_ports::other_stores::RemoteOriginRead;
     use crate::storage_ports::other_stores::{
         OtherStores, OtherStoresError, RemoteMemory, RemoteRead, RemoteSearch, RemoteSearchResult,
         StoreCaller, StoreInfo,
@@ -401,9 +309,9 @@ mod tests {
     /// and every one of them keeps the console-safe status `unavailable`.
     fn unreadable_origins_say_why_they_are_unavailable() {
         let reason = |read: Option<&Result<RemoteOriginRead, OtherStoresError>>, capped| {
-            let (_, _, _, status, reason) = project_remote_read(read, capped);
-            assert_eq!(status, Some("unavailable"));
-            reason
+            let projection = project_remote_read(read, capped);
+            assert_eq!(projection.status, Some("unavailable"));
+            projection.unavailable_reason
         };
         assert_eq!(
             reason(Some(&Ok(RemoteOriginRead::NotFound)), false),

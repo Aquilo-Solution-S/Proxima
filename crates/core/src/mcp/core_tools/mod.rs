@@ -1,5 +1,6 @@
 //! Substrate-shipped MCP tools registered into every composite binary.
 
+pub(crate) mod ancestry;
 pub mod citation_of_fact;
 pub mod episode;
 pub mod fact;

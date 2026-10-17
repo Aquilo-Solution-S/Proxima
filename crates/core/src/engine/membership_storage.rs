@@ -196,6 +196,15 @@ impl MemoryReadPort for MembershipStorage {
         })
     }
 
+    async fn external_edges(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerId],
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, StorageError> {
+        Ok(Vec::new())
+    }
+
     async fn load_memory_graph_payloads(
         &self,
         _scope: Option<&crate::OwnerScope>,

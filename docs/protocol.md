@@ -181,7 +181,9 @@ unknown store). Lineage keeps such an origin as a node with status
 `unavailable` and an `unavailable_reason`: `not readable`, `store
 unavailable`, `deadline exceeded`, or `origin limit exceeded`. The edge to another
 store's memory carries its recorded kind: `origin` for a derivation's source,
-`reference` for an interpretation's subject.
+`reference` for an interpretation's subject. `core_think` ancestors follow
+the same edges: such a memory is a leaf visit with `store`, its `edge` kind,
+and the same `status`/`unavailable_reason` when it could not be read.
 
 Operation-specific schema and error variants remain in code. Retry only when
 the operation and its idempotency contract allow it; a transport disconnect

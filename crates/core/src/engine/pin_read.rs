@@ -636,6 +636,15 @@ mod tests {
             Err(StorageError::Internal("unused".into()))
         }
 
+        async fn external_edges(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _read_owners: &[OwnerId],
+            _memory_ids: &[crate::MemoryId],
+        ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
         async fn owned_series_handle(
             &self,
             _scope: Option<&crate::OwnerScope>,

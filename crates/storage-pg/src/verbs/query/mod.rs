@@ -40,9 +40,9 @@ pub(crate) use edges::{
     load_visible_goal_ids_on_connection,
 };
 pub use goals::{ActiveGoalTargetRow, active_goals_for_memory_targets_on_connection};
-pub(crate) use lineage::walk_memory_lineage_on_connection;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
+pub(crate) use lineage::{external_edges_on_connection, walk_memory_lineage_on_connection};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories_on_connection;

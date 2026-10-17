@@ -151,32 +151,10 @@ async fn assemble_lineage_page_on_connection(
         .iter()
         .filter_map(|h| project_lineage_edge(h, &visible))
         .collect();
-    // Other-store edges (origin or reference) of the page's visible nodes. Rows are bound by
-    // the memory's owner RLS; the owner filter repeats it for the
-    // fixture lane without policies.
+    // Other-store edges (origin or reference) of the page's visible nodes.
     let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
-    let external_rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT e.t, e.memory, e.edge_kind
-           FROM proxima_core.memory_external_origin e
-           JOIN proxima_core.memory m ON m.t = e.t
-          WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
-          ORDER BY e.t, e.memory",
-    )
-    .bind(&visible_ids)
-    .bind(owner_ids)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(map_err)?;
-    let external_edges = external_rows
-        .into_iter()
-        .map(|(t, memory, kind)| {
-            let kind = match kind.as_str() {
-                "reference" => EdgeKind::Reference,
-                _ => EdgeKind::Origin,
-            };
-            (MemoryId::new(t), memory, kind)
-        })
-        .collect();
+    let external_edges =
+        external_edges_on_connection(&mut *connection, &visible_ids, owner_ids).await?;
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
         MemoryLineageCursor {
@@ -192,6 +170,44 @@ async fn assemble_lineage_page_on_connection(
         next_cursor,
         external_edges,
     })
+}
+
+/// Other-store edges `(memory, other-store memory, kind)` recorded for
+/// `memory_ids`, in `(memory, other-store memory)` order. The one statement
+/// both a lineage page and the shared ancestor walk read (#480). Rows are
+/// bound by the memory's owner RLS; the owner filter repeats it for the
+/// fixture lane without policies.
+pub(crate) async fn external_edges_on_connection(
+    connection: &mut PgConnection,
+    memory_ids: &[Uuid],
+    owner_ids: &[Uuid],
+) -> Result<Vec<(MemoryId, Uuid, EdgeKind)>, StorageError> {
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT e.t, e.memory, e.edge_kind
+           FROM proxima_core.memory_external_origin e
+           JOIN proxima_core.memory m ON m.t = e.t
+          WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
+          ORDER BY e.t, e.memory",
+    )
+    .bind(memory_ids)
+    .bind(owner_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?;
+    rows.into_iter()
+        .map(|(t, memory, kind)| {
+            let kind = match kind.as_str() {
+                "origin" => EdgeKind::Origin,
+                "reference" => EdgeKind::Reference,
+                other => {
+                    return Err(StorageError::Internal(format!(
+                        "memory_external_origin.edge_kind {other:?} is neither origin nor reference"
+                    )));
+                }
+            };
+            Ok((MemoryId::new(t), memory, kind))
+        })
+        .collect()
 }
 
 fn project_lineage_edge(
