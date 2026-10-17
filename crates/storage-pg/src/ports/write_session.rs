@@ -362,10 +362,11 @@ impl WriteSession for PgWriteSession {
         )
         .await?;
         let edge_count = edge_count.saturating_add(
-            verbs::derive_append::record_external_origins(
+            verbs::derive_append::record_external_edges(
                 &mut self.tx,
                 &outcome,
                 req.external_origins,
+                req.external_references,
             )
             .await?,
         );

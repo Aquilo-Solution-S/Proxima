@@ -98,9 +98,9 @@ pub struct LineageNodeOutput {
     pub unavailable_reason: Option<String>,
 }
 
-/// One hop of the walk. Lineage traverses `origin` and nothing else, so
-/// every edge here carries that kind; it is reported anyway so the shape
-/// matches every other edge-bearing output.
+/// One hop of the walk. Between memories of this store lineage traverses
+/// `origin`; an edge to another store's memory carries its recorded kind,
+/// `origin` or `reference` (an interpretation's remote subject, #480).
 #[derive(Debug, Serialize)]
 pub struct LineageEdgeOutput {
     pub source: String,
@@ -210,7 +210,7 @@ pub async fn walk_memory_lineage(
 
     let mut nodes = nodes;
     if matches!(direction, MemoryLineageDirection::Ancestors) {
-        append_external_origins(&ctx, &mut nodes, &mut edges, response.external_origins).await;
+        append_external_edges(&ctx, &mut nodes, &mut edges, response.external_edges).await;
     }
 
     let next_cursor = response
@@ -231,21 +231,22 @@ pub async fn walk_memory_lineage(
     })
 }
 
-/// Other-store origins of the page's nodes, each read through the port as
-/// the caller. A node of another store is one hop beyond the node it is an
-/// origin of; erased or unreadable origins render with a `status` instead
-/// of failing the walk.
-async fn append_external_origins(
+/// Other-store edges of the page's nodes, each target read through the
+/// port as the caller. A node of another store is one hop beyond the node
+/// that names it, over an edge of the recorded kind (`origin`, or
+/// `reference` for an interpretation's subject); erased or unreadable
+/// targets render with a `status` instead of failing the walk.
+async fn append_external_edges(
     ctx: &McpToolCtx,
     nodes: &mut Vec<LineageNodeOutput>,
     edges: &mut Vec<LineageEdgeOutput>,
-    external: Vec<(MemoryId, uuid::Uuid)>,
+    external: Vec<(MemoryId, uuid::Uuid, crate::EdgeKind)>,
 ) {
     let service = super::other_stores::service(ctx);
     let has_service = service.is_some();
     let mut unique = Vec::new();
     let mut seen = HashSet::new();
-    for (_, origin) in &external {
+    for (_, origin, _) in &external {
         if seen.insert(*origin) {
             unique.push(*origin);
         }
@@ -271,7 +272,7 @@ async fn append_external_origins(
             .collect()
     });
     let read_by_handle: HashMap<_, _> = unique.iter().take(readable).copied().zip(reads).collect();
-    for (memory_id, origin) in external {
+    for (memory_id, origin, edge_kind) in external {
         let Some(source) = nodes
             .iter()
             .find(|node| {
@@ -304,7 +305,7 @@ async fn append_external_origins(
         edges.push(LineageEdgeOutput {
             source: source.0,
             target: handle,
-            kind: crate::EdgeKind::Origin.as_str().to_string(),
+            kind: edge_kind.as_str().to_string(),
             distance,
         });
     }
@@ -378,7 +379,7 @@ mod tests {
     };
 
     use super::{
-        LINEAGE_CURSOR, LineageNodeOutput, RemoteOriginRead, append_external_origins,
+        LINEAGE_CURSOR, LineageNodeOutput, RemoteOriginRead, append_external_edges,
         lineage_fingerprint, project_remote_read,
     };
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
@@ -541,7 +542,10 @@ mod tests {
         let origins = (0u128..200)
             .flat_map(|node| {
                 let id = MemoryId::new(uuid::Uuid::from_u128(node + 1));
-                remote_ids.iter().copied().map(move |origin| (id, origin))
+                remote_ids
+                    .iter()
+                    .copied()
+                    .map(move |origin| (id, origin, crate::EdgeKind::Origin))
             })
             .collect::<Vec<_>>();
         let mut edges = Vec::new();
@@ -549,7 +553,7 @@ mod tests {
         let deadline = crate::storage_ports::other_stores::DEFAULT_REMOTE_BATCH_DEADLINE;
         tokio::time::timeout(
             deadline + std::time::Duration::from_millis(1),
-            append_external_origins(&ctx, &mut nodes, &mut edges, origins),
+            append_external_edges(&ctx, &mut nodes, &mut edges, origins),
         )
         .await
         .expect("lineage page must finish within the call deadline");

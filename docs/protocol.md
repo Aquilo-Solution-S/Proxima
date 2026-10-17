@@ -179,7 +179,9 @@ sources, interpret subjects) fails with JSON-RPC `-32000` and `error.data`
 ids in `unanswered`, beside `missing` (an answered not-found, erased, or
 unknown store). Lineage keeps such an origin as a node with status
 `unavailable` and an `unavailable_reason`: `not readable`, `store
-unavailable`, `deadline exceeded`, or `origin limit exceeded`.
+unavailable`, `deadline exceeded`, or `origin limit exceeded`. The edge to another
+store's memory carries its recorded kind: `origin` for a derivation's source,
+`reference` for an interpretation's subject.
 
 Operation-specific schema and error variants remain in code. Retry only when
 the operation and its idempotency contract allow it; a transport disconnect

@@ -1155,8 +1155,8 @@ async fn assert_fact_scope_sql(
     // An other-store origin of the Abstraction: the row reads and
     // writes at its memory's kind.
     sqlx::query(
-        "INSERT INTO proxima_core.memory_external_origin (t, memory)
-         VALUES ($1, $2)",
+        "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+         VALUES ($1, $2, 'origin')",
     )
     .bind(abstraction)
     .bind(proxima_core::new_memory_uuid(5))

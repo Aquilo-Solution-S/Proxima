@@ -459,8 +459,13 @@ pub struct AuthorDerivedRequest<'a> {
     pub references: &'a [EdgeEndpoint],
     /// Memories of other stores this memory was also made from. Storage
     /// records them beside the row, in the same transaction, without any
-    /// constraint on the remote side; a replay records nothing.
+    /// constraint on the remote side, as `origin` rows; a replay records
+    /// nothing and must declare the same rows.
     pub external_origins: &'a [uuid::Uuid],
+    /// Memories of other stores this memory refers to (an interpretation's
+    /// remote subjects), recorded like `external_origins` but as
+    /// `reference` rows (#480). A memory id is never in both lists.
+    pub external_references: &'a [uuid::Uuid],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

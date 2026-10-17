@@ -439,7 +439,10 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
         sqlx::query_as("SELECT version, success FROM public._sqlx_migrations ORDER BY version")
             .fetch_all(transaction.as_mut())
             .await?;
-    assert_eq!(ledger, [(33, true), (34, true), (35, true), (36, true)]);
+    assert_eq!(
+        ledger,
+        [(33, true), (34, true), (35, true), (36, true), (37, true)]
+    );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
 
     run_core_schema(&mut transaction, MissingMigrationPolicy::Reject).await?;
@@ -495,7 +498,9 @@ async fn empty_store_accepts_identity_schema_and_current_definitions() -> TestRe
         origin_columns,
         [
             ("t".into(), "uuid".into()),
-            ("memory".into(), "uuid".into())
+            ("memory".into(), "uuid".into()),
+            // #480, migration 0037.
+            ("edge_kind".into(), "text".into())
         ]
     );
     let protected: bool = sqlx::query_scalar(
@@ -510,5 +515,181 @@ async fn empty_store_accepts_identity_schema_and_current_definitions() -> TestRe
         protected,
         "the definitions install immutable, RLS-protected identity"
     );
+    Ok(())
+}
+
+/// One parent of an external row at the 0036 shape: `(t, memory)` only.
+async fn seed_external_parent(
+    admin: &PgPool,
+    owner: Uuid,
+    kind: &str,
+    schema_id: &str,
+    origins: &[Uuid],
+    refs: &[Uuid],
+    cooled: bool,
+) -> TestResult<Uuid> {
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    let content: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, $2, $3) RETURNING content_id",
+    )
+    .bind(owner)
+    .bind(schema_id)
+    .bind(t.as_bytes().repeat(2))
+    .fetch_one(admin)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+    )
+    .bind(handle)
+    .bind(kind)
+    .bind(schema_id)
+    .bind(owner)
+    .bind(t)
+    .execute(admin)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, content_id, origins, refs, \"by\",
+              occurred_at)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $4,
+                 CASE WHEN $3 = 'fact' THEN uuid_extract_timestamp($2) END)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(kind)
+    .bind(owner)
+    .bind(schema_id)
+    .bind(content)
+    .bind(origins)
+    .bind(refs)
+    .execute(admin)
+    .await?;
+    if cooled {
+        sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, content_id, origins, refs, goal_refs, \"by\")
+             SELECT t, handle, owner_id, kind, 'cold/' || t, content_id, origins, refs, goal_refs, \"by\"
+               FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .execute(admin)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(admin)
+            .await?;
+        sqlx::query("DELETE FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(handle)
+            .execute(admin)
+            .await?;
+    }
+    sqlx::query("INSERT INTO proxima_core.memory_external_origin (t, memory) VALUES ($1, $2)")
+        .bind(t)
+        .bind(Uuid::now_v7())
+        .execute(admin)
+        .await?;
+    Ok(t)
+}
+
+/// #480 migration 0037: external rows get an edge kind. Interpretations
+/// (hot: by schema; cooled: a Perspective with references and no origins,
+/// since `cooled` has no schema column) are references; derivations and
+/// orphan rows are origins. Re-running the migration changes nothing.
+#[tokio::test]
+async fn external_origin_edge_kind_backfill_reads_interpretations_as_references() -> TestResult {
+    let (_guard, platform, admin) = empty_store().await?;
+    apply_historical_schema(&platform, &[33, 34, 35, 36], definitions::POLICIES).await?;
+    let owner = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(owner)
+        .execute(&admin)
+        .await?;
+    let subject = seed_external_parent(&admin, owner, "fact", "test/f-v1", &[], &[], false)
+        .await
+        .map_err(|e| format!("fact: {e}"))?;
+    let interpretation = "core/interpretation-v1";
+    let derivation = "core/agent-derivation-v1";
+    let mut expected = Vec::new();
+    for (kind, schema, origins, refs, cooled, edge) in [
+        (
+            "perspective",
+            interpretation,
+            vec![],
+            vec![subject],
+            false,
+            "reference",
+        ),
+        (
+            "abstraction",
+            derivation,
+            vec![subject],
+            vec![],
+            false,
+            "origin",
+        ),
+        (
+            "perspective",
+            interpretation,
+            vec![],
+            vec![subject],
+            true,
+            "reference",
+        ),
+        (
+            "abstraction",
+            derivation,
+            vec![subject],
+            vec![],
+            true,
+            "origin",
+        ),
+    ] {
+        let t = seed_external_parent(&admin, owner, kind, schema, &origins, &refs, cooled)
+            .await
+            .map_err(|e| format!("{kind} {schema} cooled={cooled}: {e}"))?;
+        expected.push((t, edge.to_owned()));
+    }
+    let orphan = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.memory_external_origin (t, memory) VALUES ($1, $2)")
+        .bind(orphan)
+        .bind(Uuid::now_v7())
+        .execute(&admin)
+        .await?;
+    expected.push((orphan, "origin".to_owned()));
+    // The fact's own external row is a hot non-interpretation: origin.
+    expected.push((subject, "origin".to_owned()));
+    expected.sort();
+
+    let mut connection = platform.acquire().await?;
+    let mut transaction = begin_migration_transaction(&mut connection).await?;
+    core_migrator().run(transaction.as_mut()).await?;
+    transaction.commit().await?;
+    let read = || async {
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT t, edge_kind FROM proxima_core.memory_external_origin ORDER BY t, edge_kind",
+        )
+        .fetch_all(&admin)
+        .await
+    };
+    assert_eq!(read().await?, expected);
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0037_v039_external_origin_edge.sql"
+    ))
+    .execute(&admin)
+    .await?;
+    assert_eq!(read().await?, expected, "0037 is idempotent");
+    let refused = sqlx::query(
+        "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+         VALUES ($1, $2, 'sideways')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .execute(&admin)
+    .await;
+    assert!(refused.is_err(), "edge_kind is origin or reference");
     Ok(())
 }

@@ -334,6 +334,7 @@ const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
 
 /// An interpretation grounds through payload columns and writes no `origin`
 /// rows, so the lineage walk does not reach its subjects through `origins[]`.
+/// Its other-store subjects are `reference` rows of `memory_external_origin`.
 /// A declaration says so, rather than a call-site choice.
 const INTERPRETATION_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(FLAVOR_ID, "interpretation", 1),
@@ -722,7 +723,9 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.memory_external_origin",
-        // Other-store origins of a derived memory: (t, remote memory UUID).
+        // Other-store edges of a memory: (t, remote memory UUID, edge_kind),
+        // `origin` for a derivation's sources, `reference` for an
+        // interpretation's subjects (#480).
         // No owner column; the owner policy finds the owner through the
         // memory, hot OR cooled, so every verb reaches the rows of a
         // forgotten memory too (#478).

@@ -174,7 +174,7 @@ impl MemoryReadPort for RejectingStorage {
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
-            external_origins: Vec::new(),
+            external_edges: Vec::new(),
         })
     }
 

@@ -79,7 +79,7 @@ pub(crate) async fn walk_memory_lineage_on_connection(
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
-            external_origins: Vec::new(),
+            external_edges: Vec::new(),
         });
     }
     let owner_ids: Vec<Uuid> = read_owners
@@ -123,7 +123,7 @@ async fn assemble_lineage_page_on_connection(
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
-            external_origins: Vec::new(),
+            external_edges: Vec::new(),
         });
     }
     let keys: Vec<(Uuid, String)> = rows
@@ -151,12 +151,12 @@ async fn assemble_lineage_page_on_connection(
         .iter()
         .filter_map(|h| project_lineage_edge(h, &visible))
         .collect();
-    // Other-store origins of the page's visible nodes. Rows are bound by
+    // Other-store edges (origin or reference) of the page's visible nodes. Rows are bound by
     // the memory's owner RLS; the owner filter repeats it for the
     // fixture lane without policies.
     let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
-    let external_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT e.t, e.memory
+    let external_rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT e.t, e.memory, e.edge_kind
            FROM proxima_core.memory_external_origin e
            JOIN proxima_core.memory m ON m.t = e.t
           WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
@@ -167,9 +167,15 @@ async fn assemble_lineage_page_on_connection(
     .fetch_all(&mut *connection)
     .await
     .map_err(map_err)?;
-    let external_origins = external_rows
+    let external_edges = external_rows
         .into_iter()
-        .map(|(t, memory)| (MemoryId::new(t), memory))
+        .map(|(t, memory, kind)| {
+            let kind = match kind.as_str() {
+                "reference" => EdgeKind::Reference,
+                _ => EdgeKind::Origin,
+            };
+            (MemoryId::new(t), memory, kind)
+        })
         .collect();
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
@@ -184,7 +190,7 @@ async fn assemble_lineage_page_on_connection(
         edges,
         truncated,
         next_cursor,
-        external_origins,
+        external_edges,
     })
 }
 

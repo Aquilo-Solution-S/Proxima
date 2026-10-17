@@ -168,7 +168,7 @@ impl McpTool for InterpretTool {
                         payload,
                     )
                     .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
-                    .external_origins(read_subjects),
+                    .external_references(read_subjects),
                 )
                 .await?;
 

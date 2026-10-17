@@ -259,6 +259,60 @@ async fn row_counts(platform_url: &str) -> (i64, i64) {
     (memories, external)
 }
 
+/// The edge kind recorded for `(t, memory)` in `memory_external_origin`,
+/// read as the platform role (#480).
+async fn external_edge_kind(platform_url: &str, t: &str, memory: Uuid) -> String {
+    let pool = sqlx::PgPool::connect(platform_url)
+        .await
+        .expect("platform pool");
+    let mut tx = pool.begin().await.expect("tx");
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        .execute(&mut *tx)
+        .await
+        .expect("platform scope");
+    let kind: String = sqlx::query_scalar(
+        "SELECT edge_kind FROM proxima_core.memory_external_origin WHERE t = $1 AND memory = $2",
+    )
+    .bind(t.parse::<Uuid>().expect("t"))
+    .bind(memory)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("external edge kind");
+    tx.rollback().await.expect("rollback");
+    pool.close().await;
+    kind
+}
+
+async fn set_external_edge_kind(platform_url: &str, t: &str, memory: Uuid, kind: &str) {
+    let pool = sqlx::PgPool::connect(platform_url)
+        .await
+        .expect("platform pool");
+    let mut tx = pool.begin().await.expect("tx");
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        .execute(&mut *tx)
+        .await
+        .expect("platform scope");
+    sqlx::query(
+        "UPDATE proxima_core.memory_external_origin SET edge_kind = $3 WHERE t = $1 AND memory = $2",
+    )
+    .bind(t.parse::<Uuid>().expect("t"))
+    .bind(memory)
+    .bind(kind)
+    .execute(&mut *tx)
+    .await
+    .expect("flip edge kind");
+    tx.commit().await.expect("commit");
+    pool.close().await;
+}
+
+fn edge_kind(lineage: &serde_json::Value, source: &str, target: Uuid) -> Option<String> {
+    lineage["edges"]
+        .as_array()?
+        .iter()
+        .find(|edge| edge["source"] == source && edge["target"] == target.to_string())
+        .and_then(|edge| edge["kind"].as_str().map(str::to_owned))
+}
+
 fn node(lineage: &serde_json::Value, memory: impl AsRef<str>) -> Option<&serde_json::Value> {
     lineage["nodes"]
         .as_array()?
@@ -386,6 +440,16 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
         assert_eq!(remote["store"], 1);
         assert_eq!(remote["kind"], "Fact");
         assert!(remote.get("status").is_none(), "{remote}");
+        // #480: a remote source of a derivation is an origin.
+        assert_eq!(
+            external_edge_kind(&platform_url, &abstraction, remote_id(1, "fact-1")).await,
+            "origin"
+        );
+        assert_eq!(
+            edge_kind(&lineage, &abstraction, remote_id(1, "fact-1")).as_deref(),
+            Some("origin"),
+            "{lineage}"
+        );
         let edges = lineage["edges"].as_array().expect("edges");
         for target in [local_handle.clone(), remote_id(1, "fact-1").to_string()] {
             assert!(
@@ -742,6 +806,7 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one cross-store interpret walk, end to end
 async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the_port() {
     let split_db = clone_split_core_db("proxima_other_stores_interpret")
         .await
@@ -827,6 +892,26 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
             node(&lineage, remote_id(1, "page-1").to_string()).expect("remote subject node");
         assert_eq!(remote["store"], 1);
         assert!(remote.get("status").is_none(), "{remote}");
+        // #480: a remote subject of an interpretation is a reference, as a
+        // local subject is.
+        assert_eq!(
+            external_edge_kind(&platform_url, &perspective, remote_id(1, "page-1")).await,
+            "reference"
+        );
+        assert_eq!(
+            edge_kind(&lineage, &perspective, remote_id(1, "page-1")).as_deref(),
+            Some("reference"),
+            "{lineage}"
+        );
+        assert_replay_pins_external_edge_kinds(
+            &tools,
+            authz.clone(),
+            owner,
+            &platform_url,
+            &perspective,
+            &local_handle,
+        )
+        .await?;
 
         fake.erase(1, remote_id(1, "page-1"));
         let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
@@ -847,6 +932,43 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
     }
     .await;
     result.expect("cross-store interpret test failed");
+}
+
+/// A replay must declare the same external edges, kind included (#480).
+async fn assert_replay_pins_external_edge_kinds(
+    tools: &proxima::CoreMcpTools,
+    authz: proxima::AuthzContext,
+    owner: OwnerId,
+    platform_url: &str,
+    perspective: &str,
+    local_handle: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // A replay must declare the same external edges, kind included: the
+    // same interpretation replays; with its row's kind flipped it is a
+    // conflict, not a silent second meaning.
+    let args = serde_json::json!({
+        "claim": "both say the same thing",
+        "confidence": 80,
+        "subjects": [local_handle, remote_id(1, "page-1").to_string()],
+        "model_id": "test-model"
+    });
+    let replay =
+        call_test_model_tool(tools, authz.clone(), owner, "core_interpret", args.clone()).await?;
+    assert_eq!(replay["handle"], perspective, "{replay}");
+    assert_eq!(replay["idempotent_replay"], true, "{replay}");
+    set_external_edge_kind(platform_url, perspective, remote_id(1, "page-1"), "origin").await;
+    let flipped = call_test_model_tool(tools, authz, owner, "core_interpret", args)
+        .await
+        .expect_err("a replay whose stored edge kind differs conflicts");
+    assert!(flipped.to_string().contains("external edges"), "{flipped}");
+    set_external_edge_kind(
+        platform_url,
+        perspective,
+        remote_id(1, "page-1"),
+        "reference",
+    )
+    .await;
+    Ok(())
 }
 
 /// Other stores whose list never answers.

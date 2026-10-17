@@ -56,7 +56,7 @@ fn draft() -> FactWriteCommand {
 /// derive path's privileged insert lands them.
 async fn add_origins(pg: &PgStorage, t: Uuid, n: usize) -> Result<(), sqlx::Error> {
     for _ in 0..n {
-        sqlx::query("INSERT INTO proxima_core.memory_external_origin (t, memory) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')")
             .bind(t)
             .bind(Uuid::now_v7())
             .execute(pg.pool_for_tests())
@@ -223,6 +223,11 @@ async fn export_carries_hot_and_cooled_external_origins() -> TestResult {
     expected.sort();
     assert_eq!(ts, expected, "hot and cooled origins, nobody else's");
     assert_eq!(bundle.count(TABLE), 3);
+    // #480: every exported row says which kind of edge it is.
+    assert!(
+        rows.iter().all(|row| row["edge_kind"] == "origin"),
+        "exported external rows carry edge_kind: {rows:?}"
+    );
     Ok(())
 }
 
@@ -318,7 +323,7 @@ async fn several_origins_export_byte_identically_across_insert_orders() -> TestR
             .await?;
         for memory in order {
             sqlx::query(
-                "INSERT INTO proxima_core.memory_external_origin (t, memory) VALUES ($1, $2)",
+                "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')",
             )
             .bind(t)
             .bind(memory)

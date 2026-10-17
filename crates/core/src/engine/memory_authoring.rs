@@ -31,6 +31,7 @@ pub(super) struct PreparedDerived {
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
     pub(super) external_origins: Vec<uuid::Uuid>,
+    pub(super) external_references: Vec<uuid::Uuid>,
 }
 
 #[cfg(test)]
@@ -99,6 +100,7 @@ impl RawDerivedTestRequest<'_> {
             extra_refs: self.extra_refs.to_vec(),
             lexical_language: self.lexical_language.map(str::to_owned),
             external_origins: Vec::new(),
+            external_references: Vec::new(),
         })
     }
 }
@@ -120,6 +122,7 @@ impl PreparedDerived {
             origins: &self.origins,
             references: &self.references,
             external_origins: &self.external_origins,
+            external_references: &self.external_references,
         }
     }
 }
@@ -183,6 +186,25 @@ fn external_on_layer(
         .iter()
         .map(crate::storage_ports::other_stores::ReadOrigin::handle)
         .collect())
+}
+
+/// An other-store memory is an origin or a reference of one memory, never
+/// both: `memory_external_origin` keys on `(t, memory)`.
+fn external_references(
+    origins: &[uuid::Uuid],
+    references: &[crate::storage_ports::other_stores::ReadOrigin],
+) -> Result<Vec<uuid::Uuid>, ProtocolError> {
+    let references: Vec<uuid::Uuid> = references
+        .iter()
+        .map(crate::storage_ports::other_stores::ReadOrigin::handle)
+        .collect();
+    if let Some(both) = references.iter().find(|id| origins.contains(id)) {
+        return Err(ProtocolError::invalid_argument(
+            "references",
+            format!("{both} is both an origin and a reference of this memory"),
+        ));
+    }
+    Ok(references)
 }
 
 fn validate_typed_invocation(
@@ -302,6 +324,7 @@ pub struct DerivedMemory {
     pub(crate) extra_refs: Vec<MemoryId>,
     pub(crate) lexical_language: Option<String>,
     pub(crate) external_origins: Vec<crate::storage_ports::other_stores::ReadOrigin>,
+    pub(crate) external_references: Vec<crate::storage_ports::other_stores::ReadOrigin>,
 }
 
 impl DerivedMemory {
@@ -356,6 +379,7 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             external_origins: Vec::new(),
+            external_references: Vec::new(),
         })
     }
     /// Create a Perspective derived from Abstractions.
@@ -382,6 +406,7 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             external_origins: Vec::new(),
+            external_references: Vec::new(),
         })
     }
     /// Create an origin-free Perspective grounded through its payload references.
@@ -404,12 +429,14 @@ impl DerivedMemory {
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
             external_origins: Vec::new(),
+            external_references: Vec::new(),
         }
     }
     /// Add memories of other stores, each read through the other-stores
     /// port as the caller ([`OtherStoresService::read_origin`]); duplicates
-    /// are removed. Beside local origins they are origins on the same layer;
-    /// on an [interpretation](Self::interpretation) they are its subjects.
+    /// are removed. Beside local origins they are origins on the same layer
+    /// and are recorded as `origin` edges. An interpretation's remote
+    /// subjects are references instead: see [`Self::external_references`].
     ///
     /// [`OtherStoresService::read_origin`]: crate::storage_ports::other_stores::OtherStoresService::read_origin
     #[must_use]
@@ -420,6 +447,22 @@ impl DerivedMemory {
         for origin in origins {
             if !self.external_origins.contains(&origin) {
                 self.external_origins.push(origin);
+            }
+        }
+        self
+    }
+    /// Add memories of other stores this memory refers to, read like
+    /// [`Self::external_origins`]; duplicates are removed. They are recorded
+    /// as `reference` edges: an interpretation's remote subjects, the
+    /// counterpart of its local subject references (#480).
+    #[must_use]
+    pub fn external_references(
+        mut self,
+        references: impl IntoIterator<Item = crate::storage_ports::other_stores::ReadOrigin>,
+    ) -> Self {
+        for reference in references {
+            if !self.external_references.contains(&reference) {
+                self.external_references.push(reference);
             }
         }
         self
@@ -726,6 +769,8 @@ impl Engine {
             .await?;
         let operator_kind = infer_derivation_phase(kind, &origins)?;
         let external_origins = external_on_layer(&origins, &memory.external_origins)?;
+        let external_references =
+            external_references(&external_origins, &memory.external_references)?;
         // A new version's t is allocated by storage. The layer check needs only
         // the output kind; neither a handle nor the prior t is its source row.
         let source = EdgeEndpoint::memory(kind, memory_id);
@@ -760,6 +805,7 @@ impl Engine {
             origins,
             references,
             external_origins,
+            external_references,
         })
     }
 
@@ -902,6 +948,7 @@ impl Engine {
             origins: req.derived_from,
             references,
             external_origins: &[],
+            external_references: &[],
         };
         self.storage()
             .memory_authoring

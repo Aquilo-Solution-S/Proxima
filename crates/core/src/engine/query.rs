@@ -284,7 +284,7 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
             edges: Vec::new(),
             truncated: false,
             next_cursor: None,
-            external_origins: Vec::new(),
+            external_edges: Vec::new(),
         });
     }
     ports

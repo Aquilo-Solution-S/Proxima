@@ -1179,8 +1179,8 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
             .memory_id
             .into_inner();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_external_origin (t, memory)
-             VALUES ($1, '00000000-0000-8000-8000-000500000001'), ($1, '00000000-0000-8000-8000-000600000001'), ($2, '00000000-0000-8000-8000-000500000002')",
+            "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+             VALUES ($1, '00000000-0000-8000-8000-000500000001', 'origin'), ($1, '00000000-0000-8000-8000-000600000001', 'origin'), ($2, '00000000-0000-8000-8000-000500000002', 'origin')",
         )
         .bind(erased_t)
         .bind(kept_t)

@@ -104,10 +104,11 @@ impl MemoryAuthoringPort for PgStorage {
             )
             .await?;
             let edge_count = edge_count.saturating_add(
-                verbs::derive_append::record_external_origins(
+                verbs::derive_append::record_external_edges(
                     &mut tx,
                     &outcome,
                     req.external_origins,
+                    req.external_references,
                 )
                 .await?,
             );

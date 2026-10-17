@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion,
-    SidecarPayload, StorageError,
+    EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId,
+    SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::{Acquire, Postgres, Transaction};
 
@@ -403,24 +403,34 @@ pub(crate) async fn assert_derived_index_rows(
     Ok(origins.len().saturating_add(references.len()))
 }
 
-/// Record the other-store origins of a fresh derived row, or check a
-/// replay declares the ones its first write recorded. No constraint looks
-/// at the remote side: the rows are `(t, memory)` and nothing more.
+/// Record the other-store edges of a fresh derived row (`origin` for its
+/// remote sources, `reference` for its remote subjects, #480), or check a
+/// replay declares the same rows, kinds included, as its first write. No
+/// constraint looks at the remote side.
 ///
 /// # Errors
 ///
-/// `Conflict` when a replay's stored external origins differ from the
+/// `Conflict` when a replay's stored external edges differ from the
 /// declaration. Storage errors from Postgres.
-pub(crate) async fn record_external_origins(
+pub(crate) async fn record_external_edges(
     tx: &mut Transaction<'_, Postgres>,
     outcome: &DerivedOutcome,
-    external: &[uuid::Uuid],
+    origins: &[uuid::Uuid],
+    references: &[uuid::Uuid],
 ) -> Result<usize, StorageError> {
     let t = outcome.memory_id.into_inner();
-    let declared: BTreeSet<uuid::Uuid> = external.iter().copied().collect();
+    let declared: BTreeSet<(uuid::Uuid, String)> = origins
+        .iter()
+        .map(|id| (*id, EdgeKind::Origin.as_str().to_owned()))
+        .chain(
+            references
+                .iter()
+                .map(|id| (*id, EdgeKind::Reference.as_str().to_owned())),
+        )
+        .collect();
     if outcome.idempotent_replay {
-        let stored: BTreeSet<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT memory FROM proxima_core.memory_external_origin WHERE t = $1",
+        let stored: BTreeSet<(uuid::Uuid, String)> = sqlx::query_as(
+            "SELECT memory, edge_kind FROM proxima_core.memory_external_origin WHERE t = $1",
         )
         .bind(t)
         .fetch_all(&mut **tx)
@@ -430,7 +440,7 @@ pub(crate) async fn record_external_origins(
         .collect();
         if stored != declared {
             return Err(StorageError::Conflict(
-                "derived replay changed declared external origins".into(),
+                "derived replay changed declared external edges".into(),
             ));
         }
         return Ok(declared.len());
@@ -438,14 +448,16 @@ pub(crate) async fn record_external_origins(
     if declared.is_empty() {
         return Ok(0);
     }
-    let memories: Vec<uuid::Uuid> = declared.iter().copied().collect();
+    let (memories, kinds): (Vec<uuid::Uuid>, Vec<String>) = declared.iter().cloned().unzip();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_external_origin (t, memory)
-         SELECT $1, memory FROM unnest($2::uuid[]) AS memory
+        "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+         SELECT $1, edge.memory, edge.kind
+           FROM unnest($2::uuid[], $3::text[]) AS edge(memory, kind)
          ON CONFLICT DO NOTHING",
     )
     .bind(t)
     .bind(&memories)
+    .bind(&kinds)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
