@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::ancestry::{AncestorEdge, AncestorTarget};
 use crate::MemoryId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
@@ -17,9 +18,11 @@ const DEFAULT_LINEAGE_DEPTH: u32 = 3;
 pub struct WalkMemoryLineageArgs {
     /// Memory UUID.
     pub memory: String,
-    /// Walk direction: `ancestors` follows `origin` edges toward what
-    /// this memory was made from (default); `descendants` follows them
-    /// toward what was made from it.
+    /// Walk direction: `ancestors` walks toward what this memory was made
+    /// from or is about (default), the edges `core_think` follows:
+    /// `origin`, declared subjects as `reference`, and other stores'
+    /// memories as leaves; `descendants` follows `origin` edges toward
+    /// what was made from it.
     #[serde(default = "default_direction")]
     pub direction: WalkMemoryLineageDirectionArg,
     /// Maximum hop distance from the start memory; clamped to 1..=8,
@@ -95,9 +98,9 @@ pub struct LineageNodeOutput {
     pub unavailable_reason: Option<String>,
 }
 
-/// One hop of the walk. Between memories of this store lineage traverses
-/// `origin`; an edge to another store's memory carries its recorded kind,
-/// `origin` or `reference` (an interpretation's remote subject, #480).
+/// One hop of the walk: `origin` (made from) or, toward ancestors,
+/// `reference` (a declared subject, e.g. an interpretation's). An edge to
+/// another store's memory carries its recorded kind (#480).
 #[derive(Debug, Serialize)]
 pub struct LineageEdgeOutput {
     pub source: String,
@@ -152,6 +155,28 @@ pub async fn walk_memory_lineage(
         .map(|raw| LINEAGE_CURSOR.decode(&fingerprint, raw))
         .transpose()?;
     let engine = ctx.require_engine()?;
+    let limit = args.limit.min(super::MAX_PAGE_LIMIT);
+    if matches!(direction, MemoryLineageDirection::Ancestors) {
+        let page = walk_ancestors(&ctx, engine, start, depth, limit, after).await?;
+        let Some(page) = page else {
+            return Err(McpToolError::NotFound(format!(
+                "memory {} not found",
+                args.memory
+            )));
+        };
+        let next_cursor = page
+            .next_cursor
+            .map(|cursor| LINEAGE_CURSOR.encode(&fingerprint, &cursor));
+        let has_more = next_cursor.is_some();
+        return Ok(WalkMemoryLineageOutput {
+            start: args.memory,
+            direction: format!("{direction:?}").to_lowercase(),
+            nodes: page.nodes,
+            edges: page.edges,
+            has_more,
+            next_cursor,
+        });
+    }
     let response = engine
         .walk_memory_lineage(
             &ctx.authz,
@@ -160,7 +185,7 @@ pub async fn walk_memory_lineage(
                 start_memory_id: start,
                 direction,
                 depth,
-                limit: args.limit.min(super::MAX_PAGE_LIMIT),
+                limit,
                 after,
             },
         )
@@ -194,7 +219,7 @@ pub async fn walk_memory_lineage(
         })
         .collect::<Result<Vec<_>, McpToolError>>()?;
 
-    let mut edges: Vec<LineageEdgeOutput> = response
+    let edges: Vec<LineageEdgeOutput> = response
         .edges
         .into_iter()
         .map(|hop| LineageEdgeOutput {
@@ -204,11 +229,6 @@ pub async fn walk_memory_lineage(
             distance: hop.distance,
         })
         .collect();
-
-    let mut nodes = nodes;
-    if matches!(direction, MemoryLineageDirection::Ancestors) {
-        append_external_edges(&ctx, &mut nodes, &mut edges, response.external_edges).await;
-    }
 
     let next_cursor = response
         .next_cursor
@@ -228,36 +248,204 @@ pub async fn walk_memory_lineage(
     })
 }
 
+/// One page of an ancestors walk; `None` when the start is not readable.
+struct AncestorPage {
+    nodes: Vec<LineageNodeOutput>,
+    edges: Vec<LineageEdgeOutput>,
+    next_cursor: Option<MemoryLineageCursor>,
+}
+
+/// One edge on an ancestors page, `distance` hops from the start.
+#[derive(Debug, Clone, Copy)]
+struct AncestorHop {
+    edge: AncestorEdge,
+    distance: u8,
+}
+
+/// Where a page resumes: the hop distance and, within it, the keyset
+/// `(source, target)` the previous page ended on (edges are listed newest
+/// `(source, target)` first). A cursor whose ends are not memories (none is
+/// ever issued) resumes at the next distance.
+fn resume_point(after: Option<MemoryLineageCursor>) -> (u8, Option<(uuid::Uuid, uuid::Uuid)>) {
+    let Some(after) = after else {
+        return (1, None);
+    };
+    match (after.source, after.target) {
+        (crate::EntityRef::Memory(src), crate::EntityRef::Memory(tgt)) => (
+            after.distance.max(1),
+            Some((src.into_inner(), tgt.into_inner())),
+        ),
+        _ => (after.distance.saturating_add(1).max(1), None),
+    }
+}
+
+/// The ancestors of `start`, level by level over the ancestor-edge rule
+/// `core_think` follows ([`super::ancestry::ancestor_edges`], #480):
+/// declared origins, declared payload subjects (`reference`), and the
+/// recorded edges to other stores' memories, which are leaves.
+///
+/// Every edge of a level is listed, newest `(source, target)` first; only
+/// unseen local targets are expanded. A page holds at most `limit` edges,
+/// other-store ones included, and resumes on the same keyset
+/// `(distance, source, target)` the storage walk used, so its cursor shape
+/// is unchanged.
+async fn walk_ancestors(
+    ctx: &McpToolCtx,
+    engine: &crate::Engine,
+    start: MemoryId,
+    depth: u8,
+    limit: u32,
+    after: Option<MemoryLineageCursor>,
+) -> Result<Option<AncestorPage>, McpToolError> {
+    let page_len = usize::try_from(limit.min(super::MAX_PAGE_LIMIT)).unwrap_or(usize::MAX);
+    if engine.lineage_nodes(&ctx.authz, &[start]).await?.is_empty() {
+        return Ok(None);
+    }
+    let (start_distance, keyset) = resume_point(after);
+    let mut hops: Vec<AncestorHop> = Vec::new();
+    let mut seen = HashSet::from([start]);
+    let mut frontier = vec![start];
+    'walk: for distance in 1..=depth {
+        if frontier.is_empty() {
+            break;
+        }
+        let level = super::ancestry::ancestor_edges(engine, ctx, &frontier).await?;
+        if distance >= start_distance {
+            for edge in &level {
+                if distance == start_distance
+                    && let Some(position) = keyset
+                    && (edge.source.into_inner(), edge.target.uuid()) >= position
+                {
+                    continue;
+                }
+                hops.push(AncestorHop {
+                    edge: *edge,
+                    distance,
+                });
+                if hops.len() > page_len {
+                    break 'walk;
+                }
+            }
+        }
+        let mut next: Vec<MemoryId> = level
+            .iter()
+            .filter_map(|edge| match edge.target {
+                AncestorTarget::Local(id) => Some(id),
+                AncestorTarget::Remote(_) => None,
+            })
+            .filter(|id| seen.insert(*id))
+            .collect();
+        next.sort_by_key(|id| std::cmp::Reverse(*id));
+        frontier = next;
+    }
+    let truncated = hops.len() > page_len;
+    hops.truncate(page_len);
+    let next_cursor = truncated.then(|| {
+        let last = hops.last().expect("truncated page is non-empty");
+        MemoryLineageCursor {
+            distance: last.distance,
+            source: crate::EntityRef::Memory(last.edge.source),
+            target: crate::EntityRef::Memory(MemoryId::new(last.edge.target.uuid())),
+        }
+    });
+    let (nodes, edges) = render_ancestor_page(ctx, engine, start, &hops).await?;
+    Ok(Some(AncestorPage {
+        nodes,
+        edges,
+        next_cursor,
+    }))
+}
+
+/// Nodes and edges of an ancestors page. Local nodes render as the storage
+/// walk rendered them (distance 0 for the start, else 1); an unreadable
+/// local target is a redacted edge end. Other-store targets are read in one
+/// bounded batch and placed at their edge's distance.
+async fn render_ancestor_page(
+    ctx: &McpToolCtx,
+    engine: &crate::Engine,
+    start: MemoryId,
+    hops: &[AncestorHop],
+) -> Result<(Vec<LineageNodeOutput>, Vec<LineageEdgeOutput>), McpToolError> {
+    let mut local_ids = vec![start];
+    for hop in hops {
+        local_ids.push(hop.edge.source);
+        if let AncestorTarget::Local(id) = hop.edge.target {
+            local_ids.push(id);
+        }
+    }
+    let mut unique = HashSet::new();
+    local_ids.retain(|id| unique.insert(*id));
+    let mut nodes: Vec<LineageNodeOutput> = engine
+        .lineage_nodes(&ctx.authz, &local_ids)
+        .await?
+        .into_iter()
+        .map(|node| LineageNodeOutput {
+            memory: node.memory_id.into_inner().to_string(),
+            kind: node.kind.as_str().to_string(),
+            schema_id: node.schema_id.as_str().to_string(),
+            snippet: node.snippet,
+            distance: u8::from(node.memory_id != start),
+            store: None,
+            status: None,
+            unavailable_reason: None,
+        })
+        .collect();
+    let visible: HashSet<String> = nodes.iter().map(|node| node.memory.clone()).collect();
+    let mut edges = Vec::with_capacity(hops.len());
+    let mut external = Vec::new();
+    for hop in hops {
+        let source = hop.edge.source.into_inner().to_string();
+        if !visible.contains(&source) {
+            continue;
+        }
+        match hop.edge.target {
+            AncestorTarget::Local(id) => {
+                let handle = id.into_inner().to_string();
+                let target = if visible.contains(&handle) {
+                    handle
+                } else {
+                    super::wire_ref::format_target_projection(
+                        ctx,
+                        crate::EdgeTargetProjection::Redacted,
+                    )
+                };
+                edges.push(LineageEdgeOutput {
+                    source,
+                    target,
+                    kind: hop.edge.kind.as_str().to_string(),
+                    distance: hop.distance,
+                });
+            }
+            AncestorTarget::Remote(id) => {
+                external.push((hop.edge.source, id, hop.edge.kind, hop.distance));
+            }
+        }
+    }
+    append_external_edges(ctx, &mut nodes, &mut edges, external).await;
+    Ok((nodes, edges))
+}
+
 /// Other-store edges of the page's nodes, each target read through the
-/// port as the caller. A node of another store is one hop beyond the node
-/// that names it, over an edge of the recorded kind (`origin`, or
-/// `reference` for an interpretation's subject); erased or unreadable
-/// targets render with a `status` instead of failing the walk.
+/// port as the caller. A node of another store is a leaf at its edge's
+/// distance, over an edge of the recorded kind (`origin`, or `reference`
+/// for an interpretation's subject); erased or unreadable targets render
+/// with a `status` instead of failing the walk.
 async fn append_external_edges(
     ctx: &McpToolCtx,
     nodes: &mut Vec<LineageNodeOutput>,
     edges: &mut Vec<LineageEdgeOutput>,
-    external: Vec<(MemoryId, uuid::Uuid, crate::EdgeKind)>,
+    external: Vec<(MemoryId, uuid::Uuid, crate::EdgeKind, u8)>,
 ) {
     let mut unique = Vec::new();
     let mut seen = HashSet::new();
-    for (_, origin, _) in &external {
+    for (_, origin, _, _) in &external {
         if seen.insert(*origin) {
             unique.push(*origin);
         }
     }
     let mut projections = super::ancestry::read_remote_targets(ctx, &unique).await;
-    for (memory_id, origin, edge_kind) in external {
-        let Some(source) = nodes
-            .iter()
-            .find(|node| {
-                node.store.is_none() && ctx.resolve_memory(&node.memory).ok() == Some(memory_id)
-            })
-            .map(|node| (node.memory.clone(), node.distance))
-        else {
-            continue;
-        };
-        let distance = source.1.saturating_add(1);
+    for (memory_id, origin, edge_kind, distance) in external {
+        let source = memory_id.into_inner().to_string();
         let handle = origin.to_string();
         if let Some(remote) = projections.remove(&origin) {
             nodes.push(LineageNodeOutput {
@@ -272,7 +460,7 @@ async fn append_external_edges(
             });
         }
         edges.push(LineageEdgeOutput {
-            source: source.0,
+            source,
             target: handle,
             kind: edge_kind.as_str().to_string(),
             distance,
@@ -453,7 +641,7 @@ mod tests {
                 remote_ids
                     .iter()
                     .copied()
-                    .map(move |origin| (id, origin, crate::EdgeKind::Origin))
+                    .map(move |origin| (id, origin, crate::EdgeKind::Origin, 1))
             })
             .collect::<Vec<_>>();
         let mut edges = Vec::new();

@@ -158,6 +158,30 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
+    /// Lineage nodes (kind, schema, snippet; distance 0) of the readable
+    /// `memory_ids`, under the same auth shape as `Query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context authorizes no reads, or
+    /// `Internal` when storage fails. An all-vetoed read set reads nothing.
+    pub async fn lineage_nodes(
+        &self,
+        authz: &AuthzContext,
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() || memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.storage
+            .query
+            .memory_read
+            .lineage_nodes(authz.owner_scope(), &read_owners, memory_ids)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
     /// Current owned series handle whose sidecar matches `columns`.
     ///
     /// Owner-only. A transferred series is a miss for the prior

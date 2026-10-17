@@ -116,7 +116,8 @@ async fn assemble_lineage_page_on_connection(
 ) -> Result<MemoryLineageResponse, StorageError> {
     let mut node_ids = vec![start];
     node_ids.extend(hops.iter().flat_map(|h| [h.src, h.tgt]));
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as("SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])").bind(&node_ids).bind(owner_ids).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let (rows, mut snippets) =
+        lineage_node_rows_on_connection(connection, &node_ids, owner_ids, projections).await?;
     if !rows.iter().any(|(id, _, _)| *id == start) {
         return Ok(MemoryLineageResponse {
             nodes: Vec::new(),
@@ -126,11 +127,6 @@ async fn assemble_lineage_page_on_connection(
             external_edges: Vec::new(),
         });
     }
-    let keys: Vec<(Uuid, String)> = rows
-        .iter()
-        .map(|(id, _, schema)| (*id, schema.clone()))
-        .collect();
-    let mut snippets = load_lineage_snippets_on_connection(connection, projections, &keys).await?;
     let visible: HashMap<Uuid, EntityKind> = rows
         .iter()
         .filter_map(|(id, kind, _)| parse_kind(kind).map(|k| (*id, k)))
@@ -170,6 +166,55 @@ async fn assemble_lineage_page_on_connection(
         next_cursor,
         external_edges,
     })
+}
+
+/// The readable rows `(t, kind, schema_id)` of `node_ids` and their
+/// declared snippets: the node half of a lineage page, shared with the
+/// core ancestor walk (`lineage_nodes`, #480).
+async fn lineage_node_rows_on_connection(
+    connection: &mut PgConnection,
+    node_ids: &[Uuid],
+    owner_ids: &[Uuid],
+    projections: &[MemorySearchProjection],
+) -> Result<(Vec<(Uuid, String, String)>, HashMap<Uuid, String>), StorageError> {
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m
+          WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])",
+    )
+    .bind(node_ids)
+    .bind(owner_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?;
+    let keys: Vec<(Uuid, String)> = rows
+        .iter()
+        .map(|(id, _, schema)| (*id, schema.clone()))
+        .collect();
+    let snippets = load_lineage_snippets_on_connection(connection, projections, &keys).await?;
+    Ok((rows, snippets))
+}
+
+/// Lineage nodes of the readable `memory_ids`, `distance` 0.
+pub(crate) async fn lineage_nodes_on_connection(
+    connection: &mut PgConnection,
+    memory_ids: &[Uuid],
+    owner_ids: &[Uuid],
+    projections: &[MemorySearchProjection],
+) -> Result<Vec<MemoryLineageNode>, StorageError> {
+    let (rows, mut snippets) =
+        lineage_node_rows_on_connection(connection, memory_ids, owner_ids, projections).await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, kind, schema)| {
+            Some(MemoryLineageNode {
+                memory_id: MemoryId::new(id),
+                kind: parse_kind(&kind)?,
+                schema_id: SchemaId::new(schema),
+                snippet: snippets.remove(&id).unwrap_or_default(),
+                distance: 0,
+            })
+        })
+        .collect())
 }
 
 /// Other-store edges `(memory, other-store memory, kind)` recorded for

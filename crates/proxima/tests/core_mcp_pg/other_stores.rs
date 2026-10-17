@@ -931,6 +931,19 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
         assert_eq!(remote_visit["depth"], 1, "{think}");
         assert!(remote_visit.get("status").is_none(), "{think}");
         assert!(visit(&perspective).expect("seed").get("edge").is_none());
+        // #480: lineage ancestors follow the same edges as core_think: the
+        // local subject is a reference edge too, and both tools reach the
+        // same (target, kind) set from the same seed.
+        assert_eq!(
+            edge_kind(&lineage, &perspective, local_handle.parse()?).as_deref(),
+            Some("reference"),
+            "{lineage}"
+        );
+        assert_eq!(
+            lineage_edge_set(&lineage),
+            think_edge_set(&think),
+            "{lineage} vs {think}"
+        );
         assert_replay_pins_external_edge_kinds(
             &tools,
             authz.clone(),
@@ -1014,6 +1027,190 @@ async fn assert_replay_pins_external_edge_kinds(
     )
     .await;
     Ok(())
+}
+
+/// `(target, kind)` of every lineage edge.
+fn lineage_edge_set(lineage: &serde_json::Value) -> std::collections::BTreeSet<(String, String)> {
+    lineage["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .map(|edge| {
+            (
+                edge["target"].as_str().expect("target").to_owned(),
+                edge["kind"].as_str().expect("kind").to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// `(handle, edge)` of every non-seed `core_think` visit.
+fn think_edge_set(think: &serde_json::Value) -> std::collections::BTreeSet<(String, String)> {
+    think["visits"]
+        .as_array()
+        .expect("visits")
+        .iter()
+        .filter_map(|visit| {
+            Some((
+                visit["handle"].as_str()?.to_owned(),
+                visit["edge"].as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// #480: a two-level ancestors walk over both edge kinds and two remote
+/// leaves pages within `limit` (remote nodes counted) with no duplicate or
+/// missing edge, and the pages together equal one unpaged walk.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one graph, walked whole and page by page
+async fn lineage_ancestors_page_within_limit_over_references_and_remote_leaves() {
+    let split_db = clone_split_core_db("proxima_other_stores_lineage_pages")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let fake = Arc::new(
+            FakeStores::default()
+                .with(
+                    1,
+                    remote_id(1, "basis"),
+                    Entry::Readable(fact(remote_id(1, "basis"), "remote basis")),
+                )
+                .with(
+                    1,
+                    remote_id(1, "subject"),
+                    Entry::Readable(fact(remote_id(1, "subject"), "remote subject")),
+                ),
+        );
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .other_stores(fake)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let mut facts = Vec::new();
+        for title in ["first fact", "second fact"] {
+            let made = call(
+                "core_remember",
+                serde_json::json!({"title": title, "body": title, "tags": []}),
+            )
+            .await?;
+            facts.push(made["handle"].as_str().expect("handle").to_owned());
+        }
+        let derived = call(
+            "core_derive",
+            serde_json::json!({
+                "kind": "Abstraction",
+                "title": "derived",
+                "body": "from two local facts and a remote one",
+                "source_handles": [facts[0], facts[1], remote_id(1, "basis").to_string()],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let derived = derived["handle"].as_str().expect("handle").to_owned();
+        let interpreted = call(
+            "core_interpret",
+            serde_json::json!({
+                "claim": "about the derivation and a remote page",
+                "confidence": 60,
+                "subjects": [derived, remote_id(1, "subject").to_string()],
+                "model_id": "test-model"
+            }),
+        )
+        .await?;
+        let perspective = interpreted["handle"].as_str().expect("handle").to_owned();
+
+        let base = format!("proxima://memory/{perspective}/lineage?direction=ancestors&depth=2");
+        let whole =
+            read_test_model_resource(&tools, authz.clone(), owner, &format!("{base}&limit=50"))
+                .await?;
+        let expected: std::collections::BTreeSet<(String, String, String)> = [
+            (perspective.clone(), derived.clone(), "reference"),
+            (
+                perspective.clone(),
+                remote_id(1, "subject").to_string(),
+                "reference",
+            ),
+            (derived.clone(), facts[0].clone(), "origin"),
+            (derived.clone(), facts[1].clone(), "origin"),
+            (derived.clone(), remote_id(1, "basis").to_string(), "origin"),
+        ]
+        .into_iter()
+        .map(|(source, target, kind)| (source, target, kind.to_owned()))
+        .collect();
+        let triples = |page: &serde_json::Value| -> Vec<(String, String, String)> {
+            page["edges"]
+                .as_array()
+                .expect("edges")
+                .iter()
+                .map(|edge| {
+                    (
+                        edge["source"].as_str().expect("source").to_owned(),
+                        edge["target"].as_str().expect("target").to_owned(),
+                        edge["kind"].as_str().expect("kind").to_owned(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            triples(&whole)
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected,
+            "{whole}"
+        );
+        assert_eq!(whole["has_more"], false, "{whole}");
+        let remote_basis = node(&whole, remote_id(1, "basis").to_string()).expect("remote basis");
+        assert_eq!(remote_basis["distance"], 2, "{whole}");
+        assert_eq!(remote_basis["store"], 1, "{whole}");
+
+        let mut paged = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut page_count = 0;
+        loop {
+            let uri = match &cursor {
+                Some(cursor) => format!("{base}&limit=2&cursor={cursor}"),
+                None => format!("{base}&limit=2"),
+            };
+            let page = read_test_model_resource(&tools, authz.clone(), owner, &uri).await?;
+            let edges = triples(&page);
+            assert!(edges.len() <= 2, "a page holds at most limit edges: {page}");
+            for (_, target, _) in &edges {
+                // every target, remote or local, is a node of its page
+                assert!(node(&page, target).is_some(), "{page}");
+            }
+            paged.extend(edges);
+            page_count += 1;
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+            assert!(page_count < 10, "paging must terminate");
+        }
+        assert_eq!(page_count, 3, "5 edges at limit 2");
+        let unique: std::collections::BTreeSet<_> = paged.iter().cloned().collect();
+        assert_eq!(unique.len(), paged.len(), "no duplicate edge: {paged:?}");
+        assert_eq!(unique, expected, "no missing edge");
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("lineage paging test failed");
 }
 
 /// Other stores whose list never answers.

@@ -508,6 +508,43 @@ impl MemoryReadPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, result).await
     }
 
+    async fn lineage_nodes(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_ids: &[proxima_core::MemoryId],
+    ) -> Result<Vec<proxima_core::verbs::query::MemoryLineageNode>, StorageError> {
+        if read_owners.is_empty() || memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let owner_ids: Vec<uuid::Uuid> = read_owners
+            .iter()
+            .copied()
+            .map(OwnerId::into_inner)
+            .collect();
+        let ids: Vec<uuid::Uuid> = memory_ids
+            .iter()
+            .copied()
+            .map(proxima_core::MemoryId::into_inner)
+            .collect();
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
+        let result = async {
+            verbs::query::lineage_nodes_on_connection(
+                &mut tx,
+                &ids,
+                &owner_ids,
+                &self.search_projections,
+            )
+            .await
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
     async fn owned_series_handle(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,

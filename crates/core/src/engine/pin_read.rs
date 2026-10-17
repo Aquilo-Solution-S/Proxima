@@ -645,6 +645,15 @@ mod tests {
             Err(StorageError::Internal("unused".into()))
         }
 
+        async fn lineage_nodes(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _read_owners: &[OwnerId],
+            _memory_ids: &[crate::MemoryId],
+        ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
         async fn owned_series_handle(
             &self,
             _scope: Option<&crate::OwnerScope>,

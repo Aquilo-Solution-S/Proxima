@@ -189,6 +189,16 @@ pub trait MemoryReadPort: Send + Sync {
         memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, StorageError>;
 
+    /// The lineage nodes (kind, schema, snippet) of the `memory_ids`
+    /// `read_owners` hold, as a lineage page renders them; `distance` is 0
+    /// and set by the caller. An id the caller cannot read is absent.
+    async fn lineage_nodes(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError>;
+
     /// Current owned series handle whose sidecar matches `columns`.
     /// Owner-only. A miss after an owner-to-owner transfer is expected.
     async fn owned_series_handle(
