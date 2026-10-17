@@ -32,6 +32,14 @@ pub enum MembershipChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzOperation {
     /// Read `kind` on the owner.
+    ///
+    /// Every engine read is gated, not only search. A set read (by-id and
+    /// batch reads, lineage, edges, pins, sketches, counts, query) gates each
+    /// owner in the caller's read set once, as `Read { kind: Fact }`, meaning
+    /// "any read on this owner"; storage still applies the per-kind limits.
+    /// An entry read (a citation or prior checked on a write path) gates only
+    /// the entry's home owner, with the entry's real kind. A vetoed owner
+    /// drops out of the read: its entries read exactly like absent ones.
     Read { kind: AccessKind },
     /// Write `kind` on the owner.
     Write { kind: AccessKind },
@@ -68,6 +76,12 @@ pub trait OwnerResolver: Send + Sync + Debug + 'static {
 }
 
 /// Zero or more, run in registration order. `veto` deny-only; `observe` is audit.
+///
+/// Reads are reported once per owner gated: a set read yields one decision
+/// per owner in the caller's read set (`Read { kind: Fact }`), an entry read
+/// one decision for the entry's home owner with its real kind. See
+/// [`AuthzOperation::Read`]. Vetoing only some kinds on an owner is honoured
+/// on entry reads; set reads are vetoed per owner, not per kind.
 pub trait AuthorizationHook: Send + Sync + Debug + 'static {
     /// # Errors
     ///

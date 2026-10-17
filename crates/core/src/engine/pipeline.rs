@@ -285,8 +285,21 @@ impl Engine {
         Ok(resolved)
     }
 
-    /// Every owner this context may read anything of. Storage returns only
-    /// the rows whose kind each owner's read limit covers.
+    /// Every owner this context may read anything of, minus the owners a
+    /// host veto denies. Storage returns only the rows whose kind each
+    /// owner's read limit covers.
+    ///
+    /// Each owner in the raw read set is gated once, as `Read { kind: Fact }`
+    /// ("any read on this owner"; storage still applies the per-kind limits),
+    /// and the observers get one decision per owner, denials included. A
+    /// vetoed owner silently drops out: the returned set can be empty, and an
+    /// empty set is not an error, because an error would reveal the veto.
+    /// Callers turn an empty set into empty results or not-found.
+    ///
+    /// # Errors
+    ///
+    /// `Forbidden` only when the context itself authorizes nothing (a denied
+    /// context, or no readable owner at all).
     #[allow(
         clippy::unused_async,
         reason = "keeps the shared read gate source-compatible with async Engine callers"
@@ -301,18 +314,10 @@ impl Engine {
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
         let read = self.readable_set(authz)?;
-        let principal = authz.principal();
-        let input = AuthzInput {
-            authz,
-            requested: &principal,
-            resolved: &principal,
-            operation: AuthzOperation::Read {
-                kind: AccessKind::Fact,
-            },
-        };
-        self.registry
-            .run_authorization_observers(&input, AuthzOutcome::Allowed);
-        Ok(read)
+        Ok(read
+            .into_iter()
+            .filter(|owner| self.veto_read_owner(authz, owner, AccessKind::Fact).is_ok())
+            .collect())
     }
 
     /// The unvetoed read set: every owner this context may read anything of.
@@ -343,9 +348,41 @@ impl Engine {
         Ok(read)
     }
 
+    /// Run the host vetoes for a read of `kind` on one stored owner and
+    /// report the decision to the observers.
+    ///
+    /// `owner` is already a concrete, stored owner (from the read set or from
+    /// storage), so it is not re-resolved: a resolver could remap the gate
+    /// onto a different owner than the one storage filters on.
+    fn veto_read_owner(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerId,
+        kind: AccessKind,
+    ) -> Result<(), ProtocolError> {
+        let input = AuthzInput {
+            authz,
+            requested: owner,
+            resolved: owner,
+            operation: AuthzOperation::Read { kind },
+        };
+        if let Err(err) = self.registry.run_authorization_vetoes(&input) {
+            self.registry
+                .run_authorization_observers(&input, AuthzOutcome::DeniedVeto);
+            return Err(err);
+        }
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(())
+    }
+
     /// Single-entry read gate. Existence is not disclosed to non-readers: a
-    /// missing entity and one whose kind the caller may not read are both
-    /// [`ENTRY_NOT_FOUND_MESSAGE`].
+    /// missing entity, one whose kind the caller may not read, and one whose
+    /// home owner a host veto denies are all [`ENTRY_NOT_FOUND_MESSAGE`].
+    ///
+    /// Only the one owner that matters is gated: storage finds the entity's
+    /// single home owner within the unvetoed read set, and that owner is then
+    /// vetoed with the entity's real kind. One observer decision per entry.
     pub(in crate::engine) async fn authorize_entry_read<A>(
         &self,
         authority: &A,
@@ -354,9 +391,9 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let read = self.authorize_read(authority).await?;
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
+        let read = self.readable_set(authz)?;
         let (owner, kind) = self
             .storage()
             .pipeline
@@ -366,6 +403,8 @@ impl Engine {
             .map_err(|err| storage_error("visible_home_owner", &err))?
             .filter(|(owner, kind)| authz.may_read(owner, *kind))
             .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
+        self.veto_read_owner(authz, &owner, kind)
+            .map_err(|_| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
         Ok(EntryReadPermit { owner, kind })
     }
 }
@@ -751,6 +790,251 @@ mod tests {
         assert!(read.contains(&p));
         assert!(read.contains(&g1_owner));
         assert_eq!(read.len(), 2, "no owner beyond the caller's own read set");
+    }
+
+    /// Vetoes every operation on one owner and lets every other through.
+    #[derive(Debug)]
+    struct VetoOwner(OwnerId);
+
+    impl AuthorizationHook for VetoOwner {
+        fn veto(&self, input: &AuthzInput<'_>) -> Result<(), AuthzVeto> {
+            assert_eq!(
+                input.requested, input.resolved,
+                "set reads gate stored owners"
+            );
+            if *input.resolved == self.0 {
+                return Err(AuthzVeto("owner vetoed".into()));
+            }
+            Ok(())
+        }
+    }
+
+    /// Records every decision as `(resolved owner, operation, outcome)`.
+    #[derive(Debug)]
+    struct RecordingOwnerHook {
+        events: Arc<Mutex<Vec<(OwnerId, AuthzOperation, AuthzOutcome)>>>,
+    }
+
+    impl AuthorizationHook for RecordingOwnerHook {
+        fn observe(&self, input: &AuthzInput<'_>, outcome: AuthzOutcome) {
+            self.events.lock().expect("recorder lock").push((
+                *input.resolved,
+                input.operation.clone(),
+                outcome,
+            ));
+        }
+    }
+
+    const FACT_READ: AuthzOperation = AuthzOperation::Read {
+        kind: AccessKind::Fact,
+    };
+
+    #[tokio::test]
+    async fn authorize_read_drops_vetoed_owner() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = OwnerId::from(g1);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
+        registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
+            events: events.clone(),
+        }));
+        let engine = engine_from_registry_and_storage(registry, storage(p, g1));
+        let authz = member_context(&p, g1, Relation::Viewer);
+
+        let read = engine
+            .authorize_read(&authz)
+            .await
+            .expect("a veto narrows the read set, it does not refuse the read");
+
+        assert_eq!(read, vec![p], "the vetoed group drops out of the read set");
+        let mut seen = events.lock().expect("recorder lock").clone();
+        seen.sort_by_key(|(owner, _, outcome)| (*owner == g1_owner, format!("{outcome:?}")));
+        assert_eq!(
+            seen,
+            vec![
+                (p, FACT_READ, AuthzOutcome::Allowed),
+                (g1_owner, FACT_READ, AuthzOutcome::DeniedVeto),
+            ],
+            "one decision per owner, the denial included"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_read_all_vetoed_is_empty_not_forbidden() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoHook));
+        let engine = engine_from_registry_and_storage(registry, storage(p, g1));
+        let authz = member_context(&p, g1, Relation::Viewer);
+
+        let read = engine
+            .authorize_read(&authz)
+            .await
+            .expect("an all-vetoed read set is empty, never an error that reveals the veto");
+
+        assert!(read.is_empty());
+    }
+
+    /// Every engine read built on the read set answers an all-vetoed set
+    /// with empty results or not-found, never with an error that would
+    /// reveal the veto.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // one assertion per engine read on the read set
+    async fn every_set_read_answers_an_all_vetoed_set_with_nothing() {
+        use crate::verbs::query::{
+            EdgeExistsRequest, EdgeReadRequest, MemoryLineageDirection, MemoryLineageRequest,
+            QueryRequest,
+        };
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoHook));
+        let engine = engine_from_registry_and_storage(registry, storage(p, g1));
+        let authz = member_context(&p, g1, Relation::Viewer);
+        let id = MemoryId::new(uuid::Uuid::now_v7());
+
+        let err = engine
+            .get_memory(
+                &authz,
+                &super::super::GetMemoryReadRequest {
+                    memory_id: id,
+                    include_neighbor_edges: true,
+                },
+            )
+            .await
+            .expect_err("nothing readable");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        let batch = engine
+            .get_memories(
+                &authz,
+                &super::super::GetMemoriesReadRequest {
+                    memory_ids: vec![id],
+                },
+            )
+            .await
+            .expect("empty batch");
+        assert!(batch.memories.is_empty());
+        assert!(
+            engine
+                .load_sketches(&authz, &[id])
+                .await
+                .expect("sketches")
+                .is_empty()
+        );
+        assert_eq!(
+            engine.memory_counts(&authz).await.expect("counts"),
+            crate::read_models::MemoryCounts::default()
+        );
+        assert!(
+            engine
+                .pin_nodes(&authz, &[id])
+                .await
+                .expect("pins")
+                .is_empty()
+        );
+        assert!(
+            engine
+                .authorized_read_owners(&authz)
+                .await
+                .expect("owners")
+                .is_empty()
+        );
+        let page = engine
+            .query(&authz, &QueryRequest::readable())
+            .await
+            .expect("query");
+        assert!(page.memories.is_empty() && page.goals.is_empty() && page.edges.is_empty());
+        let edges = engine
+            .read_edges(
+                &authz,
+                &EdgeReadRequest {
+                    filter: crate::verbs::query::EdgeFilter::default(),
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .await
+            .expect("edges");
+        assert!(edges.edges.is_empty());
+        assert!(
+            !engine
+                .edge_exists(
+                    &authz,
+                    &EdgeExistsRequest {
+                        filter: crate::verbs::query::EdgeFilter::default()
+                    }
+                )
+                .await
+                .expect("exists")
+                .exists
+        );
+        let lineage = engine
+            .walk_memory_lineage(
+                &authz,
+                &MemoryLineageRequest {
+                    owner: p,
+                    start_memory_id: id,
+                    direction: MemoryLineageDirection::Ancestors,
+                    depth: 3,
+                    limit: 10,
+                    after: None,
+                },
+            )
+            .await
+            .expect("lineage");
+        assert!(lineage.nodes.is_empty() && lineage.edges.is_empty());
+        let citation = engine
+            .read_fact_citation(
+                &authz,
+                &super::super::FactCitationReadRequest { fact_memory_id: id },
+            )
+            .await
+            .expect_err("an unreadable fact is not found");
+        assert_eq!(citation.message, super::ENTRY_NOT_FOUND_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn authorize_entry_read_vetoed_owner_is_not_found() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = OwnerId::from(g1);
+        let authz = member_context(&p, g1, Relation::Viewer);
+        let entity = EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
+        registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
+            events: events.clone(),
+        }));
+        let vetoed = engine_from_registry_and_storage(
+            registry,
+            storage_with_entity(p, g1, Some(g1_owner), true),
+        );
+        let absent = engine_with_ports(storage_with_entity(p, g1, None, true));
+
+        let vetoed_err = vetoed
+            .authorize_entry_read(&authz, entity)
+            .await
+            .expect_err("a vetoed home owner hides the entry");
+        let absent_err = absent
+            .authorize_entry_read(&authz, entity)
+            .await
+            .expect_err("an absent entry fails closed");
+
+        assert_eq!(vetoed_err.message, super::ENTRY_NOT_FOUND_MESSAGE);
+        assert_eq!(
+            (vetoed_err.code, vetoed_err.message),
+            (absent_err.code, absent_err.message),
+            "a vetoed entry is byte-identical to an absent one"
+        );
+        assert_eq!(
+            *events.lock().expect("recorder lock"),
+            vec![(g1_owner, FACT_READ, AuthzOutcome::DeniedVeto)],
+            "one decision, for the one owner involved, with the entry's real kind"
+        );
     }
 
     #[tokio::test]

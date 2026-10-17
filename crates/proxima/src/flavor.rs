@@ -130,6 +130,9 @@ pub use proxima_core::{
 /// or `observe` requires the input/outcome types; [`OwnerResolver`] is the
 /// sibling remap trait the registry already accepts. Naming the trait
 /// alone is not enough (see the `UploadedBlobPayload` note below).
+/// A `veto` on [`AuthzOperation::Read`] applies to every engine read, not
+/// only search: a vetoed owner's memories read exactly like absent ones, and
+/// observers get one read decision per owner gated.
 pub use proxima_core::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
     MembershipChange, OwnerResolver,

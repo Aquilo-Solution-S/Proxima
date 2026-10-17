@@ -53,7 +53,10 @@ impl Engine {
         .await
     }
 
-    /// The read access set (`S_read`) this context resolves to.
+    /// The read access set (`S_read`) this context resolves to, after the
+    /// host read vetoes: a vetoed owner is not in it. The set can be empty
+    /// when every readable owner is vetoed; a pushdown scan over an empty
+    /// set reads nothing.
     ///
     /// Every read verb above narrows to this set before it touches storage.
     /// A flavor that runs its own candidate scan needs the same set as a SQL
@@ -182,6 +185,14 @@ pub(in crate::engine) async fn query_authorized(
     }
     validate_query_cursor(req)?;
     validate_goal_selectors(req)?;
+    if read_owners.is_empty() {
+        return Ok(QueryResponse {
+            memories: Vec::new(),
+            goals: Vec::new(),
+            edges: Vec::new(),
+            next_cursor: None,
+        });
+    }
     ports
         .memory_read
         .query_memories(owner_scope, read_owners, req, schemas)
@@ -239,6 +250,12 @@ pub(in crate::engine) async fn read_edges_authorized(
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
+    if read_owners.is_empty() {
+        return Ok(EdgeReadResponse {
+            edges: Vec::new(),
+            next_cursor: None,
+        });
+    }
     super::pin_read::read_edges_from_nodes(&ports.memory_read, owner_scope, read_owners, req).await
 }
 
@@ -248,6 +265,9 @@ pub(in crate::engine) async fn edge_exists_authorized(
     read_owners: &[OwnerId],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
+    if read_owners.is_empty() {
+        return Ok(EdgeExistsResponse { exists: false });
+    }
     super::pin_read::edge_exists_from_nodes(&ports.memory_read, owner_scope, read_owners, req).await
 }
 
@@ -257,6 +277,15 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
     read_owners: &[OwnerId],
     req: &MemoryLineageRequest,
 ) -> Result<MemoryLineageResponse, ProtocolError> {
+    if read_owners.is_empty() {
+        return Ok(MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+            external_origins: Vec::new(),
+        });
+    }
     ports
         .memory_read
         .walk_memory_lineage(owner_scope, read_owners, req)

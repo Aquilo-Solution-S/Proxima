@@ -159,6 +159,11 @@ impl Engine {
         req: &GetMemoriesReadRequest,
     ) -> Result<GetMemoriesReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(GetMemoriesReadResponse {
+                memories: Vec::new(),
+            });
+        }
         let schemas = self.memory_schema_specs();
         let memories = self
             .storage
@@ -181,6 +186,9 @@ impl Engine {
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(Vec::new());
+        }
         self.storage
             .read_verb
             .memory_read
@@ -199,6 +207,9 @@ impl Engine {
     /// authorizes nothing); `Internal` on storage.
     pub async fn memory_counts(&self, authz: &AuthzContext) -> Result<MemoryCounts, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(MemoryCounts::default());
+        }
         self.storage
             .read_verb
             .memory_read
@@ -219,6 +230,9 @@ impl Engine {
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::PinNode>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(Vec::new());
+        }
         self.storage
             .read_verb
             .memory_read
@@ -238,6 +252,9 @@ impl Engine {
         query: crate::storage_ports::InboundPinQuery<'_>,
     ) -> Result<Vec<crate::PinNode>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(Vec::new());
+        }
         self.storage
             .read_verb
             .memory_read
@@ -274,6 +291,9 @@ impl Engine {
         req: &FactCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
+        }
         let found = self
             .storage
             .read_verb
@@ -316,6 +336,13 @@ impl Engine {
         req: &FactsCitingObjectReadRequest,
     ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() {
+            return Ok(crate::verbs::query::FactCitationPage {
+                facts: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+            });
+        }
         let schemas = self.memory_schema_specs();
         facts_citing_object_authorized(
             &self.storage.read_verb,
@@ -463,6 +490,9 @@ pub(in crate::engine) async fn get_memory_authorized(
     schemas: &[MemorySchemaSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
+    if read_owners.is_empty() {
+        return Err(ProtocolError::not_found("memory not found"));
+    }
     let mut found = ports
         .memory_inspect
         .load_memories_by_ids(owner_scope, read_owners, &[req.memory_id], schemas)
