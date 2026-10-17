@@ -216,13 +216,6 @@ CREATE OR REPLACE TRIGGER projection_remember_lang
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
--- publication_counter
-CREATE OR REPLACE TRIGGER publication_counter_forward_only
-    BEFORE UPDATE ON proxima_core.publication_counter
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.publication_counter_forward_only();
-
-
 -- publication_origin
 CREATE OR REPLACE TRIGGER publication_origin_identity_immutable BEFORE UPDATE ON proxima_core.publication_origin FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_publication_origin_immutable();
 
@@ -274,3 +267,9 @@ CREATE OR REPLACE TRIGGER write_act_v1_declared_by_memory_on_update
 CREATE OR REPLACE TRIGGER store_identity_immutable
     BEFORE UPDATE OR DELETE ON proxima_core.store_identity
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_store_identity_immutable();
+
+-- publication_counter
+CREATE OR REPLACE TRIGGER publication_counter_forward_only
+    BEFORE UPDATE ON proxima_core.publication_counter
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.publication_counter_forward_only();

@@ -362,10 +362,23 @@ async fn refuses_writer_migration(
     Ok(())
 }
 
+/// Owner policies through the store-identity section (migration 0034), without
+/// the sections later migrations add, for fixtures that stop at 0034.
+fn store_identity_policies() -> &'static str {
+    let (through, _) = definitions::POLICIES
+        .split_once("\n-- publication_counter\n")
+        .expect("the publication-counter section follows store identity");
+    assert!(
+        through.contains("\n-- store_identity\n"),
+        "the publication-counter section follows store identity"
+    );
+    through
+}
+
 #[tokio::test]
 async fn retained_writer_rows_refuse_attribution_migration_without_changes() -> TestResult {
     let (_guard, platform, admin) = empty_store().await?;
-    apply_historical_schema(&platform, &[33, 34], definitions::POLICIES).await?;
+    apply_historical_schema(&platform, &[33, 34], store_identity_policies()).await?;
     for existing in [
         ExistingIdentity::Memory,
         ExistingIdentity::Cooled,
@@ -407,7 +420,7 @@ async fn memory_pin_checks_catalog(
 #[tokio::test]
 async fn attribution_migration_installs_the_restoration_seal_before_definitions() -> TestResult {
     let (_guard, platform, _admin) = empty_store().await?;
-    apply_historical_schema(&platform, &[33, 34], definitions::POLICIES).await?;
+    apply_historical_schema(&platform, &[33, 34], store_identity_policies()).await?;
     let mut connection = platform.acquire().await?;
     let mut transaction = begin_migration_transaction(&mut connection).await?;
     // The historical fixture installs functions without their later-column triggers.
@@ -426,7 +439,7 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
         sqlx::query_as("SELECT version, success FROM public._sqlx_migrations ORDER BY version")
             .fetch_all(transaction.as_mut())
             .await?;
-    assert_eq!(ledger, [(33, true), (34, true), (35, true)]);
+    assert_eq!(ledger, [(33, true), (34, true), (35, true), (36, true)]);
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
 
     run_core_schema(&mut transaction, MissingMigrationPolicy::Reject).await?;
