@@ -1756,14 +1756,15 @@ END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.owner_group_kind_guard() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
- RETURNS void
+-- Generate SQL for an unaliased, schema-qualified target relation.
+-- Parent queries retain their ordinary RLS; generation does not bind a scope.
+CREATE OR REPLACE FUNCTION proxima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
+ RETURNS TABLE(read_expr text, write_expr text, select_expr text)
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
 AS $function$
 DECLARE
     rel_oid oid;
-    rel_owner name;
     fk jsonb;
     fk_child text;
     fk_schema text;
@@ -1774,18 +1775,64 @@ DECLARE
     memory_keys integer;
     memory_on_key boolean;
     direction text;
+    fact_owners text;
+    abstraction_owners text;
+    perspective_owners text;
+    goal_owners text;
     kind_of text;
-    read_expr text;
-    write_expr text;
 BEGIN
-    SELECT c.oid, pg_get_userbyid(c.relowner) INTO rel_oid, rel_owner
+    SELECT c.oid INTO rel_oid
       FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
      WHERE n.nspname = target_schema AND c.relname = target_table AND c.relkind IN ('r', 'p');
 
     CASE class
         WHEN 'owner_id' THEN
-            read_expr := format($expr$%I = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$, owner_column);
-            write_expr := format($expr$%I = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$, owner_column);
+            memory_key := CASE WHEN target_schema = 'proxima_core' THEN
+                CASE target_table
+                    WHEN 'projection' THEN 'memory_id'
+                    WHEN 'embeddings' THEN 'entity_id'
+                    WHEN 'embedding_heads' THEN 'entity_id'
+                    WHEN 'embedding_jobs' THEN 'entity_id'
+                END
+            END;
+            IF memory_key IS NOT NULL THEN
+                IF owner_column IS DISTINCT FROM 'owner_id' THEN
+                    RAISE EXCEPTION '%: %.% requires owner column owner_id',
+                        caller, target_schema, target_table;
+                END IF;
+                FOREACH direction IN ARRAY ARRAY['read', 'write'] LOOP
+                    fact_owners := format('(SELECT COALESCE(NULLIF(current_setting(%L, true), %L)::uuid[], %L::uuid[]))::uuid[]',
+                        CASE direction WHEN 'read' THEN 'app.owner' ELSE 'app.write_owner' END, '', '{}');
+                    abstraction_owners := format('(SELECT COALESCE(NULLIF(current_setting(%L, true), %L)::uuid[], %L::uuid[]))::uuid[]',
+                        'app.' || direction || '_abstraction', '', '{}');
+                    perspective_owners := format('(SELECT COALESCE(NULLIF(current_setting(%L, true), %L)::uuid[], %L::uuid[]))::uuid[]',
+                        'app.' || direction || '_perspective', '', '{}');
+                    goal_owners := format('(SELECT COALESCE(NULLIF(current_setting(%L, true), %L)::uuid[], %L::uuid[]))::uuid[]',
+                        'app.' || direction || '_goal', '', '{}');
+                    kind_of := format('CASE parent.kind::text WHEN ''fact'' THEN %s WHEN ''abstraction'' THEN %s WHEN ''perspective'' THEN %s ELSE %s END',
+                        fact_owners, abstraction_owners, perspective_owners, goal_owners);
+                    kind_of := format($expr$(
+                        %1$I.%2$I.%3$I = ANY(%4$s)
+                        OR (
+                            %1$I.%2$I.%3$I = ANY(%5$s)
+                            AND EXISTS (
+                                SELECT 1 FROM proxima_core.memory AS parent
+                                 WHERE parent.t = %1$I.%2$I.%6$I
+                                   AND parent.owner_id = ANY(%7$s)
+                            )
+                        )
+                    )$expr$, target_schema, target_table, owner_column,
+                        goal_owners, fact_owners, memory_key, kind_of);
+                    IF direction = 'read' THEN
+                        read_expr := kind_of;
+                    ELSE
+                        write_expr := kind_of;
+                    END IF;
+                END LOOP;
+            ELSE
+                read_expr := format($expr$%I.%I.%I = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$, target_schema, target_table, owner_column);
+                write_expr := format($expr$%I.%I.%I = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])$expr$, target_schema, target_table, owner_column);
+            END IF;
         WHEN 'memory_owner' THEN
             -- The memory this row belongs to: the FK on the leading
             -- primary-key column, else the only FK to memory when no other t
@@ -1856,6 +1903,32 @@ BEGIN
                 RAISE EXCEPTION 'owner RLS writable classification missing for %.%', target_schema, target_table;
             END IF;
     END CASE;
+
+    select_expr := format('(%s) OR (%s)', read_expr, write_expr);
+    RETURN NEXT;
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    rel_owner name;
+    read_expr text;
+    write_expr text;
+BEGIN
+    SELECT pg_get_userbyid(c.relowner) INTO rel_owner
+      FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
+     WHERE n.nspname = target_schema AND c.relname = target_table AND c.relkind IN ('r', 'p');
+
+    SELECT predicates.read_expr, predicates.write_expr
+      INTO read_expr, write_expr
+      FROM proxima_core.owner_rls_class_predicates(
+          caller, class_label, target_schema, target_table, class, owner_column
+      ) AS predicates;
 
     EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', target_schema, target_table);
     EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', target_schema, target_table);
