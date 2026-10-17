@@ -30,6 +30,7 @@ pub(super) fn store_config(
         region: "eu-central-1".into(),
         key_pair: S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
         endpoint_url: endpoint_url.map(ToOwned::to_owned),
+        public_endpoint_url: None,
         plaintext_hosts: proxima_core::PlaintextHosts::none(),
         force_path_style: false,
         upload_ttl_seconds: 900,

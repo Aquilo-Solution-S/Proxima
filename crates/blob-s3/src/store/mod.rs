@@ -61,6 +61,8 @@ pub struct CitedBlobStore {
     /// S3 client built from the configured static key pair and target,
     /// memoized once per store.
     client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
+    /// Client whose endpoint is selected before signing holder-facing URLs.
+    presigning_client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
     /// Set once by normal Proxima boot and shared by every store clone.
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
@@ -80,7 +82,18 @@ impl CitedBlobStore {
         platform_scope: PgPlatformScope,
     ) -> Result<Self, BlobError> {
         if let Some(endpoint_url) = &config.endpoint_url {
-            validate_endpoint_url(endpoint_url, &config.plaintext_hosts)?;
+            validate_endpoint_url(
+                "PROXIMA_S3_ENDPOINT_URL",
+                endpoint_url,
+                &config.plaintext_hosts,
+            )?;
+        }
+        if let Some(endpoint_url) = &config.public_endpoint_url {
+            validate_endpoint_url(
+                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                endpoint_url,
+                &config.plaintext_hosts,
+            )?;
         }
         // Checked at the consuming boundary too, not only in `from_env`: a
         // host may build this struct directly, and an out-of-range TTL must
@@ -93,6 +106,7 @@ impl CitedBlobStore {
             pool,
             config,
             client: tokio::sync::OnceCell::new(),
+            presigning_client: tokio::sync::OnceCell::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
             platform_scope,
         })
@@ -135,6 +149,14 @@ impl CitedBlobStore {
             .await)
     }
 
+    /// The memoized client for presigning; object I/O keeps using `client`.
+    pub(super) async fn presigning_client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
+        Ok(self
+            .presigning_client
+            .get_or_init(|| async { self.config.presigning_client() })
+            .await)
+    }
+
     pub(super) fn bucket(&self) -> &str {
         &self.config.bucket
     }
@@ -159,7 +181,44 @@ mod tests {
         .unwrap();
         assert!(!format!("{store:?}").contains(secret));
         store.client().await.unwrap();
+        store.presigning_client().await.unwrap();
         assert!(!format!("{store:?}").contains(secret));
+    }
+
+    #[tokio::test]
+    async fn store_clients_keep_internal_io_and_public_signing_addresses_distinct() {
+        use aws_sdk_s3::presigning::PresigningConfig;
+        let mut config = store_config(Some("https://objects.internal.example/internal/"), None);
+        config.public_endpoint_url = Some("https://files.example/objects/".into());
+        config.force_path_style = true;
+        let store = CitedBlobStore::new(
+            lazy_test_pool(),
+            config,
+            proxima_storage_pg::PgPlatformScope::for_tests(),
+        )
+        .unwrap();
+        for (client, expected) in [
+            (
+                store.client().await.unwrap(),
+                "https://objects.internal.example/internal/test-bucket/config-probe?",
+            ),
+            (
+                store.presigning_client().await.unwrap(),
+                "https://files.example/objects/test-bucket/config-probe?",
+            ),
+        ] {
+            let signed = client
+                .get_object()
+                .bucket(store.bucket())
+                .key("config-probe")
+                .presigned(PresigningConfig::expires_in(std::time::Duration::from_mins(1)).unwrap())
+                .await
+                .expect("configuration-only presigning succeeds");
+            assert!(
+                signed.uri().starts_with(expected),
+                "each cached client uses its configured purpose"
+            );
+        }
     }
 
     #[tokio::test]
@@ -173,6 +232,63 @@ mod tests {
 
         assert!(matches!(error, BlobError::Config(_)));
         assert!(error.to_string().contains("must use https"));
+    }
+
+    #[tokio::test]
+    async fn store_rejects_an_invalid_public_endpoint_from_direct_configuration() {
+        for endpoint in [
+            "http://s3.example.com",
+            "s3.example.com",
+            "ftp://s3.example.com",
+            "https://",
+        ] {
+            let mut config = store_config(Some("http://localhost:9000"), Some(1_024));
+            config.public_endpoint_url = Some(endpoint.to_owned());
+            let error = CitedBlobStore::new(
+                lazy_test_pool(),
+                config,
+                proxima_storage_pg::PgPlatformScope::for_tests(),
+            )
+            .expect_err("direct public endpoint configuration must be validated");
+            assert!(
+                matches!(error, BlobError::Config(message) if message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn store_public_endpoint_inherits_loopback_and_named_host_policy() {
+        for (endpoint, named) in [
+            ("https://files.example/objects/", None),
+            ("http://127.0.0.1:9001/objects/", None),
+            (
+                "http://public-gateway:9090/objects/",
+                Some("public-gateway"),
+            ),
+        ] {
+            let mut config = store_config(None, None);
+            config.public_endpoint_url = Some(endpoint.to_owned());
+            if let Some(named) = named {
+                config.plaintext_hosts = proxima_core::PlaintextHosts::parse(named).unwrap();
+            }
+            CitedBlobStore::new(
+                lazy_test_pool(),
+                config,
+                proxima_storage_pg::PgPlatformScope::for_tests(),
+            )
+            .expect("public endpoint follows the existing transport policy");
+        }
+        let mut config = store_config(None, None);
+        config.public_endpoint_url = Some("http://other-gateway:9090".into());
+        config.plaintext_hosts = proxima_core::PlaintextHosts::parse("public-gateway").unwrap();
+        assert!(matches!(
+            CitedBlobStore::new(
+                lazy_test_pool(),
+                config,
+                proxima_storage_pg::PgPlatformScope::for_tests()
+            ),
+            Err(BlobError::Config(_))
+        ));
     }
 
     #[tokio::test]

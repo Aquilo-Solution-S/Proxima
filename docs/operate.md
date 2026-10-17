@@ -70,6 +70,21 @@ development tool; production uses an operated issuer and trusted JWKS. A
 forwarder policy is a separate host decision and never inferred from arbitrary
 request headers.
 
+## Object storage
+
+Set `PROXIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned upload and
+download links reach a different address from the host. The presigner shares
+the configured credentials, region, bucket, path style and lifetimes with the
+object client. Staging, verified reads, cold objects, reconciliation and erasure
+use `PROXIMA_S3_ENDPOINT_URL`.
+
+SigV4 signs the Host, including its port, the complete path, including any
+endpoint prefix, and the query. The public proxy must forward these unchanged
+to the store, or verify that original signed request itself before translating
+it. Configure the public address before signing; a signed link cannot be
+rewritten to another address or path. Both endpoint settings use the same
+HTTPS or allowed-plaintext host policy.
+
 ## Probes and shutdown
 
 With health endpoints enabled, anonymous `/healthz` is liveness and `/readyz`

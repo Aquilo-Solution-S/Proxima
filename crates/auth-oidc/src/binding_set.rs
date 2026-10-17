@@ -22,14 +22,15 @@ use crate::{
 pub type OidcClaimMap = serde_json::Map<String, serde_json::Value>;
 
 /// Host authz shaping for one binding: runs after the binding validated the
-/// token and resolved the subject's owner roles.
+/// token and resolved ordinary roles or retained a forwarder's owner claim.
 ///
 /// It receives the server-resolved context and every verified claim, and
 /// returns the context to use. It may narrow (a tool palette, a default
 /// owner, publication extensions, fewer owners or rights) or refuse. A
-/// returned context with another subject, auth path or trusted model id, or
-/// any owner right the resolved roles lack, refuses the token; its tool scope
-/// is intersected with the given one and its expiry clamped to the token's.
+/// returned context with another subject, auth path, trusted model id or
+/// mandatory forwarded owner, or any owner right the resolved roles lack,
+/// refuses the token; its tool scope is intersected with the given one and
+/// its expiry clamped to the token's.
 pub trait OidcRoleShaper: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
@@ -51,8 +52,8 @@ pub struct OidcBindingRoute {
 /// Authz shaping applied after a binding validates `(iss, aud, sub)`.
 #[derive(Debug, Clone)]
 pub enum OidcRoleShape {
-    /// Resolve roles through `OwnerAccessPort` and return
-    /// `AuthzContext::server_resolved(..., HostBearer)`.
+    /// Resolve ordinary roles through `OwnerAccessPort`, or retain a
+    /// forwarder's verified owner claim pending request owner agreement.
     ServerResolved,
     /// Same as [`Self::ServerResolved`], then attach a tool palette/scope.
     ServerResolvedWithToolScope(ToolScope),
@@ -93,10 +94,10 @@ impl OidcRoleShape {
 }
 
 /// Accept a host shaper's context only when it narrows the one it was given:
-/// the same `HostBearer` subject and trusted model id, no owner, kind or
-/// manage right the resolved roles lack. The tool scope is intersected with
-/// the given one and the expiry clamped to the token's, so neither can
-/// widen either.
+/// the same `HostBearer` subject, trusted model id and mandatory forwarded
+/// owner, no owner, kind or manage right the resolved roles lack. The tool
+/// scope is intersected with the given one and the expiry clamped to the
+/// token's, so neither can widen either.
 fn narrowed_by_host(
     resolved: &AuthzContext,
     shaped: AuthzContext,
@@ -114,6 +115,7 @@ fn narrowed_by_host(
     if shaped.auth_path() != AuthPath::HostBearer
         || shaped.subject() != resolved.subject()
         || shaped.trusted_model_id() != resolved.trusted_model_id()
+        || shaped.verified_forwarded_owner() != resolved.verified_forwarded_owner()
         || rights_widened
     {
         tracing::warn!("oidc binding set: host role shape widened the resolved context; refused");
@@ -235,17 +237,13 @@ impl OidcBinding {
             );
             return Err(AuthError::InvalidCredentials);
         };
-        let roles = self
-            .owner_access
-            .resolve_roles_for_subject(binding.user_id)
-            .await
-            .map_err(|err| {
-                tracing::warn!(error = %err, "oidc binding set: owner-access resolution failed");
-                AuthError::InvalidCredentials
-            })?;
         let ctx = crate::authenticator::bind_trusted_model_id(
-            AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-                .with_expires_at(Some(claims.expires_at)),
+            crate::authenticator::context_for_verified_token(
+                self.owner_access.as_ref(),
+                binding.user_id,
+                &token,
+            )
+            .await?,
             binding.trusted_model_id,
         )?;
         self.role_shape.apply(ctx, &token)

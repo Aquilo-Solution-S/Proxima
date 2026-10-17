@@ -10,9 +10,10 @@
 //!
 //! [`OidcAuthenticator`] is the default [`Authenticator`] built on top of
 //! it: [`OidcAuthenticator::new`] maps the validated `(iss, sub)` through an
-//! issuer-aware [`OidcSubjectMap`] to a [`UserId`] and resolves
-//! [`proxima_core::OwnerRoles`] through an `OwnerAccessPort`, returning
-//! [`AuthzContext::server_resolved`].
+//! issuer-aware [`OidcSubjectMap`] to a [`UserId`] and resolves ordinary
+//! [`proxima_core::OwnerRoles`] through an `OwnerAccessPort`. A configured
+//! forwarder instead carries its verified owner claim without a role until
+//! request owner agreement is checked at the edge.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -21,11 +22,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, AlgorithmFamily, Validation, decode, decode_header};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId, UserId,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::OidcClaimMap;
 use crate::authorized_party::AuthorizedPartyPolicy;
 use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
@@ -376,11 +378,44 @@ pub(crate) fn bind_trusted_model_id(
     })
 }
 
+/// Resolve ordinary memberships, or carry a forwarder's verified owner to
+/// the edge without resolving that owner before header agreement.
+pub(crate) async fn context_for_verified_token(
+    owner_access: &dyn OwnerAccessPort,
+    subject: UserId,
+    token: &ValidatedOidcToken<OidcClaimMap>,
+) -> Result<AuthzContext, AuthError> {
+    let is_forwarder = owner_access.is_forwarder(subject).map_err(|err| {
+        tracing::warn!(error = %err, "oidc auth: forwarding policy resolution failed");
+        AuthError::InvalidCredentials
+    })?;
+    let context = if is_forwarder {
+        let owner = token
+            .custom
+            .get("owner")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|owner| owner.parse::<OwnerId>().ok())
+            .ok_or(AuthError::InvalidCredentials)?;
+        AuthzContext::from_verified_forwarded_owner(subject, owner)
+    } else {
+        let roles = owner_access
+            .resolve_roles_for_subject(subject)
+            .await
+            .map_err(|err| {
+                tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
+                AuthError::InvalidCredentials
+            })?;
+        AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+    };
+    Ok(context.with_expires_at(Some(token.claims.expires_at)))
+}
+
 #[async_trait]
 impl Authenticator for OidcAuthenticator {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
         let Credentials::Bearer(token) = creds;
-        let claims = self.validator.validate(token).await?;
+        let token = self.validator.validate_with::<OidcClaimMap>(token).await?;
+        let claims = &token.claims;
 
         if let Some(allow) = &self.allowed_subjects
             && !allow.contains(&claims.subject)
@@ -399,17 +434,9 @@ impl Authenticator for OidcAuthenticator {
             );
             return Err(AuthError::InvalidCredentials);
         };
-        let roles = self
-            .owner_access
-            .resolve_roles_for_subject(binding.user_id)
-            .await
-            .map_err(|err| {
-                tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
-                AuthError::InvalidCredentials
-            })?;
+        let ctx =
+            context_for_verified_token(self.owner_access.as_ref(), binding.user_id, &token).await?;
         tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-        let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-            .with_expires_at(Some(claims.expires_at));
         bind_trusted_model_id(ctx, binding.trusted_model_id)
     }
 }

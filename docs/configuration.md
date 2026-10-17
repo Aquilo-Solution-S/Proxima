@@ -27,8 +27,8 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_STREAM_EPOCH_INTERVAL | stream auth recheck interval | long-lived MCP streams | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_REST_ENABLED | REST projection switch | serving `/v1` | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_REQUEST_HEADERS | forwarded request-header names | tools need selected headers | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
-| PROXIMA_FORWARDER_SUBJECTS | forwarding subject set | delegated group access | [owner access](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/owner_access.rs) |
-| PROXIMA_FORWARDER_ROLE | forwarding role | delegated group access | [owner access](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/owner_access.rs) |
+| PROXIMA_FORWARDER_SUBJECTS | subjects requiring a verified owner claim | forwarded owner access | `ForwarderPolicy` |
+| PROXIMA_FORWARDER_ROLE | non-managing forwarding ceiling | forwarded owner access | `ForwarderPolicy` |
 | PROXIMA_HEALTH_ENDPOINTS | health route switch | probes need HTTP health | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MAX_REQUEST_BODY_BYTES | request body ceiling | listener sizing | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MCP_SSE_KEEP_ALIVE_SECS | SSE ping interval | proxy idle timeout | [MCP transport](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
@@ -76,7 +76,8 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_S3_REGION | S3 region | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_ACCESS_KEY_ID | S3 access key | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_SECRET_ACCESS_KEY | S3 secret key | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
-| PROXIMA_S3_ENDPOINT_URL | S3-compatible endpoint | non-AWS S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
+| PROXIMA_S3_ENDPOINT_URL | object I/O endpoint | non-AWS S3 storage | `S3RuntimeConfig::from_lookup` |
+| PROXIMA_S3_PUBLIC_ENDPOINT_URL | endpoint for presigned links | holders reach a separate public address | `S3RuntimeConfig::from_lookup` |
 | PROXIMA_PLAINTEXT_HOSTS | plaintext host allowlist | named internal HTTP sidecar | [network policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/net.rs) |
 | PROXIMA_S3_FORCE_PATH_STYLE | S3 path-style switch | path-style endpoint | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_UPLOAD_TTL_SECONDS | upload URL lifetime | cited blob uploads | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |

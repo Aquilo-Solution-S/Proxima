@@ -76,6 +76,10 @@ struct ProbeOutput {
     header_names: Vec<String>,
     /// The selected owner's external key.
     owner: String,
+    /// The authenticated forwarding principal, distinct from the data owner.
+    principal: String,
+    readable_owners: Vec<String>,
+    may_manage: bool,
     /// `Debug` of the role the authz context holds for that owner.
     role: Option<String>,
     /// The engine's refusal of an Editor-level (Abstraction) write permit on
@@ -115,6 +119,14 @@ impl Tool for Probe {
                     .map(|headers| headers.iter().map(|(name, _)| name.to_owned()).collect())
                     .unwrap_or_default(),
                 owner: owner.to_string(),
+                principal: ctx.authz().principal().to_string(),
+                readable_owners: ctx
+                    .authz()
+                    .readable_owners(AccessKind::Fact)
+                    .into_iter()
+                    .map(|owner| owner.to_string())
+                    .collect(),
+                may_manage: ctx.authz().may_manage(&owner),
                 role: ctx
                     .authz()
                     .role_for_owner(&owner)
@@ -208,9 +220,20 @@ impl Idp {
     }
 
     fn bearer(&self, sub: &str) -> TestResult<String> {
+        self.bearer_with_owner(sub, None)
+    }
+
+    fn bearer_for_owner(&self, sub: &str, owner: Uuid) -> TestResult<String> {
+        self.bearer_with_owner(sub, Some(owner))
+    }
+
+    fn bearer_with_owner(&self, sub: &str, owner: Option<Uuid>) -> TestResult<String> {
         let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600;
         let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
-        let claims = json!({"iss": self.issuer, "aud": AUDIENCE, "sub": sub, "exp": exp});
+        let mut claims = json!({"iss": self.issuer, "aud": AUDIENCE, "sub": sub, "exp": exp});
+        if let Some(owner) = owner {
+            claims["owner"] = json!(owner);
+        }
         let signing_input = format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header)?),
@@ -300,8 +323,7 @@ impl Stack {
         Ok((running, format!("http://{addr}")))
     }
 
-    /// A fresh Group id, registered as a Group the way a host creates one:
-    /// a forwarder holds its fixed role only on a registered Group.
+    /// Register an ordinary group owner.
     async fn new_group(&self) -> TestResult<Uuid> {
         let group = Uuid::now_v7();
         let pool = sqlx::PgPool::connect(self.database.platform_url()).await?;
@@ -319,6 +341,22 @@ impl Stack {
         tx.commit().await?;
         pool.close().await;
         Ok(group)
+    }
+
+    async fn new_person(&self) -> TestResult<Uuid> {
+        let person = Uuid::now_v7();
+        let pool = sqlx::PgPool::connect(self.database.platform_url()).await?;
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(person)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        pool.close().await;
+        Ok(person)
     }
 
     fn cleanup(self) {
@@ -347,10 +385,13 @@ async fn initialize(
     client: &reqwest::Client,
     base: &str,
     bearer: &str,
-    owner_key: &str,
+    owner_key: Option<&str>,
 ) -> TestResult<reqwest::Response> {
-    Ok(mcp_post(client, base, bearer)
-        .header("X-Proxima-Owner", owner_key)
+    let mut request = mcp_post(client, base, bearer);
+    if let Some(owner_key) = owner_key {
+        request = request.header("X-Proxima-Owner", owner_key);
+    }
+    Ok(request
         .json(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -368,12 +409,12 @@ async fn open_session(
     client: &reqwest::Client,
     base: &str,
     bearer: &str,
-    owner_key: &str,
+    owner_key: Option<&str>,
 ) -> TestResult<String> {
     let response = initialize(client, base, bearer, owner_key).await?;
     assert!(
         response.status().is_success(),
-        "initialize as {owner_key}: {}",
+        "initialize as {owner_key:?}: {}",
         response.status()
     );
     let session = response
@@ -400,14 +441,60 @@ async fn call_probe(
     session: &str,
     headers: &[(&str, &str)],
 ) -> TestResult<Value> {
+    let body = call_tool(
+        client,
+        base,
+        bearer,
+        session,
+        &json!({"name": PROBE_TOOL, "arguments": {}}),
+        headers,
+    )
+    .await?;
+    assert_ne!(
+        body["result"]["isError"],
+        json!(true),
+        "the probe itself must not fail: {body}"
+    );
+    tool_output(&body)
+}
+
+fn tool_output(body: &Value) -> TestResult<Value> {
+    if let Some(structured) = body["result"].get("structuredContent") {
+        return Ok(structured.clone());
+    }
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("probe returned no output: {body}"))?;
+    Ok(serde_json::from_str(text)?)
+}
+
+async fn call_tool(
+    client: &reqwest::Client,
+    base: &str,
+    bearer: &str,
+    session: &str,
+    params: &Value,
+    headers: &[(&str, &str)],
+) -> TestResult<Value> {
+    mcp_rpc(client, base, bearer, session, "tools/call", params, headers).await
+}
+
+async fn mcp_rpc(
+    client: &reqwest::Client,
+    base: &str,
+    bearer: &str,
+    session: &str,
+    method: &str,
+    params: &Value,
+    headers: &[(&str, &str)],
+) -> TestResult<Value> {
     let mut request = mcp_post(client, base, bearer).header("Mcp-Session-Id", session);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
     let response = request
         .json(&json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": PROBE_TOOL, "arguments": {}}
+            "jsonrpc": "2.0", "id": 2, "method": method, "params": params,
         }))
         .send()
         .await?;
@@ -416,18 +503,30 @@ async fn call_probe(
         "tools/call: {}",
         response.status()
     );
-    let body = sse_json(response).await?;
-    assert_ne!(
-        body["result"]["isError"],
-        json!(true),
-        "the probe itself must not fail: {body}"
-    );
-    if let Some(structured) = body["result"].get("structuredContent") {
-        return Ok(structured.clone());
-    }
-    let text = body["result"]["content"][0]["text"]
+    sse_json(response).await
+}
+
+async fn read_memory(
+    client: &reqwest::Client,
+    base: &str,
+    bearer: &str,
+    session: &str,
+    memory: &str,
+) -> TestResult<Value> {
+    let uri = format!("proxima://memories?ids={memory}");
+    let body = mcp_rpc(
+        client,
+        base,
+        bearer,
+        session,
+        "resources/read",
+        &json!({"uri":uri}),
+        &[],
+    )
+    .await?;
+    let text = body["result"]["contents"][0]["text"]
         .as_str()
-        .ok_or_else(|| format!("probe returned no output: {body}"))?;
+        .ok_or_else(|| format!("memory resource returned no content: {body}"))?;
     Ok(serde_json::from_str(text)?)
 }
 
@@ -458,9 +557,9 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
         let (running, base) = stack.boot(&[]).await?;
         let client = reqwest::Client::new();
         let group = stack.new_group().await?;
-        let forwarder = stack.idp.bearer(FORWARDER_SUB)?;
+        let forwarder = stack.idp.bearer_for_owner(FORWARDER_SUB, group)?;
 
-        let session = open_session(&client, &base, &forwarder, &group_key(group)).await?;
+        let session = open_session(&client, &base, &forwarder, Some(&group_key(group))).await?;
         let seen = call_probe(
             &client,
             &base,
@@ -498,9 +597,9 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
 
         // A mapped subject that is not a forwarder: its token is good for its
         // own owner, and refused for the Group it does not belong to.
-        let member = stack.idp.bearer(MEMBER_SUB)?;
-        open_session(&client, &base, &member, &stack.member.to_string()).await?;
-        let refused = initialize(&client, &base, &member, &group_key(group)).await?;
+        let member = stack.idp.bearer_for_owner(MEMBER_SUB, group)?;
+        open_session(&client, &base, &member, Some(&stack.member.to_string())).await?;
+        let refused = initialize(&client, &base, &member, Some(&group_key(group))).await?;
         assert_eq!(
             refused.status(),
             reqwest::StatusCode::UNAUTHORIZED,
@@ -525,9 +624,9 @@ async fn a_viewer_forwarder_is_refused_the_write_an_editor_forwarder_gets() {
         let (running, base) = stack.boot(&[("PROXIMA_FORWARDER_ROLE", "viewer")]).await?;
         let client = reqwest::Client::new();
         let group = stack.new_group().await?;
-        let forwarder = stack.idp.bearer(FORWARDER_SUB)?;
+        let forwarder = stack.idp.bearer_for_owner(FORWARDER_SUB, group)?;
 
-        let session = open_session(&client, &base, &forwarder, &group_key(group)).await?;
+        let session = open_session(&client, &base, &forwarder, Some(&group_key(group))).await?;
         let seen = call_probe(
             &client,
             &base,
@@ -549,6 +648,106 @@ async fn a_viewer_forwarder_is_refused_the_write_an_editor_forwarder_gets() {
     .await;
     stack.cleanup();
     result.expect("viewer forwarder test failed");
+}
+
+/// Real stock authentication, target-owner registry, scoped writes and RLS reads.
+#[tokio::test]
+async fn forwarded_owner_claim_reaches_personal_memory_and_isolates_every_request() {
+    let stack = Stack::new().await;
+    let result: TestResult = async {
+        let (running, base) = stack.boot(&[]).await?;
+        let client = reqwest::Client::new();
+        let first = stack.new_person().await?;
+        let second = stack.new_person().await?;
+        let mut memories = Vec::new();
+        for (owner, body) in [
+            (first, "first personal private memory"),
+            (second, "second personal private memory"),
+        ] {
+            let token = stack.idp.bearer_for_owner(FORWARDER_SUB, owner)?;
+            // No owner header: the verified claim is the mandatory selection.
+            let session = open_session(&client, &base, &token, None).await?;
+            let probe = call_probe(&client, &base, &token, &session, &[]).await?;
+            assert_eq!(probe["owner"], owner.to_string());
+            assert_eq!(probe["principal"], stack.forwarder.to_string());
+            assert_eq!(probe["readable_owners"], json!([owner.to_string()]));
+            assert_eq!(probe["role"], format!("{:?}", Role::editor()));
+            assert_eq!(probe["may_manage"], false);
+            let remembered = call_tool(
+                &client,
+                &base,
+                &token,
+                &session,
+                &json!({"name":"core_remember","arguments":{
+                    "title":"Forwarded personal memory", "body":body,
+                    "idempotency_key":format!("personal-{owner}")
+                }}),
+                &[],
+            )
+            .await?;
+            assert_ne!(remembered["result"]["isError"], true, "{remembered}");
+            let output = tool_output(&remembered)?;
+            let memory = output["handle"]
+                .as_str()
+                .ok_or("missing remembered handle")?
+                .to_owned();
+            // Handles stay opaque: the existing read tool owns their parsing.
+            let read = read_memory(&client, &base, &token, &session, &memory).await?;
+            assert_eq!(read["missing"], json!([]), "{read}");
+            assert_eq!(read["memories"].as_array().map(Vec::len), Some(1), "{read}");
+            assert!(read.to_string().contains(body), "{read}");
+            memories.push((token, session, memory, body));
+        }
+        let missing = stack.idp.bearer(FORWARDER_SUB)?;
+        let refused = initialize(&client, &base, &missing, Some(&first.to_string())).await?;
+        assert_eq!(
+            refused.status(),
+            StatusCode::UNAUTHORIZED,
+            "a header cannot replace a claim"
+        );
+        let first_token = stack.idp.bearer_for_owner(FORWARDER_SUB, first)?;
+        let conflict = initialize(&client, &base, &first_token, Some(&second.to_string())).await?;
+        assert_eq!(
+            conflict.status(),
+            StatusCode::FORBIDDEN,
+            "a header cannot replace the claimed owner"
+        );
+        let unknown_token = stack.idp.bearer_for_owner(FORWARDER_SUB, Uuid::now_v7())?;
+        let unknown = initialize(&client, &base, &unknown_token, None).await?;
+        assert_eq!(
+            unknown.status(),
+            StatusCode::UNAUTHORIZED,
+            "an unknown owner grants nothing"
+        );
+
+        for index in 0..memories.len() {
+            let (token, session, _, _) = &memories[index];
+            let (_, _, other_memory, other_body) = &memories[1 - index];
+            let foreign = read_memory(&client, &base, token, session, other_memory).await?;
+            assert_eq!(
+                foreign["memories"],
+                json!([]),
+                "other owner's memory was readable: {foreign}"
+            );
+            assert_eq!(foreign["missing"], json!([other_memory]), "{foreign}");
+            assert!(
+                !foreign.to_string().contains(other_body),
+                "another owner's body escaped"
+            );
+        }
+        // A session cannot retain one owner's authority under another claim.
+        let mismatched = mcp_post(&client, &base, &memories[1].0)
+            .header("Mcp-Session-Id", &memories[0].1)
+            .json(&json!({"jsonrpc":"2.0","id":4,"method":"ping"}))
+            .send()
+            .await?;
+        assert_eq!(mismatched.status(), StatusCode::NOT_FOUND);
+        running.shutdown().await;
+        Ok(())
+    }
+    .await;
+    stack.cleanup();
+    result.expect("personal forwarding must remain exactly claim-bound");
 }
 
 // --- 2. health probes ------------------------------------------------------
@@ -666,8 +865,9 @@ async fn sigterm_drains_the_request_in_flight_and_exits_ok() {
     let result: TestResult = async {
         let (running, base) = stack.boot(&[]).await?;
         let addr = running.mcp_addr().ok_or("MCP listener did not bind")?;
-        let bearer = stack.idp.bearer(FORWARDER_SUB)?;
-        let owner = group_key(stack.new_group().await?);
+        let group = stack.new_group().await?;
+        let bearer = stack.idp.bearer_for_owner(FORWARDER_SUB, group)?;
+        let owner = group_key(group);
 
         let in_flight = tokio::spawn({
             let url = format!("{base}{SLOW_PATH}");

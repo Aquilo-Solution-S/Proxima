@@ -538,10 +538,27 @@ async fn insert_group_row(conn: &mut PgConnection, group: GroupId) -> Result<(),
     Ok(())
 }
 
-/// Whether `group` is registered as a group in `proxima_core.owners`.
+/// Whether `owner` is registered, regardless of its owner kind.
 ///
-/// One of the three readers of the registry's kind: the forwarder policy asks
-/// it through [`crate::PgOwnerAccessResolver::is_registered_group`].
+/// # Errors
+///
+/// Storage errors from the probe.
+pub(crate) async fn registered_owner_on_connection(
+    conn: &mut PgConnection,
+    owner: OwnerId,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.owners WHERE owner_id = $1
+         )",
+    )
+    .bind(owner.into_inner())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)
+}
+
+/// Whether `group` is registered as a group in `proxima_core.owners`.
 ///
 /// # Errors
 ///

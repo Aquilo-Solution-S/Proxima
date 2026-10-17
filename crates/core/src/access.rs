@@ -264,6 +264,13 @@ pub struct OwnerRoles {
 }
 
 impl OwnerRoles {
+    /// A verified forwarding claim has no role until its owner is resolved.
+    pub(crate) fn without_access(subject: UserId) -> Self {
+        Self {
+            subject,
+            roles: HashMap::new(),
+        }
+    }
     /// The one role rule: the owner equal to the subject's own id holds
     /// [`Role::personal`]; any other owner holds the subject's membership role
     /// in it, or nothing. A Group named more than once (a member holding
@@ -381,12 +388,61 @@ impl OwnerRoles {
     }
 }
 
+/// The forwarding ceilings accepted by a host policy.
+///
+/// ```compile_fail
+/// use proxima_core::{ForwarderRole, Role};
+/// let _ = ForwarderRole::new(Role::personal());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwarderRole {
+    Viewer,
+    Ingest,
+    Editor,
+}
+
+impl ForwarderRole {
+    #[must_use]
+    pub const fn role(self) -> Role {
+        match self {
+            Self::Viewer => Role::viewer(),
+            Self::Ingest => Role::ingest(),
+            Self::Editor => Role::editor(),
+        }
+    }
+}
+
 #[async_trait]
 pub trait OwnerAccessPort: Send + Sync {
     /// # Errors
     ///
     /// Returns [`AccessError`] when the host cannot resolve access roles.
     async fn resolve_roles_for_subject(&self, subject: UserId) -> Result<OwnerRoles, AccessError>;
+
+    /// Whether this subject must bind every request to a verified owner claim.
+    /// This reads policy only, without resolving any target owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError`] when the policy port is unavailable.
+    fn is_forwarder(&self, _subject: UserId) -> Result<bool, AccessError> {
+        Ok(false)
+    }
+
+    /// Resolve the policy role for exactly one verified, registered owner.
+    /// Ordinary memberships never contribute to this answer. Callers check
+    /// claim/selection agreement before invoking this target-owner probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessError`] when the registry or policy cannot be read.
+    async fn resolve_forwarded_owner_role(
+        &self,
+        _subject: UserId,
+        _owner: OwnerId,
+    ) -> Result<Option<ForwarderRole>, AccessError> {
+        Ok(None)
+    }
 
     /// Resolve only the role `subject` holds in `group`, on demand.
     ///
@@ -638,6 +694,19 @@ mod tests {
             Some(Role::viewer()),
             "a later answer after a demotion is not widened by the stale one"
         );
+    }
+
+    #[test]
+    fn forwarded_owner_roles_use_only_their_declared_ceilings() {
+        for (forwarding, role) in [
+            (ForwarderRole::Viewer, Role::viewer()),
+            (ForwarderRole::Ingest, Role::ingest()),
+            (ForwarderRole::Editor, Role::editor()),
+        ] {
+            assert_eq!(forwarding.role(), role);
+            assert!(!forwarding.role().manages());
+            assert!(!forwarding.role().may_write(AccessKind::Goal));
+        }
     }
 
     /// Implements the eager method only: the per-group method it inherits is

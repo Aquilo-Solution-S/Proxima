@@ -4,10 +4,9 @@
 //! the membership primary key, not the member's whole enumeration. What is
 //! pinned here is that the probe is *byte-identical* to the eager map's
 //! answer for every group shape — a mapped group, an unmapped group, a group
-//! with more than one relation (resolved to their join) — so a host that serves many parties through
-//! one forwarder subject can lean on it without a second authorization
-//! vocabulary. Personal owners are not a shape: the port is typed on
-//! `GroupId`, so they cannot be asked.
+//! with more than one relation (resolved to their join). The separate owner
+//! registry probe recognises both Personal and Group owners and refuses
+//! unregistered ids, using the resolver's validated platform authority.
 
 use proxima_core::{GroupId, OwnerAccessPort, OwnerId, Relation, Role, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
@@ -52,6 +51,15 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         let layered_group = GroupId::new(Uuid::now_v7());
         let unmapped_group = GroupId::new(Uuid::now_v7());
         let promoted_group = GroupId::new(Uuid::now_v7());
+        let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let unknown = OwnerId::new(Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal')",
+        )
+        .bind(personal.into_inner())
+        .execute(&pool)
+        .await?;
         seed_membership(&pool, editor_group, forwarder, Relation::Editor).await;
         // Promoted after joining: an Admin row beside the Viewer row. The rows
         // come back in enum order, Admin first.
@@ -63,6 +71,19 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         seed_membership(&pool, unmapped_group, stranger, Relation::Admin).await;
 
         let port = PgOwnerAccessResolver::new(pool, pg.platform_scope_for_host());
+        assert!(port.is_registered_owner(personal).await?);
+        assert!(
+            port.is_registered_owner(OwnerId::from(editor_group))
+                .await?
+        );
+        assert!(
+            port.is_registered_owner(OwnerId::from(unmapped_group))
+                .await?
+        );
+        assert!(
+            !port.is_registered_owner(unknown).await?,
+            "an unknown id never becomes registered through a probe"
+        );
         let eager = port.resolve_roles_for_subject(forwarder).await?;
 
         for group in [editor_group, layered_group, promoted_group, unmapped_group] {
