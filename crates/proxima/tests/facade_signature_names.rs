@@ -47,6 +47,12 @@ macro_rules! facade_names {
 }
 
 facade_names! {
+    // Needed by `ForwarderPolicy::wrap` and forwarded-owner access resolution.
+    forwarding_policy {
+        host_only: [ForwarderPolicy, ForwarderRole, OwnerRegistry],
+        both_tiers: [],
+    }
+
     // Needed by `RuntimeConfig::auth`, a public field.
     runtime_auth_state {
         host_only: [RuntimeAuthState],

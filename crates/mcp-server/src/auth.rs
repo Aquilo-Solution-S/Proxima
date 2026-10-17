@@ -45,6 +45,11 @@ impl ResolvedAuth {
         self.authz.default_owner()
     }
 
+    /// The mandatory owner carried by a verified forwarding credential.
+    pub(crate) const fn verified_forwarded_owner(&self) -> Option<OwnerId> {
+        self.authz.verified_forwarded_owner()
+    }
+
     /// Whether the eager map already carries the selected owner.
     fn carries(&self, owner: OwnerId) -> bool {
         self.authz.role_for_owner(&owner).is_some()
@@ -120,15 +125,9 @@ impl McpEdgeAuth {
         self
     }
 
-    /// Attach the owner-access port so a Group owner the authenticated role
-    /// map does not carry can still be resolved, one owner per request.
-    ///
-    /// For a host that serves many parties through a single trusted
-    /// forwarder subject: the eager map that authentication produced grows
-    /// with the number of Group owners, not with the request, so such a
-    /// host resolves nothing eagerly and everything per selected owner.
-    /// Without this port the edge behaves exactly as before — the eager map
-    /// is the only answer, and an owner missing from it is refused.
+    /// Attach host policy for ordinary on-demand Group roles and verified
+    /// forwarding claims. A configured forwarder must carry a verified
+    /// claim even when its eager role map already contains the selection.
     #[must_use]
     pub fn with_owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
         self.owner_access = Some(owner_access);
@@ -140,18 +139,33 @@ impl McpEdgeAuth {
         self.narrow_to_owner(resolved, owner).await
     }
 
-    /// Bind an authenticated request to its selected owner through the one
-    /// narrowing path. The eager map is what authentication pre-filled; a
-    /// Group it lacks takes the loop through the port and rejoins the map
-    /// before [`ResolvedAuth::narrowed_to_owner`] reads it. The subject's
-    /// own id is always in the map, so it never takes that loop, and neither
-    /// does an owner the map already carries. Any other id is asked of the
-    /// port as a group; an id that is not a registered group earns no role.
+    /// Bind an authenticated request to its selected owner. Verified
+    /// forwarding claims use only their configured policy role; neither an
+    /// eager role nor an ordinary membership can bypass that binding.
+    /// Ordinary subjects retain eager and on-demand Group resolution.
     pub(crate) async fn narrow_to_owner(
         &self,
         resolved: ResolvedAuth,
         owner: OwnerId,
     ) -> Option<McpAuthContext> {
+        if resolved.verified_forwarded_owner().is_some() {
+            let authz = resolved
+                .authz
+                .with_authenticated_forwarded_owner(self.owner_access.as_deref()?, owner)
+                .await?;
+            return Some(McpAuthContext::bound(authz, owner));
+        }
+        if let (Some(port), Some(subject)) =
+            (self.owner_access.as_deref(), resolved.authz.subject())
+            && port
+                .is_forwarder(subject)
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "mcp edge: forwarding policy resolution failed");
+                })
+                .ok()?
+        {
+            return None;
+        }
         let resolved = if resolved.carries(owner) {
             resolved
         } else {
@@ -190,10 +204,13 @@ impl McpEdgeAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime};
+
     use async_trait::async_trait;
     use proxima_core::{
-        AuthError, Engine, ErrorCode, FlavorRegistry, GetGraphReadRequest, GroupId, OwnerId,
-        Relation, Role, UserId,
+        AccessError, AccessKind, AuthError, Engine, ErrorCode, FlavorRegistry, ForwarderRole,
+        GetGraphReadRequest, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
     };
 
     fn fake_owner() -> OwnerId {
@@ -226,6 +243,165 @@ mod tests {
     impl Authenticator for StubHostAuth {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
             self.result.clone()
+        }
+    }
+
+    struct ForwardedOwnerAccess {
+        subject: UserId,
+        owner: OwnerId,
+        role: ForwarderRole,
+        target_probes: AtomicU64,
+        membership_probes: AtomicU64,
+    }
+
+    impl ForwardedOwnerAccess {
+        fn new(subject: UserId, owner: OwnerId) -> Self {
+            Self {
+                subject,
+                owner,
+                role: ForwarderRole::Viewer,
+                target_probes: AtomicU64::new(0),
+                membership_probes: AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for ForwardedOwnerAccess {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+
+        fn is_forwarder(&self, subject: UserId) -> Result<bool, AccessError> {
+            Ok(subject == self.subject)
+        }
+
+        async fn resolve_forwarded_owner_role(
+            &self,
+            subject: UserId,
+            owner: OwnerId,
+        ) -> Result<Option<ForwarderRole>, AccessError> {
+            self.target_probes.fetch_add(1, Ordering::SeqCst);
+            Ok((subject == self.subject && owner == self.owner).then_some(self.role))
+        }
+
+        async fn resolve_group_role(
+            &self,
+            _subject: UserId,
+            _group: GroupId,
+        ) -> Result<Option<Role>, AccessError> {
+            self.membership_probes.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(Role::admin()))
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_missing_claim_refuses_own_eager_and_membership_authority() {
+        let subject = fake_user();
+        let eager = fake_group_owner();
+        let membership = fake_group_owner();
+        let access = Arc::new(ForwardedOwnerAccess::new(subject, eager));
+        let contexts = [
+            (
+                AuthzContext::for_subject(subject, AuthPath::HostBearer),
+                OwnerId::from(subject),
+            ),
+            (host_group_context(subject, eager, Role::admin()), eager),
+            (
+                AuthzContext::for_subject(subject, AuthPath::HostBearer),
+                membership,
+            ),
+        ];
+
+        for (context, selected) in contexts {
+            let auth = McpEdgeAuth::headless()
+                .with_host(Arc::new(StubHostAuth {
+                    result: Ok(context),
+                }))
+                .with_owner_access(access.clone());
+            assert!(auth.resolve("host-token", selected).await.is_none());
+        }
+        assert_eq!(access.target_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(access.membership_probes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_resolves_exact_policy_role_and_preserves_authenticated_identity() {
+        let subject = fake_user();
+        let expires_at = SystemTime::now() + Duration::from_hours(1);
+        let scope = ToolScope::Palette(vec![]);
+        for owner in [fake_owner(), fake_group_owner()] {
+            let access = Arc::new(ForwardedOwnerAccess::new(subject, owner));
+            let authz = AuthzContext::from_verified_forwarded_owner(subject, owner)
+                .with_expires_at(Some(expires_at))
+                .with_auth_epoch(7)
+                .with_tool_scope(scope.clone())
+                .with_trusted_model_id("acme/runner-v3")
+                .unwrap();
+            let auth = McpEdgeAuth::headless()
+                .with_host(Arc::new(StubHostAuth { result: Ok(authz) }))
+                .with_owner_access(access.clone());
+
+            let ctx = auth.resolve("host-token", owner).await.unwrap();
+            assert_eq!(ctx.owner, owner);
+            assert_eq!(ctx.authz.subject(), Some(subject));
+            assert_eq!(ctx.authz.principal(), OwnerId::from(subject));
+            assert_eq!(ctx.authz.verified_forwarded_owner(), Some(owner));
+            assert_eq!(ctx.authz.role_for_owner(&owner), Some(Role::viewer()));
+            assert_eq!(ctx.authz.readable_owners(AccessKind::Goal), vec![owner]);
+            assert!(!ctx.authz.can_access_owner(&OwnerId::from(subject)));
+            assert_eq!(ctx.authz.expires_at(), Some(expires_at));
+            assert_eq!(ctx.authz.auth_epoch(), 7);
+            assert_eq!(ctx.authz.tool_scope(), &scope);
+            assert_eq!(ctx.authz.trusted_model_id(), Some("acme/runner-v3"));
+            assert_eq!(access.target_probes.load(Ordering::SeqCst), 1);
+            assert_eq!(access.membership_probes.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_selection_mismatch_refuses_before_target_probe() {
+        let subject = fake_user();
+        let claimed = fake_owner();
+        let access = Arc::new(ForwardedOwnerAccess::new(subject, claimed));
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(StubHostAuth {
+                result: Ok(AuthzContext::from_verified_forwarded_owner(
+                    subject, claimed,
+                )),
+            }))
+            .with_owner_access(access.clone());
+
+        for selected in [OwnerId::from(subject), fake_group_owner(), fake_owner()] {
+            assert!(auth.resolve("host-token", selected).await.is_none());
+        }
+        assert_eq!(access.target_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(access.membership_probes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forwarded_owner_requires_registered_owner_and_configured_port_subject() {
+        let subject = fake_user();
+        let owner = fake_owner();
+        let authz = AuthzContext::from_verified_forwarded_owner(subject, owner);
+        let without_port = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth {
+            result: Ok(authz.clone()),
+        }));
+        assert!(without_port.resolve("host-token", owner).await.is_none());
+
+        for access in [
+            ForwardedOwnerAccess::new(subject, fake_owner()),
+            ForwardedOwnerAccess::new(fake_user(), owner),
+        ] {
+            let auth = McpEdgeAuth::headless()
+                .with_host(Arc::new(StubHostAuth {
+                    result: Ok(authz.clone()),
+                }))
+                .with_owner_access(Arc::new(access));
+            assert!(auth.resolve("host-token", owner).await.is_none());
         }
     }
 

@@ -1041,8 +1041,8 @@ impl std::fmt::Debug for BootedRuntime {
     }
 }
 
-/// The host's owner-access port, else the Postgres resolver over the
-/// runtime pool, under the forwarder policy when one is configured.
+/// The host's owner-access port, else the Postgres resolver under this
+/// runtime's platform authority, with the configured forwarding policy.
 fn runtime_owner_access(
     app_ctx: &AppContext,
     host: Option<Arc<dyn OwnerAccessPort>>,
@@ -1057,8 +1057,8 @@ fn runtime_owner_access(
     };
     let port: Arc<dyn OwnerAccessPort> = host.unwrap_or_else(|| resolver.clone());
     match forwarder {
-        // The registry is always this runtime's own: the kind lives only in
-        // `proxima_core.owners`, whatever port resolves memberships.
+        // Registration is always this runtime's own PostgreSQL registry,
+        // whatever port resolves ordinary memberships.
         Some(policy) => policy.wrap(port, resolver),
         None => port,
     }
@@ -1142,11 +1142,9 @@ fn resolve_mcp_edge(
     let services = app_ctx.host().services.clone();
     let mut edge_auth = McpEdgeAuth::headless().with_tool_scope(config.tool_scope.clone());
     if let Some(authenticator) = parts.authenticator.clone() {
-        // The runtime's one owner-access port, so a Group owner the eager
-        // role map does not carry can still be resolved one owner per
-        // request. A host serving many parties through one forwarder subject
-        // cannot enumerate them eagerly; without this the edge would refuse
-        // every such owner.
+        // The runtime's one owner-access port resolves ordinary memberships
+        // and a forwarder's verified owner claim. Registration comes from
+        // this runtime's authoritative registry, even with a host resolver.
         edge_auth = edge_auth
             .with_host(authenticator)
             .with_owner_access(owner_access);

@@ -549,6 +549,7 @@ impl Engine {
         let refused = || ProtocolError::forbidden("requires manage on this owner");
         if matches!(authz.auth_path(), AuthPath::Delegated | AuthPath::Denied)
             || !authz.is_server_resolved()
+            || authz.verified_forwarded_owner().is_some()
         {
             return Err(refused());
         }
@@ -1460,5 +1461,35 @@ mod tests {
             .await
             .expect_err("a raw delegated context is not Engine authority");
         assert_eq!(denied.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_context_transfers_nothing() {
+        let caller = UserId::new(Uuid::now_v7());
+        let source = OwnerId::from(caller);
+        let destination = GroupId::new(Uuid::now_v7());
+        let mut storage = membership_storage_with_home(caller, destination, Some(source));
+        storage.membership_relation = Relation::Admin;
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(storage.storage_ports());
+        let ordinary = AuthzContext::for_subject(caller, AuthPath::HostBearer);
+        engine
+            .authorize_transfer_destination_out_of_band(&ordinary, &destination.into())
+            .await
+            .expect("ordinary membership supplies receiving-side consent");
+        let forwarded = AuthzContext::from_verified_forwarded_owner(caller, source)
+            .seal_verified_scope()
+            .unwrap();
+        let refusal = engine
+            .authorize_transfer_destination_out_of_band(&forwarded, &destination.into())
+            .await
+            .expect_err("a forwarded context cannot borrow ordinary membership");
+        assert_eq!(refusal.code, ErrorCode::Forbidden);
+        let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
+        let refusal = engine
+            .transfer_to_owner(&forwarded, entity, destination.into())
+            .await
+            .expect_err("a forwarded context cannot transfer a memory");
+        assert_eq!(refusal.code, ErrorCode::Forbidden);
     }
 }

@@ -27,8 +27,8 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_STREAM_EPOCH_INTERVAL | stream auth recheck interval | long-lived MCP streams | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_REST_ENABLED | REST projection switch | serving `/v1` | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_REQUEST_HEADERS | forwarded request-header names | tools need selected headers | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
-| PROXIMA_FORWARDER_SUBJECTS | forwarding subject set | delegated group access | [owner access](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/owner_access.rs) |
-| PROXIMA_FORWARDER_ROLE | forwarding role | delegated group access | [owner access](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/owner_access.rs) |
+| PROXIMA_FORWARDER_SUBJECTS | subjects requiring a verified owner claim | forwarded owner access | `ForwarderPolicy` |
+| PROXIMA_FORWARDER_ROLE | non-managing forwarding ceiling | forwarded owner access | `ForwarderPolicy` |
 | PROXIMA_HEALTH_ENDPOINTS | health route switch | probes need HTTP health | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MAX_REQUEST_BODY_BYTES | request body ceiling | listener sizing | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_MCP_SSE_KEEP_ALIVE_SECS | SSE ping interval | proxy idle timeout | [MCP transport](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
