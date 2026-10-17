@@ -1040,8 +1040,26 @@ pub enum ExportRule {
     /// not leak into a supported serialized contract merely because the
     /// table changed.
     Allowlist(&'static [&'static str]),
-    /// Deliberately absent from the bundle, with the reason stated.
+    /// Deliberately absent from the bundle, with the reason stated. Only a
+    /// surface the erase never deletes (`EraseRule::Never`) may say this:
+    /// what an erase destroys, the export carries (#478).
     Excluded { why: &'static str },
+    /// Not carried as rows because every row is rebuilt from another
+    /// surface the bundle does carry: `source` names that surface, and the
+    /// chain of sources ends at one that `carries_rows()`. Emits no
+    /// statement, and a host receipt never carries such a table.
+    DerivedFrom {
+        source: &'static str,
+        why: &'static str,
+    },
+}
+
+impl ExportRule {
+    /// Whether the bundle holds this surface's rows (whole or allowlisted).
+    #[must_use]
+    pub const fn carries_rows(self) -> bool {
+        matches!(self, Self::Rows | Self::Allowlist(_))
+    }
 }
 
 /// Which key on the erase receipt a surface's destroyed rows land under.
@@ -1357,9 +1375,10 @@ impl ProjectionSpec {
                     name: PROJECTION_MEMORY_FK,
                 },
             },
-            export: ExportRule::Excluded {
+            export: ExportRule::DerivedFrom {
+                source: "proxima_core.memory",
                 why: "a derived lexical index; every byte in it is a function of the \
-                      sidecar rows the bundle already carries",
+                      sidecar rows the bundle already carries for the memory",
             },
             forget: ForgetRule::DeleteWithMemory,
             lexical_language_column: Some("lexical_language"),

@@ -223,6 +223,34 @@ pub enum FlavorRegistryError {
     /// column nor a key with a home table, so no statement can reach it from
     /// the owner. It would go missing from every bundle.
     #[error(
+        "flavor {flavor_id} declares {table} ExportRule::Excluded, but the erase deletes it: \
+         what an erase destroys the export must carry. Declare Rows, an Allowlist, or \
+         DerivedFrom the surface its rows are rebuilt from"
+    )]
+    ErasedSurfaceNotExported {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    #[error(
+        "flavor {flavor_id} declares {table} DerivedFrom {source_table}, which no flavor \
+         declares as a surface"
+    )]
+    DerivedFromUnknownSource {
+        flavor_id: &'static str,
+        table: &'static str,
+        source_table: &'static str,
+    },
+    #[error(
+        "flavor {flavor_id} declares {table} DerivedFrom {source_table}, but that chain of \
+         sources never reaches a surface the bundle carries rows for (it ends Excluded or \
+         loops)"
+    )]
+    DerivedFromUnexported {
+        flavor_id: &'static str,
+        table: &'static str,
+        source_table: &'static str,
+    },
+    #[error(
         "flavor {flavor_id} declares {table} exportable, but it carries no owner \
          column and its key has no home table, so no export statement can reach \
          its owner"

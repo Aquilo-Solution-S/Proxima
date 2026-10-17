@@ -900,6 +900,12 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
     let bundle = pg.export_owner_bundle(&auth, &tables()).await?;
     let mut sections: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for (table, rows) in &bundle.tables {
+        // #478 began exporting these (allowlisted); the pinned baseline did
+        // not. Their erase is still compared through the database dump, and
+        // `owner_export` pins their bundle rows.
+        if names_relation(table, "content") || names_relation(table, "blob_uploads") {
+            continue;
+        }
         sections.insert(table.clone(), rows.clone());
     }
     sections.insert("edges".into(), bundle.edges.clone());
@@ -921,6 +927,18 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
                 && let Some(object) = row.as_object_mut()
             {
                 object.insert("goal_refs".to_owned(), Value::Null);
+                // #478 took the cold locator out of the bundle; the baseline
+                // exported it. Restore it from the row the bundle came from,
+                // so the comparison stays about rows, not the allowlist.
+                if let Some(t) = object.get("t").and_then(Value::as_str) {
+                    let object_key: String = sqlx::query_scalar(
+                        "SELECT object_key FROM proxima_core.cooled WHERE t = $1::uuid",
+                    )
+                    .bind(t)
+                    .fetch_one(pg.pool_for_tests())
+                    .await?;
+                    object.insert("object_key".to_owned(), Value::String(object_key));
+                }
             }
             out.push_str(&canonical(&row));
             out.push('\n');

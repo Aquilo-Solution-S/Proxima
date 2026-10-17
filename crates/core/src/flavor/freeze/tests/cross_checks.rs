@@ -15,10 +15,12 @@ use super::fixtures::{
 };
 use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
-    BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE, FOLLOW_WITH_NOTHING_TO_SET,
-    HOST_MANAGED_OWNERLESS_EXPORTS, NON_CORE_BESPOKE_ERASE_LEG, NON_CORE_BESPOKE_TRANSFER_LEG,
-    NON_CORE_DEDUPE, PER_ROW_ON_THE_WRONG_COLUMN, UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE,
-    UNMOVABLE_SURFACE, UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
+    BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE, DERIVED_FROM_A_LOOP, DERIVED_FROM_MEMORY,
+    DERIVED_FROM_NOWHERE, DERIVED_FROM_THE_EXCLUDED, ERASED_BUT_EXCLUDED,
+    FOLLOW_WITH_NOTHING_TO_SET, HOST_MANAGED_OWNERLESS_EXPORTS, NON_CORE_BESPOKE_ERASE_LEG,
+    NON_CORE_BESPOKE_TRANSFER_LEG, NON_CORE_DEDUPE, PER_ROW_ON_THE_WRONG_COLUMN,
+    UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE, UNMOVABLE_SURFACE,
+    UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
 };
 use super::projection_fixtures::{
     BANDS_NOT_UNIFORM, EMBEDDED_SIDECAR_RIGHT_KEY, EMBEDDED_SIDECAR_WRONG_KEY,
@@ -505,6 +507,50 @@ fn each_contract_cross_check_rejects_its_own_shape() {
                 )
             },
         ),
+        (
+            "an erased surface is declared out of the bundle",
+            |registry| registry.contracts.push(&ERASED_BUT_EXCLUDED),
+            |err| {
+                matches!(
+                    err,
+                    FlavorRegistryError::ErasedSurfaceNotExported {
+                        table: "test_flavor.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface is derived from a surface nobody declares",
+            |registry| registry.contracts.push(&DERIVED_FROM_NOWHERE),
+            |err| {
+                matches!(
+                    err,
+                    FlavorRegistryError::DerivedFromUnknownSource {
+                        source_table: "test_flavor.gone_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface is derived from a surface the bundle does not carry",
+            |registry| registry.contracts.push(&DERIVED_FROM_THE_EXCLUDED),
+            |err| {
+                matches!(
+                    err,
+                    FlavorRegistryError::DerivedFromUnexported {
+                        table: "test_flavor.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "two surfaces are derived from each other",
+            |registry| registry.contracts.push(&DERIVED_FROM_A_LOOP),
+            |err| matches!(err, FlavorRegistryError::DerivedFromUnexported { .. }),
+        ),
     ];
 
     for (shape, break_it, expected) in cases {
@@ -740,4 +786,37 @@ fn every_hand_written_leg_runs_on_a_core_table() {
             }
         }
     }
+}
+
+/// A surface derived from one the bundle carries freezes cleanly.
+#[test]
+fn a_surface_derived_from_a_carried_surface_freezes() {
+    let mut registry = FlavorRegistry::new();
+    registry.contracts.push(&DERIVED_FROM_MEMORY);
+    registry
+        .try_freeze()
+        .expect("DerivedFrom proxima_core.memory is a carried source");
+}
+
+/// Acceptance 2 of #478 over flavor #0: what the erase deletes, the export
+/// carries (as rows, an allowlist, or derived from a carried surface). Only
+/// a declared non-erase may be Excluded.
+#[test]
+fn no_erased_core_surface_is_excluded_from_the_export() {
+    use crate::FLAVOR_0;
+    use crate::flavor::{EraseLeg, ExportRule};
+    let offenders: Vec<&str> = FLAVOR_0
+        .all_surfaces()
+        .filter(|surface| {
+            !matches!(
+                EraseLeg::derive(surface, FLAVOR_0.bespoke_erase_legs),
+                EraseLeg::Never { .. }
+            ) && matches!(surface.export, ExportRule::Excluded { .. })
+        })
+        .map(|surface| surface.table)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "erased but excluded from the export: {offenders:?}"
+    );
 }

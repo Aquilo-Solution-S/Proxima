@@ -252,10 +252,19 @@ async fn export_carries_cooled_locators_and_sketches() {
             cooled_rows[0]["t"].as_str(),
             Some(cooled_t.to_string()).as_deref()
         );
-        assert_eq!(
-            cooled_rows[0]["object_key"].as_str(),
-            Some(key.as_str()),
-            "the bundle carries the locator, not the cold bytes"
+        assert!(
+            cooled_rows[0].get("object_key").is_none() && cooled_rows[0].get("cold_digest").is_none(),
+            "the cooled allowlist carries the memory, not where its cold object lives: {:?}",
+            cooled_rows[0]
+        );
+        // Acceptance 4 of #478: no storage locator anywhere in the bundle.
+        let whole = serde_json::to_value(&bundle.tables)?;
+        let mut leaks = Vec::new();
+        storage_locators(&whole, "$", &mut leaks);
+        assert!(leaks.is_empty(), "storage locators in the bundle: {leaks:?}");
+        assert!(
+            !serde_json::to_string(&whole)?.contains(key.as_str()),
+            "the cold object key leaked into the bundle"
         );
 
         let sketches = bundle.table("proxima_core.sketch");
@@ -500,8 +509,6 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
 /// flavor's surfaces are visible too, is in `crates/proxima`.
 #[tokio::test]
 async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
-    use proxima_core::flavor::ExportRule;
-
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -513,7 +520,7 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
         let expected: std::collections::BTreeSet<&str> = surfaces
             .surfaces()
             .iter()
-            .filter(|surface| !matches!(surface.export, ExportRule::Excluded { .. }))
+            .filter(|surface| surface.export.carries_rows())
             .map(|surface| surface.table)
             .collect();
         assert!(
@@ -553,4 +560,180 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("exportable surface completeness failed");
+}
+
+/// Every place a storage locator sits in a bundle: a key naming one, or a
+/// string value pointing into the cold prefix.
+fn storage_locators(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+    const LOCATOR_KEYS: [&str; 4] = ["object_key", "bucket", "cold_digest", "etag"];
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let here = format!("{path}.{key}");
+                if LOCATOR_KEYS.contains(&key.as_str()) {
+                    out.push(here.clone());
+                }
+                storage_locators(child, &here, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                storage_locators(child, &format!("{path}[{index}]"), out);
+            }
+        }
+        serde_json::Value::String(text) if text.starts_with("cold/") => {
+            out.push(format!("{path} = {text}"));
+        }
+        _ => {}
+    }
+}
+
+/// What the erase deletes, the export carries (#478): an owner's content
+/// rows are in the bundle, field by allowlisted field.
+#[tokio::test]
+async fn export_carries_the_owners_content_rows() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerId::from(user);
+        let pool = pg.pool_for_tests();
+        // Writing a Fact registers each owner, which content's FK needs.
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let neighbour_permit = OwnerWritePermit::new_for_tests(neighbour, AccessKind::Fact);
+        pg.ingest_fact_atomic(&neighbour_permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-abs-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner.into_inner())
+        .bind(vec![7_u8; 32])
+        .fetch_one(pool)
+        .await?;
+        // A neighbour's content stays out.
+        sqlx::query(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-abs-v1', $2)",
+        )
+        .bind(neighbour.into_inner())
+        .bind(vec![8_u8; 32])
+        .execute(pool)
+        .await?;
+
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
+        let rows = bundle.table("proxima_core.content");
+        assert_eq!(rows.len(), 1, "the owner's content row, nobody else's");
+        let mut fields: Vec<&str> = rows[0]
+            .as_object()
+            .expect("a row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["content_hash", "content_id", "schema_id"]);
+        assert_eq!(
+            rows[0]["content_id"].as_str(),
+            Some(content_id.to_string()).as_deref()
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("content export failed");
+}
+
+/// A forgotten memory's pins stay in the graph: edges come from cooled rows
+/// as well as hot ones (#478).
+#[tokio::test]
+async fn a_cooled_memorys_origins_and_refs_are_edges() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerId::from(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        let origin = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?
+            .memory_id
+            .into_inner();
+        let referenced = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?
+            .memory_id
+            .into_inner();
+        let derived = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft("abstraction", vec![referenced], vec![origin]),
+                None,
+            )
+            .await?
+            .memory_id
+            .into_inner();
+        let key = cold_object_key(derived);
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &contract_sidecar_tables(),
+            &cold,
+            &key,
+            derived,
+            owner.into_inner(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
+        assert_eq!(bundle.count("proxima_core.cooled"), 1);
+        let from_cooled: Vec<(String, String)> = bundle
+            .edges
+            .iter()
+            .filter(|edge| edge["source_t"].as_str() == Some(derived.to_string().as_str()))
+            .map(|edge| {
+                (
+                    edge["kind"].as_str().unwrap_or_default().to_owned(),
+                    edge["target_t"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        assert!(
+            from_cooled.contains(&("origin".to_owned(), origin.to_string())),
+            "the cooled memory's origin pin is an edge: {from_cooled:?}"
+        );
+        assert!(
+            from_cooled.contains(&("reference".to_owned(), referenced.to_string())),
+            "the cooled memory's ref pin is an edge: {from_cooled:?}"
+        );
+        assert_eq!(bundle.count("edges"), bundle.edges.len());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cooled pin edges failed");
 }

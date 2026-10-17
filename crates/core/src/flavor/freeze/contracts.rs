@@ -84,6 +84,74 @@ impl FlavorRegistry {
             return Err(FlavorRegistryError::MissingCoreContract);
         }
         self.validate_registrations_are_claimed()?;
+        self.validate_export_inverse()?;
+        Ok(())
+    }
+
+    /// What an erase destroys, the export carries (#478).
+    ///
+    /// Registry-wide, because a flavor's surface may derive from a core
+    /// table. A surface whose erase leg runs anything (keyed, owned,
+    /// bespoke, cascade, host lifecycle) must be exported as rows, as an
+    /// allowlist, or `DerivedFrom` a surface whose chain of sources ends at
+    /// one the bundle carries. Only a declared non-erase may be `Excluded`.
+    /// Host-lifecycle surfaces are in scope deliberately: the rule is about
+    /// what the owner loses, not about who runs the statement.
+    pub(super) fn validate_export_inverse(&self) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::{EraseLeg, ExportRule};
+
+        let rules: std::collections::HashMap<&'static str, ExportRule> = self
+            .contracts
+            .iter()
+            .flat_map(|contract| contract.all_surfaces())
+            .map(|surface| (surface.table, surface.export))
+            .collect();
+        for contract in &self.contracts {
+            for surface in contract.all_surfaces() {
+                match surface.export {
+                    ExportRule::Rows | ExportRule::Allowlist(_) => {}
+                    ExportRule::Excluded { .. } => {
+                        if !matches!(
+                            EraseLeg::derive(&surface, contract.bespoke_erase_legs),
+                            EraseLeg::Never { .. }
+                        ) {
+                            return Err(FlavorRegistryError::ErasedSurfaceNotExported {
+                                flavor_id: contract.flavor_id,
+                                table: surface.table,
+                            });
+                        }
+                    }
+                    ExportRule::DerivedFrom { source, .. } => {
+                        let mut seen = std::collections::HashSet::from([surface.table]);
+                        let mut current = source;
+                        loop {
+                            let Some(rule) = rules.get(current) else {
+                                return Err(FlavorRegistryError::DerivedFromUnknownSource {
+                                    flavor_id: contract.flavor_id,
+                                    table: surface.table,
+                                    source_table: current,
+                                });
+                            };
+                            match *rule {
+                                ExportRule::Rows | ExportRule::Allowlist(_) => break,
+                                ExportRule::DerivedFrom { source: next, .. }
+                                    if seen.insert(current) =>
+                                {
+                                    current = next;
+                                }
+                                ExportRule::Excluded { .. } | ExportRule::DerivedFrom { .. } => {
+                                    return Err(FlavorRegistryError::DerivedFromUnexported {
+                                        flavor_id: contract.flavor_id,
+                                        table: surface.table,
+                                        source_table: source,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -186,10 +254,10 @@ impl FlavorRegistry {
     fn validate_contract_surfaces(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {
-        use crate::flavor::contract::{EraseRule, ExportRule};
+        use crate::flavor::contract::EraseRule;
 
         for surface in contract.all_surfaces() {
-            if matches!(surface.export, ExportRule::Excluded { .. }) {
+            if !surface.export.carries_rows() {
                 continue;
             }
             if matches!(surface.erase, EraseRule::HostState { .. }) {

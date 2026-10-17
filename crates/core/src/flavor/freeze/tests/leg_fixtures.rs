@@ -407,3 +407,84 @@ pub(super) static NON_CORE_DEDUPE: FlavorContract = transfer_fixture(
     }],
     &["test_flavor.thing_v1"],
 );
+
+/// An erased surface (owner-filtered delete) declared out of the bundle:
+/// the erase destroys rows the owner's export never handed over (#478).
+pub(super) static ERASED_BUT_EXCLUDED: FlavorContract = erase_fixture(
+    &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::MemoryT { column: "t" },
+        EraseRule::ByOwner,
+        ExportRule::Excluded {
+            why: "the export rule is what this fixture is about",
+        },
+    )],
+    &[],
+);
+
+/// Rebuilt from a surface no flavor declares.
+pub(super) static DERIVED_FROM_NOWHERE: FlavorContract = erase_fixture(
+    &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::MemoryT { column: "t" },
+        EraseRule::ByOwner,
+        ExportRule::DerivedFrom {
+            source: "test_flavor.gone_v1",
+            why: "the export rule is what this fixture is about",
+        },
+    )],
+    &[],
+);
+
+/// Rebuilt from a surface the bundle does not carry either.
+pub(super) static DERIVED_FROM_THE_EXCLUDED: FlavorContract = erase_fixture(
+    &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::MemoryT { column: "t" },
+        EraseRule::ByOwner,
+        ExportRule::DerivedFrom {
+            source: "proxima_core.owners",
+            why: "the export rule is what this fixture is about",
+        },
+    )],
+    &[],
+);
+
+/// Two surfaces each rebuilt from the other: nothing is carried.
+pub(super) static DERIVED_FROM_A_LOOP: FlavorContract = erase_fixture(
+    &[
+        state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::ByOwner,
+            ExportRule::DerivedFrom {
+                source: "test_flavor.other_v1",
+                why: "the export rule is what this fixture is about",
+            },
+        ),
+        state_surface(
+            "test_flavor.other_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::ByOwner,
+            ExportRule::DerivedFrom {
+                source: "test_flavor.thing_v1",
+                why: "the export rule is what this fixture is about",
+            },
+        ),
+    ],
+    &[],
+);
+
+/// Rebuilt from the memory spine, which the bundle carries: freezes.
+pub(super) static DERIVED_FROM_MEMORY: FlavorContract = erase_fixture(
+    &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::MemoryT { column: "t" },
+        EraseRule::ByOwner,
+        ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
+            why: "the export rule is what this fixture is about",
+        },
+    )],
+    &[],
+);

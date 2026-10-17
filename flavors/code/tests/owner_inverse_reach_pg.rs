@@ -27,6 +27,30 @@ fn both_flavors() -> FlavorRegistryFrozen {
     registry.try_freeze().expect("core + code freeze")
 }
 
+/// Acceptance 2 of #478 over the shipped composition: no surface the erase
+/// deletes is Excluded from the export. Each is carried as rows, as an
+/// allowlist, or derived from a surface that is. (Freeze refuses the
+/// opposite; this pins the composed answer.)
+#[test]
+fn no_erased_surface_of_core_or_code_is_excluded_from_the_export() {
+    let surfaces = OwnerSurfaces::for_registry(&both_flavors());
+    let offenders: Vec<&str> = surfaces
+        .surfaces()
+        .iter()
+        .filter(|surface| {
+            !matches!(
+                surfaces.erase_leg(surface.table),
+                proxima_core::flavor::EraseLeg::Never { .. }
+            ) && matches!(surface.export, ExportRule::Excluded { .. })
+        })
+        .map(|surface| surface.table)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "erased but excluded from the export: {offenders:?}"
+    );
+}
+
 /// The bundle carries EXACTLY the surfaces both contracts declare
 /// exportable — including the ones that came back empty.
 ///
@@ -50,7 +74,7 @@ async fn the_bundle_carries_every_exportable_surface_of_both_flavors() {
         let expected: BTreeSet<&str> = surfaces
             .surfaces()
             .iter()
-            .filter(|surface| !matches!(surface.export, ExportRule::Excluded { .. }))
+            .filter(|surface| surface.export.carries_rows())
             .map(|surface| surface.table)
             .collect();
         assert!(

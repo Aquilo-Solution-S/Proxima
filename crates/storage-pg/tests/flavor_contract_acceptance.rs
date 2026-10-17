@@ -320,7 +320,9 @@ fn every_declared_surface_states_what_forget_does() {
 
     // And the same for erase and export: exclusions are declared per table.
     for surface in &surfaces {
-        if let proxima_core::flavor::ExportRule::Excluded { why } = surface.export {
+        if let proxima_core::flavor::ExportRule::Excluded { why }
+        | proxima_core::flavor::ExportRule::DerivedFrom { why, .. } = surface.export
+        {
             assert!(
                 !why.is_empty(),
                 "{} is held out of the export bundle and must say why",
@@ -939,7 +941,7 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
         // PK is (memory_id, schema_id): one memory projects per schema.
         "proxima_core.projection",
         // The declared key is the owner column, and an owner publishes many
-        // Facts. ExportRule::Excluded, so no bundle orders by it.
+        // Facts. ExportRule::DerivedFrom, so no bundle orders by it.
         "proxima_core.publication_origin",
     ];
 
@@ -1000,10 +1002,7 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
         // the declared key's ties, so every exported surface must have one.
         let mut exported_without_primary_key = Vec::new();
         for surface in surfaces.surfaces() {
-            if matches!(
-                surface.export,
-                proxima_core::flavor::ExportRule::Excluded { .. }
-            ) {
+            if !surface.export.carries_rows() {
                 continue;
             }
             let has_primary_key: bool = sqlx::query_scalar(

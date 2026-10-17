@@ -466,8 +466,10 @@ const STATE_SURFACES: &[Surface] = &[
         owner_column: None,
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
-            why: "request replay metadata is protocol bookkeeping, not portable owner content",
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.goal",
+            why: "request replay metadata is protocol bookkeeping over the goal series the \
+                  bundle carries, not portable owner content",
         },
         forget: ForgetRule::Keep {
             why: "Goal replay remains exact after a referenced Memory is cooled",
@@ -484,7 +486,8 @@ const STATE_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.goal",
             why: "the head is derivable from the goal series",
         },
         forget: ForgetRule::Keep {
@@ -533,7 +536,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         // when the series is empty — an explicit statement, named by
         // `owner_erase`'s leg table.
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
             why: "the head is derivable from the memory series",
         },
         forget: ForgetRule::Keep {
@@ -558,7 +562,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         // survive that. Owner erase deletes it with the series it counts,
         // through its bespoke leg.
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
             why: "a delivery position, not owner data; the exported events carry it",
         },
         forget: ForgetRule::Keep {
@@ -577,7 +582,22 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
-        export: ExportRule::Rows,
+        export: ExportRule::Allowlist(&[
+            "t",
+            "handle",
+            "owner_id",
+            "kind",
+            "blob_id",
+            "content_id",
+            "source_id",
+            "ingest_key",
+            "cooled_at",
+            "origins",
+            "refs",
+            "goal_refs",
+            "by",
+            "via",
+        ]),
         forget: ForgetRule::Keep {
             why: "cooled IS the forgotten form; forget writes it rather than deleting it",
         },
@@ -636,7 +656,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
             why: "a vector is a derived index over text the bundle already carries",
         },
         forget: ForgetRule::DeleteWithMemory,
@@ -652,8 +673,9 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
-            why: "derived index bookkeeping",
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
+            why: "derived index bookkeeping over memory text the bundle carries",
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
@@ -668,8 +690,9 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
-            why: "queue state, not owner data",
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
+            why: "queue state for vectors the memory text rebuilds, not owner data",
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
@@ -736,7 +759,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         // memory set would walk past exactly the records a forgotten Fact
         // left behind.
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
             why: "a derived delivery copy of a typed Fact the export already carries; \
                   exporting it would hand the subject the same content twice, once in a \
                   transport envelope naming this installation",
@@ -772,7 +796,8 @@ const KERNEL_SURFACES: &[Surface] = &[
                 name: "publication_delivery_t_fkey",
             },
         },
-        export: ExportRule::Excluded {
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.publication_outbox",
             why: "delivery state of a publication_outbox record, which the bundle derives \
                   from; it carries no content of its own",
         },
@@ -797,8 +822,10 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "publication origin records the immutable original owner",
         },
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
-            why: "internal payload-free delivery identity is not owner export content",
+        export: ExportRule::DerivedFrom {
+            source: "proxima_core.memory",
+            why: "internal payload-free delivery identity of a Fact the bundle carries; not \
+                  owner export content",
         },
         forget: ForgetRule::Keep {
             why: "cooling or pruning does not change original publication identity",
@@ -844,10 +871,23 @@ const KERNEL_SURFACES: &[Surface] = &[
         // to name the same owner.
         transfer: TransferRule::Follow,
         erase: EraseRule::ByOwner,
-        export: ExportRule::Excluded {
-            why: "DECLARED GAP — upload coordinates and object-store bytes are erased \
-                  but never exported",
-        },
+        // DECLARED GAP for the bytes: the upload rows are carried field by
+        // field (no bucket, object_key, etag or error_message); the uploaded
+        // blob bytes themselves are deferred past #478.
+        export: ExportRule::Allowlist(&[
+            "upload_id",
+            "blob_id",
+            "filename",
+            "mime",
+            "expected_byte_len",
+            "status",
+            "sha256",
+            "content_hash",
+            "expires_at",
+            "completed_at",
+            "aborted_at",
+            "mounted_from_upload_id",
+        ]),
         forget: ForgetRule::Keep {
             why: "upload coordination outlives the Fact",
         },
@@ -872,9 +912,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // its key and deleted only when no surviving admission still names
         // it — the refcount guard `owner_erase`'s leg table records.
         erase: EraseRule::ByKey,
-        export: ExportRule::Excluded {
-            why: "DECLARED GAP — the A/P body is erased but never exported",
-        },
+        export: ExportRule::Allowlist(&["content_id", "schema_id", "content_hash"]),
         forget: ForgetRule::Keep {
             why: "many admissions may share one ContentId",
         },

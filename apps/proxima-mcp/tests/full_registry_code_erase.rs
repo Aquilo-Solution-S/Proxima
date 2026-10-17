@@ -49,7 +49,10 @@ const COPY_SURFACE: Surface = Surface {
         source: proxima_core::flavor::HostStateEraseDisposition::Erase,
         exact_fact: proxima_core::flavor::HostStateEraseDisposition::Erase,
     },
-    export: ExportRule::Excluded {
+    // Erased by the host lifecycle, so the export must carry it or name
+    // what it derives from (#478).
+    export: ExportRule::DerivedFrom {
+        source: "proxima_core.memory",
         why: "the fixture only observes the erase callback",
     },
     forget: ForgetRule::Keep {

@@ -91,8 +91,11 @@ const METADATA_SURFACE: Surface = Surface {
         source: proxima_core::flavor::HostStateEraseDisposition::Retain,
         exact_fact: proxima_core::flavor::HostStateEraseDisposition::Retain,
     },
-    export: ExportRule::Excluded {
-        why: "internal lifecycle metadata is not portable owner content",
+    // Erased by the host lifecycle, so the export must carry it or name what
+    // it derives from (#478).
+    export: ExportRule::DerivedFrom {
+        source: "proxima_core.memory",
+        why: "internal lifecycle metadata over memories the bundle carries",
     },
     forget: ForgetRule::Keep {
         why: "host state follows owner and source maintenance only",
@@ -108,7 +111,8 @@ const GENERIC_COUNT_SURFACE: Surface = Surface {
     owner_column: Some("owner_id"),
     transfer: TransferRule::StaysOnKey,
     erase: EraseRule::ByOwner,
-    export: ExportRule::Excluded {
+    export: ExportRule::DerivedFrom {
+        source: "proxima_core.memory",
         why: "the fixture row exists only to test shared erase counters",
     },
     forget: ForgetRule::Keep {

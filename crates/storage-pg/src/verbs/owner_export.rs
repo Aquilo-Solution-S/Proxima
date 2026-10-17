@@ -64,7 +64,7 @@ async fn export_owner_bundle_snapshot(
     platform.bind_transaction(tx.as_mut()).await?;
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for surface in surfaces.generic_surfaces() {
-        if matches!(surface.export, ExportRule::Excluded { .. }) {
+        if !surface.export.carries_rows() {
             continue;
         }
         let primary_key = primary_key_columns(&mut tx, surface.table).await?;
@@ -84,7 +84,7 @@ async fn export_owner_bundle_snapshot(
     let expected_tables = surfaces
         .surfaces()
         .iter()
-        .filter(|surface| !matches!(surface.export, ExportRule::Excluded { .. }))
+        .filter(|surface| surface.export.carries_rows())
         .map(|surface| surface.table)
         .collect::<std::collections::BTreeSet<_>>();
     let actual_tables = tables
@@ -97,10 +97,16 @@ async fn export_owner_bundle_snapshot(
         ));
     }
 
-    let edges = tables
-        .get("proxima_core.memory")
-        .map(|memories| pins_from_memories(memories))
-        .unwrap_or_default();
+    // Pins come from hot memory rows AND cooled stubs, so a forgotten
+    // memory's origins and refs stay in the graph (#478). A pre-witness
+    // cooled row has NULL arrays and contributes nothing.
+    let pinned_rows: Vec<Value> = ["proxima_core.memory", "proxima_core.cooled"]
+        .iter()
+        .filter_map(|table| tables.get(*table))
+        .flatten()
+        .cloned()
+        .collect();
+    let edges = pins_from_memories(&pinned_rows);
 
     let mut counts: BTreeMap<String, usize> = tables
         .iter()
@@ -173,7 +179,7 @@ async fn invoke_host_lifecycle_export(
     let included_tables = surfaces
         .host_lifecycle_surfaces()
         .iter()
-        .filter(|policy| !matches!(policy.owner_export, ExportRule::Excluded { .. }))
+        .filter(|policy| policy.owner_export.carries_rows())
         .map(|policy| policy.table)
         .collect::<Vec<_>>();
     let receipt = lifecycle
@@ -247,9 +253,10 @@ fn validate_host_export_rows(
                     )));
                 }
             }
-            ExportRule::Excluded { .. } => {
+            ExportRule::Excluded { .. } | ExportRule::DerivedFrom { .. } => {
                 return Err(StorageError::Internal(format!(
-                    "excluded host lifecycle table {table} appeared in export receipt"
+                    "host lifecycle table {table} carries no rows in the bundle but appeared \
+                     in the export receipt"
                 )));
             }
         }
@@ -275,7 +282,7 @@ fn export_statement(
     primary_key: &[String],
 ) -> Result<Option<String>, StorageError> {
     let projection = match surface.export {
-        ExportRule::Excluded { .. } => return Ok(None),
+        ExportRule::Excluded { .. } | ExportRule::DerivedFrom { .. } => return Ok(None),
         // The surface is aliased `s`, never `t`. With a single range table
         // in scope Postgres resolves a bare `t` in `to_jsonb(t)` to *the
         // column*, exporting a JSON string holding the uuid where the whole
@@ -411,6 +418,7 @@ async fn primary_key_columns(
     .map_err(map_err)
 }
 
+/// Pin edges of memory-shaped rows (hot `memory` or `cooled`).
 fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
     let mut edges = Vec::new();
     for memory in memories {
@@ -499,6 +507,17 @@ mod tests {
     }
 
     #[test]
+    fn a_cooled_row_with_null_pins_contributes_no_edges() {
+        let source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let edges = pins_from_memories(&[json!({
+            "t": source,
+            "origins": null,
+            "refs": null,
+        })]);
+        assert!(edges.is_empty());
+    }
+
+    #[test]
     fn pins_come_from_memory_origin_and_ref_arrays() {
         let source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
         let origin = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -571,19 +590,26 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_declared_excluded_generates_nothing() {
+    fn a_surface_that_carries_no_rows_generates_nothing() {
         for table in [
-            "proxima_core.content",
-            "proxima_core.blob_uploads",
             "proxima_core.owners",
+            "proxima_core.memory_head",
+            "proxima_core.embeddings",
         ] {
             let declared = surface(table);
-            assert!(matches!(declared.export, ExportRule::Excluded { .. }));
+            assert!(!declared.export.carries_rows());
             assert!(
                 export_statement(&declared, &[])
                     .expect("generates")
                     .is_none(),
-                "{table} declares Excluded and must emit no statement"
+                "{table} is Excluded or DerivedFrom and must emit no statement"
+            );
+        }
+        // content and blob_uploads were declared gaps; #478 carries them.
+        for table in ["proxima_core.content", "proxima_core.blob_uploads"] {
+            assert!(
+                matches!(surface(table).export, ExportRule::Allowlist(_)),
+                "{table}"
             );
         }
     }
