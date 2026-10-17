@@ -85,14 +85,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      # actions/checkout@v7
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.target.outputs.tip }}
-      # A plain push: the server refuses anything but a fast-forward, and
-      # branch protection forbids force pushes to `verified`.
-      - run: git push origin "${TIP}:refs/heads/verified"
+      # The server moves the ref and refuses anything but a fast-forward;
+      # branch protection forbids force pushes to `verified` as well.
+      - run: gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/verified" -f sha="${TIP}" -F force=false
         env:
+          GH_TOKEN: ${{ github.token }}
           TIP: ${{ needs.target.outputs.tip }}
 
   release:
