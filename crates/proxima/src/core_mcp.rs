@@ -49,6 +49,9 @@ pub enum CoreMcpErrorKind {
     /// looks like a substrate fault.
     #[error("capacity exhausted")]
     CapacityExhausted,
+    /// Another store did not answer: retryable, and not "not found".
+    #[error("store unavailable")]
+    StoreUnavailable,
     #[error("internal")]
     Internal,
 }
@@ -77,6 +80,7 @@ impl CoreMcpError {
                 McpToolErrorKind::NotFound => CoreMcpErrorKind::NotFound,
                 McpToolErrorKind::InvalidRequest => CoreMcpErrorKind::InvalidRequest,
                 McpToolErrorKind::CapacityExhausted => CoreMcpErrorKind::CapacityExhausted,
+                McpToolErrorKind::StoreUnavailable => CoreMcpErrorKind::StoreUnavailable,
                 McpToolErrorKind::Internal => CoreMcpErrorKind::Internal,
             },
         }

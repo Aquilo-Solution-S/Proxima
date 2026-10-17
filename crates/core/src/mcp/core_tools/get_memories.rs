@@ -2,7 +2,9 @@
 //!
 //! Hydrates a bounded set of memory UUIDs in one call. Returns the visible
 //! subset plus an explicit `missing` list; not-exists and not-visible are
-//! deliberately indistinguishable, mirroring the single get.
+//! deliberately indistinguishable, mirroring the single get. Ids on another
+//! store that did not answer (failed, timed out, or answered for a different
+//! memory) are listed in `unanswered` instead: retry them, they may exist.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -13,7 +15,7 @@ use crate::MemoryId;
 use crate::engine::GetMemoriesReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::MemorySnapshot;
-use crate::storage_ports::other_stores::{RemoteMemory, RemoteRead};
+use crate::storage_ports::other_stores::{OtherStoresError, RemoteMemory, RemoteRead};
 
 use super::get_memory::{GetMemoryOutput, project_memory_snapshot, project_remote_memory};
 
@@ -33,15 +35,21 @@ pub struct GetMemoriesOutput {
     /// first occurrence).
     pub memories: Vec<GetMemoryOutput>,
     /// Requested ids that do not exist or are not visible to the caller
-    /// (deliberately indistinguishable), in request order.
+    /// (deliberately indistinguishable), in request order. Includes ids on
+    /// an unknown store (no existence leak).
     pub missing: Vec<String>,
+    /// Requested ids on another store that did not answer in time (failed,
+    /// timed out, or answered for a different memory), in request order.
+    /// Retryable: nothing is known about whether they exist.
+    pub unanswered: Vec<String>,
 }
 
 /// # Errors
 ///
 /// Returns invalid memory references, an empty or over-cap id list,
 /// authorization, or storage failures. Missing memories are NOT errors —
-/// they land in [`GetMemoriesOutput::missing`].
+/// they land in [`GetMemoriesOutput::missing`]; neither are other stores that
+/// did not answer — those land in [`GetMemoriesOutput::unanswered`].
 pub async fn get_memories(
     ctx: McpToolCtx,
     args: GetMemoriesArgs,
@@ -91,10 +99,14 @@ pub async fn get_memories(
 
     let mut memories = Vec::with_capacity(requested.len());
     let mut missing = Vec::new();
+    let mut unanswered = Vec::new();
     for (id, raw) in requested {
         if crate::memory_store_number(id.into_inner()) != engine.store_number() {
             match remote.remove(&id) {
-                Some(memory) => memories.push(project_remote_memory(memory)),
+                Some(RemoteAnswer::Found(memory)) => {
+                    memories.push(project_remote_memory(memory));
+                }
+                Some(RemoteAnswer::Unanswered) => unanswered.push(raw.to_string()),
                 None => missing.push(raw.to_string()),
             }
             continue;
@@ -107,15 +119,26 @@ pub async fn get_memories(
             None => missing.push(raw.to_string()),
         }
     }
-    Ok(GetMemoriesOutput { memories, missing })
+    Ok(GetMemoriesOutput {
+        memories,
+        missing,
+        unanswered,
+    })
 }
 
-/// One bounded remote batch; unreadable, erased and unanswered UUIDs remain missing.
+/// What another store said about one requested id; absent = missing.
+enum RemoteAnswer {
+    Found(RemoteMemory),
+    Unanswered,
+}
+
+/// One bounded remote batch. Not-found, erased and unknown-store ids are
+/// absent (missing); every other failure is [`RemoteAnswer::Unanswered`].
 async fn read_remote_memories(
     ctx: &McpToolCtx,
     requested: &[(MemoryId, &str)],
     local_number: u16,
-) -> HashMap<MemoryId, RemoteMemory> {
+) -> HashMap<MemoryId, RemoteAnswer> {
     let Some(service) = super::other_stores::service(ctx) else {
         return HashMap::new();
     };
@@ -124,13 +147,18 @@ async fn read_remote_memories(
         .map(|(id, _)| id.into_inner())
         .filter(|id| crate::memory_store_number(*id) != local_number)
         .collect::<Vec<_>>();
-    service
+    let reads = service
         .read_many_bounded(super::other_stores::caller(ctx), &ids)
-        .await
-        .into_iter()
-        .filter_map(|read| match read {
-            Ok(RemoteRead::Found(memory)) => Some((MemoryId::new(memory.handle), memory)),
-            Ok(RemoteRead::NotFound | RemoteRead::Erased) | Err(_) => None,
+        .await;
+    ids.iter()
+        .zip(reads)
+        .filter_map(|(id, read)| match read {
+            Ok(RemoteRead::Found(memory)) => {
+                Some((MemoryId::new(*id), RemoteAnswer::Found(memory)))
+            }
+            Ok(RemoteRead::NotFound | RemoteRead::Erased)
+            | Err(OtherStoresError::UnknownStore(_)) => None,
+            Err(_) => Some((MemoryId::new(*id), RemoteAnswer::Unanswered)),
         })
         .collect()
 }

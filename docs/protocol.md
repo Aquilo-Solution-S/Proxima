@@ -160,7 +160,19 @@ REST returns `application/problem+json`: machine-readable `type`, `title`,
 | Idempotency, storage, or suppression conflict | 409 |
 | Layering violation | 422 |
 | Missing capability or publication capacity exhausted | 503 |
+| Another store did not answer (`store-unavailable`, retryable) | 503 |
 | Internal/deployment failure | 500 |
+
+A memory on another store that the store did not answer for (it failed, timed
+out, or answered for a different memory) is never reported as missing: nothing
+is known about whether it exists. A single read (`core_get_memory`, derive
+sources, interpret subjects) fails with JSON-RPC `-32000` and `error.data`
+`{"code": "store_unavailable", "store": N}` (REST `503`, type
+`store-unavailable`); retry it. The batch read `proxima://memories` lists such
+ids in `unanswered`, beside `missing` (an answered not-found, erased, or
+unknown store). Lineage keeps such an origin as a node with status
+`unavailable` and an `unavailable_reason`: `not readable`, `store
+unavailable`, `deadline exceeded`, or `origin limit exceeded`.
 
 Operation-specific schema and error variants remain in code. Retry only when
 the operation and its idempotency contract allow it; a transport disconnect

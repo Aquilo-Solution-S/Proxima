@@ -184,6 +184,11 @@ fn tool_problem(err: &McpToolError, instance: &str) -> Problem {
             "unavailable",
             "Capability unavailable",
         ),
+        McpToolError::StoreUnavailable { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "store-unavailable",
+            "Store unavailable",
+        ),
         McpToolError::Protocol(inner) => protocol_status(inner.code),
         McpToolError::Storage(inner) => storage_status(inner),
         McpToolError::Other(_) => (
@@ -450,6 +455,20 @@ mod tests {
     /// `detail` keeps the backlog depth: a client that reads `500
     /// internal` cannot tell a full outbox from a broken substrate, and
     /// retries either the same way.
+    /// #480: an other store that did not answer is a retryable 503 with its
+    /// own type, not a 404.
+    #[test]
+    fn an_unanswered_store_is_a_503_with_its_own_type() {
+        let err = ToolInvocationError::Tool(McpToolError::StoreUnavailable { store: 1 });
+        let problem = problem_for(&err, "/v1/tools/core_get_memory");
+        assert_eq!(problem.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(problem.slug, "store-unavailable");
+        assert_eq!(
+            problem.to_json()["type"],
+            "https://proxima.dev/errors/store-unavailable"
+        );
+    }
+
     #[test]
     fn an_exhausted_outbox_is_a_503_with_its_own_type() {
         let err =

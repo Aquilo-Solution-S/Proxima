@@ -23,6 +23,28 @@ fn not_found(id: uuid::Uuid) -> McpToolError {
     McpToolError::NotFound(format!("memory {id} not found"))
 }
 
+/// THE mapping of a failed remote read onto the wire (#480).
+///
+/// An unknown store is `NotFound` (no existence leak, and the same answer as
+/// "no other store wired"). Every other failure (unavailable, past the
+/// deadline, an answer for a different memory, or anything else) says
+/// nothing about whether the memory exists, so it is a retryable
+/// [`McpToolError::StoreUnavailable`] naming the store, never "not found".
+/// An answer of "not found" or "erased" is not an error and never gets here.
+pub(crate) fn remote_read_error(id: uuid::Uuid, error: &OtherStoresError) -> McpToolError {
+    match error {
+        OtherStoresError::UnknownStore(_) => not_found(id),
+        OtherStoresError::Unavailable(_)
+        | OtherStoresError::DeadlineExceeded
+        | OtherStoresError::MismatchedMemory { .. }
+        | OtherStoresError::LocalStoreInInventory(_)
+        | OtherStoresError::DuplicateStoreInInventory(_)
+        | OtherStoresError::UnsupportedSearch(_) => McpToolError::StoreUnavailable {
+            store: crate::memory_store_number(id),
+        },
+    }
+}
+
 pub(crate) async fn read_origin(
     ctx: &McpToolCtx,
     id: uuid::Uuid,
@@ -30,7 +52,8 @@ pub(crate) async fn read_origin(
     let service = service(ctx).ok_or_else(|| not_found(id))?;
     match service.read_origin(caller(ctx), id).await {
         Ok(Some(read)) => Ok(read),
-        Ok(None) | Err(_) => Err(not_found(id)),
+        Ok(None) => Err(not_found(id)),
+        Err(error) => Err(remote_read_error(id, &error)),
     }
 }
 
@@ -96,16 +119,13 @@ async fn resolve_remote_origins(
     };
     let service = service(ctx).ok_or_else(|| not_found(*first))?;
     let reads = service.read_origins_bounded(caller(ctx), ids).await;
+    // The first failing id in request order decides the error: deterministic.
     ids.iter()
         .zip(reads)
         .map(|(id, read)| match read {
             Ok(RemoteOriginRead::Found(origin, _)) => Ok(origin),
-            Err(OtherStoresError::DeadlineExceeded) => Err(McpToolError::Unavailable(
-                "other-store origin deadline exceeded".into(),
-            )),
-            Ok(RemoteOriginRead::NotFound | RemoteOriginRead::Erased) | Err(_) => {
-                Err(not_found(*id))
-            }
+            Ok(RemoteOriginRead::NotFound | RemoteOriginRead::Erased) => Err(not_found(*id)),
+            Err(error) => Err(remote_read_error(*id, &error)),
         })
         .collect()
 }
@@ -529,8 +549,118 @@ mod tests {
         .expect_err("deadline must refuse derivation");
         assert!(started.elapsed() <= deadline);
         assert!(
-            matches!(error, McpToolError::Unavailable(ref message) if message.contains("deadline")),
+            matches!(error, McpToolError::StoreUnavailable { store: 1 }),
             "{error:?}"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    enum ReadReply {
+        Pending,
+        Unavailable,
+        Mismatched,
+        NotFound,
+        Erased,
+    }
+
+    struct ReadReplyStore(ReadReply);
+
+    impl OtherStores for ReadReplyStore {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: u16,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
+        }
+
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _id: uuid::Uuid,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            let reply = self.0;
+            Box::pin(async move {
+                match reply {
+                    ReadReply::Pending => futures::future::pending().await,
+                    ReadReply::Unavailable => {
+                        Err(OtherStoresError::Unavailable("remote internals".into()))
+                    }
+                    ReadReply::Mismatched => Ok(RemoteRead::Found(RemoteMemory {
+                        handle: crate::new_memory_uuid(1),
+                        writer: crate::WriterAttribution {
+                            by: uuid::Uuid::from_u128(3),
+                            via: None,
+                        },
+                        kind: crate::EntityKind::Fact,
+                        schema_id: "test/fact-v1".into(),
+                        title: None,
+                        body: String::new(),
+                        created_at: time::OffsetDateTime::UNIX_EPOCH,
+                        tags: Vec::new(),
+                    })),
+                    ReadReply::NotFound => Ok(RemoteRead::NotFound),
+                    ReadReply::Erased => Ok(RemoteRead::Erased),
+                }
+            })
+        }
+    }
+
+    fn read_reply_ctx(reply: ReadReply) -> McpToolCtx {
+        let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
+        ctx.services =
+            crate::FlavorServices::with(OtherStoresService::new(Arc::new(ReadReplyStore(reply))));
+        ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
+        ctx
+    }
+
+    /// Acceptance 2 of #480: a remote source that times out, fails, or answers
+    /// for another memory is a retryable `StoreUnavailable` naming its store,
+    /// on both the batch path (derive sources, interpret subjects) and the
+    /// single read (`get_memory`). A store that answers "no such memory" (or
+    /// erased) stays `NotFound`, so nothing about existence leaks.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_remote_read_is_store_unavailable_and_an_answer_is_not_found() {
+        for (reply, unavailable) in [
+            (ReadReply::Pending, true),
+            (ReadReply::Unavailable, true),
+            (ReadReply::Mismatched, true),
+            (ReadReply::NotFound, false),
+            (ReadReply::Erased, false),
+        ] {
+            let ctx = read_reply_ctx(reply);
+            let id = crate::new_memory_uuid(1);
+            let batch = resolve_references(&ctx, &[id.to_string()])
+                .await
+                .expect_err("no remote origin is readable");
+            let single = read_origin(&ctx, id)
+                .await
+                .expect_err("no remote memory is readable");
+            for error in [batch, single] {
+                if unavailable {
+                    assert!(
+                        matches!(error, McpToolError::StoreUnavailable { store: 1 }),
+                        "{error:?}"
+                    );
+                    assert_eq!(error.kind(), crate::mcp::McpToolErrorKind::StoreUnavailable);
+                    assert!(!error.client_message().contains("internals"));
+                } else {
+                    assert!(matches!(error, McpToolError::NotFound(_)), "{error:?}");
+                }
+            }
+        }
     }
 }

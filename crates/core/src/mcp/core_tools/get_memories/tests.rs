@@ -236,10 +236,11 @@ async fn slow_remote_batch_finishes_at_one_deadline() {
     let output = tokio::time::timeout(PROGRESS_BOUND, call)
         .await
         .expect("one deadline bounds the entire batch")
-        .expect("unanswered reads become missing");
+        .expect("unanswered reads are reported, not an error");
     assert_eq!(started_at.elapsed(), DEFAULT_REMOTE_BATCH_DEADLINE);
     assert!(output.memories.is_empty());
-    assert_eq!(output.missing, requested);
+    assert!(output.missing.is_empty(), "a timeout is not an answer");
+    assert_eq!(output.unanswered, requested);
     assert_eq!(port.peak.load(Ordering::SeqCst), MAX_REMOTE_READS_PER_STORE);
     assert_eq!(
         port.active.load(Ordering::SeqCst),
@@ -254,7 +255,10 @@ async fn slow_remote_batch_finishes_at_one_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers() {
+/// #480: an answered "erased" or "not visible" is `missing`; a store that
+/// failed, or answered for a different memory, said nothing about existence,
+/// so its ids are `unanswered` (retryable), never `missing`.
+async fn batch_preserves_request_order_with_erased_missing_and_mismatched_unanswered() {
     let Fixture {
         ctx,
         port,
@@ -268,6 +272,7 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
     let third = crate::new_memory_uuid(1);
     let mismatched = crate::new_memory_uuid(2);
     let erased = crate::new_memory_uuid(1);
+    let failed = crate::new_memory_uuid(2);
     let requested = [
         first,
         local_found,
@@ -277,6 +282,7 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
         mismatched,
         first,
         erased,
+        failed,
     ];
     let call = get_memories(
         ctx,
@@ -285,8 +291,13 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
         },
     );
     tokio::pin!(call);
-    let started = started_reads(&mut call, &mut receiver, 5).await;
+    let started = started_reads(&mut call, &mut receiver, 6).await;
     for (id, answer) in started.into_iter().rev() {
+        if id == failed {
+            // Dropping the reply fails the read: the store did not answer.
+            drop(answer);
+            continue;
+        }
         let reply = if id == erased {
             RemoteRead::Erased
         } else if id == mismatched {
@@ -313,7 +324,14 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
     );
     assert_eq!(
         output.missing,
-        [local_missing, mismatched, erased]
+        [local_missing, erased]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        output.unanswered,
+        [mismatched, failed]
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()

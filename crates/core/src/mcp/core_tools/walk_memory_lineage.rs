@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::MemoryId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::storage_ports::other_stores::{MAX_LINEAGE_REMOTE_ORIGINS, RemoteOriginRead};
+use crate::storage_ports::other_stores::{
+    MAX_LINEAGE_REMOTE_ORIGINS, OtherStoresError, RemoteOriginRead,
+};
 use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest};
 
 const MAX_LINEAGE_DEPTH: u32 = 8;
@@ -88,8 +90,10 @@ pub struct LineageNodeOutput {
     /// on such a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Why an unavailable origin was not read when a page cap or deadline
-    /// prevented the read.
+    /// Why an `unavailable` origin was not read: `not readable` (the store
+    /// answered that the caller cannot read it, or there is no such store),
+    /// `store unavailable` (the store failed; retry later), `deadline
+    /// exceeded`, or `origin limit exceeded` (the page cap).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
 }
@@ -255,14 +259,14 @@ async fn append_external_origins(
         ),
         _ => None,
     };
+    // No port wired: every origin is on a store this deployment does not know.
     let reads = reads.unwrap_or_else(|| {
-        (0..readable)
-            .map(|_| {
-                Err(
-                    crate::storage_ports::other_stores::OtherStoresError::Unavailable(
-                        "origin unavailable".into(),
-                    ),
-                )
+        unique[..readable]
+            .iter()
+            .map(|origin| {
+                Err(OtherStoresError::UnknownStore(crate::memory_store_number(
+                    *origin,
+                )))
             })
             .collect()
     });
@@ -307,7 +311,7 @@ async fn append_external_origins(
 }
 
 fn project_remote_read(
-    read: Option<&Result<RemoteOriginRead, crate::storage_ports::other_stores::OtherStoresError>>,
+    read: Option<&Result<RemoteOriginRead, OtherStoresError>>,
     capped: bool,
 ) -> (
     String,
@@ -332,33 +336,36 @@ fn project_remote_read(
             Some("erased"),
             None,
         ),
-        Some(Err(crate::storage_ports::other_stores::OtherStoresError::DeadlineExceeded)) => (
+        Some(Err(OtherStoresError::DeadlineExceeded)) => (
             String::new(),
             String::new(),
             String::new(),
             Some("unavailable"),
             Some("deadline exceeded"),
         ),
-        Some(Ok(RemoteOriginRead::NotFound)) => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            None,
-        ),
-        Some(Err(_)) | None if !capped => (
-            String::new(),
-            String::new(),
-            String::new(),
-            Some("unavailable"),
-            None,
-        ),
-        Some(Err(_)) | None => (
+        _ if capped => (
             String::new(),
             String::new(),
             String::new(),
             Some("unavailable"),
             Some("origin limit exceeded"),
+        ),
+        // The store answered that the caller cannot read it, or there is no
+        // such store (also: no other store wired).
+        Some(Ok(RemoteOriginRead::NotFound) | Err(OtherStoresError::UnknownStore(_))) | None => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            Some("not readable"),
+        ),
+        // The store failed or answered for another memory: retry later.
+        Some(Err(_)) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            Some("unavailable"),
+            Some("store unavailable"),
         ),
     }
 }
@@ -370,7 +377,10 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{LINEAGE_CURSOR, LineageNodeOutput, append_external_origins, lineage_fingerprint};
+    use super::{
+        LINEAGE_CURSOR, LineageNodeOutput, RemoteOriginRead, append_external_origins,
+        lineage_fingerprint, project_remote_read,
+    };
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
     use crate::storage_ports::other_stores::{
         OtherStores, OtherStoresError, RemoteMemory, RemoteRead, RemoteSearch, RemoteSearchResult,
@@ -383,6 +393,42 @@ mod tests {
     /// The cursor binds memory, direction, and depth; any of the three
     /// changing between pages fails closed. `limit` stays out of the
     /// fingerprint so it may vary.
+    #[test]
+    /// #480: an other-store origin the store says it cannot read is "not
+    /// readable"; a store that failed or answered for another memory is
+    /// "store unavailable" (retry later). Deadline and cap reasons are kept,
+    /// and every one of them keeps the console-safe status `unavailable`.
+    fn unreadable_origins_say_why_they_are_unavailable() {
+        let reason = |read: Option<&Result<RemoteOriginRead, OtherStoresError>>, capped| {
+            let (_, _, _, status, reason) = project_remote_read(read, capped);
+            assert_eq!(status, Some("unavailable"));
+            reason
+        };
+        assert_eq!(
+            reason(Some(&Ok(RemoteOriginRead::NotFound)), false),
+            Some("not readable")
+        );
+        assert_eq!(
+            reason(Some(&Err(OtherStoresError::UnknownStore(1))), false),
+            Some("not readable")
+        );
+        assert_eq!(reason(None, false), Some("not readable"));
+        for failed in [
+            OtherStoresError::Unavailable("remote internals".into()),
+            OtherStoresError::MismatchedMemory {
+                requested: crate::new_memory_uuid(1),
+                returned: crate::new_memory_uuid(1),
+            },
+        ] {
+            assert_eq!(reason(Some(&Err(failed)), false), Some("store unavailable"));
+        }
+        assert_eq!(
+            reason(Some(&Err(OtherStoresError::DeadlineExceeded)), false),
+            Some("deadline exceeded")
+        );
+        assert_eq!(reason(None, true), Some("origin limit exceeded"));
+    }
+
     #[test]
     fn lineage_cursor_binds_memory_direction_and_depth() {
         let memory = "018f0000-0000-7000-8000-000000000001";

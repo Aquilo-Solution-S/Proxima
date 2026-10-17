@@ -464,6 +464,7 @@ async fn assert_remote_and_batch_reads(
         batch["missing"],
         serde_json::json!([remote_id(2, "absent")])
     );
+    assert_eq!(batch["unanswered"], serde_json::json!([]));
 
     Ok(())
 }

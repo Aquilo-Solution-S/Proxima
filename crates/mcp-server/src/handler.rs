@@ -647,11 +647,17 @@ const SERVER_ERROR: rmcp::model::ErrorCode = rmcp::model::ErrorCode(-32000);
 /// the snake case the JSON-RPC payloads use.
 const CAPACITY_EXHAUSTED_CODE: &str = "capacity_exhausted";
 
+/// `error.data.code` for another store that did not answer: retryable, and
+/// never -32602 (a client would read that as "no such memory").
+const STORE_UNAVAILABLE_CODE: &str = "store_unavailable";
+
 /// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults —
 /// including references to missing entities — → `invalid_params` (-32602);
 /// well-formed-but-illegal requests → `invalid_request` (-32600); declared
 /// backpressure → server error (-32000) with `data.code`
-/// `capacity_exhausted` and the message verbatim; infrastructure faults →
+/// `capacity_exhausted` and the message verbatim; another store that did
+/// not answer → server error (-32000) with `data.code` `store_unavailable`
+/// and `data.store`; infrastructure faults →
 /// `internal_error` (-32603). Resource reads remap `NotFound` before
 /// reaching here (resources map a missing entity to `resource_not_found`).
 #[must_use]
@@ -666,6 +672,17 @@ pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
             err.client_message(),
             Some(serde_json::json!({ "code": CAPACITY_EXHAUSTED_CODE })),
         ),
+        McpToolErrorKind::StoreUnavailable => {
+            let store = match err {
+                McpToolError::StoreUnavailable { store } => Some(*store),
+                _ => None,
+            };
+            ErrorData::new(
+                SERVER_ERROR,
+                err.client_message(),
+                Some(serde_json::json!({ "code": STORE_UNAVAILABLE_CODE, "store": store })),
+            )
+        }
         McpToolErrorKind::Internal => generic_internal_error(err),
     }
 }
@@ -1891,6 +1908,22 @@ mod tests {
         assert_eq!(
             err.message,
             "semantic search unavailable: no embedding client is configured for this host"
+        );
+    }
+
+    /// #480: an other store that did not answer is a retryable -32000 with
+    /// `data.code` `store_unavailable` naming the store, never -32602 (which
+    /// a client reads as "no such memory") or -32600.
+    #[test]
+    fn an_unanswered_store_is_a_server_error_naming_the_store() {
+        let err = mcp_tool_error_to_error_data(&McpToolError::StoreUnavailable { store: 1 });
+        assert_eq!(err.code, SERVER_ERROR);
+        assert_ne!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_ne!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert_eq!(err.message, "store 1 unavailable");
+        assert_eq!(
+            err.data,
+            Some(serde_json::json!({ "code": "store_unavailable", "store": 1 }))
         );
     }
 

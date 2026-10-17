@@ -25,6 +25,12 @@ pub enum McpToolError {
     /// than redacted to a generic internal-server-error.
     #[error("{0}")]
     Unavailable(String),
+    /// Another store did not answer (timed out, failed, or answered for a
+    /// different memory). Says nothing about whether the memory exists, and
+    /// is retryable. The message names the store number only: the port's
+    /// own error text may carry the remote store's internals.
+    #[error("store {store} unavailable")]
+    StoreUnavailable { store: u16 },
     #[error("{0}")]
     Other(String),
 }
@@ -46,6 +52,11 @@ pub enum McpToolErrorKind {
     /// configured) that retrying will never resolve — that stays
     /// [`Self::InvalidRequest`].
     CapacityExhausted,
+    /// Another store did not answer. Retryable, like
+    /// [`Self::CapacityExhausted`], and never "not found": the memory may
+    /// well exist. NOT the class of [`McpToolError::Unavailable`], which is
+    /// permanent.
+    StoreUnavailable,
     Internal,
 }
 
@@ -112,6 +123,7 @@ impl McpToolError {
                 | crate::StorageError::MemoryIdCollision
                 | crate::StorageError::SchemaResetRequired { .. } => McpToolErrorKind::Internal,
             },
+            Self::StoreUnavailable { .. } => McpToolErrorKind::StoreUnavailable,
             Self::Other(_) => McpToolErrorKind::Internal,
         }
     }
@@ -128,7 +140,9 @@ impl McpToolError {
             // Verbatim: the message carries the backlog depth and the
             // configured bound, which is exactly what a caller needs to
             // decide how long to wait.
-            | McpToolErrorKind::CapacityExhausted => self.to_string(),
+            | McpToolErrorKind::CapacityExhausted
+            // Verbatim: names the store number and nothing from the port.
+            | McpToolErrorKind::StoreUnavailable => self.to_string(),
             McpToolErrorKind::Internal => "internal server error".to_string(),
         }
     }
@@ -199,6 +213,15 @@ mod tests {
             let err = McpToolError::Storage(crate::StorageError::PublicationRefused(refusal));
             assert_eq!(err.kind(), expected, "for {err}");
         }
+    }
+
+    /// #480: another store that did not answer is its own retryable kind,
+    /// distinct from `NotFound` (an answer) and `Unavailable` (permanent).
+    #[test]
+    fn an_unanswered_store_is_store_unavailable_and_verbatim() {
+        let err = McpToolError::StoreUnavailable { store: 7 };
+        assert_eq!(err.kind(), McpToolErrorKind::StoreUnavailable);
+        assert_eq!(err.client_message(), "store 7 unavailable");
     }
 
     #[test]
