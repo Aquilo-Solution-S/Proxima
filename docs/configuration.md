@@ -76,7 +76,8 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_S3_REGION | S3 region | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_ACCESS_KEY_ID | S3 access key | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_SECRET_ACCESS_KEY | S3 secret key | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
-| PROXIMA_S3_ENDPOINT_URL | S3-compatible endpoint | non-AWS S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
+| PROXIMA_S3_ENDPOINT_URL | object I/O endpoint | non-AWS S3 storage | `S3RuntimeConfig::from_lookup` |
+| PROXIMA_S3_PUBLIC_ENDPOINT_URL | endpoint for presigned links | holders reach a separate public address | `S3RuntimeConfig::from_lookup` |
 | PROXIMA_PLAINTEXT_HOSTS | plaintext host allowlist | named internal HTTP sidecar | [network policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/net.rs) |
 | PROXIMA_S3_FORCE_PATH_STYLE | S3 path-style switch | path-style endpoint | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_UPLOAD_TTL_SECONDS | upload URL lifetime | cited blob uploads | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
