@@ -300,11 +300,7 @@ impl Engine {
     {
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
-        let read = if authz.auth_path() == AuthPath::Denied {
-            Vec::new()
-        } else {
-            authz.readable_owners(AccessKind::Fact)
-        };
+        let read = self.readable_set(authz)?;
         let principal = authz.principal();
         let input = AuthzInput {
             authz,
@@ -314,15 +310,36 @@ impl Engine {
                 kind: AccessKind::Fact,
             },
         };
+        self.registry
+            .run_authorization_observers(&input, AuthzOutcome::Allowed);
+        Ok(read)
+    }
+
+    /// The unvetoed read set: every owner this context may read anything of.
+    /// A context that reads nothing is refused here, with one
+    /// `DeniedResolution` decision for its principal.
+    fn readable_set(&self, authz: &AuthzContext) -> Result<Vec<OwnerId>, ProtocolError> {
+        let read = if authz.auth_path() == AuthPath::Denied {
+            Vec::new()
+        } else {
+            authz.readable_owners(AccessKind::Fact)
+        };
         if read.is_empty() {
+            let principal = authz.principal();
+            let input = AuthzInput {
+                authz,
+                requested: &principal,
+                resolved: &principal,
+                operation: AuthzOperation::Read {
+                    kind: AccessKind::Fact,
+                },
+            };
             self.registry
                 .run_authorization_observers(&input, AuthzOutcome::DeniedResolution);
             return Err(ProtocolError::forbidden(
                 "denied context authorizes nothing",
             ));
         }
-        self.registry
-            .run_authorization_observers(&input, AuthzOutcome::Allowed);
         Ok(read)
     }
 
