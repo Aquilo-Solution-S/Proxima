@@ -30,12 +30,12 @@ fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<Mem
                 proxima_core::verbs::schema::PayloadKind::Perspective => EntityKind::Perspective,
                 _ => return None,
             };
-            Some(MemorySchemaSpec {
+            Some(MemorySchemaSpec::new(
                 kind,
-                schema_id: schema.schema_id.clone(),
-                schema_version: schema.schema_version,
-                sidecar_table: schema.sidecar_table.clone(),
-            })
+                schema.schema_id.clone(),
+                schema.schema_version,
+                schema.sidecar_table.clone(),
+            ))
         })
         .collect()
 }

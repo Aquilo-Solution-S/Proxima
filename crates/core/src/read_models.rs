@@ -65,6 +65,88 @@ pub struct MemorySchemaSpec {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub sidecar_table: Option<String>,
+    /// Payload field a memory of this schema displays as its body: the first
+    /// declared `Text` search field that is not `title`. `None` when the
+    /// schema declares no search projection.
+    pub body_field: Option<String>,
+    /// Payload field a memory of this schema displays as its tags: the
+    /// declared `tag_column`, the field search filters tags on.
+    pub tag_field: Option<String>,
+}
+
+impl MemorySchemaSpec {
+    /// A spec with no declared display fields; reads fall back to the
+    /// legacy payload keys. See [`Self::with_display_fields`].
+    #[must_use]
+    pub const fn new(
+        kind: EntityKind,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        sidecar_table: Option<String>,
+    ) -> Self {
+        Self {
+            kind,
+            schema_id,
+            schema_version,
+            sidecar_table,
+            body_field: None,
+            tag_field: None,
+        }
+    }
+
+    /// Set the display fields from a schema's search declaration.
+    #[must_use]
+    pub fn with_display_fields(
+        mut self,
+        body_field: Option<String>,
+        tag_field: Option<String>,
+    ) -> Self {
+        self.body_field = body_field;
+        self.tag_field = tag_field;
+        self
+    }
+
+    /// The one body rule, shared by search hits and by-id reads: the payload
+    /// string at [`Self::body_field`]; otherwise the legacy payload `body`,
+    /// then `text` keys (schemas that declare no projection); otherwise
+    /// `fallback` (text the read path already holds, such as a sketch).
+    #[must_use]
+    pub fn display_body(
+        &self,
+        payload: Option<&SidecarPayload>,
+        fallback: Option<&str>,
+    ) -> Option<String> {
+        let json = payload.and_then(|payload| payload.to_protocol_json().ok());
+        let field = |key: &str| {
+            json.as_ref()
+                .and_then(|value| value.get(key)?.as_str().map(ToOwned::to_owned))
+        };
+        self.body_field
+            .as_deref()
+            .and_then(field)
+            .or_else(|| field("body"))
+            .or_else(|| field("text"))
+            .or_else(|| fallback.map(ToOwned::to_owned))
+    }
+
+    /// The one tags rule, shared by search hits and by-id reads: the payload
+    /// string array at [`Self::tag_field`], so a memory reports exactly the
+    /// tags search filters it on. A schema that declares no `tag_column`
+    /// keeps the legacy payload `tags` key, so its tags are not dropped.
+    #[must_use]
+    pub fn display_tags(&self, payload: Option<&SidecarPayload>) -> Vec<String> {
+        let key = self.tag_field.as_deref().unwrap_or("tags");
+        payload
+            .and_then(|payload| payload.to_protocol_json().ok())
+            .and_then(|value| {
+                value.get(key)?.as_array().map(|tags| {
+                    tags.iter()
+                        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Resolve the single registered declaration for a persisted Memory selector.
@@ -131,12 +213,12 @@ mod tests {
     }
 
     fn spec(kind: EntityKind, id: &str, version: u32) -> MemorySchemaSpec {
-        MemorySchemaSpec {
+        MemorySchemaSpec::new(
             kind,
-            schema_id: SchemaId::new(id.to_owned()),
-            schema_version: SchemaVersion::new(version),
-            sidecar_table: None,
-        }
+            SchemaId::new(id.to_owned()),
+            SchemaVersion::new(version),
+            None,
+        )
     }
 
     #[test]

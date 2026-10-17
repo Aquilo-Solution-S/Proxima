@@ -1,3 +1,4 @@
+use crate::SearchProjectionColumnKind;
 use crate::access::AccessKind;
 use crate::authz::AuthzContext;
 use crate::edge::Edge;
@@ -361,17 +362,44 @@ impl Engine {
     /// same answer a separate `filter` would have given. Selecting and
     /// converting in one step is what keeps an "impossible" arm off the
     /// `match` — there is no second place for the two lists to disagree.
+    ///
+    /// Each spec also carries the schema's display fields, derived once from
+    /// its search declaration: the body is the first declared `Text` field
+    /// that is not `title`, the tags are the declared `tag_column`. Search
+    /// hits and by-id reads both display through these, so one memory reads
+    /// the same wherever it is reached from.
     pub(in crate::engine) fn memory_schema_specs(&self) -> Vec<MemorySchemaSpec> {
+        let projections = self.registry.search_projections();
         self.registry
             .list()
             .into_iter()
             .filter_map(|schema| {
-                Some(MemorySchemaSpec {
-                    kind: payload_entity_kind(schema.kind)?,
-                    schema_id: SchemaId::new(schema.schema_id.as_str().to_string()),
-                    schema_version: SchemaVersion::new(schema.schema_version.into_inner()),
-                    sidecar_table: schema.sidecar_table,
-                })
+                let kind = payload_entity_kind(schema.kind)?;
+                let projection = projections.iter().find(|projection| {
+                    projection.kind == schema.kind
+                        && projection.schema_id == schema.schema_id
+                        && projection.schema_version == schema.schema_version
+                });
+                let body_field = projection.and_then(|projection| {
+                    projection
+                        .fields
+                        .iter()
+                        .find(|field| {
+                            field.kind == SearchProjectionColumnKind::Text
+                                && field.column != "title"
+                        })
+                        .map(|field| field.column.clone())
+                });
+                let tag_field = projection.and_then(|projection| projection.tag_column.clone());
+                Some(
+                    MemorySchemaSpec::new(
+                        kind,
+                        SchemaId::new(schema.schema_id.as_str().to_string()),
+                        SchemaVersion::new(schema.schema_version.into_inner()),
+                        schema.sidecar_table,
+                    )
+                    .with_display_fields(body_field, tag_field),
+                )
             })
             .collect()
     }

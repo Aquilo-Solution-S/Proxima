@@ -454,12 +454,12 @@ mod tests {
 
     #[test]
     fn required_primary_stamp_is_checked_against_the_frozen_sidecar_registry() {
-        let spec = MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: SchemaId::new("test/fact".to_owned()),
-            schema_version: SchemaVersion::new(2),
-            sidecar_table: Some("test.fact_v2".to_owned()),
-        };
+        let spec = MemorySchemaSpec::new(
+            EntityKind::Fact,
+            SchemaId::new("test/fact".to_owned()),
+            SchemaVersion::new(2),
+            Some("test.fact_v2".to_owned()),
+        );
         let err = validate_row_stamp(
             &PgSidecarRegistryFrozen::default(),
             &spec,
@@ -474,12 +474,12 @@ mod tests {
     fn primary_stamp_must_be_present_but_declared_extensions_do_not_interfere() {
         let registry = core_pg_sidecars();
         let primary = AgentNoteV1::sidecar_table().expect("AgentNote has a primary sidecar");
-        let spec = MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: AgentNoteV1::schema_id(),
-            schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
-            sidecar_table: Some(primary.to_owned()),
-        };
+        let spec = MemorySchemaSpec::new(
+            EntityKind::Fact,
+            AgentNoteV1::schema_id(),
+            SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
+            Some(primary.to_owned()),
+        );
         let memory_id = MemoryId::new(uuid::Uuid::now_v7());
 
         validate_row_stamp(&registry, &spec, &[primary.to_owned()], memory_id)

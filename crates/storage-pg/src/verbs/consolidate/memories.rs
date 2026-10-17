@@ -360,12 +360,12 @@ mod tests {
     };
 
     fn fact_spec<P: FactPayload>() -> MemorySchemaSpec {
-        MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: P::schema_id(),
-            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-            sidecar_table: P::sidecar_table().map(str::to_owned),
-        }
+        MemorySchemaSpec::new(
+            EntityKind::Fact,
+            P::schema_id(),
+            SchemaVersion::new(P::SCHEMA_VERSION),
+            P::sidecar_table().map(str::to_owned),
+        )
     }
 
     #[test]

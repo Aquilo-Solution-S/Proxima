@@ -28,11 +28,13 @@ fn owner() -> OwnerId {
 
 fn schemas() -> Vec<MemorySchemaSpec> {
     [FACT_SCHEMA, OTHER_SCHEMA]
-        .map(|schema| MemorySchemaSpec {
-            kind: EntityKind::Fact,
-            schema_id: SchemaId::new(schema.into()),
-            schema_version: SchemaVersion::new(1),
-            sidecar_table: None,
+        .map(|schema| {
+            MemorySchemaSpec::new(
+                EntityKind::Fact,
+                SchemaId::new(schema.into()),
+                SchemaVersion::new(1),
+                None,
+            )
         })
         .into()
 }
