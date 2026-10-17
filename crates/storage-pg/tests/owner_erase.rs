@@ -1525,6 +1525,7 @@ async fn erase_group_owner_completes_when_abandoned() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         gtx.commit().await?;
@@ -2428,7 +2429,7 @@ async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
         let goal = tokio::spawn(async move {
             let mut tx = goal_pool.begin().await?;
             let outcome =
-                write_goal(&mut tx, &goal_owner, &goal_draft("late-goal-request")).await?;
+                write_goal(&mut tx, &goal_owner, &goal_draft("late-goal-request"), 1).await?;
             tx.commit().await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(outcome)
         });

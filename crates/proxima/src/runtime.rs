@@ -102,6 +102,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Assign this store its immutable host-selected number.
+    #[must_use]
+    pub fn store_number(mut self, number: u16) -> Self {
+        self.overlay = self.overlay.store_number(number);
+        self
+    }
+
     /// Set the separate migration/platform database URL.
     #[must_use]
     pub fn platform_database_url(mut self, url: impl Into<String>) -> Self {
@@ -1325,12 +1332,52 @@ mod tests {
         fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
             builder
                 .database_url("postgres://alpha/proxima")
+                .store_number(0)
                 .platform_database_url("postgres://alpha/platform")
                 .pg_pool_config(PgPoolConfig {
                     max_connections: 3,
                     ..PgPoolConfig::default()
                 })
         }
+    }
+
+    #[test]
+    fn setting_platform_url_keeps_the_supplied_store_number() {
+        let app = || {
+            Proxima::<AlphaApp>::app()
+                .database_url("postgres://unused/db")
+                .served_surface(ServedSurface::All)
+        };
+        let missing = app()
+            .platform_database_url("postgres://unused/platform")
+            .overlay
+            .resolve()
+            .expect_err("platform URL supplies no store identity");
+        assert!(missing.to_string().contains("PROXIMA_STORE_NUMBER"));
+        for builder in [
+            app()
+                .store_number(3)
+                .platform_database_url("postgres://unused/platform"),
+            app()
+                .platform_database_url("postgres://unused/platform")
+                .store_number(3),
+        ] {
+            assert_eq!(
+                builder
+                    .overlay
+                    .resolve()
+                    .expect("complete overlay")
+                    .0
+                    .store_number,
+                3
+            );
+        }
+        let (config, _) = app()
+            .store_number(3)
+            .platform_database_url("postgres://unused/platform")
+            .resolve()
+            .expect("explicit store overrides application defaults");
+        assert_eq!(config.store_number, 3);
     }
 
     #[tokio::test]
@@ -1465,6 +1512,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1485,6 +1533,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1508,6 +1557,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1542,6 +1592,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1573,6 +1624,7 @@ mod tests {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1617,6 +1669,7 @@ mod tests {
     async fn build_refuses_mcp_without_authenticator_or_insecure_mode_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .served_surface(ServedSurface::All)
@@ -1632,6 +1685,7 @@ mod tests {
     async fn build_refuses_insecure_exposed_network_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .served_surface(ServedSurface::All)
@@ -1650,6 +1704,7 @@ mod tests {
     async fn build_refuses_non_loopback_insecure_mcp_before_storage() {
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .served_surface(ServedSurface::All)
@@ -1667,6 +1722,7 @@ mod tests {
         let owner = owner();
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1694,6 +1750,7 @@ mod tests {
         let owner = owner();
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1717,6 +1774,7 @@ mod tests {
         // advertising `ServedSurface::All`.
         let err = Proxima::<AlphaApp>::app()
             .database_url("postgres://unused:5432/unused")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .owner(owner())
             .build()

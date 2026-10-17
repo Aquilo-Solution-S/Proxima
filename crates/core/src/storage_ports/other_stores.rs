@@ -1,17 +1,8 @@
-//! Other stores: memory stores beside this one that a caller may read
-//! through, without their memories ever being copied here (issue #462).
+//! Read access to other stores, addressed by the number carried in each memory UUID.
 //!
-//! A host wires one [`OtherStores`] port through
-//! `RuntimeBuilder::other_stores`; it reaches tools as an
-//! [`OtherStoresService`] in the request's service bag. With no port wired,
-//! every surface behaves exactly as it did before: the `stores` search
-//! argument names only `local`, and a qualified handle is refused.
-//!
-//! A remote memory is addressed by a [`QualifiedHandle`],
-//! `<store>:<handle>`. Local handles keep their one-uppercase-letter class
-//! prefix (`F:`, `A:`, `P:`), and a [`StoreName`] starts with a lowercase
-//! letter and is at least two characters long, so the two can never be
-//! read as each other.
+//! A host wires one [`OtherStores`] port through `RuntimeBuilder::other_stores`;
+//! tools find it as [`OtherStoresService`] in the request's service bag.
+//! Display names describe stores; routing and durable origins use their numbers.
 
 use std::fmt;
 use std::sync::Arc;
@@ -19,12 +10,10 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
+use uuid::Uuid;
 
 use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
 use crate::{AuthzContext, OwnerId};
-
-/// The name `stores` uses for this deployment's own memories.
-pub const LOCAL_STORE: &str = "local";
 
 /// How long a search waits for one other store before reporting it as
 /// unanswered.
@@ -43,81 +32,6 @@ pub const MAX_LINEAGE_REMOTE_ORIGINS: usize = 64;
 /// Reciprocal-rank-fusion constant used to merge store result lists.
 pub const STORE_RRF_K: f32 = 60.0;
 
-const MAX_STORE_NAME_CHARS: usize = 64;
-const MAX_REMOTE_HANDLE_CHARS: usize = 512;
-
-/// A configured store's name: `[a-z][a-z0-9_-]{1,63}`, never `local`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StoreName(String);
-
-impl StoreName {
-    /// # Errors
-    ///
-    /// Returns [`OtherStoresError::InvalidName`] when `raw` is outside the
-    /// store-name charset, too short or long, or `local`.
-    pub fn new(raw: impl Into<String>) -> Result<Self, OtherStoresError> {
-        let raw = raw.into();
-        if Self::is_valid(&raw) {
-            Ok(Self(raw))
-        } else {
-            Err(OtherStoresError::InvalidName(raw))
-        }
-    }
-
-    fn is_valid(raw: &str) -> bool {
-        let mut chars = raw.chars();
-        matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
-            && (2..=MAX_STORE_NAME_CHARS).contains(&raw.len())
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-            && raw != LOCAL_STORE
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for StoreName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// `<store>:<handle>`: a memory that lives in another store.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct QualifiedHandle {
-    pub store: StoreName,
-    pub handle: String,
-}
-
-impl QualifiedHandle {
-    /// Read `raw` as a qualified handle. `None` means `raw` is not one (a
-    /// local handle such as `F:<uuid>`, or nothing handle-shaped at all);
-    /// the caller then treats it as local.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        let (store, handle) = raw.split_once(':')?;
-        let store = StoreName::new(store).ok()?;
-        if handle.is_empty()
-            || handle.chars().count() > MAX_REMOTE_HANDLE_CHARS
-            || handle.chars().any(char::is_control)
-        {
-            return None;
-        }
-        Some(Self {
-            store,
-            handle: handle.to_string(),
-        })
-    }
-}
-
-impl fmt::Display for QualifiedHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.store, self.handle)
-    }
-}
-
 /// Who is asking: the store decides what this caller may see.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreCaller<'a> {
@@ -128,11 +42,67 @@ pub struct StoreCaller<'a> {
 /// One store the caller may read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreInfo {
-    pub name: StoreName,
+    pub number: u16,
+    pub name: String,
     pub description: String,
     /// Schema ids the store holds; a search filtered to a `schema_id`
     /// exactly one store declares goes to that store only.
     pub schema_ids: Vec<String>,
+}
+
+/// A checked inventory of remote stores for one local store.
+///
+/// Remote numbers are unique and exclude this store's number. Routing and
+/// schema rendering share this inventory without choosing a local number again.
+///
+/// ```compile_fail
+/// use proxima_core::storage_ports::other_stores::StoreInventory;
+/// StoreInventory { local_number: 0, remotes: Vec::new() };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreInventory {
+    local_number: u16,
+    remotes: Vec<StoreInfo>,
+}
+
+impl StoreInventory {
+    /// Check an inventory where it enters from an other-stores port.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a local number or a repeated remote number.
+    pub fn new(local_number: u16, remotes: Vec<StoreInfo>) -> Result<Self, OtherStoresError> {
+        let mut numbers = std::collections::HashSet::with_capacity(remotes.len());
+        for info in &remotes {
+            if info.number == local_number {
+                return Err(OtherStoresError::LocalStoreInInventory(info.number));
+            }
+            if !numbers.insert(info.number) {
+                return Err(OtherStoresError::DuplicateStoreInInventory(info.number));
+            }
+        }
+        Ok(Self {
+            local_number,
+            remotes,
+        })
+    }
+
+    pub(crate) const fn empty(local_number: u16) -> Self {
+        Self {
+            local_number,
+            remotes: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn local_number(&self) -> u16 {
+        self.local_number
+    }
+
+    #[must_use]
+    pub fn remotes(&self) -> &[StoreInfo] {
+        &self.remotes
+    }
 }
 
 /// The search a remote store is asked to run.
@@ -171,7 +141,7 @@ pub struct RemoteSearchResult {
 /// One remote search hit, in the requested order within its store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteHit {
-    pub handle: String,
+    pub handle: Uuid,
     pub kind: EntityKind,
     pub schema_id: String,
     pub snippet: String,
@@ -182,7 +152,7 @@ pub struct RemoteHit {
 /// One remote memory, as read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteMemory {
-    pub handle: String,
+    pub handle: Uuid,
     pub kind: EntityKind,
     pub schema_id: String,
     pub title: Option<String>,
@@ -198,21 +168,21 @@ pub struct RemoteMemory {
 /// prepared, and its layer is the one the store reported.
 ///
 /// ```compile_fail
-/// use proxima_core::storage_ports::other_stores::{QualifiedHandle, ReadOrigin};
-/// fn forge(handle: QualifiedHandle) -> ReadOrigin {
+/// use proxima_core::storage_ports::other_stores::ReadOrigin;
+/// fn forge(handle: uuid::Uuid) -> ReadOrigin {
 ///     ReadOrigin { handle, kind: proxima_core::verbs::query::EntityKind::Fact }
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOrigin {
-    handle: QualifiedHandle,
+    handle: Uuid,
     kind: EntityKind,
 }
 
 impl ReadOrigin {
     #[must_use]
-    pub const fn handle(&self) -> &QualifiedHandle {
-        &self.handle
+    pub const fn handle(&self) -> Uuid {
+        self.handle
     }
 
     /// The layer the store reported for it.
@@ -223,7 +193,7 @@ impl ReadOrigin {
 
     /// A read this crate's unit tests stand in for, without a port.
     #[cfg(test)]
-    pub(crate) const fn for_tests(handle: QualifiedHandle, kind: EntityKind) -> Self {
+    pub(crate) const fn for_tests(handle: Uuid, kind: EntityKind) -> Self {
         Self { handle, kind }
     }
 }
@@ -249,10 +219,14 @@ pub enum RemoteOriginRead {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OtherStoresError {
-    #[error("invalid store name '{0}': expected [a-z][a-z0-9_-]{{1,63}}, not 'local'")]
-    InvalidName(String),
     #[error("unknown store '{0}'")]
-    UnknownStore(String),
+    UnknownStore(u16),
+    #[error("other-store inventory includes local store '{0}'")]
+    LocalStoreInInventory(u16),
+    #[error("other-store inventory repeats store '{0}'")]
+    DuplicateStoreInInventory(u16),
+    #[error("store returned memory {returned} for requested memory {requested}")]
+    MismatchedMemory { requested: Uuid, returned: Uuid },
     #[error("store unavailable: {0}")]
     Unavailable(String),
     #[error("store cannot honor search: {0}")]
@@ -275,7 +249,7 @@ pub trait OtherStores: Send + Sync {
     fn search<'a>(
         &'a self,
         caller: StoreCaller<'a>,
-        store: &'a StoreName,
+        store: u16,
         args: &'a RemoteSearch,
     ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>>;
 
@@ -283,8 +257,7 @@ pub trait OtherStores: Send + Sync {
     fn read<'a>(
         &'a self,
         caller: StoreCaller<'a>,
-        store: &'a StoreName,
-        handle: &'a str,
+        id: Uuid,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>>;
 }
 
@@ -329,6 +302,25 @@ impl OtherStoresService {
         self.timeout
     }
 
+    /// Read and check the remote-store inventory under the time bound.
+    /// An unavailable port returns `None`; an answered inventory is validated
+    /// before either routing or schema rendering can use it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an answered inventory containing the local number or duplicates.
+    pub async fn stores_bounded(
+        &self,
+        caller: StoreCaller<'_>,
+        local_number: u16,
+    ) -> Result<Option<StoreInventory>, OtherStoresError> {
+        let Ok(Ok(stores)) = tokio::time::timeout(self.timeout, self.port.stores(caller)).await
+        else {
+            return Ok(None);
+        };
+        StoreInventory::new(local_number, stores).map(Some)
+    }
+
     /// Read one handle under the time bound; a timeout is
     /// [`OtherStoresError::Unavailable`].
     ///
@@ -338,14 +330,20 @@ impl OtherStoresService {
     pub async fn read_bounded(
         &self,
         caller: StoreCaller<'_>,
-        handle: &QualifiedHandle,
+        id: Uuid,
     ) -> Result<RemoteRead, OtherStoresError> {
-        tokio::time::timeout(
-            self.timeout,
-            self.port.read(caller, &handle.store, &handle.handle),
-        )
-        .await
-        .unwrap_or_else(|_| Err(OtherStoresError::Unavailable("timed out".into())))
+        let read = tokio::time::timeout(self.timeout, self.port.read(caller, id))
+            .await
+            .unwrap_or_else(|_| Err(OtherStoresError::Unavailable("timed out".into())))?;
+        if let RemoteRead::Found(memory) = &read
+            && memory.handle != id
+        {
+            return Err(OtherStoresError::MismatchedMemory {
+                requested: id,
+                returned: memory.handle,
+            });
+        }
+        Ok(read)
     }
 
     /// [`Self::read_bounded`], and for a memory the caller may read, the
@@ -358,12 +356,12 @@ impl OtherStoresService {
     pub async fn read_origin(
         &self,
         caller: StoreCaller<'_>,
-        handle: &QualifiedHandle,
+        id: Uuid,
     ) -> Result<Option<(ReadOrigin, RemoteMemory)>, OtherStoresError> {
-        Ok(match self.read_bounded(caller, handle).await? {
+        Ok(match self.read_bounded(caller, id).await? {
             RemoteRead::Found(memory) => Some((
                 ReadOrigin {
-                    handle: handle.clone(),
+                    handle: id,
                     kind: memory.kind,
                 },
                 memory,
@@ -373,11 +371,11 @@ impl OtherStoresService {
     }
 
     /// Read origins under one call-wide deadline and construct witnesses only
-    /// for memories returned by this service.
+    /// for memories returned and UUID-checked by this service.
     pub async fn read_origins_bounded(
         &self,
         caller: StoreCaller<'_>,
-        handles: &[QualifiedHandle],
+        handles: &[Uuid],
     ) -> Vec<Result<RemoteOriginRead, OtherStoresError>> {
         self.read_many_bounded(caller, handles)
             .await
@@ -387,7 +385,7 @@ impl OtherStoresService {
                 result.map(|read| match read {
                     RemoteRead::Found(memory) => RemoteOriginRead::Found(
                         ReadOrigin {
-                            handle: handle.clone(),
+                            handle: *handle,
                             kind: memory.kind,
                         },
                         memory,
@@ -411,13 +409,13 @@ impl OtherStoresService {
     pub async fn read_many_bounded(
         &self,
         caller: StoreCaller<'_>,
-        handles: &[QualifiedHandle],
+        handles: &[Uuid],
     ) -> Vec<Result<RemoteRead, OtherStoresError>> {
-        let mut by_store: std::collections::BTreeMap<StoreName, Vec<(usize, QualifiedHandle)>> =
+        let mut by_store: std::collections::BTreeMap<u16, Vec<(usize, Uuid)>> =
             std::collections::BTreeMap::new();
-        for (index, handle) in handles.iter().cloned().enumerate() {
+        for (index, handle) in handles.iter().copied().enumerate() {
             by_store
-                .entry(handle.store.clone())
+                .entry(crate::memory_store_number(handle))
                 .or_default()
                 .push((index, handle));
         }
@@ -426,23 +424,12 @@ impl OtherStoresService {
         let groups = by_store.into_values().map(|entries| async move {
             stream::iter(entries)
                 .map(|(index, handle)| async move {
-                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    let result = if remaining.is_zero() {
+                    let result = if tokio::time::Instant::now() >= deadline {
                         Err(OtherStoresError::DeadlineExceeded)
                     } else {
-                        let bound = remaining.min(self.timeout);
-                        tokio::time::timeout(
-                            bound,
-                            self.port.read(caller, &handle.store, &handle.handle),
-                        )
-                        .await
-                        .unwrap_or_else(|_| {
-                            if remaining <= self.timeout {
-                                Err(OtherStoresError::DeadlineExceeded)
-                            } else {
-                                Err(OtherStoresError::Unavailable("timed out".into()))
-                            }
-                        })
+                        tokio::time::timeout_at(deadline, self.read_bounded(caller, handle))
+                            .await
+                            .unwrap_or(Err(OtherStoresError::DeadlineExceeded))
                     };
                     (index, result)
                 })
@@ -466,12 +453,12 @@ impl OtherStoresService {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreRoute {
     pub local: bool,
-    pub remotes: Vec<StoreName>,
+    pub remotes: Vec<u16>,
 }
 
 /// Pick the stores of one search.
 ///
-/// - `requested` names stores explicitly (`local` for this one); each must
+/// - `requested` numbers stores explicitly; each must
 ///   be one the caller may read.
 /// - Otherwise a `schema_id` declared by exactly one store — this one
 ///   counting as a store, by `local_declares` — routes there only.
@@ -482,11 +469,13 @@ pub struct StoreRoute {
 /// Returns a message naming the first requested store that is not
 /// readable, or an empty request.
 pub fn route_stores(
-    requested: Option<&[String]>,
+    requested: Option<&[u16]>,
     schema_id: Option<&str>,
     local_declares: impl Fn(&str) -> bool,
-    readable: &[StoreInfo],
+    inventory: &StoreInventory,
 ) -> Result<StoreRoute, String> {
+    let local_number = inventory.local_number;
+    let readable = &inventory.remotes;
     if let Some(requested) = requested {
         if requested.is_empty() {
             return Err("stores must name at least one store when given".into());
@@ -495,17 +484,17 @@ pub fn route_stores(
             local: false,
             remotes: Vec::new(),
         };
-        for name in requested {
-            if name == LOCAL_STORE {
+        for number in requested {
+            if *number == local_number {
                 route.local = true;
                 continue;
             }
             let info = readable
                 .iter()
-                .find(|info| info.name.as_str() == name)
-                .ok_or_else(|| format!("unknown store '{name}'"))?;
-            if !route.remotes.contains(&info.name) {
-                route.remotes.push(info.name.clone());
+                .find(|info| info.number == *number)
+                .ok_or_else(|| format!("unknown store '{number}'"))?;
+            if !route.remotes.contains(&info.number) {
+                route.remotes.push(info.number);
             }
         }
         return Ok(route);
@@ -528,7 +517,7 @@ pub fn route_stores(
             (false, Some(only), None) => {
                 return Ok(StoreRoute {
                     local: false,
-                    remotes: vec![only.name.clone()],
+                    remotes: vec![only.number],
                 });
             }
             _ => {}
@@ -536,7 +525,7 @@ pub fn route_stores(
     }
     Ok(StoreRoute {
         local: true,
-        remotes: readable.iter().map(|info| info.name.clone()).collect(),
+        remotes: readable.iter().map(|info| info.number).collect(),
     })
 }
 
@@ -563,62 +552,33 @@ pub fn rrf_merge<T>(lists: Vec<Vec<T>>) -> Vec<(T, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    fn info(name: &str, schemas: &[&str]) -> StoreInfo {
+    fn info(number: u16, name: &str, schemas: &[&str]) -> StoreInfo {
         StoreInfo {
-            name: StoreName::new(name).expect("name"),
+            number,
+            name: name.into(),
             description: String::new(),
             schema_ids: schemas.iter().map(ToString::to_string).collect(),
         }
     }
 
     #[test]
-    fn local_handles_are_never_qualified() {
-        let id = "018f0000-0000-7000-8000-000000000001";
-        for prefix in ["F", "A", "P", "G"] {
-            assert_eq!(QualifiedHandle::parse(&format!("{prefix}:{id}")), None);
-        }
-        assert_eq!(QualifiedHandle::parse(id), None);
-        assert_eq!(QualifiedHandle::parse("local:abc"), None);
-        assert_eq!(QualifiedHandle::parse("remote:"), None);
-        let parsed = QualifiedHandle::parse("remote:abc").expect("qualified");
-        assert_eq!(parsed.store.as_str(), "remote");
-        assert_eq!(parsed.handle, "abc");
-        assert_eq!(parsed.to_string(), "remote:abc");
-        // The handle part may itself carry colons.
-        assert_eq!(
-            QualifiedHandle::parse("wiki:F:x")
-                .expect("qualified")
-                .handle,
-            "F:x"
-        );
-    }
-
-    #[test]
-    fn store_names_are_restricted() {
-        for bad in ["", "a", "Remote", "1st", "local", "has space", "a:b"] {
-            assert!(StoreName::new(bad).is_err(), "{bad}");
-        }
-        for good in ["ab", "team-wiki", "s3_archive", "x9"] {
-            assert!(StoreName::new(good).is_ok(), "{good}");
-        }
-    }
-
-    #[test]
     fn a_schema_declared_by_one_store_routes_there_only() {
-        let stores = [
-            info("wiki", &["wiki/page"]),
-            info("crm", &["crm/contact", "shared"]),
-        ];
-        // This store declares `core/note` and `shared`.
+        let stores = StoreInventory::new(
+            3,
+            vec![
+                info(5, "wiki", &["wiki/page"]),
+                info(7, "crm", &["crm/contact", "shared"]),
+            ],
+        )
+        .expect("valid inventory");
         let local = |id: &str| matches!(id, "core/note" | "shared");
         let only = route_stores(None, Some("wiki/page"), local, &stores).expect("route");
         assert_eq!(
             only,
             StoreRoute {
                 local: false,
-                remotes: vec![stores[0].name.clone()]
+                remotes: vec![5]
             }
         );
 
@@ -631,37 +591,142 @@ mod tests {
             }
         );
 
-        // Declared here and by one other store: two stores, so all of them.
-        let both = route_stores(None, Some("shared"), local, &stores).expect("route");
-        assert!(both.local);
-        assert_eq!(both.remotes.len(), 2);
-
-        let shared = [info("wiki", &["shared"]), info("crm", &["shared"])];
+        for schema in ["shared", "nobody/has"] {
+            let all = route_stores(None, Some(schema), local, &stores).expect("route");
+            assert!(all.local);
+            assert_eq!(all.remotes, [5, 7]);
+        }
+        let shared = StoreInventory::new(
+            3,
+            vec![info(5, "wiki", &["shared"]), info(7, "crm", &["shared"])],
+        )
+        .expect("valid inventory");
         let all = route_stores(None, Some("shared"), |_| false, &shared).expect("route");
         assert!(all.local);
-        assert_eq!(all.remotes.len(), 2);
+        assert_eq!(all.remotes, [5, 7]);
 
-        let undeclared = route_stores(None, Some("nobody/has"), local, &stores).expect("route");
-        assert!(undeclared.local);
-        assert_eq!(undeclared.remotes.len(), 2);
-
-        let explicit = route_stores(
-            Some(&["local".into(), "crm".into()]),
-            Some("wiki/page"),
-            local,
-            &stores,
-        )
-        .expect("route");
+        let explicit =
+            route_stores(Some(&[3, 7, 7]), Some("wiki/page"), local, &stores).expect("route");
         assert_eq!(
             explicit,
             StoreRoute {
                 local: true,
-                remotes: vec![stores[1].name.clone()]
+                remotes: vec![7]
             }
         );
 
-        assert!(route_stores(Some(&["nope".into()]), None, local, &stores).is_err());
+        let error = route_stores(Some(&[9]), None, local, &stores).expect_err("unknown store");
+        assert!(error.contains('9'));
         assert!(route_stores(Some(&[]), None, local, &stores).is_err());
+    }
+
+    #[test]
+    fn inventories_refuse_local_and_duplicate_store_numbers() {
+        assert_eq!(
+            StoreInventory::new(3, vec![info(5, "remote", &[]), info(3, "local", &[])]),
+            Err(OtherStoresError::LocalStoreInInventory(3))
+        );
+        assert_eq!(
+            StoreInventory::new(3, vec![info(5, "first", &[]), info(5, "second", &[])]),
+            Err(OtherStoresError::DuplicateStoreInInventory(5))
+        );
+    }
+
+    #[test]
+    fn changing_display_names_does_not_change_routes() {
+        let before =
+            StoreInventory::new(3, vec![info(5, "wiki", &["wiki/page"])]).expect("valid inventory");
+        let after = StoreInventory::new(3, vec![info(5, "knowledge", &["wiki/page"])])
+            .expect("valid inventory");
+        for requested in [None, Some([5].as_slice())] {
+            assert_eq!(
+                route_stores(requested, Some("wiki/page"), |_| false, &before),
+                route_stores(requested, Some("wiki/page"), |_| false, &after),
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct WrongMemoryStore;
+
+    impl OtherStores for WrongMemoryStore {
+        fn stores<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+        ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn search<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _store: u16,
+            _args: &'a RemoteSearch,
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
+        }
+
+        fn read<'a>(
+            &'a self,
+            _caller: StoreCaller<'a>,
+            _id: Uuid,
+        ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteRead::Found(RemoteMemory {
+                    handle: Uuid::from_u128(2),
+                    kind: EntityKind::Fact,
+                    schema_id: "remote/note".into(),
+                    title: None,
+                    body: "different memory".into(),
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    tags: Vec::new(),
+                }))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_cannot_bind_another_memorys_kind_to_the_requested_origin() {
+        let owner = crate::UserId::new(Uuid::nil());
+        let authz = AuthzContext::for_subject(owner, crate::AuthPath::System);
+        let service = OtherStoresService::new(Arc::new(WrongMemoryStore));
+        let requested = Uuid::from_u128(1);
+        let error = service
+            .read_origin(
+                StoreCaller {
+                    owner: owner.into(),
+                    authz: &authz,
+                },
+                requested,
+            )
+            .await
+            .expect_err("a mismatched memory cannot become an origin");
+        assert_eq!(
+            error,
+            OtherStoresError::MismatchedMemory {
+                requested,
+                returned: Uuid::from_u128(2),
+            }
+        );
+        let reads = service
+            .read_origins_bounded(
+                StoreCaller {
+                    owner: owner.into(),
+                    authz: &authz,
+                },
+                &[requested],
+            )
+            .await;
+        assert!(matches!(
+            &reads[0],
+            Err(OtherStoresError::MismatchedMemory { requested: actual, returned })
+                if *actual == requested && *returned == Uuid::from_u128(2)
+        ));
     }
 
     #[test]
@@ -672,7 +737,6 @@ mod tests {
         assert!((merged[0].1 - 1.0 / 61.0).abs() < f32::EPSILON);
         assert!(merged.windows(2).all(|w| w[0].1 >= w[1].1));
     }
-
     struct SlowOrigins {
         delay: Duration,
         active: std::sync::atomic::AtomicUsize,
@@ -708,7 +772,7 @@ mod tests {
         fn search<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
+            _store: u16,
             _args: &'a RemoteSearch,
         ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
             Box::pin(async {
@@ -722,8 +786,7 @@ mod tests {
         fn read<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
-            _handle: &'a str,
+            _id: Uuid,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async {
                 use std::sync::atomic::Ordering::SeqCst;
@@ -745,9 +808,7 @@ mod tests {
             authz: &authz,
         };
         let handles = (0..255)
-            .map(|index| {
-                QualifiedHandle::parse(&format!("remote:{index}")).expect("qualified test handle")
-            })
+            .map(|_| crate::new_memory_uuid(1))
             .collect::<Vec<_>>();
         let port = Arc::new(SlowOrigins::new(Duration::from_millis(1_900)));
         let service = OtherStoresService::new(port.clone());
@@ -777,7 +838,7 @@ mod tests {
             authz: &authz,
         };
         let service = OtherStoresService::new(Arc::new(SlowOrigins::new(Duration::from_secs(3))));
-        let handles = [QualifiedHandle::parse("remote:slow").expect("handle")];
+        let handles = [crate::new_memory_uuid(1)];
         let started = tokio::time::Instant::now();
         let reads = service.read_many_bounded(caller, &handles).await;
         assert_eq!(started.elapsed(), Duration::from_secs(2));
@@ -794,13 +855,9 @@ mod tests {
             owner,
             authz: &authz,
         };
-        let handles = ["first", "second"]
+        let handles = [1, 2]
             .into_iter()
-            .flat_map(|store| {
-                (0..8).map(move |index| {
-                    QualifiedHandle::parse(&format!("{store}:{index}")).expect("handle")
-                })
-            })
+            .flat_map(|store| (0..8).map(move |_| crate::new_memory_uuid(store)))
             .collect::<Vec<_>>();
         let port = Arc::new(SlowOrigins::new(Duration::from_millis(1_900)));
         let service = OtherStoresService::new(port.clone());

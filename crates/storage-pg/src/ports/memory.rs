@@ -34,18 +34,7 @@ impl MemoryAuthoringPort for PgStorage {
                 crate::owner_scope::require_owner_scope(permit.owner_scope())?,
             )
             .await?;
-            let draft = verbs::derive_append::DerivedDraft {
-                memory_id: req.memory_id.into_inner(),
-                owner: req.owner,
-                kind: req.kind,
-                schema_id: req.schema_id.clone(),
-                schema_version: req.schema_version,
-                text: req.text.clone(),
-                operator_kind: req.operator_kind,
-                supersedes: req.supersedes,
-                lexical_language: req.lexical_language,
-                queued_spaces: req.queued_spaces,
-            };
+            let draft = verbs::derive_append::DerivedDraft::from_request(req, self.store_number);
             // Share origin validation with the write-session authoring path.
             verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
                 .await?;
@@ -267,6 +256,10 @@ impl MemoryAuthoringPort for PgStorage {
 
 #[async_trait::async_trait]
 impl MemoryReadPort for PgStorage {
+    fn store_number(&self) -> u16 {
+        self.store_number
+    }
+
     async fn load_fact_text(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,

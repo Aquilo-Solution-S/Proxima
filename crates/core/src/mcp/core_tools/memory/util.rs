@@ -66,12 +66,15 @@ pub fn operator_label(ctx: &McpToolCtx, explicit: Option<&str>) -> Result<String
 ///
 /// Returns [`McpToolError::InvalidInput`] when `handles` is over `max` or
 /// resolves to nothing, and whatever `resolve` returns for a bad handle.
-pub fn dedup_resolved<T>(
-    handles: &[String],
+pub async fn dedup_resolved<'a, T: Send>(
+    handles: &'a [String],
     max: usize,
     field: &'static str,
     empty_message: &'static str,
-    mut resolve: impl FnMut(&str) -> Result<(MemoryId, T), McpToolError>,
+    mut resolve: impl FnMut(
+        &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<(MemoryId, T), McpToolError>>
+    + Send,
 ) -> Result<Vec<(MemoryId, T)>, McpToolError> {
     if handles.len() > max {
         return Err(McpToolError::InvalidInput(format!(
@@ -81,7 +84,7 @@ pub fn dedup_resolved<T>(
     let mut seen = std::collections::HashSet::with_capacity(handles.len());
     let mut resolved = Vec::with_capacity(handles.len());
     for handle in handles {
-        let (memory_id, class) = resolve(handle)?;
+        let (memory_id, class) = resolve(handle).await?;
         if seen.insert(memory_id.into_inner()) {
             resolved.push((memory_id, class));
         }
@@ -296,15 +299,16 @@ mod tests {
         Ok((memory(last as u8), last))
     }
 
-    #[test]
-    fn dedup_resolved_rejects_an_empty_result_with_the_callers_message() {
+    #[tokio::test]
+    async fn dedup_resolved_rejects_an_empty_result_with_the_callers_message() {
         let McpToolError::InvalidInput(message) = dedup_resolved(
             &[],
             8,
             "source_handles",
             "source_handles must be nonempty for operator derivation",
-            resolve_by_last_char,
+            |handle| Box::pin(std::future::ready(resolve_by_last_char(handle))),
         )
+        .await
         .expect_err("no declared inputs") else {
             panic!("an empty declaration must be invalid input");
         };
@@ -314,12 +318,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dedup_resolved_rejects_more_handles_than_the_cap() {
+    #[tokio::test]
+    async fn dedup_resolved_rejects_more_handles_than_the_cap() {
         let handles: Vec<String> = (0..3).map(|i| format!("mem-{i}")).collect();
         let McpToolError::InvalidInput(message) =
-            dedup_resolved(&handles, 2, "subjects", "nonempty", resolve_by_last_char)
-                .expect_err("over the cap")
+            dedup_resolved(&handles, 2, "subjects", "nonempty", |handle| {
+                Box::pin(std::future::ready(resolve_by_last_char(handle)))
+            })
+            .await
+            .expect_err("over the cap")
         else {
             panic!("an over-cap declaration must be invalid input");
         };
@@ -329,10 +336,16 @@ mod tests {
     /// A handle the surface cannot resolve fails the whole declaration:
     /// silently dropping it would write a derivation over fewer inputs
     /// than the caller declared.
-    #[test]
-    fn dedup_resolved_propagates_a_resolver_error() {
+    #[tokio::test]
+    async fn dedup_resolved_propagates_a_resolver_error() {
         let handles = vec!["ok".to_string(), String::new()];
-        assert!(dedup_resolved(&handles, 8, "subjects", "nonempty", resolve_by_last_char).is_err());
+        assert!(
+            dedup_resolved(&handles, 8, "subjects", "nonempty", |handle| Box::pin(
+                std::future::ready(resolve_by_last_char(handle))
+            ))
+            .await
+            .is_err()
+        );
     }
 
     #[test]

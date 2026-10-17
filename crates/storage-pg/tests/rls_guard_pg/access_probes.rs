@@ -145,6 +145,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
         PgPoolConfig::default(),
         PgTuning::default(),
         scope,
+        1,
     )
     .await
     .expect("runtime storage");
@@ -226,6 +227,7 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
         PgPoolConfig::default(),
         PgTuning::default(),
         scope,
+        1,
     )
     .await
     .expect_err("a runtime role unsafe on a composed schema is refused");

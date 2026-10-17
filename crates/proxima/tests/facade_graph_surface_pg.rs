@@ -79,6 +79,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
@@ -235,6 +236,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
@@ -361,6 +363,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
         let foreign = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
@@ -547,6 +550,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
         let foreign = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
@@ -653,6 +657,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .allow_insecure_single_owner()
@@ -1147,6 +1152,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -1476,6 +1482,7 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
         ];
         let built = Proxima::<FacadeSurfaceApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owners[0])
             .allow_insecure_single_owner()

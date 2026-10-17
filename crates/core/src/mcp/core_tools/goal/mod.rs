@@ -98,11 +98,11 @@ pub struct GoalSetArgs {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstraction handles (`A:<uuid>`) that motivate the goal; at least one."
+        description = "Abstraction handles (`<uuid>`) that motivate the goal; at least one."
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Perspective handle (`P:<uuid>`) the goal is assigned to, e.g. a stance `core_interpret` returned. Required unless the host supplies a caller Perspective."
+        description = "Perspective handle (`<uuid>`) the goal is assigned to, e.g. a stance `core_interpret` returned. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
@@ -288,7 +288,7 @@ pub enum GoalTransition {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalTransitionArgs {
     #[schemars(
-        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
+        description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
     #[schemars(
@@ -355,12 +355,12 @@ async fn goal_transition(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalMarkAchievedArgs {
     #[schemars(
-        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
+        description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
     #[schemars(
         length(min = 1),
-        description = "Fact or Abstraction handles (`F:`/`A:<uuid>`) that show completion; at least one."
+        description = "Fact or Abstraction UUIDs that show completion; at least one."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -406,14 +406,14 @@ async fn goal_mark_achieved(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalModifyArgs {
     #[schemars(
-        description = "Goal handle `G:<uuid>` from the latest write on this goal; an older handle is refused."
+        description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused."
     )]
     pub goal: String,
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Replacement Abstraction handles (`A:<uuid>`), at least one. Omit to keep the current evidence."
+        description = "Replacement Abstraction handles (`<uuid>`), at least one. Omit to keep the current evidence."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
@@ -433,11 +433,10 @@ async fn goal_modify(
     }
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
-    let evidence = args
-        .evidence
-        .as_ref()
-        .map(|evidence| resolve_operator_goal_evidence(&ctx, evidence))
-        .transpose()?;
+    let evidence = match args.evidence.as_ref() {
+        Some(evidence) => Some(resolve_operator_goal_evidence(&ctx, evidence)?),
+        None => None,
+    };
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
         .map_err(McpToolError::InvalidInput)?;
     let engine = ctx.require_engine()?;
@@ -469,7 +468,7 @@ pub struct GoalDecomposeArgs {
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Perspective handle (`P:<uuid>`) the children are assigned to; not inherited from the parent. Required unless the host supplies a caller Perspective."
+        description = "Perspective handle (`<uuid>`) the children are assigned to; not inherited from the parent. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
@@ -484,7 +483,7 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstraction handles (`A:<uuid>`) that motivate this child; at least one."
+        description = "Abstraction handles (`<uuid>`) that motivate this child; at least one."
     )]
     pub evidence: Vec<String>,
 }
@@ -541,7 +540,7 @@ async fn goal_decompose(
         .await
         .map_err(McpToolError::Protocol)?;
     Ok(GoalDecomposeOutput {
-        parent_goal: ctx.format_goal(parent),
+        parent_goal: parent.into_inner().to_string(),
         children: outcome
             .children
             .into_iter()
@@ -611,12 +610,7 @@ fn resolve_evidence(
         .collect()
 }
 
-/// Resolve operator-authored Goal evidence at the protocol boundary.
-///
-/// A syntactically valid but absent or unreadable `A:` reaches the Engine's
-/// normal authorization gate and collapses to `Forbidden("entry not found")`.
-/// Other prefixes are rejected before any storage access, so a caller cannot
-/// pair an operator schema with a lower- or higher-layer carrier.
+/// Parse operator Goal evidence; storage checks its actual kind in the write transaction.
 pub(crate) fn resolve_operator_goal_evidence(
     ctx: &McpToolCtx,
     evidence: &[String],
@@ -626,18 +620,7 @@ pub(crate) fn resolve_operator_goal_evidence(
             "operator-authored Goal evidence must contain at least one Abstraction handle".into(),
         ));
     }
-    evidence
-        .iter()
-        .map(|handle| {
-            ctx.resolve_abstraction_memory(handle)
-                .map(GoalEvidenceRef::new)
-                .map_err(|_| {
-                    McpToolError::InvalidInput(
-                        "operator-authored Goal evidence must be Abstraction".into(),
-                    )
-                })
-        })
-        .collect()
+    resolve_evidence(ctx, evidence)
 }
 
 fn target_perspective(
@@ -645,17 +628,15 @@ fn target_perspective(
     target_perspective: Option<&str>,
 ) -> Result<GoalAssignmentTarget, McpToolError> {
     match target_perspective {
-        Some(handle) => ctx
-            .resolve_perspective_memory(handle)
+        Some(raw) => ctx
+            .resolve_memory(raw)
             .map(GoalAssignmentTarget::perspective),
         None => ctx
             .caller_self_perspective
             .map(GoalAssignmentTarget::perspective)
             .ok_or_else(|| {
                 McpToolError::InvalidInput(
-                    "target_perspective is required: name the Perspective (`P:<uuid>`) to \
-                     assign to, e.g. one core_interpret returned"
-                        .into(),
+                    "target_perspective is required: name the Perspective UUID to assign to".into(),
                 )
             }),
     }
@@ -699,9 +680,9 @@ pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str)
     })
 }
 
-fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> GoalWriteOutput {
+fn format_goal_write_output(_ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> GoalWriteOutput {
     GoalWriteOutput {
-        handle: ctx.format_goal(outcome.goal_id),
+        handle: outcome.goal_id.into_inner().to_string(),
         edge_count: outcome.edge_count,
         idempotent_replay: outcome.idempotent_replay,
     }
@@ -794,8 +775,8 @@ mod tests {
     #[tokio::test]
     async fn direct_goal_actions_forward_operator_authorship() {
         let (ctx, observed, target) = operator_recording_ctx();
-        let abstraction = format!("A:{}", uuid::Uuid::now_v7());
-        let perspective = ctx.format_perspective_memory(target);
+        let abstraction = format!("{}", uuid::Uuid::now_v7());
+        let perspective = target.into_inner().to_string();
 
         let set_error = goal_set(
             ctx.clone(),
@@ -815,7 +796,9 @@ mod tests {
         let modify_error = goal_modify(
             ctx.clone(),
             GoalModifyArgs {
-                goal: ctx.format_goal(crate::GoalId::new(uuid::Uuid::now_v7())),
+                goal: (crate::GoalId::new(uuid::Uuid::now_v7()))
+                    .into_inner()
+                    .to_string(),
                 payload: valid_goal_payload_args(),
                 evidence: Some(vec![abstraction.clone()]),
                 idempotency_key: Some("operator-modify-authorship".into()),
@@ -830,7 +813,9 @@ mod tests {
         let decompose_error = goal_decompose(
             ctx.clone(),
             GoalDecomposeArgs {
-                parent_goal: ctx.format_goal(crate::GoalId::new(uuid::Uuid::now_v7())),
+                parent_goal: (crate::GoalId::new(uuid::Uuid::now_v7()))
+                    .into_inner()
+                    .to_string(),
                 children: vec![ChildGoalInput {
                     payload: valid_goal_payload_args(),
                     evidence: vec![abstraction],
@@ -896,7 +881,7 @@ mod tests {
         let err = goal_modify(
             test_ctx(),
             GoalModifyArgs {
-                goal: format!("G:{}", uuid::Uuid::now_v7()),
+                goal: format!("{}", uuid::Uuid::now_v7()),
                 payload: GoalPayloadArgs {
                     schema_id: "bogus/goal".into(),
                     schema_version: None,
@@ -923,7 +908,7 @@ mod tests {
         // only fires on empty evidence (an Abstraction handle is accepted).
         let err = goal_set(
             test_ctx(),
-            goal_set_args(vec![format!("A:{}", uuid::Uuid::now_v7())]),
+            goal_set_args(vec![format!("{}", uuid::Uuid::now_v7())]),
         )
         .await
         .expect_err("bogus schema still fails later");
@@ -938,21 +923,12 @@ mod tests {
     }
 
     #[test]
-    fn operator_goal_evidence_accepts_only_abstraction_handles() {
+    fn operator_goal_evidence_rejects_prefixed_ids_before_storage() {
         let ctx = test_ctx();
-        let abstraction = format!("A:{}", uuid::Uuid::now_v7());
-        let resolved = resolve_operator_goal_evidence(&ctx, std::slice::from_ref(&abstraction))
-            .expect("A handle should resolve at the boundary");
-        assert_eq!(resolved.len(), 1);
-
-        for prefix in ['F', 'P'] {
-            let handle = format!("{prefix}:{}", uuid::Uuid::now_v7());
-            let err = resolve_operator_goal_evidence(&ctx, &[handle])
-                .expect_err("non-Abstraction prefixes must fail before storage");
-            assert!(
-                matches!(err, McpToolError::InvalidInput(ref message) if message.contains("must be Abstraction")),
-                "got {err:?}"
-            );
+        for prefix in ['F', 'A', 'P', 'G'] {
+            let raw = format!("{prefix}:{}", uuid::Uuid::now_v7());
+            let err = resolve_operator_goal_evidence(&ctx, &[raw]).expect_err("bare UUID required");
+            assert!(matches!(err, McpToolError::InvalidInput(_)), "{err}");
         }
     }
 

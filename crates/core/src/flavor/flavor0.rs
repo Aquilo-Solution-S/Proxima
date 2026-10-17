@@ -1118,7 +1118,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "memory",
         name: "proxima-memory",
         title: "Proxima Memory",
-        description: "Owner-scoped memory by prefixed id (`F:`/`A:`/`P:`).",
+        description: "Owner-scoped memory by bare UUID.",
         scope_key: scope::MEMORY,
         is_template: true,
         read_only: true,
@@ -1133,7 +1133,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "memories",
         name: "proxima-memories",
         title: "Proxima Memories",
-        description: "Batch memory read by comma-separated prefixed ids (`F:`/`A:`/`P:`), \
+        description: "Batch memory read by comma-separated bare UUIDs, \
                       at most 100 per call; unknown or invisible ids are reported as missing.",
         scope_key: scope::MEMORIES,
         is_template: true,
@@ -1149,7 +1149,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "memory",
         name: "proxima-memory-lineage",
         title: "Proxima Memory Lineage",
-        description: "Owner-scoped origin lineage from a prefixed memory id, \
+        description: "Owner-scoped origin lineage from a bare memory UUID, \
                       with keyset cursor pagination.",
         scope_key: scope::MEMORY_LINEAGE,
         is_template: true,
@@ -1176,7 +1176,7 @@ const RESOURCES: &[ResourceContract] = &[
         path: "goal",
         name: "proxima-goal",
         title: "Proxima Goal",
-        description: "Single-goal read by series handle or any version reference G:<uuid>; returns the series' current head.",
+        description: "Single-goal read by series handle or any version UUID; returns the series' current head.",
         scope_key: scope::GOAL,
         is_template: true,
         read_only: true,

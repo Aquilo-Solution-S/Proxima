@@ -280,7 +280,7 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     .await
     .expect("exactly one row");
     assert_eq!(row_t, t, "the record is keyed by the Fact's t");
-    assert_eq!(event_id, format!("F:{t}"));
+    assert_eq!(event_id, t.to_string());
     assert_eq!(state, "pending");
     assert_eq!(attempts, 0);
     assert_eq!(outbox_rows(&pool).await, 1);
@@ -316,7 +316,7 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     }
     let parsed: serde_json::Value = serde_json::from_slice(&envelope).expect("valid JSON");
     assert_eq!(parsed["specversion"], "1.0");
-    assert_eq!(parsed["id"], format!("F:{t}"));
+    assert_eq!(parsed["id"], t.to_string());
     assert_eq!(parsed["source"], source().as_str());
     assert_eq!(parsed["type"], ListenableProbeV1::SCHEMA_ID);
     assert_eq!(parsed["datacontenttype"], "application/json");
@@ -331,17 +331,12 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     );
 
     // `time` is when the Fact occurred. Its writer gave no time, so that is
-    // the v7 timestamp of `t` (not the capture's wall clock), and it is the
+    // the UUID timestamp of `t`, and it is the
     // `occurred_at` the Fact reads back with.
-    let (secs, nanos) = t.get_timestamp().expect("a v7 id").to_unix();
-    let expected = time::OffsetDateTime::from_unix_timestamp_nanos(
-        i128::from(secs) * 1_000_000_000 + i128::from(nanos),
-    )
-    .expect("in range")
-    .replace_nanosecond((nanos / 1_000_000) * 1_000_000)
-    .expect("millisecond truncation")
-    .format(&time::format_description::well_known::Rfc3339)
-    .expect("formats");
+    let expected = MemoryId::new(t)
+        .created_at()
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("formats");
     assert_eq!(parsed["time"], expected);
     let stored: time::OffsetDateTime =
         sqlx::query_scalar("SELECT occurred_at FROM proxima_core.memory WHERE t = $1")
@@ -561,6 +556,7 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
         &authorized,
         &[],
         crate::verbs::fact_ingest::FactAdmissionInput {
+            store_number: 1,
             natural_key: None,
             sidecar_tables: &[],
             scopes: &[],
@@ -621,6 +617,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
         &authorized,
         &[],
         crate::verbs::fact_ingest::FactAdmissionInput {
+            store_number: 1,
             natural_key: None,
             sidecar_tables: &[],
             scopes: &[],

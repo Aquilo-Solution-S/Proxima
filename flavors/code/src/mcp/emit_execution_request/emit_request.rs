@@ -3,8 +3,8 @@ use proxima_core::{EdgeEndpoint, EntityKind, FactPayload, Tool, ToolCtx, ToolErr
 
 use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1};
 
+use super::super::engine;
 use super::super::sql::resolve_repo_identifier;
-use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
     validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
     validate_repo,
@@ -44,8 +44,9 @@ impl Tool for CodeEmitExecutionRequestTool {
                     "caller_self_perspective is required to author an execution request".into(),
                 )
             })?;
-            let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
-            let evidence = resolve_evidence(&ctx, &args.evidence)?;
+            let goal_activated_memory_id =
+                crate::mcp::parse_memory_uuid(&args.goal_activated_memory)?;
+            let evidence = resolve_evidence(&args.evidence)?;
 
             let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&ctx, goal_id, planner_root).await?;
@@ -110,14 +111,14 @@ impl Tool for CodeEmitExecutionRequestTool {
             uow.commit().await.map_err(ToolError::Protocol)?;
 
             Ok(CodeEmitExecutionRequestOutput {
-                handle: ctx.format_fact_memory(outcome.memory_id),
+                handle: outcome.memory_id.into_inner().to_string(),
                 origin_count: if outcome.idempotent_replay {
                     0
                 } else {
                     origins.len()
                 },
                 acceptance_criteria_handle: acceptance_memory_id
-                    .map(|id| ctx.format_fact_memory(id)),
+                    .map(|id| id.into_inner().to_string()),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

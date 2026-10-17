@@ -172,7 +172,7 @@ pub fn build_instructions(
             out.push_str(
                 "When the claim is a judgment about memories that already exist — a reason and a \
                  confidence — `core_interpret` authors an interpretation Perspective over its \
-                 `subjects` and returns a `P:` handle. Subjects may be Facts, Abstractions, or \
+                 `subjects` and returns a Perspective UUID. Subjects may be Facts, Abstractions, or \
                  Perspectives; the new Perspective declares references, not derivation origins. ",
             );
         }
@@ -324,11 +324,11 @@ pub fn how_to_markdown(
     out.push_str("## The model: three layers\n\n");
     out.push_str(
         "- **Fact** — an immutable observation; something that happened or that you learned. \
-         Wire handle `F:<uuid>`.\n\
+         Wire handle `<uuid>`.\n\
          - **Abstraction** — a conclusion over a nonempty set of Facts or Abstractions. Wire handle \
-         `A:<uuid>`.\n\
+         `<uuid>`.\n\
          - **Perspective** — a stance or self-model (\"how I see X\", \"who I am\"). Wire handle \
-         `P:<uuid>`.\n\n",
+         `<uuid>`.\n\n",
     );
 
     push_law(&mut out, s);
@@ -368,12 +368,12 @@ fn push_law(out: &mut String, s: Surface) {
     out.push_str("```\n");
     out.push_str(
         "core_derive(kind=\"Abstraction\", title=..., body=...,\n\
-        \x20           source_handles=[\"F:aaaa\", \"F:bbbb\", \"F:cccc\"])\n",
+        \x20           source_handles=[\"00000000-0000-8000-8000-000000000001\", \"00000000-0000-8000-8000-000000000002\", \"00000000-0000-8000-8000-000000000003\"])\n",
     );
     out.push_str("```\n\n");
     out.push_str(
         "`source_handles` lands `origin` entries from the new Abstraction/Perspective down to \
-         each source. **That is the graph.** Wanting to connect two `F:` handles is the signal \
+         each source. **That is the graph.** Wanting to connect two Fact UUIDs is the signal \
          to *abstract*. An Abstraction can also derive from a nonempty set of Abstractions; \
          keep one input layer per call. A derived Perspective requires Abstraction origins.",
     );
@@ -384,11 +384,11 @@ fn push_law(out: &mut String, s: Surface) {
         out.push_str("```\n");
         out.push_str(
             "core_interpret(claim=\"the outage followed the deploy\", confidence=80,\n\
-            \x20              subjects=[\"F:aaaa\", \"A:bbbb\"])\n",
+            \x20              subjects=[\"00000000-0000-8000-8000-000000000001\", \"00000000-0000-8000-8000-000000000004\"])\n",
         );
         out.push_str("```\n\n");
         out.push_str(
-            "It returns a `P:` handle. A reason and a confidence are a judgment, and a judgment \
+            "It returns a Perspective UUID. A reason and a confidence are a judgment, and a judgment \
              is a Perspective. Subjects may be Facts, Abstractions, or Perspectives; the new \
              Perspective declares references, not derivation origins.",
         );
@@ -501,18 +501,18 @@ fn push_worked_example(out: &mut String, s: Surface) {
     let _ = writeln!(
         out,
         "1. **Observe.** `core_remember(title=..., body=...)` for each distinct thing that \
-         happened → Facts `F:a`, `F:b`, `F:c`."
+         happened → Facts `fact-a`, `fact-b`, `fact-c`."
     );
     let _ = writeln!(
         out,
         "2. **Abstract.** Once a pattern recurs across those Facts: \
-         `core_derive(kind=\"Abstraction\", source_handles=[\"F:a\",\"F:b\",\"F:c\"], …)` → \
-         `A:d`, with an `origin` entry to each Fact."
+         `core_derive(kind=\"Abstraction\", source_handles=[\"fact-a\",\"fact-b\",\"fact-c\"], …)` → \
+         `abstraction-d`, with an `origin` entry to each Fact."
     );
     let _ = writeln!(
         out,
         "3. **Take a stance.** When your view genuinely shifts: \
-         `core_derive(kind=\"Perspective\", source_handles=[\"A:d\"], …)` → `P:e`."
+         `core_derive(kind=\"Perspective\", source_handles=[\"abstraction-d\"], …)` → `perspective-e`."
     );
     if s.goals {
         let _ = writeln!(

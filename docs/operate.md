@@ -18,8 +18,9 @@ The boot RLS guard covers composed schemas and schemas recorded in
 The platform connection reads that catalog; the runtime connection is checked
 against the combined inventory.
 
-`DATABASE_URL` and `PROXIMA_PLATFORM_DATABASE_URL` are both required for the
-canonical host. Provision the platform role as the schema/migration owner and
+`DATABASE_URL`, `PROXIMA_PLATFORM_DATABASE_URL`, and the host-assigned
+`PROXIMA_STORE_NUMBER` are required for the canonical host. Provision the
+platform role as the schema/migration owner and
 the runtime role for serving grants. Development provisioning is executable in
 [`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/pg-init.sql).
 Stop older hosts before changing their role/schema contract.
@@ -54,7 +55,7 @@ ingestion accept only canonical repository paths under those canonical roots,
 refusing symlink escapes and every path when no roots are set. Ingest rechecks
 registered paths against the current roots before starting and reading a tree.
 
-Supply the two database connections and OIDC configuration through the
+Supply the database connections, store number, and OIDC configuration through the
 deployment's secret/config mechanism. Use a loopback bind for local use. A
 non-loopback listener requires explicit network exposure, public URL, Host and
 Origin allowlists. Terminate TLS at the trusted ingress and preserve streaming

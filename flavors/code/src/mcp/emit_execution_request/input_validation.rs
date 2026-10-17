@@ -1,10 +1,9 @@
 use std::collections::HashSet;
 
-use proxima_core::{MemoryId, ToolCtx, ToolError};
+use proxima_core::{MemoryId, ToolError};
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind};
 
-use super::super::CodeToolCtxExt;
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 
 /// Trim `value` and check it against `1..=max` characters.
@@ -184,9 +183,9 @@ fn validate_acceptance_verifier_spec(criterion: &AcceptanceCriterionV1) -> Resul
     Ok(())
 }
 
-pub(super) fn resolve_evidence(ctx: &ToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, ToolError> {
+pub(super) fn resolve_evidence(raw: &[String]) -> Result<Vec<MemoryId>, ToolError> {
     raw.iter()
-        .map(|value| ctx.resolve_fact_memory(value))
+        .map(|value| crate::mcp::parse_memory_uuid(value))
         .collect()
 }
 

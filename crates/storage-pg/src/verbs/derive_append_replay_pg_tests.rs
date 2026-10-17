@@ -37,6 +37,7 @@ fn fact_draft() -> FactWriteCommand {
 
 fn derived_draft(owner: OwnerId, handle: Uuid) -> DerivedDraft<'static> {
     DerivedDraft {
+        store_number: 1,
         memory_id: handle,
         owner,
         kind: EntityKind::Abstraction,

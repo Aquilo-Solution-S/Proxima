@@ -243,6 +243,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
         built = Some(
             Proxima::<PublisherApp>::app()
                 .database_url(runtime_url)
+                .store_number(0)
                 .platform_database_url(platform_url)
                 .owner(owner)
                 .served_surface(ServedSurface::All)

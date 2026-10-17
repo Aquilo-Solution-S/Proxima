@@ -12,7 +12,6 @@ use bytes::Bytes;
 use serde::de::Error as _;
 
 use crate::MemoryId;
-use crate::mcp::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::owner::OwnerId;
 use crate::publication::SubjectPosition;
 use crate::storage_ports::publication::ClaimedPublication;
@@ -73,7 +72,7 @@ pub struct CloudEventEnvelope {
 /// ```
 #[derive(Debug, Clone)]
 pub struct ReceivedEvent {
-    /// The `CloudEvents` `id` (`F:<uuid>`) — the dedup key.
+    /// The `CloudEvents` `id` (the bare memory UUID) — the dedup key.
     pub id: String,
     /// The owner the Fact was written under, from the outbox row.
     pub owner: OwnerId,
@@ -133,8 +132,7 @@ pub struct ReceivedEvent {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventIdentity {
-    /// `F:` followed by a lowercase hyphenated UUID, the spelling
-    /// `format_prefixed_uuid(_, PrefixedUuidClass::Fact)` produces.
+    /// A lowercase hyphenated UUID, the spelling the producer emits.
     Fact(MemoryId),
     /// Every other id, byte for byte.
     Opaque(String),
@@ -143,8 +141,8 @@ pub enum EventIdentity {
 impl ReceivedEvent {
     /// The typed reading of [`Self::id`], the dedup key. Stores nothing.
     ///
-    /// `Fact(m)` only when `id` parses as a Fact id and formatting `m` gives
-    /// back exactly `id`: the core parser accepts upper-case, simple, braced
+    /// `Fact(m)` only when `id` parses as a bare UUID and formatting `m` gives
+    /// back exactly `id`: the UUID parser accepts upper-case, simple, braced
     /// and `urn:` UUID spellings, and the comparison is what refuses them.
     /// Every other string is `Opaque(id)` unchanged. The UUID version is not
     /// checked, because [`MemoryId`] does not constrain it.
@@ -156,10 +154,8 @@ impl ReceivedEvent {
     /// admitted Fact's `t`, nothing more. See [`EventIdentity`].
     #[must_use]
     pub fn identity(&self) -> EventIdentity {
-        match parse_prefixed_uuid(&self.id, PrefixedUuidClass::Fact) {
-            Ok(uuid) if format_prefixed_uuid(uuid, PrefixedUuidClass::Fact) == self.id => {
-                EventIdentity::Fact(MemoryId::new(uuid))
-            }
+        match uuid::Uuid::parse_str(&self.id) {
+            Ok(uuid) if uuid.to_string() == self.id => EventIdentity::Fact(MemoryId::new(uuid)),
             _ => EventIdentity::Opaque(self.id.clone()),
         }
     }
@@ -263,7 +259,7 @@ mod tests {
             "id": id,
             "source": "urn:test",
             "type": "probe/listenable-v1",
-            "subject": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "subject": "0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b",
             "sequence": "00000000000000000001",
             "data": null,
         }))
@@ -273,7 +269,7 @@ mod tests {
     fn claimed(envelope: Vec<u8>) -> ClaimedPublication {
         ClaimedPublication {
             id: uuid::Uuid::nil(),
-            event_id: "F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned(),
+            event_id: "0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b".to_owned(),
             owner_id: uuid::Uuid::from_u128(7),
             schema_id: "probe/listenable".to_owned(),
             schema_version: 1,
@@ -288,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_claimed_record_becomes_an_event_that_keeps_its_bytes_and_its_typed_owner() {
-        let record = claimed(envelope_bytes("F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"));
+        let record = claimed(envelope_bytes("0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b"));
         let event = ReceivedEvent::from_record(&record).expect("a sealed envelope parses");
         assert_eq!(event.id, record.event_id);
         assert_eq!(
@@ -309,7 +305,7 @@ mod tests {
 
     fn envelope_with(subject: Option<&str>, sequence: Option<&str>) -> Vec<u8> {
         let mut value: serde_json::Value =
-            serde_json::from_slice(&envelope_bytes("F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"))
+            serde_json::from_slice(&envelope_bytes("0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b"))
                 .expect("json");
         let object = value.as_object_mut().expect("object");
         match subject {
@@ -325,7 +321,7 @@ mod tests {
 
     #[test]
     fn a_position_is_read_once_and_a_malformed_one_is_corruption() {
-        let subject = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+        let subject = "0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b";
         let event = ReceivedEvent::from_record(&claimed(envelope_with(
             Some(subject),
             Some("00000000000000000003"),
@@ -359,7 +355,7 @@ mod tests {
         assert!(ReceivedEvent::from_record(&record).is_err());
     }
 
-    const FACT_UUID: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    const FACT_UUID: &str = "0190a1b2-c3d4-8e5f-8a9b-00032e3f4a5b";
 
     fn received(id: &str) -> ReceivedEvent {
         let raw = Bytes::from(envelope_bytes(id));
@@ -374,16 +370,15 @@ mod tests {
         }
     }
 
-    /// Ids the core parser reads as a Fact id, whose spelling is not the
-    /// one `format_prefixed_uuid` emits.
+    /// UUID spellings the parser reads whose form is not canonical.
     fn parseable_but_not_canonical() -> Vec<String> {
         let upper = FACT_UUID.to_uppercase();
         let simple = FACT_UUID.replace('-', "");
         vec![
-            format!("F:{upper}"),
-            format!("F:{simple}"),
-            format!("F:{{{FACT_UUID}}}"),
-            format!("F:urn:uuid:{FACT_UUID}"),
+            upper,
+            simple,
+            format!("{{{FACT_UUID}}}"),
+            format!("urn:uuid:{FACT_UUID}"),
         ]
     }
 
@@ -396,7 +391,7 @@ mod tests {
             format!("G:{FACT_UUID}"),
             format!("f:{FACT_UUID}"),
             format!("urn:uuid:{FACT_UUID}"),
-            FACT_UUID.to_owned(),
+            format!("F:{FACT_UUID}"),
             upper,
             String::new(),
             "F:".to_owned(),
@@ -412,17 +407,14 @@ mod tests {
 
     #[test]
     fn a_canonical_fact_id_reads_as_a_fact() {
-        let id = format!("F:{FACT_UUID}");
+        let id = FACT_UUID.to_owned();
         let uuid = uuid::Uuid::parse_str(FACT_UUID).expect("fixture uuid");
         let identity = received(&id).identity();
         let EventIdentity::Fact(memory) = identity else {
             panic!("a canonical Fact id must read as Fact, got {identity:?}");
         };
         assert_eq!(memory, MemoryId::new(uuid));
-        assert_eq!(
-            format_prefixed_uuid(memory.into_inner(), PrefixedUuidClass::Fact),
-            id
-        );
+        assert_eq!(memory.into_inner().to_string(), id);
     }
 
     #[test]
@@ -442,7 +434,7 @@ mod tests {
         // core parser alone, and the re-format comparison would be dead code.
         for id in parseable_but_not_canonical() {
             assert!(
-                parse_prefixed_uuid(&id, PrefixedUuidClass::Fact).is_ok(),
+                uuid::Uuid::parse_str(&id).is_ok(),
                 "{id:?} must parse, or the comparison is not exercised"
             );
         }
@@ -451,11 +443,11 @@ mod tests {
     #[test]
     fn identities_are_equal_exactly_when_ids_are_equal() {
         let mut ids = opaque_ids();
-        ids.push(format!("F:{FACT_UUID}"));
-        ids.push(format!("F:{}", uuid::Uuid::from_u128(1)));
-        ids.push(format!("F:{}", uuid::Uuid::nil()));
+        ids.push(FACT_UUID.to_owned());
+        ids.push(uuid::Uuid::from_u128(1).to_string());
+        ids.push(uuid::Uuid::nil().to_string());
         // The same id twice, so the `true` direction is exercised too.
-        ids.push(format!("F:{FACT_UUID}"));
+        ids.push(FACT_UUID.to_owned());
         let events: Vec<_> = ids.iter().map(|id| received(id)).collect();
         for first in &events {
             for second in &events {

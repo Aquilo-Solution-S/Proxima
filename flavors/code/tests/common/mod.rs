@@ -21,7 +21,7 @@ use uuid::Uuid;
 pub async fn migrated_db() -> (String, PgStorage) {
     let template = code_template_name();
     ensure_code_template(&template, proxima_code::migrator()).await;
-    open_migrated_db(&template, true).await
+    open_migrated_db(&template).await
 }
 
 pub fn owner_scope(owner: &OwnerId) -> proxima_core::OwnerScope {
@@ -62,39 +62,37 @@ async fn ensure_code_template(template: &str, flavor_lane: sqlx::migrate::Migrat
     .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
 }
 
-async fn open_migrated_db(template: &str, validate_runtime: bool) -> (String, PgStorage) {
+async fn open_migrated_db(template: &str) -> (String, PgStorage) {
     let db_name = create_db_from_template("proxima_code_test", template)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
     let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but role setup failed: {e}"));
-    if validate_runtime {
-        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
-            &platform_url,
-            proxima_storage_pg::PgPoolConfig::default(),
-            proxima_storage_pg::PgTuning::default(),
-        )
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await
+    .expect("migration connection");
+    proxima::run_core_and_flavor_migrations(
+        &migration,
+        <proxima_code::CodeFlavor as proxima::flavor::FlavorBundle>::migrators(),
+    )
+    .await
+    .expect("current migrations");
+    migration
+        .initialize_store_number(0)
         .await
-        .unwrap_or_else(|e| panic!("PG required for tests but migration connect failed: {e}"));
-        proxima::run_core_and_flavor_migrations(
-            &migration,
-            <proxima_code::CodeFlavor as proxima::flavor::FlavorBundle>::migrators(),
-        )
+        .expect("store number");
+    let platform_pool = sqlx::PgPool::connect(&platform_url)
         .await
-        .unwrap_or_else(|e| panic!("PG required for tests but migrations failed: {e}"));
-    }
-    let platform_scope = if validate_runtime {
-        let platform_pool = sqlx::PgPool::connect(&platform_url)
-            .await
-            .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
-        PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_code"])
-            .await
-            .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"))
-    } else {
-        PgPlatformScope::for_tests()
-    };
-    let pg = match PgStorage::connect(&runtime_url, platform_scope).await {
+        .expect("platform connection");
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_code"])
+        .await
+        .expect("platform validation");
+    let pg = match PgStorage::connect(&runtime_url, platform_scope, 0).await {
         Ok(pg) => pg,
         Err(err) => {
             let _ = drop_db(&db_name).await;
@@ -246,8 +244,8 @@ pub async fn seed_memory_with_sidecars_in_tx(
     origins: &[Uuid],
     sidecar_tables: &[&str],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
-    let handle = handle.unwrap_or_else(Uuid::now_v7);
-    let t = t.unwrap_or_else(Uuid::now_v7);
+    let handle = handle.unwrap_or_else(|| proxima_core::new_memory_uuid(0));
+    let t = t.unwrap_or_else(|| proxima_core::new_memory_uuid(0));
     let mut origins = origins.to_vec();
     if kind != "fact" && origins.is_empty() {
         let (_, fact_t) = Box::pin(seed_memory_with_sidecars_in_tx(
@@ -334,7 +332,7 @@ pub async fn seed_memory_with_sidecars_in_tx(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END)",
     )
     .bind(handle)
     .bind(t)
@@ -359,8 +357,8 @@ pub async fn seed_goal(
     t: Option<Uuid>,
     assignment_t: Option<Uuid>,
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
-    let handle = Uuid::now_v7();
-    let t = t.unwrap_or_else(Uuid::now_v7);
+    let handle = proxima_core::new_memory_uuid(0);
+    let t = t.unwrap_or_else(|| proxima_core::new_memory_uuid(0));
     let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)

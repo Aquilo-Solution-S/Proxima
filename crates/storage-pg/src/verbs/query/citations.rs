@@ -29,7 +29,7 @@ pub(crate) async fn facts_citing_object_on_connection(
         .map(OwnerId::into_inner)
         .collect();
     let fetch = i64::from(limit).saturating_add(1);
-    let rows: Vec<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as("SELECT m.t, COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') FROM proxima_core.memory m WHERE m.blob_id = $1 AND m.owner_id = ANY($2::uuid[]) AND m.kind = 'fact' AND ($3::timestamptz IS NULL OR (COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01'), m.t) < ($3::timestamptz, $4::uuid)) ORDER BY 2 DESC, m.t DESC LIMIT $5")
+    let rows: Vec<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as("SELECT m.t, proxima_core.memory_created_at(m.t) FROM proxima_core.memory m WHERE m.blob_id = $1 AND m.owner_id = ANY($2::uuid[]) AND m.kind = 'fact' AND ($3::timestamptz IS NULL OR (proxima_core.memory_created_at(m.t), m.t) < ($3::timestamptz, $4::uuid)) ORDER BY 2 DESC, m.t DESC LIMIT $5")
         .bind(cited_object_id).bind(&owner_ids).bind(after.map(|c| c.created_at)).bind(after.map(|c| c.memory_id.into_inner())).bind(fetch)
         .fetch_all(&mut *connection).await.map_err(map_err)?;
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);

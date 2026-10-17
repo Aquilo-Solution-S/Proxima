@@ -55,8 +55,8 @@ mod manifest_tests {
 
     #[tokio::test]
     async fn dispatcher_rejects_cross_action_goal_fields_before_execution() {
-        let ctx = prefixed_ctx();
-        let goal = ctx.format_goal(GoalId::new(uuid::Uuid::now_v7()));
+        let ctx = wire_ctx();
+        let goal = (GoalId::new(uuid::Uuid::now_v7())).into_inner().to_string();
         let desc = ctx
             .registry
             .list_mcp_tools()
@@ -83,7 +83,7 @@ mod manifest_tests {
 
     #[tokio::test]
     async fn dispatcher_refuses_a_pending_that_does_not_fit_the_transition() {
-        let desc_ctx = prefixed_ctx();
+        let desc_ctx = wire_ctx();
         let desc = desc_ctx
             .registry
             .list_mcp_tools()
@@ -106,8 +106,8 @@ mod manifest_tests {
             ),
             ("pause", Some("maybe"), vec!["maybe", "keep"]),
         ] {
-            let ctx = prefixed_ctx();
-            let goal = ctx.format_goal(GoalId::new(uuid::Uuid::now_v7()));
+            let ctx = wire_ctx();
+            let goal = (GoalId::new(uuid::Uuid::now_v7())).into_inner().to_string();
             let mut args = serde_json::json!({
                 "action": "transition",
                 "goal": goal,
@@ -129,8 +129,10 @@ mod manifest_tests {
 
     #[tokio::test]
     async fn dispatcher_rejects_cross_action_fact_fields_before_execution() {
-        let ctx = prefixed_ctx();
-        let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));
+        let ctx = wire_ctx();
+        let fact = (MemoryId::new(uuid::Uuid::now_v7()))
+            .into_inner()
+            .to_string();
         let desc = ctx
             .registry
             .list_mcp_tools()
@@ -157,16 +159,23 @@ mod manifest_tests {
     }
 
     #[tokio::test]
-    async fn prefixed_ids_ctx_rejects_wrong_class() {
-        let ctx = prefixed_ctx();
-        let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));
-        let err = ctx.resolve_goal(&fact).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("expected Goal id"), "message: {msg}");
-        assert!(msg.contains("got prefix 'F'"), "message: {msg}");
+    async fn wire_ctx_rejects_prefixed_ids() {
+        let ctx = wire_ctx();
+        let id = uuid::Uuid::now_v7();
+        for prefix in ['F', 'A', 'P', 'G', 'R'] {
+            let raw = format!("{prefix}:{id}");
+            assert!(ctx.resolve_memory(&raw).is_err());
+            assert!(ctx.resolve_goal(&raw).is_err());
+        }
+        assert_eq!(
+            ctx.resolve_memory(&id.to_string())
+                .expect("UUID")
+                .into_inner(),
+            id
+        );
     }
 
-    fn prefixed_ctx() -> McpToolCtx {
+    fn wire_ctx() -> McpToolCtx {
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,

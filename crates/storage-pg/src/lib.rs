@@ -522,6 +522,7 @@ fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 
 #[derive(Clone)]
 pub struct PgStorage {
+    store_number: u16,
     pool: PgPool,
     /// Fixture setup/inspection only; runtime operations always use `pool`.
     #[cfg(feature = "test-fixtures")]
@@ -595,6 +596,18 @@ async fn run_migrations_on_pool(pool: &PgPool, tuning: &PgTuning) -> Result<(), 
     ensure_pgvector_runtime_compatible(pool, tuning).await
 }
 
+fn validate_store_number(persisted: Option<i32>, configured: u16) -> Result<(), StorageError> {
+    match persisted {
+        Some(number) if number == i32::from(configured) => Ok(()),
+        Some(number) => Err(StorageError::Unavailable(format!(
+            "configured store number {configured} differs from persisted store number {number}"
+        ))),
+        None => Err(StorageError::Unavailable(
+            "store has no persisted number; initialize it before serving".into(),
+        )),
+    }
+}
+
 impl PgMigrationStorage {
     /// Connect the separately configured schema-management lane.
     ///
@@ -617,6 +630,31 @@ impl PgMigrationStorage {
             .await
             .map_err(|error| StorageError::Unavailable(error.to_string()))?;
         Ok(Self { pool, tuning })
+    }
+
+    /// Write this store's number on its first boot, or verify the number
+    /// already persisted. Call after migrations and before serving connects.
+    ///
+    /// # Errors
+    /// Refuses a number different from the database's immutable identity.
+    pub async fn initialize_store_number(&self, store_number: u16) -> Result<(), StorageError> {
+        let mut connection = self.pool.acquire().await.map_err(error::map_err)?;
+        let mut tx = begin_migration_transaction(&mut connection).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.store_identity (singleton, store_number) VALUES (true, $1) ON CONFLICT (singleton) DO NOTHING",
+        )
+        .bind(i32::from(store_number))
+        .execute(tx.as_mut())
+        .await
+        .map_err(error::map_err)?;
+        let persisted = sqlx::query_scalar(
+            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
+        )
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(error::map_err)?;
+        validate_store_number(persisted, store_number)?;
+        tx.commit().await.map_err(error::map_err)
     }
 
     /// The migration runner's pool. Serving code cannot use this as a
@@ -886,6 +924,12 @@ fn env_int_or<T: std::str::FromStr>(
 }
 
 impl PgStorage {
+    /// The immutable number validated against this database at boot.
+    #[must_use]
+    pub const fn store_number(&self) -> u16 {
+        self.store_number
+    }
+
     /// Connect using `url`, build a tuned pool, and verify
     /// connectivity by acquiring one connection.
     ///
@@ -896,12 +940,17 @@ impl PgStorage {
     ///
     /// Returns `StorageError::Unavailable` on connection or
     /// query failure, or on a malformed tuning variable.
-    pub async fn connect(url: &str, platform_scope: PgPlatformScope) -> Result<Self, StorageError> {
+    pub async fn connect(
+        url: &str,
+        platform_scope: PgPlatformScope,
+        store_number: u16,
+    ) -> Result<Self, StorageError> {
         Self::connect_with_config(
             url,
             PgPoolConfig::from_env()?,
             PgTuning::from_env()?,
             platform_scope,
+            store_number,
         )
         .await
     }
@@ -921,8 +970,16 @@ impl PgStorage {
         url: &str,
         tuning: PgTuning,
         platform_scope: PgPlatformScope,
+        store_number: u16,
     ) -> Result<Self, StorageError> {
-        Self::connect_with_config(url, PgPoolConfig::from_env()?, tuning, platform_scope).await
+        Self::connect_with_config(
+            url,
+            PgPoolConfig::from_env()?,
+            tuning,
+            platform_scope,
+            store_number,
+        )
+        .await
     }
 
     /// Connect with fully resolved pool and query policy.
@@ -941,8 +998,9 @@ impl PgStorage {
         pool_config: PgPoolConfig,
         tuning: PgTuning,
         platform_scope: PgPlatformScope,
+        store_number: u16,
     ) -> Result<Self, StorageError> {
-        Self::connect_for_purpose(url, pool_config, tuning, platform_scope).await
+        Self::connect_for_purpose(url, pool_config, tuning, platform_scope, store_number).await
     }
 
     async fn connect_for_purpose(
@@ -950,6 +1008,7 @@ impl PgStorage {
         pool_config: PgPoolConfig,
         tuning: PgTuning,
         platform_scope: PgPlatformScope,
+        store_number: u16,
     ) -> Result<Self, StorageError> {
         let pool_config = pool_config.validate()?;
         // A conservative per-statement timeout bounds
@@ -981,7 +1040,18 @@ impl PgStorage {
         assert_runtime_rls(&pool, &schema_refs).await?;
         ensure_pgvector_runtime_compatible(&pool, &tuning).await?;
 
+        let mut identity_tx = platform_scope.begin().await?;
+        let persisted: Option<i32> = sqlx::query_scalar(
+            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
+        )
+        .fetch_optional(identity_tx.as_mut())
+        .await
+        .map_err(error::map_err)?;
+        validate_store_number(persisted, store_number)?;
+        identity_tx.commit().await.map_err(error::map_err)?;
+
         Ok(Self {
+            store_number,
             pool,
             #[cfg(feature = "test-fixtures")]
             test_admin_pool: None,

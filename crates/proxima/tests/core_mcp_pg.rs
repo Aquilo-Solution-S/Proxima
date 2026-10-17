@@ -252,6 +252,7 @@ mod embedding_failure_regressions {
             let router = Arc::new(TestEmbeddingRouter::default());
             let built = Proxima::<AgentMemoryApp>::app()
                 .database_url(runtime_url)
+                .store_number(0)
                 .platform_database_url(platform_url)
                 .owner(owner)
                 .served_surface(proxima_core::ServedSurface::All)
@@ -546,7 +547,8 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(personal)
             .served_surface(proxima_core::ServedSurface::All)
             .build()
@@ -562,6 +564,7 @@ async fn core_memory_tools_route_by_explicit_space_grants() {
             proxima_storage_pg::PgPoolConfig::from_env()?,
             proxima_storage_pg::PgTuning::from_env()?,
             scope,
+            0,
         )
         .await?;
         seed_group_membership(&pg, &shared, Relation::Viewer, &personal).await;
@@ -630,7 +633,8 @@ async fn shared_space_include_body_uses_shared_owner() {
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(personal)
             .served_surface(proxima_core::ServedSurface::All)
             .build()
@@ -725,7 +729,8 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(personal)
             .served_surface(proxima_core::ServedSurface::All)
             .build()
@@ -790,7 +795,7 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
 
         let derived = call_test_model_tool(
             &tools,
-            authz,
+            authz.clone(),
             personal,
             "core_derive",
             serde_json::json!({
@@ -807,12 +812,39 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
         assert!(
             derived["handle"]
                 .as_str()
-                .is_some_and(|handle| handle.starts_with("A:")),
+                .is_some_and(|handle| Uuid::parse_str(handle).is_ok()),
             "cross-space derive must return an Abstraction handle, got {derived}"
         );
         // Two `origin` rows, reported as a count: an edge has no handle to
         // hand back, and re-running the derivation re-asserts the same rows.
         assert_eq!(derived["edge_count"], serde_json::json!(2));
+
+        let perspective = call_test_model_tool(
+            &tools, authz.clone(), personal, "core_derive",
+            serde_json::json!({"kind":"Perspective", "title":"stored layer", "body":"an interpretation",
+                "source_handles":[personal_abstraction["handle"]], "model_id":"test-model"}),
+        ).await?;
+        assert!(Uuid::parse_str(perspective["handle"].as_str().expect("bare perspective UUID")).is_ok());
+        for (kind, sources, reason) in [
+            ("Perspective", vec![personal_fact["handle"].clone()], "Fact"),
+            ("Abstraction", vec![personal_fact["handle"].clone(), personal_abstraction["handle"].clone()], "layer"),
+        ] {
+            let error = call_test_model_tool(
+                &tools, authz.clone(), personal, "core_derive",
+                serde_json::json!({"kind":kind, "title":"refused layer", "body":"must not be written",
+                    "source_handles":sources, "model_id":"test-model"}),
+            ).await.expect_err("stored source layer is authoritative");
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+        let uuid = personal_fact["handle"].as_str().expect("fact UUID");
+        for prefix in ["F", "A", "P", "G"] {
+            let error = call_test_model_tool(
+                &tools, authz.clone(), personal, "core_derive",
+                serde_json::json!({"kind":"Abstraction", "title":"refused prefix", "body":"bare UUID required",
+                    "source_handles":[format!("{prefix}:{uuid}")], "model_id":"test-model"}),
+            ).await.expect_err("letters never enter the handle grammar");
+            assert!(error.to_string().contains("UUID"), "{error}");
+        }
 
         built.shutdown().await;
         Ok(())
@@ -855,7 +887,8 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
             .build()
@@ -1022,6 +1055,7 @@ async fn facade_reads_core_resources_with_resource_scope() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1119,6 +1153,7 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1161,8 +1196,8 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
         .await?;
         let current = current["handle"].as_str().expect("handle").to_owned();
         let memory_id = |read: &serde_json::Value| {
-            let memory = read["memory"].as_str().expect("a prefixed memory id");
-            let (_, t) = memory.split_once(':').expect("a prefixed memory id");
+            let memory = read["memory"].as_str().expect("a memory UUID");
+            let t = memory;
             MemoryId::new(t.parse::<Uuid>().expect("a memory id"))
         };
 
@@ -1367,6 +1402,7 @@ async fn a_flavor_only_palette_reads_the_owners_memory_and_refuses_writes() {
         let other = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(split_db.runtime_url())
+            .store_number(0)
             .platform_database_url(split_db.platform_url())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1485,6 +1521,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1521,10 +1558,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
         )
         .await?;
         let fact = remembered["handle"].as_str().expect("fact handle");
-        let fact_t = fact
-            .strip_prefix("F:")
-            .expect("fact prefix")
-            .parse::<Uuid>()?;
+        let fact_t = fact.parse::<Uuid>()?;
         let stored_sketch: String =
             sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
                 .bind(fact_t)
@@ -1631,10 +1665,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
             "assigned Active Goal missing from Self packet: {packet}"
         );
 
-        let goal_t = goal_handle
-            .strip_prefix("G:")
-            .expect("goal prefix")
-            .parse::<Uuid>()?;
+        let goal_t = goal_handle.parse::<Uuid>()?;
         sqlx::query("DELETE FROM proxima_core.sketch WHERE t = $1")
             .bind(goal_t)
             .execute(&admin_pool)
@@ -1716,6 +1747,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1761,10 +1793,7 @@ async fn facade_core_think_reaches_an_interpretations_subject_through_its_payloa
         // NO origins, and the subject is in the payload column the
         // declaration names. If either becomes false the declaration is
         // wrong, not this test.
-        let interpretation_t = interpretation_handle
-            .split_once(':')
-            .map_or(interpretation_handle.as_str(), |(_, id)| id)
-            .parse::<Uuid>()?;
+        let interpretation_t = interpretation_handle.parse::<Uuid>()?;
         let origins: i64 = sqlx::query_scalar(
             "SELECT cardinality(origins)::bigint FROM proxima_core.memory WHERE t = $1",
         )
@@ -1832,6 +1861,7 @@ async fn facade_core_think_pages_ancestors_from_a_derivation() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -1955,6 +1985,7 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -2042,6 +2073,7 @@ async fn facade_core_episode_commit_refuses_nested_model_id_against_the_bound_id
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -2159,6 +2191,7 @@ async fn facade_core_episode_commit_bound_replay_fails() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -2356,6 +2389,7 @@ async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() 
         // No .embed_client(...) — engine.embed_client() is None.
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -2447,7 +2481,8 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let owner = company_owner(Uuid::now_v7());
         let other_owner = company_owner(Uuid::now_v7());
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(owner)
             .embed_client(test_embedding())
             .served_surface(proxima_core::ServedSurface::All)
@@ -2477,8 +2512,6 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         .await?;
         let memory = remembered["handle"].as_str().expect("remembered handle");
         let fact_id = memory
-            .strip_prefix("F:")
-            .expect("prefixed fact id")
             .parse::<Uuid>()?;
         let cited_object_id: Uuid = sqlx::query_scalar(
             "SELECT blob_id
@@ -2549,10 +2582,7 @@ async fn ensure_fact_embedding_for_handle(
     owner: &OwnerId,
     handle: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let memory_id = handle
-        .strip_prefix("F:")
-        .expect("prefixed fact id")
-        .parse::<Uuid>()?;
+    let memory_id = handle.parse::<Uuid>()?;
     engine
         .ensure_fact_embedding(owner, MemoryId::new(memory_id))
         .await?;
@@ -2587,7 +2617,8 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         let group_owner = OwnerId::from(group);
         let member = UserId::new(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
-            .database_url(runtime_url.clone()).platform_database_url(platform_url.clone())
+            .database_url(runtime_url.clone()).store_number(0)
+        .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
             .build()
@@ -2610,8 +2641,6 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
         .await?;
         let handle = remembered["handle"].as_str().expect("remembered handle");
         let memory_id = handle
-            .strip_prefix("F:")
-            .expect("prefixed fact handle")
             .parse::<Uuid>()?;
 
         // Admin on BOTH sides: the author's own personal owner (source) and
@@ -2699,6 +2728,18 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
     result.expect("authorized-read owner-transfer visibility test failed");
 }
 
+async fn assert_read_resolves_cooled_kind(
+    engine: &proxima_core::Engine,
+    authz: &AuthzContext,
+    source: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        engine.memory_kinds(authz, &[MemoryId::new(source)]).await?,
+        [(MemoryId::new(source), proxima_core::EntityKind::Fact)]
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn core_forget_cools_a_remembered_fact() {
     if !S3RuntimeConfig::present_in_env() {
@@ -2719,6 +2760,7 @@ async fn core_forget_cools_a_remembered_fact() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .s3(S3RuntimeConfig {
                 force_path_style: true,
@@ -2753,14 +2795,11 @@ async fn core_forget_cools_a_remembered_fact() {
         )
         .await?;
         let handle = remembered["handle"].as_str().expect("handle").to_string();
-        let t = handle
-            .strip_prefix("F:")
-            .expect("prefixed fact")
-            .parse::<Uuid>()?;
+        let t = handle.parse::<Uuid>()?;
 
         let forgotten = call_test_model_tool(
             &tools,
-            authz,
+            authz.clone(),
             owner,
             "core_forget",
             serde_json::json!({ "memory": handle }),
@@ -2780,6 +2819,8 @@ async fn core_forget_cools_a_remembered_fact() {
                 .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(cooled, 1, "forget must leave the cooled stub");
+
+        assert_read_resolves_cooled_kind(built.host().engine(), &authz, t).await?;
 
         let cold = built
             .host()
@@ -2812,6 +2853,7 @@ async fn request_services_reject_duplicate_boot_type() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<MarkApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()

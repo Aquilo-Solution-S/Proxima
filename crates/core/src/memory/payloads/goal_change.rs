@@ -11,10 +11,9 @@
 //! Storage composes the payload inside the goal transaction, because the new
 //! version's `t` and the series handle are minted there.
 
-use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::verbs::goal_write::GoalState;
 use crate::{FactPayload, GoalId, PayloadKeyBuilder};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 /// What a pause does with the work a scheduler already queued for the goal.
 ///
@@ -71,7 +70,6 @@ pub enum GoalChange {
     Modify,
     /// A child created by a decompose. The child starts its own series.
     DecomposeChild {
-        #[serde(with = "goal_handle")]
         parent: GoalId,
     },
     Pause {
@@ -201,7 +199,7 @@ impl GoalChange {
 /// `core/goal-change-v1`: one goal write, as the event's `data`.
 ///
 /// `series` is the goal's series handle, the same on every version and
-/// opaque (not a `G:` handle). `goal` is the version this write created and
+/// opaque. `goal` is the version this write created and
 /// `prior` the one it replaced, `None` when the write starts a series (set,
 /// a decomposed child). `state` is the state after the write.
 ///
@@ -213,13 +211,11 @@ impl GoalChange {
 /// `series` and apply an event only if its `revision` is greater than the
 /// last one applied for that series; the envelope carries the same pair as
 /// `subject` and `sequence` (docs/host-integration.md). `goal` versions are
-/// identifiers, not an order: a version's `t` comes from the database clock.
+/// identifiers, not an order: a version's `t` is an admission identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalChangeV1 {
     pub series: uuid::Uuid,
-    #[serde(with = "goal_handle")]
     pub goal: GoalId,
-    #[serde(with = "goal_handle_option")]
     pub prior: Option<GoalId>,
     pub revision: u32,
     pub state: GoalState,
@@ -246,7 +242,7 @@ impl FactPayload for GoalChangeV1 {
         format!(
             "goal-change {} {}",
             self.change.kind().as_str(),
-            format_prefixed_uuid(self.goal.into_inner(), PrefixedUuidClass::Goal)
+            self.goal.into_inner()
         )
     }
 
@@ -254,12 +250,11 @@ impl FactPayload for GoalChangeV1 {
         Some("proxima_core.goal_change_v1")
     }
 
-    /// Written by hand: the `G:<uuid>` spelling of `goal`, `prior` and
-    /// `parent` is a serde adapter a derive cannot see.
+    /// The payload schema, including the closed change variants and bare UUIDs.
     fn json_schema() -> Option<serde_json::Value> {
         let handle = serde_json::json!({
             "type": "string",
-            "pattern": "^G:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            "format": "uuid"
         });
         let kind_only = |kind: &str| {
             serde_json::json!({
@@ -329,65 +324,6 @@ impl GoalChangeKind {
     }
 }
 
-/// `G:<uuid>` on the wire, [`GoalId`] in Rust. `GoalId` itself serializes as
-/// a bare uuid, which is the form storage columns take.
-mod goal_handle {
-    use super::{
-        Deserialize, Deserializer, GoalId, PrefixedUuidClass, Serializer, format_prefixed_uuid,
-        parse_prefixed_uuid,
-    };
-
-    pub(super) fn serialize<S: Serializer>(id: &GoalId, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&format_prefixed_uuid(
-            id.into_inner(),
-            PrefixedUuidClass::Goal,
-        ))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<GoalId, D::Error> {
-        let raw = String::deserialize(deserializer)?;
-        parse_prefixed_uuid(&raw, PrefixedUuidClass::Goal)
-            .map(GoalId::new)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// [`goal_handle`] for a nullable field: `null` when absent, never skipped.
-mod goal_handle_option {
-    use super::{
-        Deserialize, Deserializer, GoalId, PrefixedUuidClass, Serializer, format_prefixed_uuid,
-        parse_prefixed_uuid,
-    };
-
-    #[expect(clippy::ref_option, reason = "the signature serde's `with` calls")]
-    pub(super) fn serialize<S: Serializer>(
-        id: &Option<GoalId>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match id {
-            Some(id) => serializer.serialize_str(&format_prefixed_uuid(
-                id.into_inner(),
-                PrefixedUuidClass::Goal,
-            )),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<GoalId>, D::Error> {
-        Option::<String>::deserialize(deserializer)?
-            .map(|raw| {
-                parse_prefixed_uuid(&raw, PrefixedUuidClass::Goal)
-                    .map(GoalId::new)
-                    .map_err(serde::de::Error::custom)
-            })
-            .transpose()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{GoalChange as C, GoalChangeKind as K};
@@ -400,7 +336,7 @@ mod tests {
 
     #[test]
     fn the_payload_is_the_documented_json() {
-        let parent = "G:00000000-0000-0000-0000-000000000009";
+        let parent = "00000000-0000-0000-0000-000000000009";
         let pending = PendingWork::Discard;
         let changes = [
             (C::Set, json!({ "kind": "set" })),
@@ -428,12 +364,40 @@ mod tests {
             };
             let value = json!({
                 "series": "00000000-0000-0000-0000-000000000001", "revision": 2, "state": "Paused",
-                "goal": "G:00000000-0000-0000-0000-000000000003",
-                "prior": "G:00000000-0000-0000-0000-000000000002", "change": wire,
+                "goal": "00000000-0000-0000-0000-000000000003",
+                "prior": "00000000-0000-0000-0000-000000000002", "change": wire,
             });
             assert_eq!(serde_json::to_value(&payload).expect("serializes"), value);
             let parsed: GoalChangeV1 = serde_json::from_value(value).expect("parses");
             assert_eq!(parsed, payload);
+        }
+    }
+
+    #[test]
+    fn prefixed_goal_references_are_refused_at_deserialization() {
+        let payload = GoalChangeV1 {
+            series: uuid::Uuid::from_u128(1),
+            goal: id(3),
+            prior: Some(id(2)),
+            revision: 2,
+            state: GoalState::Paused,
+            change: C::DecomposeChild { parent: id(9) },
+        };
+        let valid = serde_json::to_value(payload).expect("serializes");
+        for field in ["goal", "prior", "parent"] {
+            for prefix in ["F", "A", "P", "G"] {
+                let mut value = valid.clone();
+                let reference = if field == "parent" {
+                    &mut value["change"][field]
+                } else {
+                    &mut value[field]
+                };
+                *reference = json!(format!("{prefix}:{}", id(3).into_inner()));
+                assert!(
+                    serde_json::from_value::<GoalChangeV1>(value).is_err(),
+                    "{field}: {prefix}"
+                );
+            }
         }
     }
 

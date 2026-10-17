@@ -168,6 +168,7 @@ async fn build(
 ) -> Result<proxima::BuiltProxima, ProximaError> {
     let mut app = Proxima::<CodeGrantsApp>::app()
         .database_url(fixture.runtime_url.clone())
+        .store_number(0)
         .platform_database_url(fixture.platform_url.clone())
         .owner(owner)
         .served_surface(ServedSurface::All)
@@ -425,7 +426,7 @@ async fn runtime_grants_refuse_without_split_roles() {
             .served_surface(ServedSurface::All)
             .runtime_grants(true);
         match platform_database_url {
-            Some(url) => app.platform_database_url(url),
+            Some(url) => app.store_number(0).platform_database_url(url),
             None => app,
         }
         .build()

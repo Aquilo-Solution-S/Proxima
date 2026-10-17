@@ -97,8 +97,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await
             .expect_err("Perspective evidence must fail in-tx");
         match err {
@@ -140,8 +139,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await?;
         assert_eq!(
             pg.load_goal_evidence(Some(&owner_scope), &owner, valid.goal_id).await?,
@@ -194,8 +192,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await?;
         assert_eq!(
             pg.load_goal_evidence(Some(&owner_scope), &owner, stale_goal.goal_id).await?,
@@ -225,8 +222,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     evidence: None,
                 },
-                &permit,
-            )
+                &permit)
             .await
             .expect_err("omitted storage evidence must fail closed on a missing target");
         assert!(
@@ -247,8 +243,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 },
                 evidence: vec![GoalEvidenceRef::new(fact.memory_id)],
             },
-            &permit,
-        )
+            &permit)
         .await
         .expect("host mark-achieved must accept Fact evidence");
 
@@ -288,8 +283,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await
             .expect_err("operator-authored Goal must reject Fact evidence");
         assert!(
@@ -326,8 +320,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await?;
         assert_eq!(
             pg.load_goal_evidence(
@@ -353,8 +346,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 },
                 evidence: vec![GoalEvidenceRef::new(abs.memory_id)],
             },
-            &permit,
-        )
+            &permit)
         .await
         .expect("host mark-achieved must accept Abstraction evidence");
 
@@ -386,8 +378,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await?;
         let err = pg
             .achieve_goal_atomic(
@@ -403,8 +394,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     evidence: vec![GoalEvidenceRef::new(perspective.memory_id)],
                 },
-                &permit,
-            )
+                &permit)
             .await
             .expect_err("mark-achieved must reject Perspective evidence");
         assert!(
@@ -440,8 +430,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     write_act_t: None,
                 },
-                &permit,
-            )
+                &permit)
             .await?;
         let decompose_err = pg
             .decompose_goal_atomic(
@@ -486,8 +475,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         },
                     ],
                 },
-                &permit,
-            )
+                &permit)
             .await
             .expect_err("one invalid child must roll back every child insert");
         assert!(

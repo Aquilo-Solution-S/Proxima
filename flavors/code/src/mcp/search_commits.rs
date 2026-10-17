@@ -14,7 +14,6 @@ use uuid::Uuid;
 use crate::contract::{COMMIT_SCHEMA_ID, COMMIT_SUMMARY_SCHEMA_ID, band, substring_arm};
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
-use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
 
@@ -31,7 +30,7 @@ pub struct CodeSearchCommitsArgs {
     )]
     pub limit: Option<u32>,
     #[schemars(
-        description = "Optional repository filter: an `R:<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(
@@ -179,12 +178,8 @@ async fn load_commit_matches(
     let commits = commit_payloads
         .into_iter()
         .map(|(memory_id, row)| CommitMatch {
-            handle: ctx.format_fact_memory(memory_id),
-            repo_handle: ctx.format_flavor_object(
-                super::REPO_HANDLE_KIND,
-                row.repo_id,
-                super::REPO_HANDLE_PREFIX,
-            ),
+            handle: memory_id.into_inner().to_string(),
+            repo_handle: (row.repo_id).to_string(),
             sha: row.sha,
             author_name: row.author_name,
             committer_time: row.committer_time,
@@ -238,12 +233,8 @@ async fn load_summary_matches(
     let summaries = summary_payloads
         .into_iter()
         .map(|(memory_id, row)| SummaryMatch {
-            handle: ctx.format_abstraction_memory(memory_id),
-            repo_handle: ctx.format_flavor_object(
-                super::REPO_HANDLE_KIND,
-                row.repo_id,
-                super::REPO_HANDLE_PREFIX,
-            ),
+            handle: memory_id.into_inner().to_string(),
+            repo_handle: (row.repo_id).to_string(),
             commit_sha: row.commit_sha,
             change_kind: row.change_kind,
             key_files: row.key_files,

@@ -1,7 +1,7 @@
 //! End-to-end multi-owner MCP serving against real Postgres.
 //!
 //! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built when
-//! the `code` feature is on (the host default) so the production
+//! the opt-in `code` feature is on so the production
 //! `ProximaMcpApp` bundle is exercised.
 #![cfg(feature = "code")]
 
@@ -75,6 +75,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     let running = Proxima::<ProximaMcpApp>::app()
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
@@ -129,7 +130,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     assert!(
         remembered["handle"]
             .as_str()
-            .is_some_and(|h| h.starts_with("F:")),
+            .is_some_and(|h| Uuid::parse_str(h).is_ok()),
         "remember output: {remembered:?}"
     );
 
@@ -260,6 +261,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     let running = Proxima::<ProximaMcpApp>::app()
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
@@ -344,10 +346,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         );
 
         // The move is real, not just a happy answer.
-        let memory_t = handle
-            .strip_prefix("F:")
-            .ok_or_else(|| format!("unexpected handle spelling: {handle}"))?
-            .parse::<Uuid>()?;
+        let memory_t = proxima_core::mcp::parse_wire_uuid(&handle)?;
         let pool = sqlx::PgPool::connect(&database_url).await?;
         let landed: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
@@ -430,10 +429,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         );
 
         // The refusals left the series where it was.
-        let stranded_t = stranded_handle
-            .strip_prefix("F:")
-            .ok_or_else(|| format!("unexpected handle spelling: {stranded_handle}"))?
-            .parse::<Uuid>()?;
+        let stranded_t = proxima_core::mcp::parse_wire_uuid(&stranded_handle)?;
         let unmoved: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(stranded_t)

@@ -89,9 +89,9 @@ fn semantic_search_scan(lane: Lane) -> String {
             AND emb.model_id = $2
             AND {predicate}
             AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
+                 OR proxima_core.memory_created_at(emb.entity_id) >= $5)
             AND ($6::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)",
+                 OR proxima_core.memory_created_at(emb.entity_id) <= $6)",
         predicate = lane.predicate,
     )
 }
@@ -620,9 +620,9 @@ fn substring_leg_sql(
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(c.{key}), TIMESTAMPTZ '1970-01-01') >= $4)
+                 OR proxima_core.memory_created_at(c.{key}) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(c.{key}), TIMESTAMPTZ '1970-01-01') <= $5)
+                 OR proxima_core.memory_created_at(c.{key}) <= $5)
             AND ($6::uuid IS NULL OR c.{key} < $6)",
         table = table.as_str(),
         key = key.as_str(),
@@ -731,9 +731,9 @@ fn ranked_projection_sql(
             AND ({tsv} @@ q.tsq{rescue_where})
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') >= $4)
+                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') <= $5)
+                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
             AND ($6::uuid IS NULL OR p.memory_id < $6)
           ORDER BY {order_by}
           LIMIT $2",
@@ -950,7 +950,7 @@ fn search_admit_sql(heads_only: bool) -> String {
         "SELECT m.t,
                 m.kind::text,
                 m.schema_id,
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at,
+                proxima_core.memory_created_at(m.t) AS created_at,
                 m.occurred_at
            {from}
           WHERE m.t = ANY($1::uuid[])
@@ -958,9 +958,9 @@ fn search_admit_sql(heads_only: bool) -> String {
             AND ($3::text IS NULL OR m.kind::text = $3)
             AND ($4::text IS NULL OR m.schema_id = $4)
             AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $5)
+                 OR proxima_core.memory_created_at(m.t) >= $5)
             AND ($6::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') <= $6)"
+                 OR proxima_core.memory_created_at(m.t) <= $6)"
     )
 }
 
@@ -1492,11 +1492,11 @@ mod tests {
         // tells `since` from `until`, and swapping them leaves every other
         // test in the workspace green.
         assert!(
-            ranked.contains("TIMESTAMPTZ '1970-01-01') >= $4"),
+            ranked.contains("proxima_core.memory_created_at(p.memory_id) >= $4"),
             "$4 is `since` — a LOWER bound"
         );
         assert!(
-            ranked.contains("TIMESTAMPTZ '1970-01-01') <= $5"),
+            ranked.contains("proxima_core.memory_created_at(p.memory_id) <= $5"),
             "$5 is `until` — an UPPER bound"
         );
         assert!(
@@ -1538,11 +1538,11 @@ mod tests {
         assert!(substring.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(substring.contains("c.tags && $3::text[]"), "$3 is the tags");
         assert!(
-            substring.contains("TIMESTAMPTZ '1970-01-01') >= $4"),
+            substring.contains("proxima_core.memory_created_at(c.t) >= $4"),
             "$4 is `since` — a LOWER bound"
         );
         assert!(
-            substring.contains("TIMESTAMPTZ '1970-01-01') <= $5"),
+            substring.contains("proxima_core.memory_created_at(c.t) <= $5"),
             "$5 is `until` — an UPPER bound"
         );
         assert!(
@@ -1715,7 +1715,9 @@ mod tests {
         req.kind = None;
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
-            !ranked.contains("proxima_core.memory"),
+            !ranked
+                .split_whitespace()
+                .any(|token| token == "proxima_core.memory"),
             "with neither filter the ranked arm reads the projection ALONE, \
              as it always did"
         );
@@ -1775,11 +1777,11 @@ mod tests {
             ("$4", "schema_id — `p.schema_id = ANY($8::text[])`"),
             (
                 "$5",
-                "since — a `uuid_extract_timestamp(...) >= $4` row predicate",
+                "since — a `proxima_core.memory_created_at(...) >= $4` row predicate",
             ),
             (
                 "$6",
-                "until — a `uuid_extract_timestamp(...) <= $5` row predicate",
+                "until — a `proxima_core.memory_created_at(...) <= $5` row predicate",
             ),
         ];
         for heads_only in [false, true] {

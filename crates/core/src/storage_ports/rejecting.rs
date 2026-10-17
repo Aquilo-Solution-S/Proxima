@@ -113,6 +113,10 @@ impl MemoryAuthoringPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl MemoryReadPort for RejectingStorage {
+    fn store_number(&self) -> u16 {
+        0
+    }
+
     async fn load_fact_text(
         &self,
         _scope: Option<&crate::OwnerScope>,

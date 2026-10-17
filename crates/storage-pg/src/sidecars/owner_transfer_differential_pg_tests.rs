@@ -197,7 +197,21 @@ async fn write_note(
     // `call_log` admissions carry a hand-written `RetainAtSource` row below,
     // and a sidecar row the memory does not declare is one no verb reaches.
     let tables = vec![AGENT_NOTE.to_owned()];
-    let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], &[], &tables, None).await?;
+    let outcome = ingest_fact_timeseries(
+        &mut tx,
+        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+            store_number: 1,
+            natural_key: None,
+            owner: &owner,
+            draft: &write,
+            origins: &[],
+            references: &[],
+            sidecar_tables: &tables,
+            scopes: &[],
+        },
+        None,
+    )
+    .await?;
     core_pg_sidecars()
         .writing(&write)
         .insert_memory_sidecar(&mut tx, outcome.memory_id, &note(title))
@@ -634,7 +648,7 @@ pub async fn dump_database(
                 ))::text[]
            FROM information_schema.tables t
           WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
-            AND t.table_name NOT IN ('erased_pin_target', 'installation')
+            AND t.table_name NOT IN ('erased_pin_target', 'installation', 'store_identity')
           ORDER BY t.table_name",
     )
     .fetch_all(pool)

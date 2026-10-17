@@ -10,6 +10,7 @@ Postgres, `proxima-dev-idp`, then:
 
 ```sh
 export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
+export PROXIMA_STORE_NUMBER=0
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```

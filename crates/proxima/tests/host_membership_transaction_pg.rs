@@ -47,10 +47,22 @@ static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
 });
 
 async fn clone_db() -> SplitRoleDb {
-    TEMPLATE
+    let db = TEMPLATE
         .clone_split_role("proxima_host_membership_tx", &[])
         .await
-        .expect("PG required")
+        .expect("PG required");
+    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await
+    .expect("migration pool");
+    migration
+        .initialize_store_number(0)
+        .await
+        .expect("fixture store number");
+    db
 }
 
 async fn platform_scope(db: &SplitRoleDb) -> PgPlatformScope {
@@ -200,6 +212,7 @@ async fn connection_membership_write_keeps_user_registry_constraint() {
         proxima_storage_pg::PgPoolConfig::from_env().expect("pool config"),
         proxima_storage_pg::PgTuning::from_env().expect("pool tuning"),
         scope,
+        0,
     )
     .await
     .expect("pool storage");

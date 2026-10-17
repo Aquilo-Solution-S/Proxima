@@ -132,6 +132,7 @@ async fn facade_embeds_and_searches_at_a_non_default_width() {
                 |router| {
                     Proxima::<AgentMemoryApp>::app()
                         .database_url(runtime_url.clone())
+                        .store_number(0)
                         .platform_database_url(platform_url.clone())
                         .owner(owner)
                         .embedding_router(router)
@@ -290,6 +291,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
             |router| {
                 Proxima::<AgentMemoryApp>::app()
                     .database_url(runtime_url.clone())
+                    .store_number(0)
                     .platform_database_url(platform_url.clone())
                     .owner(owner)
                     .embedding_router(router)
@@ -384,6 +386,7 @@ impl TwoOwnerFixture {
         let (built, held) = HeldWorker::boot(db_name, personal, router.clone(), |router| {
             Proxima::<AgentMemoryApp>::app()
                 .database_url(runtime_url)
+                .store_number(0)
                 .platform_database_url(platform_url)
                 .owner(personal)
                 .embedding_router(router)
@@ -482,10 +485,7 @@ impl TwoOwnerFixture {
         &self,
         handle: &str,
     ) -> Result<Option<(String, i16)>, Box<dyn std::error::Error>> {
-        let memory_id = handle
-            .strip_prefix("F:")
-            .ok_or("fact handle")?
-            .parse::<Uuid>()?;
+        let memory_id = handle.parse::<Uuid>()?;
         Ok(sqlx::query_as(
             "SELECT model_id, dim FROM proxima_core.embeddings WHERE entity_id = $1
                  UNION
@@ -509,10 +509,7 @@ impl TwoOwnerFixture {
         &self,
         handle: &str,
     ) -> Result<Vec<(String, Option<String>)>, Box<dyn std::error::Error>> {
-        let memory_id = handle
-            .strip_prefix("F:")
-            .ok_or("fact handle")?
-            .parse::<Uuid>()?;
+        let memory_id = handle.parse::<Uuid>()?;
         Ok(sqlx::query_as(
             "SELECT status::text, last_error FROM proxima_core.embedding_jobs WHERE entity_id = $1",
         )
@@ -782,11 +779,7 @@ impl TwoOwnerFixture {
         &self,
         handle: &str,
     ) -> Result<(Vec<(String, i16)>, Vec<(String, i16)>), Box<dyn std::error::Error>> {
-        let memory_id = handle
-            .split_once(':')
-            .ok_or("typed handle")?
-            .1
-            .parse::<Uuid>()?;
+        let memory_id = handle.parse::<Uuid>()?;
         let vectors = sqlx::query_as(
             "SELECT model_id, dim FROM proxima_core.embeddings
               WHERE entity_id = $1 ORDER BY model_id",
@@ -1011,13 +1004,7 @@ async fn a_transferred_memory_moves_to_the_destinations_space() {
             fixture.embedding_rows(&moved).await?,
             (vec![personal_space.clone()], vec![])
         );
-        let entity = proxima_core::EntityId::Memory(MemoryId::new(
-            moved
-                .split_once(':')
-                .ok_or("typed handle")?
-                .1
-                .parse::<Uuid>()?,
-        ));
+        let entity = proxima_core::EntityId::Memory(MemoryId::new(moved.parse::<Uuid>()?));
 
         let refused = engine
             .transfer_to_owner(&fixture.authz, entity, fixture.shared)

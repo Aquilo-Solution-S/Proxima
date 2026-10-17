@@ -449,6 +449,7 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
     let owner = company_owner(Uuid::now_v7());
     let built = Proxima::<kit::KitFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()
@@ -511,6 +512,7 @@ async fn per_table_installer_calls_boot_under_the_runtime_rls_guard() {
     let owner = company_owner(Uuid::now_v7());
     let built = Proxima::<kit_per_table::KitPerTableFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()
@@ -556,6 +558,7 @@ async fn a_table_added_without_a_call_refuses_boot() {
         .expect("PG required");
     let refused = Proxima::<kit_forgotten_table::KitForgottenTableFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
@@ -580,6 +583,7 @@ async fn the_census_refuses_a_migration_that_forgot_a_table() {
         .expect("PG required");
     let refused = Proxima::<kit_forgotten_table_census::KitForgottenTableCensusFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
@@ -601,6 +605,7 @@ async fn an_unclassified_table_refuses_the_migration() {
         .expect("PG required");
     let refused = Proxima::<kit_gap::KitGapFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
@@ -622,6 +627,7 @@ async fn a_flavor_definer_view_refuses_boot_and_names_the_view() {
         .expect("PG required");
     let refused = Proxima::<kit_definer_view::KitDefinerViewFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .allow_insecure_single_owner()
@@ -643,6 +649,7 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
     let other = company_owner(Uuid::now_v7());
     let built = Proxima::<kit_invoker_view::KitInvokerViewFlavor>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(owner)
         .allow_insecure_single_owner()

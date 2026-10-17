@@ -33,12 +33,13 @@ pub async fn storage(
     )
     .await?;
     migration.run_migrations().await?;
+    migration.initialize_store_number(0).await?;
     let scope = proxima_storage_pg::PgPlatformScope::new(
         sqlx::PgPool::connect(&platform_url).await?,
         &["proxima_core"],
     )
     .await?;
-    let storage = proxima_storage_pg::PgStorage::connect(&runtime_url, scope).await?;
+    let storage = proxima_storage_pg::PgStorage::connect(&runtime_url, scope, 0).await?;
     let admin_pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(database)).await?;
     Ok(storage.with_admin_pool_for_tests(admin_pool))
 }
@@ -184,6 +185,7 @@ pub async fn start_server(
         &runtime_url,
         &platform_url,
         proxima_core::FlavorRegistry::new(),
+        0,
     )
     .await?;
     let (handle, addr) = proxima_mcp_server::serve_streamable_http(

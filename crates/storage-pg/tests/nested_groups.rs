@@ -244,11 +244,20 @@ async fn projection_equals_reference_after_seeded_person_and_group_write_sequenc
     let scope =
         proxima_storage_pg::PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
     let (runtime_url, _) = split_role_urls(h.database.name()).await?;
+    let (_, platform_url) = split_role_urls(h.database.name()).await?;
+    let identity = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxima_storage_pg::PgPoolConfig::default(),
+        proxima_storage_pg::PgTuning::default(),
+    )
+    .await?;
+    identity.initialize_store_number(1).await?;
     let storage = PgStorage::connect_with_config(
         &runtime_url,
         proxima_storage_pg::PgPoolConfig::default(),
         proxima_storage_pg::PgTuning::default(),
         scope,
+        1,
     )
     .await?;
     for person in people {

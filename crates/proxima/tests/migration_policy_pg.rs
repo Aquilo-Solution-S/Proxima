@@ -4,10 +4,7 @@ use std::borrow::Cow;
 
 #[path = "../../storage-pg/tests/support/migration_reset.rs"]
 mod migration_reset_support;
-#[path = "fixtures/split_core_db.rs"]
-mod split_core_db;
-
-use migration_reset_support::pre_reset_pairs;
+use migration_reset_support::{apply_pre_identity_schema, pre_reset_pairs};
 use proxima::{
     CoreAdoption, MigrationError, NamedMigrator, PendingMigration, pending_migrations,
     preflight_without_migrations, run_core_and_flavor_migrations,
@@ -16,7 +13,6 @@ use proxima_pg_testkit::SplitRoleDb;
 use proxima_storage_pg::{
     PgMigrationStorage, PgPoolConfig, PgTuning, adopt::PRE_RESET, core_migrator,
 };
-use split_core_db::clone_split_core_db;
 use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 use sqlx::{PgPool, SqlSafeStr};
 
@@ -24,9 +20,16 @@ const FIRST: i64 = 20_991_001_000_010;
 const UNKNOWN: i64 = FIRST + 1;
 
 async fn core_history_db(count: usize) -> SplitRoleDb {
-    let db = clone_split_core_db("proxima_policy_adoption")
+    let db = SplitRoleDb::create("proxima_policy_adoption", &[])
         .await
         .expect("owned PG required");
+    let platform = PgPool::connect(db.platform_url())
+        .await
+        .expect("platform pool");
+    apply_pre_identity_schema(&platform)
+        .await
+        .expect("schema before store identities");
+    platform.close().await;
     let admin = PgPool::connect(&db.admin_url()).await.expect("admin pool");
     sqlx::query("DELETE FROM public._sqlx_migrations")
         .execute(&admin)
@@ -69,14 +72,20 @@ async fn the_facade_adopts_the_complete_pre_reset_main_ledger() {
         .expect("adopted history passes facade preflight");
 
     let pool = pg.clone_pool_for_backend();
-    let baseline = core_migrator().iter().next().expect("baseline").version;
+    let expected: Vec<i64> = PRE_RESET
+        .iter()
+        .map(|(version, _)| *version)
+        .chain(core_migrator().iter().map(|migration| migration.version))
+        .collect();
     let rows: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
             .fetch_all(&pool)
             .await
             .expect("core ledger");
-    assert_eq!(rows.len(), PRE_RESET.len() + 1);
-    assert_eq!(rows.last().copied(), Some(baseline));
+    assert_eq!(
+        rows, expected,
+        "adoption retains history and applies current migrations"
+    );
 }
 
 #[tokio::test]
@@ -349,6 +358,7 @@ async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot(
     let host = || {
         Proxima::<PolicyHost>::app()
             .database_url(db.runtime_url())
+            .store_number(0)
             .platform_database_url(db.platform_url())
             .owner(owner)
             .allow_insecure_single_owner()

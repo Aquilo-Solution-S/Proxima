@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::payloads::ExecutionRequestV1;
 
 use super::super::sql::map_storage;
-use super::super::{CodeToolCtxExt, code_store, engine};
+use super::super::{code_store, engine};
 use super::input_validation::normalize_text;
 
 pub(super) fn retry_instructions(
@@ -27,13 +27,6 @@ pub(super) fn retry_instructions(
         instructions.push_str(&extra);
     }
     normalize_text("instructions", &instructions, 20_000)
-}
-
-pub(super) fn resolve_target_perspective_id(
-    ctx: &ToolCtx,
-    raw: &str,
-) -> Result<MemoryId, ToolError> {
-    ctx.resolve_perspective_memory(raw)
 }
 
 #[derive(Debug)]

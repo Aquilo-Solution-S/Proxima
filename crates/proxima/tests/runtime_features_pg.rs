@@ -255,6 +255,7 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
 
     let built = Proxima::<BareApp>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .served_surface(ServedSurface::All)
@@ -301,6 +302,7 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
     let app = || {
         Proxima::<WorkerApp>::app()
             .database_url(db.runtime_url())
+            .store_number(0)
             .platform_database_url(db.platform_url())
             .owner(owner)
             .authenticator(Arc::new(StubAuth { subject, owner }))
@@ -379,6 +381,7 @@ async fn a_retention_without_a_publisher_is_off_and_says_so() {
         .expect("PG required");
     let built = Proxima::<BareApp>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(company_owner(Uuid::now_v7()))
         .served_surface(ServedSurface::All)

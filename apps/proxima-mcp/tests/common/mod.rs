@@ -20,6 +20,7 @@ pub async fn runtime_storage(
     )
     .await?;
     migration.run_migrations().await?;
+    migration.initialize_store_number(0).await?;
     let platform = sqlx::PgPool::connect(platform_url).await?;
     sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_code")
         .execute(&platform)
@@ -34,6 +35,7 @@ pub async fn runtime_storage(
         proxima_storage_pg::PgPoolConfig::from_env()?,
         proxima_storage_pg::PgTuning::from_env()?,
         scope,
+        0,
     )
     .await?)
 }

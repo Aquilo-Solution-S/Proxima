@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::GoalId;
 use crate::mcp::cursor as wire_cursor;
-use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid};
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::query::{EntityKind, QueryCursor, QueryPage, QueryRequest, SupersessionStatus};
@@ -43,9 +42,9 @@ pub struct ListGoalsOutput {
 
 #[derive(Debug, Serialize)]
 pub struct GoalItem {
-    /// Goal reference (`G:<uuid>`), as accepted by `core_goal`.
+    /// Goal reference (`<uuid>`), as accepted by `core_goal`.
     pub goal: String,
-    /// Stable series handle (`G:<uuid>`). `goal` is this version's `t` and is
+    /// Stable series handle (`<uuid>`). `goal` is this version's `t` and is
     /// retained for write references.
     pub handle: String,
     pub title: String,
@@ -62,7 +61,7 @@ pub struct GoalItem {
     /// first version.
     #[serde(with = "time::serde::rfc3339")]
     pub changed_at: time::OffsetDateTime,
-    /// Goals this one depends on (`G:<uuid>`), as declared on its own row.
+    /// Goals this one depends on (`<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
 }
 
@@ -133,8 +132,7 @@ pub async fn list_goals(
 /// Returns malformed/unknown goal references, authorization, or storage
 /// failures.
 pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolError> {
-    let id = parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let id = ctx.resolve_goal(raw)?.into_inner();
     let engine = ctx.require_engine()?;
     let handle = series_handle(&ctx, engine, id).await?;
     let mut req = QueryRequest::readable();
@@ -149,7 +147,7 @@ pub async fn get_goal(ctx: McpToolCtx, raw: &str) -> Result<GoalItem, McpToolErr
         .ok_or_else(|| McpToolError::NotFound(format!("goal {raw} not found")))
 }
 
-/// The series a `G:<uuid>` names. A readable version resolves to its series;
+/// The series a `<uuid>` names. A readable version resolves to its series;
 /// anything else is taken as a series handle. Version ids and handles are
 /// distinct UUIDs, so the version lookup cannot select another series.
 async fn series_handle(
@@ -169,8 +167,8 @@ async fn series_handle(
 fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
     rows.into_iter()
         .map(|row| GoalItem {
-            goal: format_prefixed_uuid(row.id.into_inner(), PrefixedUuidClass::Goal),
-            handle: format_prefixed_uuid(row.handle, PrefixedUuidClass::Goal),
+            goal: row.id.into_inner().to_string(),
+            handle: row.handle.to_string(),
             title: row.title,
             text: row.text,
             state: state_str(row.state).to_string(),
@@ -180,7 +178,7 @@ fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
             dependencies: row
                 .dependency_goal_ids
                 .into_iter()
-                .map(|id| format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal))
+                .map(|id| id.into_inner().to_string())
                 .collect(),
         })
         .collect()

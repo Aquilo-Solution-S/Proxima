@@ -93,6 +93,10 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         .run_migrations()
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but migration failed: {e}"));
+    migration
+        .initialize_store_number(1)
+        .await
+        .expect("fixture store identity");
     let platform_pool = sqlx::PgPool::connect(&platform_url)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
@@ -104,6 +108,7 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         PgPoolConfig::default(),
         PgTuning::default(),
         platform_scope,
+        1,
     )
     .await
     {
@@ -153,6 +158,7 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
     )
     .await?;
     migration.run_migrations().await?;
+    migration.initialize_store_number(1).await?;
     let platform_pool = sqlx::PgPool::connect(&platform_url)
         .await
         .map_err(|error| StorageError::Unavailable(error.to_string()))?;
@@ -162,6 +168,7 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
         PgPoolConfig::default(),
         PgTuning::default(),
         platform_scope,
+        1,
     )
     .await?;
     let admin_pool = sqlx::PgPool::connect(&url)

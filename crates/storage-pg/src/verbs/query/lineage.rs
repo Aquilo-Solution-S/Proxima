@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use proxima_core::storage_ports::other_stores::QualifiedHandle;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse,
@@ -20,7 +19,7 @@ use crate::projection::{projection_key_ident, snippet_sql};
 /// Outbound origin pins of the frontier, newest `(src, tgt)` first.
 const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
        m.t AS src, m.kind::text AS src_kind, pin AS tgt,
-       COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
+       proxima_core.memory_created_at(m.t) AS created_at
   FROM proxima_core.memory m
   JOIN unnest(m.origins) AS pin ON true
  WHERE m.t = ANY($1::uuid[])
@@ -33,7 +32,7 @@ const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
 /// in that frontier (not the child's other pins).
 const DESCENDANT_HOP_SQL: &str = "SELECT DISTINCT ON (child.t, pin)
        child.t AS src, child.kind::text AS src_kind, pin AS tgt,
-       COALESCE(uuid_extract_timestamp(child.t), TIMESTAMPTZ '1970-01-01') AS created_at
+       proxima_core.memory_created_at(child.t) AS created_at
   FROM proxima_core.memory child
   JOIN unnest(child.origins) AS pin ON true
  WHERE child.owner_id = ANY($2::uuid[])
@@ -156,12 +155,12 @@ async fn assemble_lineage_page_on_connection(
     // the memory's owner RLS; the owner filter repeats it for the
     // fixture lane without policies.
     let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
-    let external_rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT e.t, e.store, e.handle
+    let external_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT e.t, e.memory
            FROM proxima_core.memory_external_origin e
            JOIN proxima_core.memory m ON m.t = e.t
           WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
-          ORDER BY e.t, e.store, e.handle",
+          ORDER BY e.t, e.memory",
     )
     .bind(&visible_ids)
     .bind(owner_ids)
@@ -170,10 +169,7 @@ async fn assemble_lineage_page_on_connection(
     .map_err(map_err)?;
     let external_origins = external_rows
         .into_iter()
-        .filter_map(|(t, store, handle)| {
-            let origin = QualifiedHandle::parse(&format!("{store}:{handle}"))?;
-            Some((MemoryId::new(t), origin))
-        })
+        .map(|(t, memory)| (MemoryId::new(t), memory))
         .collect();
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");

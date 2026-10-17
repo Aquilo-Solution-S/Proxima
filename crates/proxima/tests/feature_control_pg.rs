@@ -183,6 +183,7 @@ impl World {
     fn base_app(&self, worker_interval: Duration) -> Proxima<BareApp> {
         Proxima::<BareApp>::app()
             .database_url(self.db.runtime_url())
+            .store_number(0)
             .platform_database_url(self.db.platform_url())
             .owner(self.owner)
             .authenticator(Arc::new(StubAuth {

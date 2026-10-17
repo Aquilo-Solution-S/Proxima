@@ -98,7 +98,7 @@ pub struct UploadAbortArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UploadReadUrlArgs {
     #[schemars(
-        description = "Cited object uuid from the complete action (or a citation read-back), optionally prefixed as `C:<uuid>`."
+        description = "Cited object uuid from the complete action (or a citation read-back), as a bare UUID."
     )]
     pub cited_object_id: String,
     #[serde(default)]
@@ -280,7 +280,7 @@ impl McpTool for CoreUploadTool {
                         mime: outcome.mime,
                         filename: outcome.filename,
                         idempotent_replay: outcome.idempotent_replay,
-                        fact: ctx.format_fact_memory(completed.fact.memory_id),
+                        fact: completed.fact.memory_id.into_inner().to_string(),
                     }))
                 }
                 CoreUploadArgs::Abort(args) => {

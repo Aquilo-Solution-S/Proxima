@@ -5,21 +5,18 @@ use std::collections::{HashMap, HashSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::storage_ports::other_stores::RemoteOriginRead;
+use crate::storage_ports::other_stores::{MAX_LINEAGE_REMOTE_ORIGINS, RemoteOriginRead};
 use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest};
-use crate::{MemoryHandleClass, MemoryId};
-
-use super::get_memory::memory_class;
 
 const MAX_LINEAGE_DEPTH: u32 = 8;
 const DEFAULT_LINEAGE_DEPTH: u32 = 3;
-use crate::storage_ports::other_stores::MAX_LINEAGE_REMOTE_ORIGINS;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
-    /// `F:<uuid>`, `A:<uuid>`, or `P:<uuid>` memory id.
+    /// Memory UUID.
     pub memory: String,
     /// Walk direction: `ancestors` follows `origin` edges toward what
     /// this memory was made from (default); `descendants` follows them
@@ -82,9 +79,9 @@ pub struct LineageNodeOutput {
     pub schema_id: String,
     pub snippet: String,
     pub distance: u8,
-    /// Set only on a node of another store: its store name.
+    /// Set only on a node of another store: its store number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
+    pub store: Option<u16>,
     /// Set only on an other-store node that could not be read: `erased`
     /// (the store erased it) or `unavailable` (no port, the store did not
     /// answer, or the caller may no longer read it). The walk never fails
@@ -179,15 +176,12 @@ pub async fn walk_memory_lineage(
         )));
     }
 
-    let mut classes = HashMap::new();
     let nodes = response
         .nodes
         .into_iter()
         .map(|node| {
-            let class = memory_class(node.kind)?;
-            classes.insert(node.memory_id, class);
             Ok(LineageNodeOutput {
-                memory: ctx.format_memory_with_class(node.memory_id, class),
+                memory: node.memory_id.into_inner().to_string(),
                 kind: node.kind.as_str().to_string(),
                 schema_id: node.schema_id.as_str().to_string(),
                 snippet: node.snippet,
@@ -203,8 +197,8 @@ pub async fn walk_memory_lineage(
         .edges
         .into_iter()
         .map(|hop| LineageEdgeOutput {
-            source: format_lineage_endpoint(&ctx, &classes, hop.edge.source),
-            target: format_lineage_target(&ctx, &classes, hop.edge.target),
+            source: super::wire_ref::format_endpoint(&ctx, hop.edge.source),
+            target: super::wire_ref::format_target_projection(&ctx, hop.edge.target),
             kind: hop.edge.kind.as_str().to_string(),
             distance: hop.distance,
         })
@@ -241,18 +235,15 @@ async fn append_external_origins(
     ctx: &McpToolCtx,
     nodes: &mut Vec<LineageNodeOutput>,
     edges: &mut Vec<LineageEdgeOutput>,
-    external: Vec<(
-        MemoryId,
-        crate::storage_ports::other_stores::QualifiedHandle,
-    )>,
+    external: Vec<(MemoryId, uuid::Uuid)>,
 ) {
     let service = super::other_stores::service(ctx);
     let has_service = service.is_some();
     let mut unique = Vec::new();
     let mut seen = HashSet::new();
     for (_, origin) in &external {
-        if seen.insert(origin.clone()) {
-            unique.push(origin.clone());
+        if seen.insert(*origin) {
+            unique.push(*origin);
         }
     }
     let readable = unique.len().min(MAX_LINEAGE_REMOTE_ORIGINS);
@@ -275,7 +266,7 @@ async fn append_external_origins(
             })
             .collect()
     });
-    let read_by_handle: HashMap<_, _> = unique.iter().take(readable).cloned().zip(reads).collect();
+    let read_by_handle: HashMap<_, _> = unique.iter().take(readable).copied().zip(reads).collect();
     for (memory_id, origin) in external {
         let Some(source) = nodes
             .iter()
@@ -301,7 +292,7 @@ async fn append_external_origins(
                 schema_id,
                 snippet,
                 distance,
-                store: Some(origin.store.to_string()),
+                store: Some(crate::memory_store_number(origin)),
                 status: status.map(ToString::to_string),
                 unavailable_reason: unavailable_reason.map(ToString::to_string),
             });
@@ -372,38 +363,6 @@ fn project_remote_read(
     }
 }
 
-fn format_lineage_target(
-    ctx: &McpToolCtx,
-    classes: &HashMap<MemoryId, MemoryHandleClass>,
-    target: crate::EdgeTargetProjection,
-) -> String {
-    // Memory prefixes come from the per-walk class map (built off the
-    // node projection) rather than a single kind, so this goes through
-    // the closure variant of the shared formatter.
-    super::wire_ref::format_target_projection_with(ctx, target, |memory_id| {
-        let class = classes
-            .get(&memory_id)
-            .copied()
-            .unwrap_or(MemoryHandleClass::Fact);
-        ctx.format_memory_with_class(memory_id, class)
-    })
-}
-
-fn format_lineage_endpoint(
-    ctx: &McpToolCtx,
-    classes: &HashMap<MemoryId, MemoryHandleClass>,
-    endpoint: crate::EdgeEndpoint,
-) -> String {
-    let Some(memory_id) = endpoint.memory_id() else {
-        return super::wire_ref::format_endpoint(ctx, endpoint);
-    };
-    let class = classes
-        .get(&memory_id)
-        .copied()
-        .unwrap_or_else(|| memory_class(endpoint.kind).unwrap_or(MemoryHandleClass::Fact));
-    ctx.format_memory_with_class(memory_id, class)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -415,7 +374,7 @@ mod tests {
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
     use crate::storage_ports::other_stores::{
         OtherStores, OtherStoresError, RemoteMemory, RemoteRead, RemoteSearch, RemoteSearchResult,
-        StoreCaller, StoreInfo, StoreName,
+        StoreCaller, StoreInfo,
     };
     use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection};
     use crate::{MemoryId, UserId};
@@ -426,7 +385,7 @@ mod tests {
     /// fingerprint so it may vary.
     #[test]
     fn lineage_cursor_binds_memory_direction_and_depth() {
-        let memory = "F:018f0000-0000-7000-8000-000000000001";
+        let memory = "018f0000-0000-7000-8000-000000000001";
         let fingerprint = lineage_fingerprint(memory, MemoryLineageDirection::Ancestors, 3);
         let cursor = MemoryLineageCursor {
             distance: 2,
@@ -443,7 +402,7 @@ mod tests {
             lineage_fingerprint(memory, MemoryLineageDirection::Descendants, 3),
             lineage_fingerprint(memory, MemoryLineageDirection::Ancestors, 4),
             lineage_fingerprint(
-                "F:018f0000-0000-7000-8000-000000000002",
+                "018f0000-0000-7000-8000-000000000002",
                 MemoryLineageDirection::Ancestors,
                 3,
             ),
@@ -469,7 +428,7 @@ mod tests {
         fn search<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
+            _store: u16,
             _args: &'a RemoteSearch,
         ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
             Box::pin(async {
@@ -482,14 +441,13 @@ mod tests {
         fn read<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
-            _handle: &'a str,
+            id: uuid::Uuid,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async {
+            Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
                 Ok(RemoteRead::Found(RemoteMemory {
-                    handle: "remote:lineage".into(),
+                    handle: id,
                     kind: crate::EntityKind::Fact,
                     schema_id: "test/fact-v1".into(),
                     title: None,
@@ -516,7 +474,7 @@ mod tests {
             .map(|index| {
                 let id = MemoryId::new(uuid::Uuid::from_u128(index + 1));
                 LineageNodeOutput {
-                    memory: ctx.format_memory_with_class(id, crate::MemoryHandleClass::Fact),
+                    memory: id.into_inner().to_string(),
                     kind: "fact".into(),
                     schema_id: "test/fact-v1".into(),
                     snippet: String::new(),
@@ -527,18 +485,13 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
+        let remote_ids = (0..255)
+            .map(|_| crate::new_memory_uuid(1))
+            .collect::<Vec<_>>();
         let origins = (0u128..200)
             .flat_map(|node| {
                 let id = MemoryId::new(uuid::Uuid::from_u128(node + 1));
-                (0..255).map(move |offset| {
-                    (
-                        id,
-                        crate::storage_ports::other_stores::QualifiedHandle::parse(&format!(
-                            "remote:{offset}"
-                        ))
-                        .expect("origin"),
-                    )
-                })
+                remote_ids.iter().copied().map(move |origin| (id, origin))
             })
             .collect::<Vec<_>>();
         let mut edges = Vec::new();

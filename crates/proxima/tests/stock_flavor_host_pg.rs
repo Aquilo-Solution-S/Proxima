@@ -282,6 +282,7 @@ impl Stack {
     fn env(&self, overrides: &[(&str, &str)]) -> HashMap<String, String> {
         let mut env: HashMap<String, String> = [
             ("DATABASE_URL", self.database.runtime_url().to_owned()),
+            ("PROXIMA_STORE_NUMBER", "0".to_owned()),
             (
                 "PROXIMA_PLATFORM_DATABASE_URL",
                 self.database.platform_url().to_owned(),

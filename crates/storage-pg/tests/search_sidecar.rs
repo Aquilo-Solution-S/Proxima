@@ -1053,15 +1053,21 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         )
         .await?;
         migration.run_migrations().await?;
+        migration.initialize_store_number(1).await?;
         let scope = PgPlatformScope::new(
             sqlx::PgPool::connect(&platform_url).await?,
             &["proxima_core"],
         )
         .await?;
-        let pg =
-            PgStorage::connect_with_config(&runtime_url, pool_config, PgTuning::default(), scope)
-                .await?
-                .with_admin_pool_for_tests(sqlx::PgPool::connect(&db_url(&db_name)).await?);
+        let pg = PgStorage::connect_with_config(
+            &runtime_url,
+            pool_config,
+            PgTuning::default(),
+            scope,
+            1,
+        )
+        .await?
+        .with_admin_pool_for_tests(sqlx::PgPool::connect(&db_url(&db_name)).await?);
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let near = seed_note(pool, owner, "Near", "semantic neighbour body").await?;

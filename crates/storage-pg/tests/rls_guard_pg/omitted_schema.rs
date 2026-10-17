@@ -31,6 +31,7 @@ async fn storage_construction_refuses_unsafe_registered_schema_outside_scope() {
         PgPoolConfig::default(),
         PgTuning::default(),
         scope,
+        1,
     )
     .await
     .expect_err("storage construction must reject the omitted unsafe schema");

@@ -186,6 +186,7 @@ async fn boot(
     skip_migrations: bool,
 ) -> Result<proxima::BuiltProxima, proxima::ProximaError> {
     let mut app = Proxima::<CodeApp>::app()
+        .store_number(0)
         .database_url(runtime_url)
         .owner(owner)
         .served_surface(ServedSurface::All)
@@ -327,6 +328,7 @@ async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
     let built = Proxima::<CodeApp>::app()
         .database_url(runtime_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
         .allow_insecure_single_owner()

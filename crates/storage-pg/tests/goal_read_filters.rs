@@ -100,6 +100,7 @@ async fn goal(
             mint_write_act: false,
             write_act_t: None,
         },
+        1,
     )
     .await
     .unwrap();

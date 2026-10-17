@@ -301,6 +301,7 @@ async fn exercise_full_registry_erase(
     let owner_scope = authz.owner_scope().expect("verified owner scope").clone();
     let built = Proxima::<FullRegistryApp>::app()
         .database_url(&runtime_url)
+        .store_number(0)
         .platform_database_url(&platform_url)
         .owner(owner)
         .allow_insecure_single_owner()

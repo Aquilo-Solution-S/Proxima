@@ -21,7 +21,7 @@ WITH scoped AS MATERIALIZED (
         AND h2.model_id = $1
         AND h2.dim = $6
       WHERE ($3::text <> 'since'
-             OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $4)
+             OR proxima_core.memory_created_at(m.t) >= $4)
         AND mh.schema_id <> ALL($5::text[])
         AND ($7::uuid[] IS NULL OR m.owner_id = ANY($7::uuid[]))
  ),

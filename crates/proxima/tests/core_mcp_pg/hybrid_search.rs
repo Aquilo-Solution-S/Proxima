@@ -19,12 +19,7 @@ async fn remember(
         serde_json::json!({"title": title, "body": body, "language": "english"}),
     )
     .await?;
-    Ok(result["handle"]
-        .as_str()
-        .ok_or("memory handle")?
-        .strip_prefix("F:")
-        .ok_or("fact handle")?
-        .parse()?)
+    Ok(result["handle"].as_str().ok_or("memory handle")?.parse()?)
 }
 
 async fn search(
@@ -64,7 +59,8 @@ async fn served_hybrid_rescues_bilingual_queries_and_pages_with_raw_leg_floors()
         let router = Arc::new(TestEmbeddingRouter::default());
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url)
-            .platform_database_url(platform_url)
+            .store_number(0)
+        .platform_database_url(platform_url)
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
             .embedding_router(router.clone())

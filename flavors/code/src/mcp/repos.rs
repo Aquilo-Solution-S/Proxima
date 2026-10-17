@@ -10,7 +10,6 @@ use uuid::Uuid;
 use crate::repos::{MAX_SCOPE_GLOBS, RepoRecord, RepoRegistryError};
 use crate::{FileClassCounts, IndexReport};
 
-use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
 
@@ -184,7 +183,7 @@ fn repo_fingerprint(owner: &proxima_core::OwnerId) -> String {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeIngestHeadSnapshotArgs {
     #[schemars(
-        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R:<uuid>`."
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `<uuid>`."
     )]
     pub repo_handle: String,
 }
@@ -504,14 +503,10 @@ async fn maybe_set_target_branch(
     .map_err(map_repo_registry)
 }
 
-pub(super) fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
+pub(super) fn repo_item(_ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
     let last_polled_at = record.last_polled_at.map(format_time).transpose()?;
     Ok(RepoItem {
-        repo_handle: ctx.format_flavor_object(
-            super::REPO_HANDLE_KIND,
-            record.repo_id,
-            super::REPO_HANDLE_PREFIX,
-        ),
+        repo_handle: (record.repo_id).to_string(),
         repo_id: record.repo_id.to_string(),
         canonical_path: record.canonical_path,
         display_name: record.display_name,
@@ -527,7 +522,7 @@ pub(super) fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, T
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEraseRepoArgs {
     #[schemars(
-        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R:<uuid>`."
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `<uuid>`."
     )]
     pub repo_handle: String,
     #[schemars(

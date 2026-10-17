@@ -9,7 +9,7 @@ use crate::flavor::Provenance;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
-use crate::{EdgeKind, GetMemoriesReadRequest, InboundPinQuery, MemoryHandleClass, MemoryId};
+use crate::{EdgeKind, GetMemoriesReadRequest, InboundPinQuery, MemoryId};
 
 const MAX_SEEDS: usize = 8;
 const MAX_DEPTH: u32 = 8;
@@ -22,7 +22,7 @@ pub struct ThinkTool;
 pub struct ThinkArgs {
     #[schemars(
         length(min = 1, max = 8),
-        description = "Start memories: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`. Every direction walks from all seeds."
+        description = "Start memories: memory UUIDs. Every direction walks from all seeds."
     )]
     pub seeds: Vec<String>,
     #[serde(default)]
@@ -223,13 +223,12 @@ async fn pin_bfs(
     let visits = page
         .iter()
         .map(|(id, kind, hop)| {
-            let class = super::get_memory::memory_class(*kind).unwrap_or(MemoryHandleClass::Fact);
             let sketch = sketches
                 .iter()
                 .find(|row| row.id == *id)
                 .map_or_else(|| kind.as_str().to_string(), |row| row.text.clone());
             ThinkVisit {
-                handle: ctx.format_memory_with_class(*id, class),
+                handle: (*id).into_inner().to_string(),
                 kind: kind.as_str().to_string(),
                 sketch,
                 depth: *hop,
@@ -471,14 +470,12 @@ async fn episode_siblings(
     let visits = page
         .into_iter()
         .map(|node| {
-            let class =
-                super::get_memory::memory_class(node.kind).unwrap_or(MemoryHandleClass::Fact);
             let sketch = sketches
                 .iter()
                 .find(|row| row.id == node.id)
                 .map_or_else(|| node.kind.as_str().to_string(), |row| row.text.clone());
             ThinkVisit {
-                handle: ctx.format_memory_with_class(node.id, class),
+                handle: node.id.into_inner().to_string(),
                 kind: node.kind.as_str().to_string(),
                 sketch,
                 depth: 1,

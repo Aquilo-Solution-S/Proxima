@@ -14,7 +14,7 @@ use proxima_core::{
     EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion,
     SidecarPayload, StorageError,
 };
-use sqlx::{Postgres, Transaction};
+use sqlx::{Acquire, Postgres, Transaction};
 
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
@@ -23,6 +23,7 @@ type InputProofRow = (uuid::Uuid, EntityKind, Option<uuid::Uuid>, bool, bool);
 
 #[derive(Debug, Clone)]
 pub(crate) struct DerivedDraft<'a> {
+    pub(crate) store_number: u16,
     pub memory_id: uuid::Uuid,
     pub owner: OwnerId,
     pub kind: EntityKind,
@@ -43,6 +44,27 @@ pub(crate) struct DerivedDraft<'a> {
     /// Spaces selected by the schema and write route. Jobs are queued in
     /// this memory transaction; an empty slice requests no work.
     pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
+}
+
+impl<'a> DerivedDraft<'a> {
+    pub(crate) fn from_request(
+        req: &proxima_core::AuthorDerivedRequest<'a>,
+        store_number: u16,
+    ) -> Self {
+        Self {
+            store_number,
+            memory_id: req.memory_id.into_inner(),
+            owner: req.owner,
+            kind: req.kind,
+            schema_id: req.schema_id.clone(),
+            schema_version: req.schema_version,
+            text: req.text.clone(),
+            operator_kind: req.operator_kind,
+            supersedes: req.supersedes,
+            lexical_language: req.lexical_language,
+            queued_spaces: req.queued_spaces,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +98,37 @@ async fn append_derived_timeseries(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
     ) -> PgSidecarFuture<'t>,
+) -> Result<DerivedOutcome, StorageError> {
+    let mut retried_collision = false;
+    let outcome = loop {
+        let mut attempt = tx.begin().await.map_err(map_err)?;
+        match admit_derived(&mut attempt, draft, input).await {
+            Ok(outcome) => {
+                attempt.commit().await.map_err(map_err)?;
+                break outcome;
+            }
+            Err(StorageError::MemoryIdCollision) if !retried_collision => {
+                attempt.rollback().await.map_err(map_err)?;
+                retried_collision = true;
+            }
+            Err(StorageError::MemoryIdCollision) => return Err(crate::error::collision_exhausted()),
+            Err(error) => return Err(error),
+        }
+    };
+    if outcome.idempotent_replay {
+        return Ok(outcome);
+    }
+    sidecar(tx, &outcome).await?;
+    if !outcome.idempotent_replay {
+        enqueue_derived_embedding_jobs(tx, draft, outcome.memory_id).await?;
+    }
+    Ok(outcome)
+}
+
+async fn admit_derived(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    input: DerivedAdmissionInput<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
     let kind = match draft.kind {
         EntityKind::Fact => "fact",
@@ -117,6 +170,7 @@ async fn append_derived_timeseries(
     let prepared = super::memory_timeseries::prepare_memory_admission_with_extra_targets(
         tx,
         super::memory_timeseries::MemoryAdmissionDraft {
+            store_number: draft.store_number,
             natural_key: None,
             owner: &draft.owner,
             draft: &cmd,
@@ -153,10 +207,6 @@ async fn append_derived_timeseries(
         memory_id: ingested.memory_id,
         idempotent_replay: ingested.idempotent_replay,
     };
-    sidecar(tx, &outcome).await?;
-    if !outcome.idempotent_replay {
-        enqueue_derived_embedding_jobs(tx, draft, outcome.memory_id).await?;
-    }
     Ok(outcome)
 }
 
@@ -351,7 +401,7 @@ pub(crate) async fn assert_derived_index_rows(
 
 /// Record the other-store origins of a fresh derived row, or check a
 /// replay declares the ones its first write recorded. No constraint looks
-/// at the remote side: the rows are `(t, store, handle)` and nothing more.
+/// at the remote side: the rows are `(t, memory)` and nothing more.
 ///
 /// # Errors
 ///
@@ -360,16 +410,13 @@ pub(crate) async fn assert_derived_index_rows(
 pub(crate) async fn record_external_origins(
     tx: &mut Transaction<'_, Postgres>,
     outcome: &DerivedOutcome,
-    external: &[proxima_core::storage_ports::other_stores::QualifiedHandle],
+    external: &[uuid::Uuid],
 ) -> Result<usize, StorageError> {
     let t = outcome.memory_id.into_inner();
-    let declared: BTreeSet<(String, String)> = external
-        .iter()
-        .map(|origin| (origin.store.as_str().to_string(), origin.handle.clone()))
-        .collect();
+    let declared: BTreeSet<uuid::Uuid> = external.iter().copied().collect();
     if outcome.idempotent_replay {
-        let stored: BTreeSet<(String, String)> = sqlx::query_as(
-            "SELECT store, handle FROM proxima_core.memory_external_origin WHERE t = $1",
+        let stored: BTreeSet<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT memory FROM proxima_core.memory_external_origin WHERE t = $1",
         )
         .bind(t)
         .fetch_all(&mut **tx)
@@ -387,15 +434,14 @@ pub(crate) async fn record_external_origins(
     if declared.is_empty() {
         return Ok(0);
     }
-    let (stores, handles): (Vec<String>, Vec<String>) = declared.iter().cloned().unzip();
+    let memories: Vec<uuid::Uuid> = declared.iter().copied().collect();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
-         SELECT $1, s, h FROM unnest($2::text[], $3::text[]) AS x(s, h)
+        "INSERT INTO proxima_core.memory_external_origin (t, memory)
+         SELECT $1, memory FROM unnest($2::uuid[]) AS memory
          ON CONFLICT DO NOTHING",
     )
     .bind(t)
-    .bind(&stores)
-    .bind(&handles)
+    .bind(&memories)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

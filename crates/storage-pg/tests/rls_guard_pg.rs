@@ -322,6 +322,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
     flavor_migrations.run(&platform_pool).await.unwrap();
     platform_pool.close().await;
+    platform_storage.initialize_store_number(1).await.unwrap();
     execute(
         &admin,
         &format!(

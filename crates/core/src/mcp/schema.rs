@@ -2395,10 +2395,13 @@ mod tests {
             serde_json::json!(["array", "null"])
         );
 
-        for evidence in [serde_json::Value::Null, serde_json::json!(["A:example"])] {
+        for evidence in [
+            serde_json::Value::Null,
+            serde_json::json!(["00000000-0000-8000-8000-000000000001"]),
+        ] {
             let value = serde_json::json!({
                 "action": "modify",
-                "goal": "G:example",
+                "goal": "00000000-0000-8000-8000-000000000002",
                 "schema_id": "goal",
                 "title": "title",
                 "text": "text",

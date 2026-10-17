@@ -54,6 +54,7 @@ pub(crate) const DUPLICATE_HOST_STATE_PARTICIPANT: &str = "a host-state particip
 #[derive(Default)]
 pub struct RuntimeBuilder {
     database_url: Option<String>,
+    store_number: Option<u16>,
     platform_database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<OwnerId>,
@@ -110,6 +111,7 @@ impl std::fmt::Debug for RuntimeBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeBuilder")
             .field("has_database_url", &self.database_url.is_some())
+            .field("store_number", &self.store_number)
             .field(
                 "has_platform_database_url",
                 &self.platform_database_url.is_some(),
@@ -177,6 +179,7 @@ impl RuntimeBuilder {
             };
         Self {
             database_url: self.database_url.or(base.database_url),
+            store_number: self.store_number.or(base.store_number),
             platform_database_url: self.platform_database_url.or(base.platform_database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
@@ -232,8 +235,17 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the separate migration/platform connection string. Env equivalent:
-    /// `PROXIMA_PLATFORM_DATABASE_URL`.
+    /// Assign this store its host-selected number. Required; the first boot
+    /// persists it and every later boot must supply the same value.
+    /// Environment equivalent: `PROXIMA_STORE_NUMBER`.
+    #[must_use]
+    pub const fn store_number(mut self, number: u16) -> Self {
+        self.store_number = Some(number);
+        self
+    }
+
+    /// Set the separate migration/platform connection string.
+    /// Environment equivalent: `PROXIMA_PLATFORM_DATABASE_URL`.
     #[must_use]
     pub fn platform_database_url(mut self, url: impl Into<String>) -> Self {
         self.platform_database_url = Some(url.into());
@@ -529,8 +541,9 @@ impl RuntimeBuilder {
 
     /// Read memory stores beside this one through `port` (issue #462):
     /// `core_search_memories` fans out to them, `core_derive` accepts
-    /// `<store>:<handle>` sources, and `proxima://memory/<store>:<handle>`
-    /// reads through it. Each store gets the default 2 s bound; publish an
+    /// bare UUID sources from another store, and `proxima://memory/<uuid>`
+    /// reads through it using the number embedded in that UUID. Each store gets
+    /// the default 2 s bound; publish an
     /// [`OtherStoresService`] with `with_timeout` through [`Self::services`]
     /// for another. Without a port every surface behaves as before.
     ///
@@ -685,6 +698,11 @@ impl RuntimeBuilder {
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ProximaError> {
         let lookup = |key: &str| proxima_core::env_value(&lookup, key);
+        if self.store_number.is_none() {
+            self.store_number = lookup("PROXIMA_STORE_NUMBER")
+                .map(|value| parse_store_number(&value))
+                .transpose()?;
+        }
         if self.database_url.is_none() {
             self.database_url = lookup("DATABASE_URL");
         }
@@ -960,7 +978,6 @@ impl RuntimeBuilder {
             services,
             mcp_transport,
         } = self.take_served_path()?;
-        let mcp = self.mcp_bind.map(|bind| McpSettings { bind });
         let default_revalidation = RevalidationConfig::default();
         let stream_revalidation = RevalidationConfig {
             max_stream_lifetime: self
@@ -993,7 +1010,6 @@ impl RuntimeBuilder {
                     .into(),
             )
         })?;
-        let owner = self.owner;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             platform_authenticator: self.platform_authenticator,
@@ -1006,14 +1022,17 @@ impl RuntimeBuilder {
             services,
             late_owner_access,
         };
-        let pg_pool_config = self.pg_pool_config.unwrap_or_default();
-        let publication = self.publication.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
+            store_number: self.store_number.ok_or_else(|| {
+                ProximaError::Config(
+                    "PROXIMA_STORE_NUMBER is required: assign this store a number".into(),
+                )
+            })?,
             platform_database_url,
             s3: self.s3,
-            owner,
-            mcp,
+            owner: self.owner,
+            mcp: self.mcp_bind.map(|bind| McpSettings { bind }),
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
             allowed_hosts: self.allowed_hosts.unwrap_or_default(),
@@ -1028,14 +1047,14 @@ impl RuntimeBuilder {
             forwarder: self.forwarder,
             health_endpoints: self.health_endpoints.unwrap_or(false),
             mcp_transport,
-            pg_pool_config,
+            pg_pool_config: self.pg_pool_config.unwrap_or_default(),
             pg_tuning: self.pg_tuning.unwrap_or_default(),
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.has_authenticator(),
             },
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
-            publication: publication.clone(),
+            publication: self.publication.unwrap_or_default(),
             published_retention: self.published_retention,
             outbox_consumers: self.outbox_consumers,
         };
@@ -1063,6 +1082,8 @@ struct ServedPath {
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub database_url: String,
+    /// Host-assigned immutable store identity, persisted on first boot.
+    pub store_number: u16,
     pub platform_database_url: String,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Option<OwnerId>,
@@ -1185,6 +1206,7 @@ impl std::fmt::Debug for RuntimeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeConfig")
             .field("database_url", &"<redacted>")
+            .field("store_number", &self.store_number)
             .field("platform_database_url", &"<redacted>")
             .field("s3", &self.s3)
             .field("owner", &self.owner)
@@ -1540,6 +1562,17 @@ fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>)
     .any(|key| proxima_core::env_value(lookup, key).is_some())
 }
 
+/// Parse the host-assigned store number at the configuration boundary.
+///
+/// # Errors
+///
+/// Returns `ProximaError::Config` for a non-integer or a value outside `u16`.
+pub fn parse_store_number(raw: &str) -> Result<u16, ProximaError> {
+    raw.trim().parse().map_err(|_| {
+        ProximaError::Config("PROXIMA_STORE_NUMBER must be an integer from 0 to 65535".into())
+    })
+}
+
 /// Parse the canonical generic embedding policy block through an injected
 /// lookup. Shared by the facade env layer and host binaries that must build a
 /// concrete embedding adapter before calling the facade.
@@ -1581,6 +1614,7 @@ mod tests {
         let resolve = |builder: RuntimeBuilder| {
             builder
                 .database_url("postgres://runtime/proxima")
+                .store_number(0)
                 .platform_database_url("postgres://platform/proxima")
                 .served_surface(ServedSurface::All)
                 .resolve()
@@ -1647,6 +1681,42 @@ mod tests {
     }
 
     #[test]
+    fn store_number_is_required_and_parsed_at_configuration() {
+        let base = || {
+            RuntimeBuilder::default()
+                .database_url("postgres://unused/db")
+                .platform_database_url("postgres://unused/platform")
+                .served_surface(ServedSurface::All)
+        };
+        let missing = base().resolve().expect_err("a store needs a number");
+        assert!(missing.to_string().contains("PROXIMA_STORE_NUMBER"));
+        for raw in ["-1", "65536", "three", "1.5"] {
+            let error = base()
+                .apply_lookup(|key| (key == "PROXIMA_STORE_NUMBER").then(|| raw.to_owned()))
+                .expect_err("invalid outside store number");
+            assert!(
+                error.to_string().contains("PROXIMA_STORE_NUMBER"),
+                "{error}"
+            );
+        }
+        for number in [0, 3, u16::MAX] {
+            let (config, _) = base()
+                .apply_lookup(|key| (key == "PROXIMA_STORE_NUMBER").then(|| number.to_string()))
+                .expect("valid store number")
+                .resolve()
+                .expect("number supplied");
+            assert_eq!(config.store_number, number);
+        }
+        let (config, _) = base()
+            .store_number(3)
+            .apply_lookup(|key| (key == "PROXIMA_STORE_NUMBER").then(|| "4".into()))
+            .expect("explicit value takes precedence")
+            .resolve()
+            .expect("complete config");
+        assert_eq!(config.store_number, 3);
+    }
+
+    #[test]
     fn platform_database_url_is_required_at_resolve() {
         let error = RuntimeBuilder::default()
             .database_url("postgres://runtime/proxima")
@@ -1703,6 +1773,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .store_number(0)
                 .platform_database_url("postgres://localhost/platform")
                 .served_surface(ServedSurface::All)
         };
@@ -1734,6 +1805,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .store_number(0)
                 .platform_database_url("postgres://localhost/platform")
                 .served_surface(ServedSurface::All)
         };
@@ -1820,6 +1892,7 @@ mod tests {
         let base = || {
             RuntimeBuilder::default()
                 .database_url("postgres://localhost/proxima")
+                .store_number(0)
                 .platform_database_url("postgres://localhost/platform")
                 .served_surface(ServedSurface::All)
                 .authenticator(Arc::new(TestAuthenticator))
@@ -1869,6 +1942,7 @@ mod tests {
             published_retention: None,
             outbox_consumers: OutboxConsumers::default(),
             database_url: "postgres://localhost/proxima".to_string(),
+            store_number: 0,
             platform_database_url: "postgres://unused/platform".into(),
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
@@ -2076,6 +2150,7 @@ mod tests {
     fn stream_revalidation_env_parses_integer_seconds() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2101,6 +2176,7 @@ mod tests {
     fn stream_revalidation_zero_duration_rejected_at_resolve() {
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .stream_max_lifetime(Duration::ZERO)
@@ -2114,6 +2190,7 @@ mod tests {
     fn stream_revalidation_defaults_when_unset() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2166,6 +2243,7 @@ mod tests {
 
         let resolved = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2206,6 +2284,7 @@ mod tests {
     fn pg_pool_config_reads_the_injected_env_block() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2237,6 +2316,7 @@ mod tests {
 
         let programmatic_error = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2279,6 +2359,7 @@ mod tests {
             .expect("explicit default-valued pool env");
         let configured_base = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2350,6 +2431,7 @@ mod tests {
         // (core_transfer/core_membership included) by omitting `.served_surface(...)`.
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .resolve()
@@ -2365,6 +2447,7 @@ mod tests {
     fn resolve_with_explicit_served_surface_all_builds_as_before() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2382,6 +2465,7 @@ mod tests {
     fn a_programmatic_retention_horizon_is_floored_like_the_env_one() {
         let refused = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2395,6 +2479,7 @@ mod tests {
 
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2405,6 +2490,7 @@ mod tests {
 
         let (default_config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2420,6 +2506,7 @@ mod tests {
     fn runtime_config_accepts_custom_authenticator_without_separate_owner_access() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .owner(owner(uuid::Uuid::now_v7()))
             .served_surface(ServedSurface::All)
@@ -2453,6 +2540,7 @@ mod tests {
         let refused = platform()
             .authenticator(Arc::new(TestAuthenticator))
             .database_url("postgres://unused/proxima")
+            .store_number(0)
             .platform_database_url("postgres://unused/platform")
             .served_surface(ServedSurface::All)
             .resolve()
@@ -2463,6 +2551,7 @@ mod tests {
     fn served_builder() -> RuntimeBuilder {
         RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
+            .store_number(0)
             .platform_database_url("postgres://localhost/platform")
             .served_surface(ServedSurface::All)
     }

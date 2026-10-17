@@ -518,7 +518,7 @@ pub trait FactPayload:
     ///   export, size, capacity or insert failure rolls the Fact write back;
     ///   there is no path that admits the Fact and drops the event.
     /// - **The event id is the Fact id.** `id` is `t` in canonical wire form
-    ///   (`F:<uuid>`), not the series handle, the receipt or a content hash,
+    ///   (the bare UUID), not the series handle, the receipt or a content hash,
     ///   and a replayed admission writes no second record.
     /// - **The snapshot is this payload's serde JSON**, captured once. A
     ///   later flavor upgrade never reinterprets an already-captured event.

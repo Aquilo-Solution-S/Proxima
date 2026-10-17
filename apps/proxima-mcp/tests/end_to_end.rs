@@ -157,6 +157,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
     let running = Proxima::<ProximaMcpApp>::app()
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .owner(OwnerId::from(subject))
         .authenticator(Arc::new(authn))

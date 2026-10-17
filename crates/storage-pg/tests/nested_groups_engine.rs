@@ -62,6 +62,7 @@ impl Harness {
         )
         .await?;
         migration.run_migrations().await?;
+        migration.initialize_store_number(1).await?;
         let platform_pool = PgPool::connect(&platform_url).await?;
         let platform_scope = PgPlatformScope::new(platform_pool.clone(), &["proxima_core"]).await?;
         let storage = Arc::new(
@@ -70,6 +71,7 @@ impl Harness {
                 PgPoolConfig::default(),
                 PgTuning::default(),
                 platform_scope,
+                1,
             )
             .await?,
         );

@@ -30,7 +30,6 @@ use crate::file_class::FileClass;
 use crate::payloads::{CodeChunkV1, FileState};
 use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
 
-use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
 
@@ -79,7 +78,7 @@ pub struct CodeSearchChunksArgs {
     )]
     pub cursor: Option<String>,
     #[schemars(
-        description = "Optional repository filter: an `R:<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
+        description = "Optional repository filter: an `<uuid>` repo_handle, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead. Omit or null to search all visible repos."
     )]
     pub repo_handle: Option<String>,
     #[schemars(
@@ -246,11 +245,6 @@ fn reject_malformed_args(args: &CodeSearchChunksArgs) -> Result<(), ToolError> {
     }
     proxima_core::reject_zero_limit(args.limit)?;
     reject_unknown_language(args.language.as_deref())
-}
-
-/// A repository's `R…` handle.
-fn format_repo_handle(ctx: &ToolCtx, repo_id: Uuid) -> String {
-    ctx.format_flavor_object(super::REPO_HANDLE_KIND, repo_id, super::REPO_HANDLE_PREFIX)
 }
 
 /// Resolve the requested snippet budget against the ceiling.
@@ -496,9 +490,7 @@ impl Tool for CodeSearchChunksTool {
                     semantic_reached,
                 ),
                 mode: mode_label(resolved.requested_mode).to_string(),
-                repo_handle: resolved
-                    .repo_id
-                    .map(|repo_id| format_repo_handle(&ctx, repo_id)),
+                repo_handle: resolved.repo_id.map(|repo_id| repo_id.to_string()),
                 matches,
                 calls_edges,
                 has_more: page.has_more,
@@ -858,7 +850,7 @@ struct MatchRendering<'a> {
 /// Render the page into wire matches, and collect the same page's row ids
 /// for the call-neighbour phase.
 fn render_chunk_matches(
-    ctx: &ToolCtx,
+    _ctx: &ToolCtx,
     render: &MatchRendering<'_>,
     eligible: Vec<(MemoryId, CodeChunkV1, MatchScores)>,
 ) -> Result<(Vec<ChunkMatch>, Vec<Uuid>), ToolError> {
@@ -897,8 +889,8 @@ fn render_chunk_matches(
             None
         };
         matches.push(ChunkMatch {
-            handle: ctx.format_abstraction_memory(memory_id),
-            repo_handle: (!render.repo_scoped).then(|| format_repo_handle(ctx, payload.repo_id)),
+            handle: memory_id.into_inner().to_string(),
+            repo_handle: (!render.repo_scoped).then(|| payload.repo_id.to_string()),
             file_path: payload.file_path,
             chunk_type: payload.chunk_type,
             file_class: (!payload.file_class.is_source()).then_some(payload.file_class),
@@ -1388,9 +1380,7 @@ async fn load_call_edges(
     let readable = readable_call_endpoints(ctx, engine, &endpoints).await?;
     let shown = |id: uuid::Uuid| {
         let id = MemoryId::new(id);
-        readable
-            .contains(&id)
-            .then(|| ctx.format_abstraction_memory(id))
+        readable.contains(&id).then(|| id.into_inner().to_string())
     };
     let mut sites: HashMap<(uuid::Uuid, uuid::Uuid), Vec<CallSite>> = HashMap::new();
     for row in site_rows {

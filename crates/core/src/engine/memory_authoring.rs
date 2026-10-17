@@ -30,7 +30,7 @@ pub(super) struct PreparedDerived {
     pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
-    pub(super) external_origins: Vec<crate::storage_ports::other_stores::QualifiedHandle>,
+    pub(super) external_origins: Vec<uuid::Uuid>,
 }
 
 #[cfg(test)]
@@ -166,7 +166,7 @@ fn infer_derivation_phase(
 fn external_on_layer(
     origins: &[EdgeEndpoint],
     external: &[crate::storage_ports::other_stores::ReadOrigin],
-) -> Result<Vec<crate::storage_ports::other_stores::QualifiedHandle>, ProtocolError> {
+) -> Result<Vec<uuid::Uuid>, ProtocolError> {
     if let Some(layer) = origins.first().map(|origin| origin.kind)
         && let Some(off) = external.iter().find(|origin| origin.kind() != layer)
     {
@@ -181,7 +181,7 @@ fn external_on_layer(
     }
     Ok(external
         .iter()
-        .map(|origin| origin.handle().clone())
+        .map(crate::storage_ports::other_stores::ReadOrigin::handle)
         .collect())
 }
 
@@ -438,6 +438,40 @@ impl DerivedMemory {
 }
 
 impl Engine {
+    /// Read each unique memory's stored kind after authorizing it, in request order.
+    /// Cooled memories use the same authorized kind stream as hot memories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an id is absent, unreadable, or storage cannot resolve it.
+    pub async fn memory_kinds<A>(
+        &self,
+        authority: &A,
+        ids: &[MemoryId],
+    ) -> Result<Vec<(MemoryId, EntityKind)>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+        let mut kinds = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !seen.insert(*id) {
+                continue;
+            }
+            let permit = self
+                .authorize_entry_read(authority, EntityId::Memory(*id))
+                .await?;
+            let kind = match permit.kind() {
+                crate::AccessKind::Fact => EntityKind::Fact,
+                crate::AccessKind::Abstraction => EntityKind::Abstraction,
+                crate::AccessKind::Perspective => EntityKind::Perspective,
+                crate::AccessKind::Goal => EntityKind::Goal,
+            };
+            kinds.push((*id, kind));
+        }
+        Ok(kinds)
+    }
+
     /// Resolve actual kinds after entry-read authorization; one kind read per home owner.
     pub(in crate::engine) async fn resolve_memory_targets<A>(
         &self,
@@ -672,7 +706,10 @@ impl Engine {
             MemoryTarget::Series(handle) => (MemoryId::new(handle.into_inner()), None),
             // Storage resolves the prior row's handle. This private draft key is
             // unused for series selection and must not pretend to be the prior t.
-            MemoryTarget::Revision(prior) => (MemoryId::new(uuid::Uuid::now_v7()), Some(prior)),
+            MemoryTarget::Revision(prior) => (
+                MemoryId::new(crate::new_memory_uuid(self.store_number())),
+                Some(prior),
+            ),
         };
         if let Some(prior) = supersedes {
             self.validate_derived_revision(
@@ -691,7 +728,7 @@ impl Engine {
         let external_origins = external_on_layer(&origins, &memory.external_origins)?;
         // A new version's t is allocated by storage. The layer check needs only
         // the output kind; neither a handle nor the prior t is its source row.
-        let source = EdgeEndpoint::memory(kind, MemoryId::new(uuid::Uuid::now_v7()));
+        let source = EdgeEndpoint::memory(kind, memory_id);
         for origin in &origins {
             validate_edge_layering(source, *origin)
                 .map_err(|err| ProtocolError::invalid_argument("origins", err))?;
@@ -1066,30 +1103,36 @@ mod tests {
     /// have no layer rule.
     #[test]
     fn other_store_origins_share_the_local_layer() {
-        use crate::storage_ports::other_stores::{QualifiedHandle, ReadOrigin};
-        let remote = |raw: &str, kind| {
-            ReadOrigin::for_tests(QualifiedHandle::parse(raw).expect("qualified"), kind)
-        };
+        use crate::storage_ports::other_stores::ReadOrigin;
+        let fact_id = crate::new_memory_uuid(5);
+        let abstraction_id = crate::new_memory_uuid(5);
+        let perspective_id = crate::new_memory_uuid(5);
         let facts = [EdgeEndpoint::memory(
             EntityKind::Fact,
-            MemoryId::new(uuid::Uuid::now_v7()),
+            MemoryId::new(crate::new_memory_uuid(3)),
         )];
-
-        let same = external_on_layer(&facts, &[remote("wiki:f-1", EntityKind::Fact)])
+        let same = external_on_layer(&facts, &[ReadOrigin::for_tests(fact_id, EntityKind::Fact)])
             .expect("a Fact beside Facts");
-        assert_eq!(
-            same,
-            vec![QualifiedHandle::parse("wiki:f-1").expect("qualified")]
-        );
-
-        let err = external_on_layer(&facts, &[remote("wiki:a-1", EntityKind::Abstraction)])
-            .expect_err("an Abstraction beside Facts");
+        assert_eq!(same, vec![fact_id]);
+        let err = external_on_layer(
+            &facts,
+            &[ReadOrigin::for_tests(
+                abstraction_id,
+                EntityKind::Abstraction,
+            )],
+        )
+        .expect_err("an Abstraction beside Facts");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
-        assert!(err.message.contains("wiki:a-1"), "{err:?}");
-
-        let subjects = external_on_layer(&[], &[remote("wiki:p-1", EntityKind::Perspective)])
-            .expect("an interpretation's subject");
-        assert_eq!(subjects.len(), 1);
+        assert!(err.message.contains(&abstraction_id.to_string()), "{err:?}");
+        let subjects = external_on_layer(
+            &[],
+            &[ReadOrigin::for_tests(
+                perspective_id,
+                EntityKind::Perspective,
+            )],
+        )
+        .expect("an interpretation's subject");
+        assert_eq!(subjects, [perspective_id]);
     }
 
     /// An F→A derive that names its inputs carries a well-formed

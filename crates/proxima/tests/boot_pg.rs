@@ -263,6 +263,7 @@ async fn unknown_pre_reset_ledger_surfaces_typed_reset_error_through_boot() {
 
         let err = Proxima::<GoalTestApp>::app()
             .database_url(db_url.clone())
+            .store_number(0)
             .platform_database_url(db_url.clone())
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -302,6 +303,7 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
         let subject = UserId::new(Uuid::now_v7());
         let running = Proxima::<GoalTestApp>::app()
             .database_url(runtime_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
@@ -368,6 +370,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
 
         let without = Proxima::<GoalTestApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -399,6 +402,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
 
         let with = Proxima::<GoalTestApp>::app()
             .database_url(runtime_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -450,6 +454,7 @@ async fn facade_boot_exposes_pg_sidecars_and_drains_embedding_jobs_with_no_extra
         let inspection = sqlx::PgPool::connect(&db_url(&db_name)).await?;
         let built = Proxima::<GoalTestApp>::app()
             .database_url(runtime_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .served_surface(ServedSurface::All)
@@ -515,6 +520,7 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
         let app = || {
             Proxima::<GoalTestApp>::app()
                 .database_url(runtime_url.clone())
+                .store_number(0)
                 .platform_database_url(platform_url.clone())
                 .owner(owner)
                 .served_surface(ServedSurface::All)

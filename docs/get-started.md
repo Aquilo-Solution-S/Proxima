@@ -26,6 +26,7 @@ docker compose -f docker-compose.dev.yml exec -T postgres \
   psql -U proxima -d proxima -v ON_ERROR_STOP=1 < scripts/pg-init.sql
 export DATABASE_URL="postgres://proxima_runtime:proxima-runtime-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT}/proxima"
 export PROXIMA_PLATFORM_DATABASE_URL="postgres://proxima_platform:proxima-platform-dev@localhost:${PROXIMA_DEV_POSTGRES_PORT}/proxima"
+export PROXIMA_STORE_NUMBER=0
 ```
 
 `DATABASE_URL` is the runtime connection. `PROXIMA_PLATFORM_DATABASE_URL` is

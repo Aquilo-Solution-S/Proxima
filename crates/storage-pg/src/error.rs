@@ -31,6 +31,16 @@ pub fn map_err(e: sqlx::Error) -> StorageError {
         Error::Database(db) if db.code().as_deref() == Some("25001") => {
             StorageError::MembershipIsolation
         }
+        Error::Database(db)
+            if db.is_unique_violation()
+                && db
+                    .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                    .is_some_and(|pg| {
+                        is_memory_identity_constraint(pg.schema(), pg.table(), pg.constraint())
+                    }) =>
+        {
+            StorageError::MemoryIdCollision
+        }
         Error::Database(db) if db.is_unique_violation() => {
             StorageError::ConstraintViolation(db.message().to_string())
         }
@@ -50,6 +60,37 @@ pub fn map_err(e: sqlx::Error) -> StorageError {
         }
         _ => StorageError::Internal(e.to_string()),
     }
+}
+
+fn is_memory_identity_constraint(
+    schema: Option<&str>,
+    table: Option<&str>,
+    constraint: Option<&str>,
+) -> bool {
+    matches!(
+        (schema, table, constraint),
+        (
+            Some("proxima_core"),
+            Some("memory"),
+            Some("memory_pkey" | "memory_t_key")
+        ) | (
+            Some("proxima_core"),
+            Some("goal"),
+            Some("goal_pkey" | "goal_t_key")
+        ) | (
+            Some("proxima_core"),
+            Some("memory_head"),
+            Some("memory_head_pkey")
+        ) | (
+            Some("proxima_core"),
+            Some("goal_head"),
+            Some("goal_head_pkey")
+        )
+    )
+}
+
+pub(crate) fn collision_exhausted() -> StorageError {
+    StorageError::ConstraintViolation("memory UUID collided again after one retry".into())
 }
 
 /// SQLSTATE codes that mark a transient, retry-after-rollback failure.
@@ -105,8 +146,13 @@ where
     Fut: std::future::Future<Output = Result<T, StorageError>>,
 {
     let mut attempt = 1;
+    let mut retried_collision = false;
     loop {
         match op().await {
+            Err(StorageError::MemoryIdCollision) if !retried_collision => {
+                retried_collision = true;
+            }
+            Err(StorageError::MemoryIdCollision) => return Err(collision_exhausted()),
             Err(StorageError::Retryable(_)) if attempt < MAX_STORAGE_ATTEMPTS => {
                 attempt += 1;
             }
@@ -161,5 +207,96 @@ mod tests {
         .await;
         assert!(matches!(result, Err(StorageError::Conflict(_))));
         assert_eq!(calls.get(), 1);
+    }
+}
+
+#[cfg(test)]
+mod memory_collision_tests {
+    use super::{is_memory_identity_constraint, with_bounded_retry};
+    use proxima_core::StorageError;
+    use std::cell::Cell;
+
+    #[test]
+    fn only_memory_identity_constraints_are_collisions() {
+        for (table, constraint) in [
+            ("memory", "memory_t_key"),
+            ("memory", "memory_pkey"),
+            ("goal", "goal_t_key"),
+            ("goal", "goal_pkey"),
+            ("memory_head", "memory_head_pkey"),
+            ("goal_head", "goal_head_pkey"),
+        ] {
+            assert!(is_memory_identity_constraint(
+                Some("proxima_core"),
+                Some(table),
+                Some(constraint)
+            ));
+        }
+        for (table, constraint) in [
+            ("goal", "goal_owner_id_request_id_key"),
+            ("content", "content_pkey"),
+            ("ingest_keys", "ingest_keys_pkey"),
+            ("memory", "some_future_unique"),
+        ] {
+            assert!(!is_memory_identity_constraint(
+                Some("proxima_core"),
+                Some(table),
+                Some(constraint)
+            ));
+        }
+        assert!(!is_memory_identity_constraint(
+            Some("proxima_core"),
+            None,
+            Some("memory_pkey")
+        ));
+        assert!(!is_memory_identity_constraint(
+            Some("proxima_core"),
+            Some("memory"),
+            None
+        ));
+    }
+
+    #[test]
+    fn a_flavors_same_named_primary_key_is_not_a_memory_collision() {
+        assert!(!is_memory_identity_constraint(
+            Some("proxima_flavor"),
+            Some("memory"),
+            Some("memory_pkey")
+        ));
+        assert!(!is_memory_identity_constraint(
+            None,
+            Some("memory"),
+            Some("memory_pkey")
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_collision_mints_again_once() {
+        let attempts = Cell::new(0);
+        let result = with_bounded_retry(|| {
+            attempts.set(attempts.get() + 1);
+            async {
+                if attempts.get() == 1 {
+                    Err(StorageError::MemoryIdCollision)
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_second_collision_refuses_the_write() {
+        let attempts = Cell::new(0);
+        let result: Result<(), StorageError> = with_bounded_retry(|| {
+            attempts.set(attempts.get() + 1);
+            async { Err(StorageError::MemoryIdCollision) }
+        })
+        .await;
+        assert!(matches!(result, Err(StorageError::ConstraintViolation(_))));
+        assert_eq!(attempts.get(), 2);
     }
 }

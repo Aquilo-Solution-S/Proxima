@@ -196,10 +196,10 @@ pub struct SearchMemoriesArgs {
     pub cursor: Option<String>,
     /// Stores to search. Left out of the static schema: a deployment with
     /// an other-stores port renders it per caller
-    /// ([`caller_input_schema`]); without one only `local` is accepted.
+    /// ([`caller_input_schema`]); without one only this store's number is accepted.
     #[serde(default)]
     #[schemars(skip)]
-    pub stores: Option<Vec<String>>,
+    pub stores: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -220,7 +220,7 @@ pub struct SearchMemoriesOutput {
     /// answer within the time bound (or failed). Their hits are missing
     /// from this page; the rest is returned.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unanswered: Option<Vec<String>>,
+    pub unanswered: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -232,8 +232,7 @@ pub enum SearchRanking {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMemoryOutput {
-    /// The stable UUID of this Memory admission. The typed `memory` handle
-    /// remains the generic wire reference used by other MCP surfaces.
+    /// The UUID of this memory admission, also carried by `memory`.
     pub memory_id: uuid::Uuid,
     pub memory: String,
     pub space: String,
@@ -267,11 +266,10 @@ pub struct SearchMemoryOutput {
     /// Present only when a body was hydrated (`include_body=true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_truncated: Option<bool>,
-    /// Present only when other stores were searched: the store this hit
-    /// came from (`local` for this one). A hit of another store carries
-    /// the nil `memory_id`; its `memory` is the `<store>:<handle>`.
+    /// Present when other stores were searched: the issuing store's number.
+    /// Both `memory_id` and `memory` retain the hit's original UUID.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
+    pub store: Option<u16>,
 }
 
 impl McpTool for SearchMemoriesTool {
@@ -351,7 +349,14 @@ impl McpTool for SearchMemoriesTool {
                     &remote,
                 )
                 .await;
-                merge_store_hits(&mut output, answered, unanswered, remote.limit, args.order);
+                merge_store_hits(
+                    &mut output,
+                    answered,
+                    unanswered,
+                    remote.limit,
+                    args.order,
+                    ctx.require_engine()?.store_number(),
+                );
             }
             Ok(output)
         })
@@ -359,49 +364,60 @@ impl McpTool for SearchMemoriesTool {
 }
 
 /// `core_search_memories`'s `inputSchema` for one caller: with an
-/// other-stores port wired, `stores` is added as an enum of `local` plus
-/// every store `stores(caller)` names, each name described. Without a port
+/// other-stores port wired, `stores` is added as an enum of this store's
+/// number and every readable store's number, with display names as metadata. Without a port
 /// (or when the port does not answer in time) the static schema is
 /// returned unchanged.
-pub async fn caller_input_schema(ctx: &McpToolCtx, schema: serde_json::Value) -> serde_json::Value {
+///
+/// # Errors
+///
+/// Refuses an answered inventory containing local or duplicate store numbers.
+pub async fn caller_input_schema(
+    ctx: &McpToolCtx,
+    schema: serde_json::Value,
+) -> Result<serde_json::Value, crate::storage_ports::other_stores::OtherStoresError> {
     let Some(service) = super::other_stores::service(ctx) else {
-        return schema;
+        return Ok(schema);
     };
-    let Some(readable) = tokio::time::timeout(
-        service.timeout(),
-        service.port().stores(super::other_stores::caller(ctx)),
-    )
-    .await
-    .ok()
-    .and_then(Result::ok) else {
-        return schema;
+    let Some(engine) = ctx.engine() else {
+        return Ok(schema);
     };
-    with_stores_property(schema, &readable)
+    let Some(inventory) = service
+        .stores_bounded(super::other_stores::caller(ctx), engine.store_number())
+        .await?
+    else {
+        return Ok(schema);
+    };
+    Ok(with_stores_property(schema, &inventory))
 }
 
 fn with_stores_property(
     mut schema: serde_json::Value,
-    readable: &[crate::storage_ports::other_stores::StoreInfo],
+    inventory: &crate::storage_ports::other_stores::StoreInventory,
 ) -> serde_json::Value {
-    use crate::storage_ports::other_stores::LOCAL_STORE;
     use std::fmt::Write as _;
-    let mut names = vec![serde_json::Value::from(LOCAL_STORE)];
+    let local_number = inventory.local_number();
+    let mut names = vec![serde_json::Value::from(local_number)];
     let mut described = vec![
-        serde_json::json!({"const": LOCAL_STORE, "description": "This deployment's own memories."}),
+        serde_json::json!({"const": local_number, "description": "This deployment's own memories."}),
     ];
-    let mut prose = format!("- `{LOCAL_STORE}`: this deployment's own memories.");
-    for info in readable {
-        names.push(serde_json::Value::from(info.name.as_str()));
+    let mut prose = format!("- `{local_number}`: this deployment's own memories.");
+    for info in inventory.remotes() {
+        names.push(serde_json::Value::from(info.number));
         described.push(
-            serde_json::json!({"const": info.name.as_str(), "description": info.description}),
+            serde_json::json!({"const": info.number, "title": info.name, "description": info.description}),
         );
-        let _ = write!(prose, "\n- `{}`: {}", info.name, info.description);
+        let _ = write!(
+            prose,
+            "\n- `{}` ({}): {}",
+            info.number, info.name, info.description
+        );
     }
     let property = serde_json::json!({
         "type": "array",
         "uniqueItems": true,
         "minItems": 1,
-        "items": {"type": "string", "enum": names, "oneOf": described},
+        "items": {"type": "integer", "minimum": 0, "maximum": 65535, "enum": names, "oneOf": described},
         "description": format!(
             "Stores to search; omit for all of them. A schema_id only one store declares searches that store only. Other stores answer on the first page only.\n{prose}"
         ),
@@ -419,23 +435,21 @@ fn with_stores_property(
 /// rank (k=60), or newest first for recency, before keeping `limit`. Other
 /// stores answer on the first page only. The local page keeps its own cursor,
 /// so a local hit the merge pushes past `limit` is not repeated on the next
-/// page; a caller that needs every local hit pages with `stores: ["local"]`.
+/// page; a caller that needs every local hit pages with an explicit local number.
 fn merge_store_hits(
     output: &mut SearchMemoriesOutput,
-    answered: Vec<(
-        crate::storage_ports::other_stores::StoreName,
-        crate::storage_ports::other_stores::RemoteSearchResult,
-    )>,
-    unanswered: Vec<String>,
+    answered: Vec<(u16, crate::storage_ports::other_stores::RemoteSearchResult)>,
+    unanswered: Vec<u16>,
     limit: u32,
     order: SearchOrder,
+    local_number: u16,
 ) {
     let local = std::mem::take(&mut output.memories);
     let mut lists = vec![
         local
             .into_iter()
             .map(|mut hit| {
-                hit.store = Some(crate::storage_ports::other_stores::LOCAL_STORE.to_string());
+                hit.store = Some(local_number);
                 hit
             })
             .collect::<Vec<_>>(),
@@ -446,7 +460,7 @@ fn merge_store_hits(
             result
                 .hits
                 .into_iter()
-                .map(|hit| remote_hit_output(&store, hit))
+                .map(|hit| remote_hit_output(store, hit))
                 .collect(),
         );
     }
@@ -468,12 +482,12 @@ fn merge_store_hits(
 }
 
 fn remote_hit_output(
-    store: &crate::storage_ports::other_stores::StoreName,
+    store: u16,
     hit: crate::storage_ports::other_stores::RemoteHit,
 ) -> SearchMemoryOutput {
     SearchMemoryOutput {
-        memory_id: uuid::Uuid::nil(),
-        memory: format!("{store}:{}", hit.handle),
+        memory_id: hit.handle,
+        memory: hit.handle.to_string(),
         space: store.to_string(),
         kind: hit.kind.as_str().to_string(),
         schema_id: hit.schema_id,
@@ -487,7 +501,7 @@ fn remote_hit_output(
         tags: hit.tags,
         body: None,
         body_truncated: None,
-        store: Some(store.to_string()),
+        store: Some(store),
     }
 }
 
@@ -763,7 +777,7 @@ struct RankedList {
 }
 
 /// A wire output paired with the typed sort/cursor keys it was ranked
-/// by. The wire `memory` field is a prefixed id whose prefix would
+/// by. The wire `memory` field is a UUID whose prefix would
 /// distort cross-kind uuid tiebreaks, and `created_at` is a formatted
 /// string — the merge across spaces must sort on the raw values that
 /// storage sorted on.
@@ -906,15 +920,13 @@ async fn search_one_space(
                 Some((text, truncated)) => (Some(text), Some(truncated)),
                 None => (None, None),
             };
-            search_memory_output(ctx, &space.key, row, tags, body, body_truncated).map(|output| {
-                RankedMemoryOutput {
-                    memory_id: mid,
-                    created_at,
-                    output,
-                }
-            })
+            RankedMemoryOutput {
+                memory_id: mid,
+                created_at,
+                output: search_memory_output(&space.key, row, tags, body, body_truncated),
+            }
         })
-        .collect::<Result<Vec<_>, McpToolError>>()?;
+        .collect();
     Ok(SpaceSearchResult {
         degraded_to_lexical,
         has_more: response.has_more,
@@ -1139,7 +1151,7 @@ fn query_fingerprint(
 /// An explicit `stores` choice is part of the query: a cursor minted for
 /// one set of stores does not continue another. Omitted, the fingerprint is
 /// the one every earlier release minted.
-fn bind_stores(fingerprint: String, stores: Option<&[String]>) -> String {
+fn bind_stores(fingerprint: String, stores: Option<&[u16]>) -> String {
     match stores {
         None => fingerprint,
         Some(stores) => {
@@ -1218,17 +1230,15 @@ fn effective_body_max_chars(requested: Option<usize>) -> usize {
 }
 
 fn search_memory_output(
-    ctx: &McpToolCtx,
     space: &str,
     row: crate::verbs::query::MemorySearchResult,
     tags: Vec<String>,
     body: Option<String>,
     body_truncated: Option<bool>,
-) -> Result<SearchMemoryOutput, McpToolError> {
-    let class = super::get_memory::memory_class(row.kind)?;
-    Ok(SearchMemoryOutput {
+) -> SearchMemoryOutput {
+    SearchMemoryOutput {
         memory_id: row.memory_id.into_inner(),
-        memory: ctx.format_memory_with_class(row.memory_id, class),
+        memory: row.memory_id.into_inner().to_string(),
         space: space.to_string(),
         kind: row.kind.as_str().to_string(),
         schema_id: row.schema_id.as_str().to_string(),
@@ -1242,7 +1252,7 @@ fn search_memory_output(
         body,
         body_truncated,
         store: None,
-    })
+    }
 }
 
 /// The fusion weight to hand the search verb, given the mode the run can

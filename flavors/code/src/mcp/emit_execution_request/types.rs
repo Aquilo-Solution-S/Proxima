@@ -6,7 +6,7 @@ use crate::payloads::AcceptanceCriterionV1;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
     #[schemars(
-        description = "Repository the work is for: `R:<uuid>` from proxima-code_list_repos or search output."
+        description = "Repository the work is for: `<uuid>` from proxima-code_list_repos or search output."
     )]
     pub repo_handle: String,
     #[schemars(
@@ -25,11 +25,11 @@ pub struct CodeEmitExecutionRequestArgs {
     )]
     pub idempotency_key: String,
     #[schemars(
-        description = "`F:<uuid>` goal-activated Fact for the Active Goal that caused this planner wake (not a `G:<uuid>` Goal handle). Recorded as the request's origin."
+        description = "`<uuid>` goal-activated Fact for the Active Goal that caused this planner wake (not a `<uuid>` Goal handle). Recorded as the request's origin."
     )]
     pub goal_activated_memory: String,
     #[serde(default)]
-    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only).")]
+    #[schemars(description = "Extra evidence Facts (`<uuid>` only).")]
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
@@ -95,11 +95,11 @@ pub struct ExecutionPlanItemArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionPlanArgs {
-    #[schemars(description = "`R:<uuid>` repo handle from code search or list output.")]
+    #[schemars(description = "`<uuid>` repo handle from code search or list output.")]
     pub repo_handle: String,
-    #[schemars(description = "`F:<uuid>` goal-activated Fact for the Active Goal.")]
+    #[schemars(description = "`<uuid>` goal-activated Fact for the Active Goal.")]
     pub goal_activated_memory: String,
-    #[schemars(description = "`A:<uuid>` of the planning Abstraction this plan is derived from.")]
+    #[schemars(description = "`<uuid>` of the planning Abstraction this plan is derived from.")]
     pub plan_source_memory: String,
     #[serde(default)]
     #[schemars(
@@ -110,7 +110,7 @@ pub struct CodeEmitExecutionPlanArgs {
     #[schemars(description = "Optional concise summary of the plan synthesis.")]
     pub plan_summary: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only) for every item.")]
+    #[schemars(description = "Extra evidence Facts (`<uuid>` only) for every item.")]
     pub evidence: Vec<String>,
     #[schemars(
         description = "1 to 20 items, in order; depends_on may name only earlier item keys."
@@ -139,9 +139,9 @@ pub struct CodeEmitExecutionPlanOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestArgs {
-    #[schemars(description = "`F:<uuid>` of the prior proxima-code/work-requested-v1 Fact.")]
+    #[schemars(description = "`<uuid>` of the prior proxima-code/work-requested-v1 Fact.")]
     pub prior_execution_request: String,
-    #[schemars(description = "`P:<uuid>` of the worker Perspective receiving the retry.")]
+    #[schemars(description = "`<uuid>` of the worker Perspective receiving the retry.")]
     pub target_perspective: String,
     #[schemars(
         description = "Stable idempotency key for this retry request. Reuse only for exact replay."
@@ -158,14 +158,14 @@ pub struct CodeRetryExecutionRequestArgs {
     )]
     pub instructions_append: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Extra evidence Facts (`F:<uuid>` only).")]
+    #[schemars(description = "Extra evidence Facts (`<uuid>` only).")]
     pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestOutput {
     pub handle: String,
-    /// `P:` handle of the assignment Perspective that names the target
+    /// UUID of the assignment Perspective that names the target
     /// worker and this request. A memory handle, because the claim is a node
     /// rather than an edge.
     pub assignment_handle: Option<String>,

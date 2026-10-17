@@ -3,7 +3,6 @@
 use proxima_core::{ToolCtx, ToolError};
 use proxima_storage_pg::begin_owner_transaction;
 
-use super::CodeToolCtxExt;
 use super::code_store;
 
 /// Resolve a `repo_handle`, a bare repo UUID, or a display name / path to a
@@ -22,10 +21,7 @@ pub async fn resolve_repo_identifier(
     }
     // Parsing an id shape proves only that it *is* an id shape. Whether it
     // names a repo is the query's business, below.
-    let claimed_id = ctx
-        .resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND)
-        .ok()
-        .or_else(|| uuid::Uuid::parse_str(trimmed).ok());
+    let claimed_id = super::parse_uuid(trimmed).ok();
 
     let owner_id = ctx.owner().into_inner();
     let pool = code_store(ctx)?;

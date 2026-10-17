@@ -328,10 +328,7 @@ pub struct MemoryLineageResponse {
     /// Other-store origins of this page's nodes, `(node, origin)`, read
     /// from storage only; the wire layer resolves each through the
     /// other-stores port.
-    pub external_origins: Vec<(
-        MemoryId,
-        crate::storage_ports::other_stores::QualifiedHandle,
-    )>,
+    pub external_origins: Vec<(MemoryId, uuid::Uuid)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

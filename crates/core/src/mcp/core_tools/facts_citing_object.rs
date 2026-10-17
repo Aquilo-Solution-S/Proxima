@@ -23,7 +23,7 @@ const CITATION_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::Fingerpri
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FactsCitingObjectArgs {
-    /// Cited object uuid, optionally prefixed as `C:<uuid>`.
+    /// Cited object uuid, as a bare UUID.
     pub cited_object_id: String,
     /// Max citing Facts per page; default 50, values above 200 are clamped.
     #[serde(default)]
@@ -110,8 +110,5 @@ pub(super) async fn facts_citing_object(
 }
 
 pub(super) fn parse_cited_object_id(raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    let uuid_part = raw.strip_prefix("C:").unwrap_or(raw);
-    uuid_part
-        .parse()
-        .map_err(|err| McpToolError::InvalidInput(format!("not a cited_object_id uuid: {err}")))
+    crate::mcp::parse_wire_uuid(raw)
 }

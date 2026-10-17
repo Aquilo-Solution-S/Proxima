@@ -85,6 +85,12 @@ pub struct EngineHandle {
 }
 
 impl Engine {
+    /// The store number carried by this deployment's memory UUIDs.
+    #[must_use]
+    pub fn store_number(&self) -> u16 {
+        self.storage.query.memory_read.store_number()
+    }
+
     pub(in crate::engine) fn operation_authority<'a, A>(
         &self,
         authority: &'a A,

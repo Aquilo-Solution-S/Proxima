@@ -114,6 +114,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         ))
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .s3(s3)
         .authenticator(Arc::new(authn))
@@ -508,10 +509,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     );
     let forgotten_output: serde_json::Value = serde_json::from_str(&mcp_text(&forgotten))?;
     assert_eq!(forgotten_output["ok"], json!(true));
-    let memory_t = handle
-        .strip_prefix("F:")
-        .ok_or("remember must return a Fact handle")?
-        .parse::<Uuid>()?;
+    let memory_t = handle.parse::<Uuid>()?;
     let cold = running
         .host()
         .blobs()
@@ -609,6 +607,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
                 .collect(),
         ))
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
@@ -994,6 +993,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     let running = Proxima::<ProximaMcpApp>::app()
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
+        .store_number(0)
         .platform_database_url(platform_url.clone())
         .owner(group_owner)
         .authenticator(Arc::new(authn))

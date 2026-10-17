@@ -53,6 +53,19 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Host configuration and the canonical bare UUID boundary.
+    store_identity {
+        host_only: [new_memory_uuid, memory_store_number, parse_store_number, parse_wire_uuid],
+        both_tiers: [],
+    }
+
+    // Needed by `RuntimeBuilder::other_stores`, `Proxima::other_stores`, the port
+    // implementations they accept, and `OtherStoresService`'s bounded answers.
+    other_stores {
+        host_only: [OtherStores, OtherStoresError, OtherStoresService, ReadOrigin, RemoteHit, RemoteMemory, RemoteOriginRead, RemoteRead, RemoteSearch, StoreCaller, StoreInfo, StoreInventory],
+        both_tiers: [],
+    }
+
     // Needed by `RuntimeConfig::auth`, a public field.
     runtime_auth_state {
         host_only: [RuntimeAuthState],
@@ -95,12 +108,6 @@ facade_names! {
     // Needed by `core_action_meta`, `all_core_resources`, `tool_name_matches`.
     core_action_meta {
         host_only: [CoreActionMeta, all_core_resources, core_action_meta, tool_name_matches],
-        both_tiers: [],
-    }
-
-    // Needed by tool-argument ids: `format_prefixed_uuid`, `parse_prefixed_uuid`.
-    prefixed_uuid {
-        host_only: [PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid],
         both_tiers: [],
     }
 

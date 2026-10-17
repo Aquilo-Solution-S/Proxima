@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "support/migration_reset.rs"]
 mod migration_reset_support;
 
-use migration_reset_support::pre_reset_pairs as shared_pre_reset_pairs;
+use migration_reset_support::{
+    apply_pre_identity_schema, pre_reset_pairs as shared_pre_reset_pairs,
+};
 use proxima_core::StorageError;
 use proxima_pg_testkit::{DbGuard, admin_url_or_skip, create_db, split_role_urls};
 use proxima_storage_pg::{
@@ -386,11 +388,10 @@ async fn pre_reset_main_ledger_is_stamped_without_baseline_execution() {
     let Some((_name, migration, _guard)) = migration_db("stamp").await else {
         return;
     };
-    migration
-        .run_migrations()
-        .await
-        .expect("build current schema");
     let pool = migration.clone_pool_for_backend();
+    apply_pre_identity_schema(&pool)
+        .await
+        .expect("schema before store identities");
     let pairs = pre_reset_pairs();
     assert_eq!(pairs.len(), 32);
     let migrator = proxima_storage_pg::core_migrator();

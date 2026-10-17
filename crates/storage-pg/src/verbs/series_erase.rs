@@ -339,15 +339,15 @@ const ADMITTED_BEFORE_SQL: &str = concat!(
  LIMIT $4"
 );
 
-/// The smallest `UUIDv7` of the millisecond `cutoff` falls in. A `t` below
+/// The smallest `UUIDv8` of the millisecond `cutoff` falls in. A `t` below
 /// it was minted in an earlier millisecond; `uuid` compares bytewise and a
-/// `UUIDv7` leads with its big-endian millisecond timestamp.
-fn uuid_v7_floor(cutoff: time::OffsetDateTime) -> Uuid {
+/// `UUIDv8` leads with its big-endian millisecond timestamp.
+fn memory_uuid_floor(cutoff: time::OffsetDateTime) -> Uuid {
     let millis = cutoff.unix_timestamp_nanos().div_euclid(1_000_000);
     let millis = u64::try_from(millis.clamp(0, (1_i128 << 48) - 1)).unwrap_or(0);
     let mut bytes = [0_u8; 16];
     bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
-    bytes[6] = 0x70;
+    bytes[6] = 0x80;
     Uuid::from_bytes(bytes)
 }
 
@@ -476,7 +476,7 @@ async fn resolve_footprint(
             sqlx::query_scalar(ADMITTED_BEFORE_SQL)
                 .bind(owner_id)
                 .bind(schema.as_str())
-                .bind(uuid_v7_floor(*cutoff))
+                .bind(memory_uuid_floor(*cutoff))
                 .bind(limit)
                 .fetch_all(tx.as_mut())
                 .await
@@ -636,25 +636,22 @@ fn count(n: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::uuid_v7_floor;
+    use super::memory_uuid_floor;
 
     #[test]
-    fn the_floor_orders_below_every_uuid_v7_of_its_millisecond_and_above_the_last() {
+    fn the_floor_orders_below_every_memory_uuid_of_its_millisecond_and_above_the_last() {
         let cutoff = time::OffsetDateTime::from_unix_timestamp(1_790_000_000).expect("valid");
-        let floor = uuid_v7_floor(cutoff);
+        let floor = memory_uuid_floor(cutoff);
         let millis = u64::try_from(cutoff.unix_timestamp() * 1000).expect("positive");
-        let at = uuid::Uuid::new_v7(uuid::Timestamp::from_unix(
-            uuid::NoContext,
-            millis / 1000,
-            0,
-        ));
-        let before = uuid::Uuid::new_v7(uuid::Timestamp::from_unix(
-            uuid::NoContext,
-            millis / 1000 - 1,
-            999_000_000,
-        ));
+        let id_at = |millis: u64| {
+            let mut bytes = proxima_core::new_memory_uuid(3).into_bytes();
+            bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+            uuid::Uuid::from_bytes(bytes)
+        };
+        let at = id_at(millis);
+        let before = id_at(millis - 1);
         assert!(before < floor, "a t minted a millisecond earlier is before");
         assert!(at >= floor, "a t minted in the cutoff millisecond is not");
-        assert_eq!(floor.get_version_num(), 7);
+        assert_eq!(floor.get_version_num(), 8);
     }
 }

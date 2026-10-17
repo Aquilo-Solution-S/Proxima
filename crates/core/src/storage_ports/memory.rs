@@ -86,6 +86,9 @@ pub trait MemoryAuthoringPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait MemoryReadPort: Send + Sync {
+    /// The persisted number this backend uses when minting memory UUIDs.
+    fn store_number(&self) -> u16;
+
     async fn load_fact_text(
         &self,
         owner_scope: Option<&OwnerScope>,

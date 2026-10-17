@@ -23,7 +23,7 @@ use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
     MemoryId, OwnerId, SidecarPayload, StorageError,
 };
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Acquire, PgPool, Postgres, Transaction};
 
 pub(crate) use super::memory_timeseries::ContentResolution;
 use crate::access::scope_surfaces::ScopeFenceTarget;
@@ -67,6 +67,7 @@ struct IngestCoreOptions<'a> {
 /// scopes would admit a row a concurrent scope erase cannot see.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FactAdmissionInput<'a> {
+    pub(crate) store_number: u16,
     pub(crate) natural_key: Option<&'a super::memory_timeseries::MemoryNaturalKey>,
     pub(crate) sidecar_tables: &'a [String],
     /// The declared scopes to fence, already sorted and deduplicated. Empty
@@ -197,6 +198,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
     pool: &PgPool,
     authorized: &AuthorizedFactWrite,
     embedding_spaces: &[proxima_core::EmbeddingSpace],
+    store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
@@ -205,7 +207,8 @@ pub(crate) async fn ingest_authorized_fact_atomic(
             crate::owner_scope::require_owner_scope(authorized.owner_write_permit().owner_scope())?,
         )
         .await?;
-        let outcome = ingest_fact_command_in_tx(&mut tx, authorized, embedding_spaces).await?;
+        let outcome =
+            ingest_fact_command_in_tx(&mut tx, authorized, embedding_spaces, store_number).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
@@ -226,6 +229,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
     embedding_spaces: &[proxima_core::EmbeddingSpace],
+    store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     if !authorized.sidecar_payloads().is_empty() {
         return Err(StorageError::ConstraintViolation(
@@ -256,6 +260,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         ),
         options,
         FactAdmissionInput {
+            store_number,
             natural_key: None,
             sidecar_tables: &[],
             // The untyped Fact write: this route carries no `SidecarPayload`
@@ -560,63 +565,23 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    let AuthorizedFactInput {
-        owner,
-        draft,
-        links,
-    } = authorized;
-    let prepared = super::memory_timeseries::prepare_memory_admission(
-        tx,
-        super::memory_timeseries::MemoryAdmissionDraft {
-            natural_key: input.natural_key,
-            owner,
-            draft,
-            origins: links.origins(),
-            references: links.references(),
-            sidecar_tables: input.sidecar_tables,
-            scopes: input.scopes,
-        },
-    )
-    .await?;
-    super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
-    let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
-    if let super::memory_timeseries::PreparedMemoryAdmission::Replay(mut outcome) = prepared {
-        outcome.cited_object_id =
-            citation_object_for_t(tx, owner.into_inner(), outcome.memory_id).await?;
-        return Ok(outcome);
-    }
-
-    let occurred_at = prepared.occurred_at();
-    let mut write = draft.clone();
-    if write.blob_id.is_none() {
-        write.blob_id =
-            persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
-    }
-    let content_id = match (input.content.content_id, input.content.payloads) {
-        (Some(content_id), _) => Some(content_id),
-        (None, Some(payloads)) => {
-            crate::verbs::content::ensure_content_from_payloads(
-                tx,
-                owner.into_inner(),
-                if draft.kind.is_empty() {
-                    "fact"
-                } else {
-                    draft.kind.as_str()
-                },
-                draft.schema_id.as_str(),
-                payloads,
-            )
-            .await?
+    let mut retried_collision = false;
+    let (mut outcome, occurred_at, blob_id) = loop {
+        let mut attempt = tx.begin().await.map_err(map_err)?;
+        match admit_fact(&mut attempt, authorized, options, input).await {
+            Ok(outcome) => {
+                attempt.commit().await.map_err(map_err)?;
+                break outcome;
+            }
+            Err(StorageError::MemoryIdCollision) if !retried_collision => {
+                attempt.rollback().await.map_err(map_err)?;
+                retried_collision = true;
+            }
+            Err(StorageError::MemoryIdCollision) => return Err(crate::error::collision_exhausted()),
+            Err(error) => return Err(error),
         }
-        (None, None) => None,
     };
-    let mut outcome = super::memory_timeseries::materialize_prepared_memory_admission(
-        tx,
-        prepared,
-        write.blob_id,
-        content_id,
-    )
-    .await?;
+    let owner = authorized.owner;
     // Replay reuses the original `(handle, t)`. The sidecar row is already
     // there; inserting again trips `<table>_pkey` on `t`.
     if !outcome.idempotent_replay {
@@ -644,7 +609,7 @@ where
         outcome.cited_object_id =
             citation_object_for_t(tx, owner.into_inner(), outcome.memory_id).await?;
     } else {
-        outcome.cited_object_id = write.blob_id;
+        outcome.cited_object_id = blob_id;
         crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
             tx,
             owner.into_inner(),
@@ -654,4 +619,79 @@ where
         .await?;
     }
     Ok(outcome)
+}
+
+/// Admit all identity-dependent rows before invoking the once-only sidecar.
+async fn admit_fact(
+    tx: &mut Transaction<'_, Postgres>,
+    authorized: AuthorizedFactInput<'_>,
+    options: IngestCoreOptions<'_>,
+    input: FactAdmissionInput<'_>,
+) -> Result<
+    (
+        FactIngestOutcome,
+        Option<time::OffsetDateTime>,
+        Option<uuid::Uuid>,
+    ),
+    StorageError,
+> {
+    let AuthorizedFactInput {
+        owner,
+        draft,
+        links,
+    } = authorized;
+    let prepared = super::memory_timeseries::prepare_memory_admission(
+        tx,
+        super::memory_timeseries::MemoryAdmissionDraft {
+            store_number: input.store_number,
+            natural_key: input.natural_key,
+            owner,
+            draft,
+            origins: links.origins(),
+            references: links.references(),
+            sidecar_tables: input.sidecar_tables,
+            scopes: input.scopes,
+        },
+    )
+    .await?;
+    super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
+    let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
+    if let super::memory_timeseries::PreparedMemoryAdmission::Replay(mut outcome) = prepared {
+        outcome.cited_object_id =
+            citation_object_for_t(tx, owner.into_inner(), outcome.memory_id).await?;
+        return Ok((outcome, None, draft.blob_id));
+    }
+
+    let occurred_at = prepared.occurred_at();
+    let mut write = draft.clone();
+    if write.blob_id.is_none() {
+        write.blob_id =
+            persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
+    }
+    let content_id = match (input.content.content_id, input.content.payloads) {
+        (Some(content_id), _) => Some(content_id),
+        (None, Some(payloads)) => {
+            crate::verbs::content::ensure_content_from_payloads(
+                tx,
+                owner.into_inner(),
+                if draft.kind.is_empty() {
+                    "fact"
+                } else {
+                    draft.kind.as_str()
+                },
+                draft.schema_id.as_str(),
+                payloads,
+            )
+            .await?
+        }
+        (None, None) => None,
+    };
+    let outcome = super::memory_timeseries::materialize_prepared_memory_admission(
+        tx,
+        prepared,
+        write.blob_id,
+        content_id,
+    )
+    .await?;
+    Ok((outcome, occurred_at, write.blob_id))
 }

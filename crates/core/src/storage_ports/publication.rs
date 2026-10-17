@@ -270,7 +270,7 @@ impl std::fmt::Display for ClaimToken {
 pub struct ClaimedPublication {
     /// The Fact's `t`.
     pub id: Uuid,
-    /// `CloudEvents` `id` (`F:<uuid>`), and the key an intake deduplicates on.
+    /// `CloudEvents` `id` (the bare UUID), and the key an intake deduplicates on.
     pub event_id: String,
     pub owner_id: Uuid,
     pub schema_id: String,

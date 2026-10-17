@@ -24,6 +24,10 @@ pub enum StorageError {
     ConstraintViolation(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A newly minted memory or Goal UUID hit an existing admission primary key.
+    /// Storage may mint again once and retry the complete write.
+    #[error("memory UUID collision")]
+    MemoryIdCollision,
     /// Transient failure (deadlock / serialization) that is safe to retry
     /// after re-running the whole transaction. Classified from SQLSTATE
     /// `40P01`/`40001`; the `*_atomic` pool wrappers retry a bounded number
@@ -483,7 +487,7 @@ pub struct AuthorDerivedRequest<'a> {
     /// Memories of other stores this memory was also made from. Storage
     /// records them beside the row, in the same transaction, without any
     /// constraint on the remote side; a replay records nothing.
-    pub external_origins: &'a [crate::storage_ports::other_stores::QualifiedHandle],
+    pub external_origins: &'a [uuid::Uuid],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

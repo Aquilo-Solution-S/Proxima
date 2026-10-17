@@ -139,6 +139,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 mint_write_act: true,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;

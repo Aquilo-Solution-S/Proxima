@@ -1,38 +1,40 @@
 use super::error::McpToolError;
-use super::handles::{PrefixedUuidClass, parse_prefixed_uuid};
 
-pub(super) fn parse_any_prefixed_memory_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    let class = match raw.split_once(':').map(|(prefix, _)| prefix) {
-        Some("F") => PrefixedUuidClass::Fact,
-        Some("A") => PrefixedUuidClass::Abstraction,
-        Some("P") => PrefixedUuidClass::Perspective,
-        Some(prefix) => {
-            return Err(McpToolError::InvalidInput(format!(
-                "expected memory id prefix F, A, or P; got '{prefix}' in '{raw}'"
-            )));
-        }
-        None => {
-            return Err(McpToolError::InvalidInput(format!(
-                "malformed memory id '{raw}': expected F:<uuid>, A:<uuid>, or P:<uuid>"
-            )));
-        }
-    };
-    parse_prefixed_uuid(raw, class).map_err(|e| McpToolError::InvalidInput(e.to_string()))
+/// Parse the wire form: one hyphenated UUID, without a class or store prefix.
+///
+/// # Errors
+///
+/// Returns invalid input for any other spelling.
+pub fn parse_wire_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
+    if raw.len() != 36 {
+        return Err(McpToolError::InvalidInput(
+            "id must be a hyphenated UUID".into(),
+        ));
+    }
+    uuid::Uuid::parse_str(raw)
+        .map_err(|_| McpToolError::InvalidInput("id must be a hyphenated UUID".into()))
 }
 
-pub(super) fn parse_flavor_prefixed_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    let Some((prefix, uuid_part)) = raw.split_once(':') else {
-        return Err(McpToolError::InvalidInput(format!(
-            "malformed flavor object id '{raw}': expected <prefix>:<uuid>"
-        )));
-    };
-    let mut chars = prefix.chars();
-    if !matches!(chars.next(), Some(c) if c.is_ascii_uppercase()) || chars.next().is_some() {
-        return Err(McpToolError::InvalidInput(format!(
-            "malformed flavor object id '{raw}': prefix must be one ASCII uppercase letter"
-        )));
+#[cfg(test)]
+mod tests {
+    use super::parse_wire_uuid;
+
+    #[test]
+    fn wire_ids_accept_only_bare_hyphenated_uuids() {
+        let id = uuid::Uuid::now_v7();
+        assert_eq!(parse_wire_uuid(&id.to_string()).expect("UUID"), id);
+        for raw in [
+            format!("F:{id}"),
+            format!("A:{id}"),
+            format!("P:{id}"),
+            format!("G:{id}"),
+            format!("R:{id}"),
+            id.simple().to_string(),
+            format!("{{{id}}}"),
+            format!("urn:uuid:{id}"),
+            "not-a-uuid".into(),
+        ] {
+            assert!(parse_wire_uuid(&raw).is_err(), "{raw}");
+        }
     }
-    uuid_part
-        .parse::<uuid::Uuid>()
-        .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))
 }

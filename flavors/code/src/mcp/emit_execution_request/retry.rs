@@ -2,19 +2,19 @@ use proxima_core::mcp::{Replay, ToolEffect};
 use std::collections::HashSet;
 
 use proxima_core::{
-    AccessKind, DerivedMemory, EdgeEndpoint, EntityKind, FactPayload, MemoryTarget,
+    AccessKind, DerivedMemory, EdgeEndpoint, EntityKind, FactPayload, MemoryId, MemoryTarget,
     PerspectivePayload, SeriesHandle, Tool, ToolCtx, ToolError,
 };
 
 use crate::payloads::{CodeWorkAssignmentV1, ExecutionRequestV1};
 
-use super::super::{CodeToolCtxExt, engine};
+use super::super::engine;
 use super::context_validation::validate_evidence_in_owner;
 use super::ingest::{FactProvenance, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence};
 use super::retry_support::{
-    find_execution_request_by_key, load_execution_request, load_prior_origins,
-    resolve_target_perspective_id, retry_instructions, validate_target_perspective,
+    find_execution_request_by_key, load_execution_request, load_prior_origins, retry_instructions,
+    validate_target_perspective,
 };
 use super::types::{CodeRetryExecutionRequestArgs, CodeRetryExecutionRequestOutput};
 use super::work_assignment_memory_id;
@@ -51,18 +51,17 @@ impl Tool for CodeRetryExecutionRequestTool {
                     "caller_self_perspective is required for shell-author retry provenance".into(),
                 )
             })?;
-            let prior_memory_id = ctx.resolve_fact_memory(&args.prior_execution_request)?;
-            let target_perspective_id =
-                resolve_target_perspective_id(&ctx, &args.target_perspective)?;
+            let prior_memory_id = crate::mcp::parse_memory_uuid(&args.prior_execution_request)?;
+            let target_perspective_id = crate::mcp::parse_memory_uuid(&args.target_perspective)?;
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 240)?;
-            let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
+            let explicit_evidence = resolve_evidence(&args.evidence)?;
 
             let prior = load_execution_request(&ctx, prior_memory_id).await?;
             if let Some(existing) =
                 find_execution_request_by_key(&ctx, prior.repo_id, &request_key).await?
             {
                 return Ok(CodeRetryExecutionRequestOutput {
-                    handle: ctx.format_fact_memory(existing),
+                    handle: existing.into_inner().to_string(),
                     assignment_handle: None,
                     origin_count: 0,
                     idempotent_replay: true,
@@ -82,23 +81,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 args.instructions_append.as_deref(),
             )?;
 
-            // A retry is made from the request it retries, everything that
-            // request was made from, and whatever extra evidence the caller
-            // supplies. Declared once, on the write.
-            let mut seen = HashSet::new();
-            let mut origins = Vec::new();
-            let mut push = |memory_id| {
-                if seen.insert(memory_id) {
-                    origins.push(EdgeEndpoint::memory(EntityKind::Fact, memory_id));
-                }
-            };
-            push(prior_memory_id);
-            for memory_id in load_prior_origins(&ctx, prior_memory_id).await? {
-                push(memory_id);
-            }
-            for memory_id in explicit_evidence {
-                push(memory_id);
-            }
+            let origins = retry_origins(&ctx, prior_memory_id, explicit_evidence).await?;
 
             let payload = ExecutionRequestV1 {
                 repo_id: prior.repo_id,
@@ -143,7 +126,7 @@ impl Tool for CodeRetryExecutionRequestTool {
             };
 
             Ok(CodeRetryExecutionRequestOutput {
-                handle: ctx.format_fact_memory(outcome.memory_id),
+                handle: outcome.memory_id.into_inner().to_string(),
                 assignment_handle,
                 origin_count: if outcome.idempotent_replay {
                     0
@@ -154,6 +137,26 @@ impl Tool for CodeRetryExecutionRequestTool {
             })
         })
     }
+}
+
+/// A retry retains its prior request and that request's origins, then adds new evidence.
+async fn retry_origins(
+    ctx: &ToolCtx,
+    prior_memory_id: MemoryId,
+    evidence: Vec<MemoryId>,
+) -> Result<Vec<EdgeEndpoint>, ToolError> {
+    let prior_origins = load_prior_origins(ctx, prior_memory_id).await?;
+    let mut seen = HashSet::new();
+    let mut origins = Vec::new();
+    for id in std::iter::once(prior_memory_id)
+        .chain(prior_origins)
+        .chain(evidence)
+    {
+        if seen.insert(id) {
+            origins.push(EdgeEndpoint::memory(EntityKind::Fact, id));
+        }
+    }
+    Ok(origins)
 }
 
 /// Author the assignment Perspective through the engine's derived-write
@@ -196,5 +199,5 @@ async fn author_assignment(
         ))
         .await?;
     uow.commit().await.map_err(ToolError::Protocol)?;
-    Ok(ctx.format_perspective_memory(outcome.memory_id))
+    Ok(outcome.memory_id.into_inner().to_string())
 }

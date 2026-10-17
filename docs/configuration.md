@@ -10,6 +10,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 |---|---|---|---|
 | DATABASE_URL | serving database connection | required for the canonical host | [MCP args](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/args.rs) |
 | PROXIMA_PLATFORM_DATABASE_URL | platform database connection | required for boot and maintenance | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
+| PROXIMA_STORE_NUMBER | immutable host-assigned store number | required on every boot | `RuntimeBuilder::store_number` |
 | PROXIMA_MCP_BIND | MCP listener address | serving MCP | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_EXPOSE_NETWORK | non-loopback exposure gate | public listener | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_ALLOWED_ORIGINS | CORS origin allowlist | browser clients | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |

@@ -3,16 +3,9 @@ use std::sync::Arc;
 use crate::{GoalId, MemoryId};
 
 use super::error::McpToolError;
-use super::handles::{
-    MemoryHandleClass, PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid,
-};
-use super::ids::{parse_any_prefixed_memory_uuid, parse_flavor_prefixed_uuid};
+use super::handles::MemoryHandleClass;
 use super::types::McpToolCtx;
 
-// format_*/resolve_* stay instance methods even though the canonical
-// prefixed form needs no per-session state: the ctx is the tool-facing
-// seam for wire references, and method call sites stay stable if
-// presentation ever grows state again.
 #[allow(clippy::unused_self)]
 impl McpToolCtx {
     /// `None` when the MCP server is running without a wired engine
@@ -42,101 +35,52 @@ impl McpToolCtx {
         self.services.get::<T>()
     }
 
-    #[must_use]
-    pub fn format_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> String {
-        format_prefixed_uuid(id.into_inner(), class.into())
-    }
-
-    #[must_use]
-    pub fn format_fact_memory(&self, id: MemoryId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Fact)
-    }
-
-    #[must_use]
-    pub fn format_abstraction_memory(&self, id: MemoryId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Abstraction)
-    }
-
-    #[must_use]
-    pub fn format_perspective_memory(&self, id: MemoryId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Perspective)
-    }
-
-    #[must_use]
-    pub fn format_goal(&self, id: GoalId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal)
-    }
-
-    #[must_use]
-    pub fn format_flavor_object(&self, _kind: &str, id: uuid::Uuid, prefix: char) -> String {
-        format!("{prefix}:{id}")
-    }
-
-    /// Parse `raw` as a memory reference (`F:`/`A:`/`P:` prefixed uuid).
+    /// Parse a bare memory UUID. Kind and visibility are checked by the engine.
     ///
     /// # Errors
     ///
-    /// Returns `McpToolError::InvalidInput` when `raw` is not a
-    /// well-formed prefixed memory id.
+    /// Returns invalid input for any other spelling.
     pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
-        parse_any_prefixed_memory_uuid(raw).map(MemoryId::new)
+        super::ids::parse_wire_uuid(raw).map(MemoryId::new)
     }
 
-    /// Parse `raw` as a fact-memory reference (`F:<uuid>`).
+    /// Parse a bare Goal UUID; the Goal operation resolves its stored row.
     ///
     /// # Errors
     ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
-        parse_prefixed_uuid(raw, PrefixedUuidClass::Fact)
-            .map(MemoryId::new)
-            .map_err(|e| McpToolError::InvalidInput(e.to_string()))
-    }
-
-    /// Parse `raw` as an abstraction-memory reference (`A:<uuid>`).
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
-        parse_prefixed_uuid(raw, PrefixedUuidClass::Abstraction)
-            .map(MemoryId::new)
-            .map_err(|e| McpToolError::InvalidInput(e.to_string()))
-    }
-
-    /// Parse `raw` as a perspective-memory reference (`P:<uuid>`).
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
-        parse_prefixed_uuid(raw, PrefixedUuidClass::Perspective)
-            .map(MemoryId::new)
-            .map_err(|e| McpToolError::InvalidInput(e.to_string()))
-    }
-
-    /// Parse `raw` as a goal reference (`G:<uuid>`).
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
+    /// Returns invalid input for any other spelling.
     pub fn resolve_goal(&self, raw: &str) -> Result<GoalId, McpToolError> {
-        parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
-            .map(GoalId::new)
-            .map_err(|e| McpToolError::InvalidInput(e.to_string()))
+        super::ids::parse_wire_uuid(raw).map(GoalId::new)
     }
 
-    /// Parse `raw` as a flavor-object reference of the given `kind`
-    /// (`<prefix>:<uuid>` with a flavor-registered prefix).
+    /// Resolve the layer of a readable stored memory, without trusting the caller.
     ///
     /// # Errors
     ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_flavor_object(
+    /// Returns invalid input, not found, or an engine read failure.
+    pub async fn resolve_memory_with_kind(
         &self,
         raw: &str,
-        _kind: &str,
-    ) -> Result<uuid::Uuid, McpToolError> {
-        parse_flavor_prefixed_uuid(raw)
+    ) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
+        let memory_id = self.resolve_memory(raw)?;
+        self.resolve_memory_id_with_kind(memory_id).await
+    }
+
+    pub(crate) async fn resolve_memory_id_with_kind(
+        &self,
+        memory_id: MemoryId,
+    ) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
+        let (_, kind) = self
+            .require_engine()?
+            .memory_kinds(&self.authz, &[memory_id])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                McpToolError::NotFound(format!("memory {} not found", memory_id.into_inner()))
+            })?;
+        let class = MemoryHandleClass::from_entity_kind(kind)
+            .ok_or_else(|| McpToolError::InvalidInput("expected a memory".into()))?;
+        Ok((memory_id, class))
     }
 }

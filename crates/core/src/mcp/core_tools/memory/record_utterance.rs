@@ -108,7 +108,7 @@ impl McpTool for RecordUtteranceTool {
             let outcome = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
 
             Ok(RecordUtteranceOutput {
-                handle: ctx.format_fact_memory(outcome.memory_id),
+                handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

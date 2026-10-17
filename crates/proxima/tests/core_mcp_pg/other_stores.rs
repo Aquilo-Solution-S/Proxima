@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use proxima::host::{
     OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
-    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
+    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo,
 };
 use proxima::{FlavorServices, Proxima};
 use proxima_core::verbs::query::{
@@ -29,7 +29,8 @@ enum Entry {
 
 #[derive(Default)]
 struct FakeStore {
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<Uuid, Entry>,
+    name: String,
     delay: Option<Duration>,
     schema_ids: Vec<String>,
     degraded_to_lexical: bool,
@@ -40,13 +41,19 @@ struct FakeStore {
 /// store hides what the caller may not read.
 #[derive(Default)]
 struct FakeStores {
-    stores: Mutex<BTreeMap<String, FakeStore>>,
-    searches: Mutex<Vec<(String, RemoteSearch)>>,
+    stores: Mutex<BTreeMap<u16, FakeStore>>,
+    searches: Mutex<Vec<(u16, RemoteSearch)>>,
 }
 
-fn fact(handle: &str, body: &str) -> RemoteMemory {
+fn remote_id(store: u16, key: &str) -> Uuid {
+    let mut bytes = *Uuid::new_v5(&Uuid::NAMESPACE_OID, key.as_bytes()).as_bytes();
+    bytes[10..12].copy_from_slice(&store.to_be_bytes());
+    Uuid::from_bytes(bytes)
+}
+
+fn fact(handle: Uuid, body: &str) -> RemoteMemory {
     RemoteMemory {
-        handle: handle.to_string(),
+        handle,
         kind: EntityKind::Fact,
         schema_id: "remote/note".into(),
         title: Some(format!("title of {handle}")),
@@ -56,7 +63,7 @@ fn fact(handle: &str, body: &str) -> RemoteMemory {
     }
 }
 
-fn dated_fact(handle: &str, body: &str, day: i64) -> RemoteMemory {
+fn dated_fact(handle: Uuid, body: &str, day: i64) -> RemoteMemory {
     RemoteMemory {
         created_at: time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(day),
         ..fact(handle, body)
@@ -64,46 +71,55 @@ fn dated_fact(handle: &str, body: &str, day: i64) -> RemoteMemory {
 }
 
 impl FakeStores {
-    fn set_search_outcome(&self, store: &str, degraded: bool, refusal: Option<&str>) {
+    fn set_search_outcome(&self, store: u16, degraded: bool, refusal: Option<&str>) {
         let mut stores = self.stores.lock().expect("stores");
-        let store = stores.get_mut(store).expect("configured fake store");
+        let store = stores.get_mut(&store).expect("configured fake store");
         store.degraded_to_lexical = degraded;
         store.unsupported_search = refusal.map(str::to_owned);
     }
 
-    fn searches(&self) -> Vec<(String, RemoteSearch)> {
+    fn searches(&self) -> Vec<(u16, RemoteSearch)> {
         self.searches.lock().expect("searches").clone()
     }
 
-    fn with(self, store: &str, handle: &str, entry: Entry) -> Self {
+    fn with(self, store: u16, handle: Uuid, entry: Entry) -> Self {
         self.stores
             .lock()
             .expect("lock")
-            .entry(store.to_string())
+            .entry(store)
             .or_default()
             .entries
-            .insert(handle.to_string(), entry);
+            .insert(handle, entry);
         self
     }
 
-    fn slow(self, store: &str, delay: Duration) -> Self {
+    fn slow(self, store: u16, delay: Duration) -> Self {
         self.stores
             .lock()
             .expect("lock")
-            .entry(store.to_string())
+            .entry(store)
             .or_default()
             .delay = Some(delay);
         self
     }
 
-    fn erase(&self, store: &str, handle: &str) {
+    fn rename(&self, store: u16, name: &str) {
         self.stores
             .lock()
             .expect("lock")
-            .get_mut(store)
+            .get_mut(&store)
+            .expect("store")
+            .name = name.into();
+    }
+
+    fn erase(&self, store: u16, handle: Uuid) {
+        self.stores
+            .lock()
+            .expect("lock")
+            .get_mut(&store)
             .expect("store")
             .entries
-            .insert(handle.to_string(), Entry::Erased);
+            .insert(handle, Entry::Erased);
     }
 }
 
@@ -118,9 +134,10 @@ impl OtherStores for FakeStores {
                 .lock()
                 .expect("lock")
                 .iter()
-                .map(|(name, store)| StoreInfo {
-                    name: StoreName::new(name.clone()).expect("store name"),
-                    description: format!("fake {name}"),
+                .map(|(number, store)| StoreInfo {
+                    number: *number,
+                    name: store.name.clone(),
+                    description: format!("fake store {number}"),
                     schema_ids: store.schema_ids.clone(),
                 })
                 .collect())
@@ -130,19 +147,19 @@ impl OtherStores for FakeStores {
     fn search<'a>(
         &'a self,
         _caller: StoreCaller<'a>,
-        store: &'a StoreName,
+        store: u16,
         args: &'a RemoteSearch,
     ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
         Box::pin(async move {
             self.searches
                 .lock()
                 .expect("searches")
-                .push((store.to_string(), args.clone()));
+                .push((store, args.clone()));
             let (delay, mut hits, degraded_to_lexical) = {
                 let stores = self.stores.lock().expect("lock");
                 let fake = stores
-                    .get(store.as_str())
-                    .ok_or_else(|| OtherStoresError::UnknownStore(store.to_string()))?;
+                    .get(&store)
+                    .ok_or(OtherStoresError::UnknownStore(store))?;
                 if let Some(reason) = &fake.unsupported_search {
                     return Err(OtherStoresError::UnsupportedSearch(reason.clone()));
                 }
@@ -152,7 +169,7 @@ impl OtherStores for FakeStores {
                     .filter_map(|entry| match entry {
                         Entry::Readable(memory) if remote_matches(memory, args) => {
                             Some(RemoteHit {
-                                handle: memory.handle.clone(),
+                                handle: memory.handle,
                                 kind: memory.kind,
                                 schema_id: memory.schema_id.clone(),
                                 snippet: memory.body.clone(),
@@ -181,14 +198,13 @@ impl OtherStores for FakeStores {
     fn read<'a>(
         &'a self,
         _caller: StoreCaller<'a>,
-        store: &'a StoreName,
-        handle: &'a str,
+        handle: Uuid,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
         Box::pin(async move {
             let stores = self.stores.lock().expect("lock");
             let entry = stores
-                .get(store.as_str())
-                .and_then(|fake| fake.entries.get(handle).cloned());
+                .get(&proxima_core::memory_store_number(handle))
+                .and_then(|fake| fake.entries.get(&handle).cloned());
             Ok(match entry {
                 Some(Entry::Readable(memory)) => RemoteRead::Found(memory),
                 Some(Entry::Erased) => RemoteRead::Erased,
@@ -238,11 +254,11 @@ async fn row_counts(platform_url: &str) -> (i64, i64) {
     (memories, external)
 }
 
-fn node<'a>(lineage: &'a serde_json::Value, memory: &str) -> Option<&'a serde_json::Value> {
+fn node(lineage: &serde_json::Value, memory: impl AsRef<str>) -> Option<&serde_json::Value> {
     lineage["nodes"]
         .as_array()?
         .iter()
-        .find(|node| node["memory"] == memory)
+        .find(|node| node["memory"] == memory.as_ref())
 }
 
 #[tokio::test]
@@ -260,14 +276,15 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
         let fake = Arc::new(
             FakeStores::default()
                 .with(
-                    "wiki",
-                    "fact-1",
-                    Entry::Readable(fact("fact-1", "remote basis")),
+                    1,
+                    remote_id(1, "fact-1"),
+                    Entry::Readable(fact(remote_id(1, "fact-1"), "remote basis")),
                 )
-                .with("wiki", "secret", Entry::Denied),
+                .with(1, remote_id(1, "secret"), Entry::Denied),
         );
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -299,13 +316,18 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
                 "kind": "Abstraction",
                 "title": "unreadable basis",
                 "body": "must not land",
-                "source_handles": [local_handle, "wiki:secret"],
+                "source_handles": [local_handle, remote_id(1, "secret").to_string()],
                 "model_id": "test-model"
             }),
         )
         .await
         .expect_err("an unreadable remote origin refuses");
-        assert!(refused.to_string().contains("wiki:secret"), "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains(&remote_id(1, "secret").to_string()),
+            "{refused}"
+        );
         assert_eq!(row_counts(&platform_url).await, before, "zero rows written");
 
         // Remote sources alone are not a derivation of this store.
@@ -318,7 +340,7 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
                 "kind": "Abstraction",
                 "title": "remote only",
                 "body": "must not land either",
-                "source_handles": ["wiki:fact-1"],
+                "source_handles": [remote_id(1, "fact-1").to_string()],
                 "model_id": "test-model"
             }),
         )
@@ -341,7 +363,7 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
                 "kind": "Abstraction",
                 "title": "cross-store pattern",
                 "body": "local and remote agree",
-                "source_handles": [local_handle, "wiki:fact-1"],
+                "source_handles": [local_handle, remote_id(1, "fact-1").to_string()],
                 "model_id": "test-model"
             }),
         )
@@ -350,15 +372,17 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
         assert_eq!(derived["edge_count"], serde_json::json!(2), "{derived}");
         assert_eq!(row_counts(&platform_url).await.1, before.1 + 1);
 
+        fake.rename(1, "renamed-wiki");
         let lineage_uri = format!("proxima://memory/{abstraction}/lineage");
         let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
         assert!(node(&lineage, &local_handle).is_some(), "{lineage}");
-        let remote = node(&lineage, "wiki:fact-1").expect("remote origin node");
-        assert_eq!(remote["store"], "wiki");
+        let remote =
+            node(&lineage, remote_id(1, "fact-1").to_string()).expect("remote origin node");
+        assert_eq!(remote["store"], 1);
         assert_eq!(remote["kind"], "Fact");
         assert!(remote.get("status").is_none(), "{remote}");
         let edges = lineage["edges"].as_array().expect("edges");
-        for target in [local_handle.as_str(), "wiki:fact-1"] {
+        for target in [local_handle.clone(), remote_id(1, "fact-1").to_string()] {
             assert!(
                 edges
                     .iter()
@@ -369,10 +393,10 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
 
         // The store erases its Fact: the walk renders it erased and the
         // Abstraction still reads.
-        fake.erase("wiki", "fact-1");
+        fake.erase(1, remote_id(1, "fact-1"));
         let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
         assert_eq!(
-            node(&lineage, "wiki:fact-1").expect("remote node")["status"],
+            node(&lineage, remote_id(1, "fact-1").to_string()).expect("remote node")["status"],
             "erased"
         );
         let read = read_test_model_resource(
@@ -391,39 +415,92 @@ async fn derive_from_a_local_and_a_remote_fact_names_both_and_survives_remote_er
     result.expect("cross-store derive test failed");
 }
 
+async fn assert_remote_and_batch_reads(
+    tools: &proxima::CoreMcpTools,
+    authz: proxima::AuthzContext,
+    owner: OwnerId,
+    local: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // The UUID alone routes the read through the port.
+    let remote = read_test_model_resource(
+        tools,
+        authz.clone(),
+        owner,
+        &format!("proxima://memory/{}", remote_id(2, "c1")),
+    )
+    .await?;
+    assert_eq!(remote["handle"], remote_id(2, "c1").to_string());
+    assert_eq!(remote["space"], "2");
+    assert_eq!(remote["body"], "zebra account in the crm");
+    let batch = read_test_model_resource(
+        tools,
+        authz.clone(),
+        owner,
+        &format!(
+            "proxima://memories?ids={},{},{},{}",
+            local,
+            remote_id(1, "w1"),
+            remote_id(2, "c1"),
+            remote_id(2, "absent")
+        ),
+    )
+    .await?;
+    assert_eq!(batch["memories"].as_array().expect("memories").len(), 3);
+    assert_eq!(batch["memories"][0]["memory"], local);
+    assert_eq!(
+        batch["memories"][1]["memory"],
+        remote_id(1, "w1").to_string()
+    );
+    assert_eq!(
+        batch["memories"][2]["memory"],
+        remote_id(2, "c1").to_string()
+    );
+    assert_eq!(
+        batch["missing"],
+        serde_json::json!([remote_id(2, "absent")])
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
     let split_db = clone_split_core_db("proxima_other_stores_search")
         .await
         .expect("PG required for tests");
-    let (runtime_url, platform_url) = (
-        split_db.runtime_url().to_owned(),
-        split_db.platform_url().to_owned(),
-    );
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let fake = Arc::new(
             FakeStores::default()
                 .with(
-                    "wiki",
-                    "w1",
-                    Entry::Readable(dated_fact("w1", "zebra crossing in the wiki", 3)),
+                    1,
+                    remote_id(1, "w1"),
+                    Entry::Readable(dated_fact(
+                        remote_id(1, "w1"),
+                        "zebra crossing in the wiki",
+                        3,
+                    )),
                 )
                 .with(
-                    "crm",
-                    "c1",
-                    Entry::Readable(dated_fact("c1", "zebra account in the crm", 2)),
+                    2,
+                    remote_id(2, "c1"),
+                    Entry::Readable(dated_fact(
+                        remote_id(2, "c1"),
+                        "zebra account in the crm",
+                        2,
+                    )),
                 )
                 .with(
-                    "slow",
-                    "s1",
-                    Entry::Readable(fact("s1", "zebra that never arrives")),
+                    3,
+                    remote_id(3, "s1"),
+                    Entry::Readable(fact(remote_id(3, "s1"), "zebra that never arrives")),
                 )
-                .slow("slow", Duration::from_secs(5)),
+                .slow(3, Duration::from_secs(5)),
         );
         let built = Proxima::<AgentMemoryApp>::app()
-            .database_url(runtime_url.clone())
-            .platform_database_url(platform_url.clone())
+            .database_url(split_db.runtime_url())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
             .services(FlavorServices::with(
@@ -433,7 +510,7 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
             .await?;
         let tools = built.host().core_mcp_tools();
         let authz = space_authz(owner, vec![owner], Role::admin());
-        call_test_model_tool(
+        let local = call_test_model_tool(
             &tools,
             authz.clone(),
             owner,
@@ -451,17 +528,17 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
         )
         .await?;
         let memories = found["memories"].as_array().expect("memories");
-        let stores: std::collections::BTreeSet<&str> = memories
+        let stores: std::collections::BTreeSet<u64> = memories
             .iter()
-            .map(|hit| hit["store"].as_str().expect("every hit names its store"))
+            .map(|hit| hit["store"].as_u64().expect("every hit names its store"))
             .collect();
-        assert_eq!(
-            stores,
-            ["crm", "local", "wiki"].into_iter().collect(),
-            "{found}"
+        assert_eq!(stores, [0, 1, 2].into_iter().collect(), "{found}");
+        assert!(
+            memories
+                .iter()
+                .any(|hit| hit["memory"] == remote_id(1, "w1").to_string())
         );
-        assert!(memories.iter().any(|hit| hit["memory"] == "wiki:w1"));
-        assert_eq!(found["unanswered"], serde_json::json!(["slow"]), "{found}");
+        assert_eq!(found["unanswered"], serde_json::json!([3]), "{found}");
         assert_eq!(found["ranking"], "rank");
 
         // An explicit selection searches only what it names.
@@ -470,20 +547,20 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
             authz.clone(),
             owner,
             "core_search_memories",
-            serde_json::json!({"query":"zebra","mode":"lexical","stores":["wiki"]}),
+            serde_json::json!({"query":"zebra","mode":"lexical","stores":[1]}),
         )
         .await?;
         let memories = only_wiki["memories"].as_array().expect("memories");
         assert_eq!(memories.len(), 1, "{only_wiki}");
-        assert_eq!(memories[0]["memory"], "wiki:w1");
+        assert_eq!(memories[0]["memory"], remote_id(1, "w1").to_string());
 
-        // `proxima://memory/<store>:<handle>` reads through the port.
-        let remote =
-            read_test_model_resource(&tools, authz.clone(), owner, "proxima://memory/crm:c1")
-                .await?;
-        assert_eq!(remote["handle"], "crm:c1");
-        assert_eq!(remote["space"], "crm");
-        assert_eq!(remote["body"], "zebra account in the crm");
+        assert_remote_and_batch_reads(
+            &tools,
+            authz.clone(),
+            owner,
+            local["handle"].as_str().expect("local UUID"),
+        )
+        .await?;
 
         assert_remote_search_intent(&tools, &authz, owner, &fake).await?;
 
@@ -500,7 +577,7 @@ async fn assert_remote_search_intent(
     owner: OwnerId,
     fake: &FakeStores,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    fake.set_search_outcome("wiki", true, None);
+    fake.set_search_outcome(1, true, None);
     let before = fake.searches().len();
     let found = call_test_model_tool(
         tools,
@@ -512,12 +589,15 @@ async fn assert_remote_search_intent(
             "schema_id":"remote/note", "tags":[" ReMoTe ","remote"], "tag_match":"all",
             "since":"1970-01-02T00:00:00Z", "until":"1970-01-05T00:00:00Z",
             "order":"recency", "supersession":"all", "min_score":0.2,
-            "semantic_weight":0.7, "stores":["crm","wiki"]
+            "semantic_weight":0.7, "stores":[2,1]
         }),
     )
     .await?;
     assert_eq!(found["memories"].as_array().unwrap().len(), 1);
-    assert_eq!(found["memories"][0]["memory"], "wiki:w1");
+    assert_eq!(
+        found["memories"][0]["memory"],
+        remote_id(1, "w1").to_string()
+    );
     assert_eq!(found["degraded_to_lexical"], true);
     let expected = RemoteSearch {
         query: "zebra".into(),
@@ -544,18 +624,24 @@ async fn assert_remote_search_intent(
         authz.clone(),
         owner,
         "core_search_memories",
-        serde_json::json!({"query":"absent phrase", "mode":"hybrid", "stores":["wiki"]}),
+        serde_json::json!({"query":"absent phrase", "mode":"hybrid", "stores":[1]}),
     )
     .await?;
     assert_eq!(empty["memories"], serde_json::json!([]));
     assert_eq!(empty["degraded_to_lexical"], true);
 
-    fake.set_search_outcome("wiki", false, Some("tag filter unsupported"));
+    fake.set_search_outcome(1, false, Some("tag filter unsupported"));
     let before = fake.searches().len();
-    let refused = call_test_model_tool(tools, authz.clone(), owner, "core_search_memories",
-        serde_json::json!({"query":"zebra", "mode":"lexical", "tags":["remote"], "stores":["wiki"]})).await?;
+    let refused = call_test_model_tool(
+        tools,
+        authz.clone(),
+        owner,
+        "core_search_memories",
+        serde_json::json!({"query":"zebra", "mode":"lexical", "tags":["remote"], "stores":[1]}),
+    )
+    .await?;
     assert_eq!(refused["memories"], serde_json::json!([]));
-    assert_eq!(refused["unanswered"], serde_json::json!(["wiki"]));
+    assert_eq!(refused["unanswered"], serde_json::json!([1]));
     assert_eq!(fake.searches().len(), before + 1, "no weaker retry");
     Ok(())
 }
@@ -573,6 +659,7 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -598,16 +685,13 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
                 "kind": "Abstraction",
                 "title": "t",
                 "body": "b",
-                "source_handles": [local["handle"], "wiki:fact-1"],
+                "source_handles": [local["handle"], remote_id(1, "fact-1").to_string()],
                 "model_id": "test-model"
             }),
         )
         .await
         .expect_err("a qualified handle without a port refuses");
-        assert!(
-            refused.to_string().contains("expected memory id prefix"),
-            "{refused}"
-        );
+        assert!(refused.to_string().contains("not found"), "{refused}");
 
         let found = call_test_model_tool(
             &tools,
@@ -624,7 +708,7 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
             authz.clone(),
             owner,
             "core_search_memories",
-            serde_json::json!({"query":"zebra","mode":"lexical","stores":["local"]}),
+            serde_json::json!({"query":"zebra","mode":"lexical","stores":[0]}),
         )
         .await?;
         let unknown = call_test_model_tool(
@@ -632,12 +716,12 @@ async fn without_a_port_qualified_handles_and_other_stores_are_refused() {
             authz.clone(),
             owner,
             "core_search_memories",
-            serde_json::json!({"query":"zebra","stores":["wiki"]}),
+            serde_json::json!({"query":"zebra","stores":[1]}),
         )
         .await
         .expect_err("no port, no other store");
         assert!(
-            unknown.to_string().contains("unknown store 'wiki'"),
+            unknown.to_string().contains("unknown store '1'"),
             "{unknown}"
         );
         read_test_model_resource(&tools, authz, owner, "proxima://memory/wiki:abc")
@@ -665,14 +749,15 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
         let fake = Arc::new(
             FakeStores::default()
                 .with(
-                    "wiki",
-                    "page-1",
-                    Entry::Readable(fact("page-1", "the remote subject")),
+                    1,
+                    remote_id(1, "page-1"),
+                    Entry::Readable(fact(remote_id(1, "page-1"), "the remote subject")),
                 )
-                .with("wiki", "secret", Entry::Denied),
+                .with(1, remote_id(1, "secret"), Entry::Denied),
         );
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .served_surface(proxima_core::ServedSurface::All)
@@ -693,8 +778,8 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
 
         let before = row_counts(&platform_url).await;
         for subjects in [
-            serde_json::json!([local_handle, "wiki:secret"]),
-            serde_json::json!(["wiki:page-1"]),
+            serde_json::json!([local_handle, remote_id(1, "secret").to_string()]),
+            serde_json::json!([remote_id(1, "page-1").to_string()]),
         ] {
             call_test_model_tool(
                 &tools,
@@ -721,25 +806,26 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
             serde_json::json!({
                 "claim": "both say the same thing",
                 "confidence": 80,
-                "subjects": [local_handle, "wiki:page-1"],
+                "subjects": [local_handle, remote_id(1, "page-1").to_string()],
                 "model_id": "test-model"
             }),
         )
         .await?;
         let perspective = interpreted["handle"].as_str().expect("handle").to_string();
-        assert!(perspective.starts_with("P:"), "{interpreted}");
+        assert!(perspective.parse::<Uuid>().is_ok(), "{interpreted}");
         assert_eq!(row_counts(&platform_url).await.1, before.1 + 1);
 
         let lineage_uri = format!("proxima://memory/{perspective}/lineage");
         let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
-        let remote = node(&lineage, "wiki:page-1").expect("remote subject node");
-        assert_eq!(remote["store"], "wiki");
+        let remote =
+            node(&lineage, remote_id(1, "page-1").to_string()).expect("remote subject node");
+        assert_eq!(remote["store"], 1);
         assert!(remote.get("status").is_none(), "{remote}");
 
-        fake.erase("wiki", "page-1");
+        fake.erase(1, remote_id(1, "page-1"));
         let lineage = read_test_model_resource(&tools, authz.clone(), owner, &lineage_uri).await?;
         assert_eq!(
-            node(&lineage, "wiki:page-1").expect("remote node")["status"],
+            node(&lineage, remote_id(1, "page-1").to_string()).expect("remote node")["status"],
             "erased"
         );
         read_test_model_resource(

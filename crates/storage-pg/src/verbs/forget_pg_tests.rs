@@ -162,11 +162,16 @@ async fn ingest_stamped(
         .collect::<Vec<_>>();
     let outcome = ingest_fact_timeseries(
         &mut tx,
-        permit.owner(),
-        draft,
-        &draft.additional_references,
-        &references,
-        tables,
+        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+            store_number: 1,
+            natural_key: None,
+            owner: permit.owner(),
+            draft,
+            origins: &draft.additional_references,
+            references: &references,
+            sidecar_tables: tables,
+            scopes: &[],
+        },
         None,
     )
     .await?;
@@ -195,8 +200,21 @@ async fn append_in_own_transaction(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome =
-        ingest_fact_timeseries(&mut tx, permit.owner(), &draft, &[], &[], &[], None).await;
+    let outcome = ingest_fact_timeseries(
+        &mut tx,
+        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+            store_number: 1,
+            natural_key: None,
+            owner: permit.owner(),
+            draft: &draft,
+            origins: &[],
+            references: &[],
+            sidecar_tables: &[],
+            scopes: &[],
+        },
+        None,
+    )
+    .await;
     match outcome {
         Ok(outcome) => {
             tx.commit()
@@ -441,6 +459,7 @@ async fn insert_unassigned_goal(
             mint_write_act: false,
             write_act_t: None,
         },
+        1,
     )
     .await?;
     tx.commit().await?;
@@ -1000,11 +1019,16 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
         append_draft.handle = Some(first.handle);
         let append = ingest_fact_timeseries(
             &mut append_holder,
-            permit.owner(),
-            &append_draft,
-            &[],
-            &[],
-            &[],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: permit.owner(),
+                draft: &append_draft,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[],
+                scopes: &[],
+            },
             None,
         )
         .await?;
@@ -1138,8 +1162,8 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
             .memory_id
             .into_inner();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
-             VALUES ($1, 'wiki', 'page-1'), ($1, 'crm', 'c-1'), ($2, 'wiki', 'page-2')",
+            "INSERT INTO proxima_core.memory_external_origin (t, memory)
+             VALUES ($1, '00000000-0000-8000-8000-000500000001'), ($1, '00000000-0000-8000-8000-000600000001'), ($2, '00000000-0000-8000-8000-000500000002')",
         )
         .bind(erased_t)
         .bind(kept_t)
@@ -1158,12 +1182,12 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
         tx.commit().await?;
         assert_eq!(erased, 1);
 
-        let remaining: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT t, handle FROM proxima_core.memory_external_origin ORDER BY handle",
+        let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT t, memory FROM proxima_core.memory_external_origin ORDER BY memory",
         )
         .fetch_all(pool)
         .await?;
-        assert_eq!(remaining, vec![(kept_t, "page-2".to_string())]);
+        assert_eq!(remaining, vec![(kept_t, Uuid::parse_str("00000000-0000-8000-8000-000500000002")?)]);
         Ok(())
     }
     .await;
@@ -1232,11 +1256,16 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         append_draft.handle = Some(first.handle);
         ingest_fact_timeseries(
             &mut append_holder,
-            permit.owner(),
-            &append_draft,
-            &[],
-            &[],
-            &[],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: permit.owner(),
+                draft: &append_draft,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[],
+                scopes: &[],
+            },
             None,
         )
         .await?;
@@ -1438,11 +1467,16 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
         append_draft.handle = Some(first.handle);
         let append = ingest_fact_timeseries(
             &mut append_holder,
-            permit.owner(),
-            &append_draft,
-            &[],
-            &[],
-            &[],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: permit.owner(),
+                draft: &append_draft,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[],
+                scopes: &[],
+            },
             None,
         )
         .await?;
@@ -2224,6 +2258,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;
@@ -3564,7 +3599,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
                 (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
                  blob_id, content_id, origins, refs, sidecar_tables, occurred_at)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', NULL, NULL,
-                     NULL, NULL, '{}', '{}', '{}', uuid_extract_timestamp($2))",
+                     NULL, NULL, '{}', '{}', '{}', proxima_core.memory_created_at($2))",
         )
         .bind(holder.handle)
         .bind(target_t)
@@ -4827,11 +4862,16 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
             .await?;
         let appended = ingest_fact_timeseries(
             &mut destination_append,
-            destination_permit.owner(),
-            &append_draft,
-            &[],
-            &[],
-            &[],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: destination_permit.owner(),
+                draft: &append_draft,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[],
+                scopes: &[],
+            },
             None,
         )
         .await?;

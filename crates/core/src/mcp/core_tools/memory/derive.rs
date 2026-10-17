@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{dedup_resolved, normalize_idempotency_key, normalize_tags, operator_label};
+use super::super::other_stores::{self, ResolvedMemory};
+
+use super::util::{normalize_idempotency_key, normalize_tags, operator_label};
 
 pub(crate) const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -43,21 +45,11 @@ pub(crate) fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractI
     ))
 }
 
-pub(crate) fn resolve_source_memory(
+pub(crate) async fn resolve_source_memory(
     ctx: &McpToolCtx,
     handle: &str,
 ) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
-    if let Ok(memory_id) = ctx.resolve_fact_memory(handle) {
-        return Ok((memory_id, MemoryHandleClass::Fact));
-    }
-    if let Ok(memory_id) = ctx.resolve_abstraction_memory(handle) {
-        return Ok((memory_id, MemoryHandleClass::Abstraction));
-    }
-    if let Ok(memory_id) = ctx.resolve_perspective_memory(handle) {
-        return Ok((memory_id, MemoryHandleClass::Perspective));
-    }
-    ctx.resolve_memory(handle)
-        .map(|memory_id| (memory_id, MemoryHandleClass::Fact))
+    ctx.resolve_memory_with_kind(handle).await
 }
 
 pub(crate) fn operator_shape(
@@ -116,7 +108,7 @@ pub struct DeriveArgs {
     )]
     pub tags: Vec<String>,
     #[schemars(
-        description = "At least one handle the new memory is made from, all of one layer: Facts (`F:<uuid>`) or Abstractions (`A:<uuid>`) for an Abstraction, Abstractions for a Perspective."
+        description = "At least one handle the new memory is made from, all of one layer: Facts (`<uuid>`) or Abstractions (`<uuid>`) for an Abstraction, Abstractions for a Perspective."
     )]
     pub source_handles: Vec<String>,
     #[serde(default)]
@@ -215,29 +207,20 @@ impl McpTool for DeriveTool {
                 args.space.as_deref(),
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
-            // The declared sources, resolved to memories in request order
-            // with repeats dropped: a handle named twice is one input, and
-            // no input at all is not a derivation.
-            // Other-store origins split off first (only with a port wired)
-            // and are read as the caller before anything is written.
-            let (local_handles, external) =
-                super::super::other_stores::partition_sources(&ctx, &args.source_handles);
-            if !external.is_empty() && local_handles.is_empty() {
-                super::super::other_stores::admit_external_origins(&ctx, None, &external).await?;
+            let resolved = other_stores::resolve_references(&ctx, &args.source_handles).await?;
+            let sources = resolved
+                .iter()
+                .map(ResolvedMemory::classified)
+                .collect::<Result<Vec<_>, _>>()?;
+            if !resolved
+                .iter()
+                .any(|source| matches!(source, ResolvedMemory::Local(..)))
+                && !resolved.is_empty()
+            {
+                return Err(McpToolError::InvalidInput(
+                    "source_handles must include at least one memory of this store; memories of other stores only join local ones".into(),
+                ));
             }
-            let sources = dedup_resolved(
-                &local_handles,
-                MAX_SOURCE_HANDLES,
-                "source_handles",
-                "source_handles must be nonempty for operator derivation",
-                |handle| resolve_source_memory(&ctx, handle),
-            )?;
-            let external = super::super::other_stores::admit_external_origins(
-                &ctx,
-                sources.first().map(|(_id, class)| *class),
-                &external,
-            )
-            .await?;
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{}\n{}", authored.title, authored.body),
@@ -253,8 +236,18 @@ impl McpTool for DeriveTool {
             let engine = ctx.require_engine()?;
             let origins = derived_from
                 .iter()
-                .copied()
-                .filter_map(EdgeEndpoint::memory_id)
+                .filter_map(|endpoint| {
+                    endpoint.memory_id().filter(|id| {
+                        crate::memory_store_number(id.into_inner()) == engine.store_number()
+                    })
+                })
+                .collect::<Vec<_>>();
+            let external = resolved
+                .into_iter()
+                .filter_map(|source| match source {
+                    ResolvedMemory::Local(..) => None,
+                    ResolvedMemory::Remote(origin) => Some(origin),
+                })
                 .collect::<Vec<_>>();
             let identity = DerivationIdentity::new(
                 core_derive_operator_id(args.kind),
@@ -287,10 +280,7 @@ impl McpTool for DeriveTool {
                 .map_err(map_derive_authoring_error)?;
 
             Ok(DeriveOutput {
-                handle: match args.kind {
-                    DerivedKind::Abstraction => ctx.format_abstraction_memory(outcome.memory_id),
-                    DerivedKind::Perspective => ctx.format_perspective_memory(outcome.memory_id),
-                },
+                handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
                 edge_count: outcome.edge_count,
                 embedding_deferred: outcome.embedding_deferred,

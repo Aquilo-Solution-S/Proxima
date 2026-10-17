@@ -384,7 +384,7 @@ impl ServerHandler for DynamicHandler {
                             .map(|d| project_dispatcher_actions_for_auth(caller, d))
                             .unwrap_or_default(),
                     )
-                    .await,
+                    .await?,
                 ),
                 None => None,
             };
@@ -787,8 +787,10 @@ pub(crate) fn project_dispatcher_actions_for_auth(
 async fn caller_search_input_schema(
     ctx: &McpToolCtx,
     schema: serde_json::Value,
-) -> serde_json::Value {
-    proxima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema).await
+) -> Result<serde_json::Value, ErrorData> {
+    proxima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema)
+        .await
+        .map_err(generic_internal_error)
 }
 
 fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
@@ -1161,7 +1163,7 @@ fn caller_self_perspective_from_args(
             None,
         ));
     };
-    let id = uuid::Uuid::parse_str(raw).map_err(|err| {
+    let id = proxima_core::mcp::parse_wire_uuid(raw).map_err(|err| {
         ErrorData::invalid_params(format!("{field} must be a valid UUID: {err}"), None)
     })?;
     Ok(Some(MemoryId::new(id)))

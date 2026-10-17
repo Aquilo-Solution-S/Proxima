@@ -49,6 +49,7 @@ fn derived_draft(
     kind: EntityKind,
 ) -> DerivedDraft<'static> {
     DerivedDraft {
+        store_number: 1,
         memory_id,
         owner,
         kind,

@@ -37,6 +37,8 @@ pub(super) struct EvidenceTarget {
 /// [`GoalDraft`]: proxima_core::verbs::goal_write::GoalDraft
 #[derive(Clone, Copy)]
 pub(super) struct RowColumns<'a> {
+    /// The configured number encoded into this row's minted identity.
+    pub(super) store_number: u16,
     pub(super) text: Option<&'a str>,
     pub(super) write_act_t: Option<uuid::Uuid>,
 }

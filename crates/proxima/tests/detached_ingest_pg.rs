@@ -40,6 +40,7 @@ impl FlavorApp for CodeApp {
 async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxima {
     Proxima::<CodeApp>::app()
         .database_url(db.runtime_url())
+        .store_number(0)
         .platform_database_url(db.platform_url())
         .owner(owner)
         .served_surface(ServedSurface::All)

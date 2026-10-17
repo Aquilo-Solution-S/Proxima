@@ -1,10 +1,3 @@
-use std::sync::Arc;
-
-use proxima_core::mcp::{McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid};
-use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerId, ToolCaller, ToolCtx,
-    ToolServices,
-};
 use uuid::Uuid;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
@@ -12,35 +5,16 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 use super::input_validation::{resolve_evidence, validate_plan_items};
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 
-fn test_ctx() -> ToolCtx {
-    let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
-    let mut services = ToolServices::new();
-    services.insert(McpToolPresentation::new());
-    ToolCtx::new(
-        owner,
-        AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-        Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-        services,
-    )
-    .with_caller(Some(ToolCaller::new("test/model", "test", "0")))
-}
-
-#[tokio::test]
-async fn execution_request_evidence_accepts_only_fact_references() {
-    let fact = MemoryId::new(Uuid::now_v7());
-    let abstraction = MemoryId::new(Uuid::now_v7());
-    let fact_handle = format_prefixed_uuid(fact.into_inner(), PrefixedUuidClass::Fact);
-    let abstraction_handle =
-        format_prefixed_uuid(abstraction.into_inner(), PrefixedUuidClass::Abstraction);
-    let ctx = test_ctx();
-
-    assert_eq!(
-        resolve_evidence(&ctx, &[fact_handle]).expect("fact evidence"),
-        vec![fact]
-    );
-    let err = resolve_evidence(&ctx, &[abstraction_handle]).expect_err("A reference rejected");
-    assert!(err.to_string().contains("expected Fact id"), "{err}");
-    assert!(err.to_string().contains("got prefix 'A'"), "{err}");
+#[test]
+fn execution_request_evidence_rejects_prefixed_references_before_storage() {
+    for prefix in ['F', 'A', 'P', 'G'] {
+        let raw = format!("{prefix}:{}", Uuid::now_v7());
+        let err = resolve_evidence(&[raw]).expect_err("bare UUID required");
+        assert!(
+            matches!(err, proxima_core::ToolError::InvalidInput(_)),
+            "{err}"
+        );
+    }
 }
 
 fn criterion(key: &str, required: bool) -> AcceptanceCriterionV1 {

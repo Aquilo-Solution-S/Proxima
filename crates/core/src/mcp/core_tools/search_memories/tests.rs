@@ -35,6 +35,22 @@ fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {
 }
 
 #[test]
+fn stores_require_numbers_in_the_store_number_range() {
+    for stores in [
+        serde_json::json!(["wiki"]),
+        serde_json::json!([65536]),
+        serde_json::json!([-1]),
+    ] {
+        assert!(
+            serde_json::from_value::<SearchMemoriesArgs>(
+                serde_json::json!({"query": "needle", "stores": stores})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn score_args_reject_out_of_range_and_non_hybrid_weight() {
     let mut floor_too_high = args(SearchMemoriesMode::Hybrid);
     floor_too_high.min_score = Some(1.01);
@@ -278,14 +294,15 @@ mod other_stores {
     use crate::McpTool;
     use crate::storage_ports::other_stores::{
         OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteRead, RemoteSearch,
-        RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
+        RemoteSearchResult, StoreCaller, StoreInfo,
     };
     use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
 
-    fn local_hit(n: usize) -> SearchMemoryOutput {
+    fn local_hit() -> SearchMemoryOutput {
+        let memory_id = crate::new_memory_uuid(0);
         SearchMemoryOutput {
-            memory_id: uuid::Uuid::now_v7(),
-            memory: format!("F:local-{n}"),
+            memory_id,
+            memory: memory_id.to_string(),
             space: "current".into(),
             kind: "Fact".into(),
             schema_id: "core/agent-note-v1".into(),
@@ -302,9 +319,9 @@ mod other_stores {
         }
     }
 
-    fn remote_hit(n: usize) -> RemoteHit {
+    fn remote_hit(store: u16) -> RemoteHit {
         RemoteHit {
-            handle: format!("r{n}"),
+            handle: crate::new_memory_uuid(store),
             kind: EntityKind::Fact,
             schema_id: "remote/note".into(),
             snippet: String::new(),
@@ -315,39 +332,47 @@ mod other_stores {
 
     #[test]
     fn the_merged_page_is_cut_to_the_limit() {
+        let local: Vec<_> = (0..3).map(|_| local_hit()).collect();
+        let wiki: Vec<_> = (0..3).map(|_| remote_hit(1)).collect();
+        let crm: Vec<_> = (0..3).map(|_| remote_hit(2)).collect();
+        let expected = [
+            local[0].memory.clone(),
+            wiki[0].handle.to_string(),
+            crm[0].handle.to_string(),
+            local[1].memory.clone(),
+        ];
         let mut output = SearchMemoriesOutput {
             mode: "lexical".into(),
             degraded_to_lexical: false,
             ranking: SearchRanking::Score,
-            memories: (0..3).map(local_hit).collect(),
+            memories: local,
             neighbor_edges: Vec::new(),
             next_cursor: None,
             has_more: false,
             unanswered: None,
         };
-        let wiki = StoreName::new("wiki").expect("name");
-        let crm = StoreName::new("crm").expect("name");
         merge_store_hits(
             &mut output,
             vec![
                 (
-                    wiki,
+                    1,
                     RemoteSearchResult {
-                        hits: (0..3).map(remote_hit).collect(),
+                        hits: wiki,
                         degraded_to_lexical: false,
                     },
                 ),
                 (
-                    crm,
+                    2,
                     RemoteSearchResult {
-                        hits: (0..3).map(remote_hit).collect(),
+                        hits: crm,
                         degraded_to_lexical: false,
                     },
                 ),
             ],
-            vec!["slow".into()],
+            vec![3],
             4,
             SearchOrder::Relevance,
+            0,
         );
         let order: Vec<&str> = output
             .memories
@@ -355,22 +380,28 @@ mod other_stores {
             .map(|hit| hit.memory.as_str())
             .collect();
         // Rank 0 of every list, then rank 1 of the first: RRF, cut at 4.
-        assert_eq!(order, ["F:local-0", "wiki:r0", "crm:r0", "F:local-1"]);
+        assert_eq!(order, expected);
         assert!(output.memories.iter().all(|hit| hit.store.is_some()));
         assert_eq!(output.ranking, SearchRanking::Rank);
-        assert_eq!(output.unanswered, Some(vec!["slow".to_string()]));
+        assert_eq!(output.unanswered, Some(vec![3]));
     }
 
     #[test]
     fn recency_orders_all_store_candidates_before_the_global_limit() {
-        let mut local = vec![local_hit(0), local_hit(1)];
+        let mut local = vec![local_hit(), local_hit()];
         local[0].created_at += time::Duration::seconds(100);
         local[1].created_at += time::Duration::seconds(50);
-        let mut wiki = vec![remote_hit(0), remote_hit(1)];
+        let mut wiki = vec![remote_hit(1), remote_hit(1)];
         wiki[0].created_at += time::Duration::seconds(300);
         wiki[1].created_at += time::Duration::seconds(100);
-        let mut crm = remote_hit(0);
+        let mut crm = remote_hit(2);
         crm.created_at += time::Duration::seconds(200);
+        let expected = [
+            wiki[0].handle.to_string(),
+            crm.handle.to_string(),
+            local[0].memory.clone(),
+            wiki[1].handle.to_string(),
+        ];
         let mut output = SearchMemoriesOutput {
             mode: "hybrid".into(),
             degraded_to_lexical: true,
@@ -385,14 +416,14 @@ mod other_stores {
             &mut output,
             vec![
                 (
-                    StoreName::new("wiki").unwrap(),
+                    1,
                     RemoteSearchResult {
                         hits: wiki,
                         degraded_to_lexical: false,
                     },
                 ),
                 (
-                    StoreName::new("crm").unwrap(),
+                    2,
                     RemoteSearchResult {
                         hits: vec![crm],
                         degraded_to_lexical: false,
@@ -402,6 +433,7 @@ mod other_stores {
             Vec::new(),
             4,
             SearchOrder::Recency,
+            0,
         );
         assert_eq!(
             output
@@ -409,7 +441,7 @@ mod other_stores {
                 .iter()
                 .map(|hit| hit.memory.as_str())
                 .collect::<Vec<_>>(),
-            ["wiki:r0", "crm:r0", "F:local-0", "wiki:r1"]
+            expected
         );
         assert!(output.memories.iter().all(|hit| hit.score > 0.0));
         assert_eq!(output.ranking, SearchRanking::Rank);
@@ -443,7 +475,8 @@ mod other_stores {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async {
                 Ok(vec![StoreInfo {
-                    name: StoreName::new("wiki").unwrap(),
+                    number: 1,
+                    name: "wiki".into(),
                     description: String::new(),
                     schema_ids: vec!["remote/note".into()],
                 }])
@@ -452,7 +485,7 @@ mod other_stores {
         fn search<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
+            _store: u16,
             args: &'a RemoteSearch,
         ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
             self.requests.lock().unwrap().push(args.clone());
@@ -461,8 +494,7 @@ mod other_stores {
         fn read<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
-            _handle: &'a str,
+            _handle: uuid::Uuid,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async { Ok(RemoteRead::NotFound) })
         }
@@ -473,13 +505,14 @@ mod other_stores {
             crate::UserId::new(uuid::Uuid::now_v7()),
             Vec::new(),
         );
+        ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
         ctx.services = crate::FlavorServices::with(OtherStoresService::new(port.clone()));
         ctx
     }
 
     fn remote_args(mode: SearchMemoriesMode) -> super::super::SearchMemoriesArgs {
         let mut request = super::args(mode);
-        request.stores = Some(vec!["wiki".into()]);
+        request.stores = Some(vec![1]);
         request
     }
 
@@ -561,9 +594,9 @@ mod other_stores {
 
     #[tokio::test]
     async fn remote_fallback_is_reported_with_empty_or_capped_hits() {
-        let mut opaque = remote_hit(0);
-        opaque.handle = "opaque/id?x:y".into();
-        for hits in [Vec::new(), vec![opaque, remote_hit(1)]] {
+        let first = remote_hit(1);
+        let first_id = first.handle;
+        for hits in [Vec::new(), vec![first, remote_hit(1)]] {
             let expected = hits.len().min(1);
             let port = Arc::new(CapturingStore::new(Ok(RemoteSearchResult {
                 hits,
@@ -576,8 +609,8 @@ mod other_stores {
                 .unwrap();
             assert_eq!(result.memories.len(), expected);
             if let Some(hit) = result.memories.first() {
-                assert_eq!(hit.memory, "wiki:opaque/id?x:y");
-                assert_eq!(hit.memory_id, uuid::Uuid::nil());
+                assert_eq!(hit.memory, first_id.to_string());
+                assert_eq!(hit.memory_id, first_id);
             }
             assert!(result.degraded_to_lexical);
             assert_eq!(result.unanswered, Some(Vec::new()));
@@ -596,7 +629,7 @@ mod other_stores {
         let result = SearchMemoriesTool::call(remote_ctx(&port), request)
             .await
             .unwrap();
-        assert_eq!(result.unanswered, Some(vec!["wiki".into()]));
+        assert_eq!(result.unanswered, Some(vec![1]));
         assert!(result.memories.is_empty());
         let requests = port.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
@@ -614,12 +647,14 @@ mod other_stores {
             Box::pin(async {
                 Ok(vec![
                     StoreInfo {
-                        name: StoreName::new("wiki").expect("name"),
+                        number: 1,
+                        name: "wiki".into(),
                         description: "Team wiki pages".into(),
                         schema_ids: Vec::new(),
                     },
                     StoreInfo {
-                        name: StoreName::new("crm").expect("name"),
+                        number: 2,
+                        name: "crm".into(),
                         description: "Customer records".into(),
                         schema_ids: Vec::new(),
                     },
@@ -629,7 +664,7 @@ mod other_stores {
         fn search<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
+            _store: u16,
             _args: &'a RemoteSearch,
         ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
             Box::pin(async {
@@ -642,8 +677,7 @@ mod other_stores {
         fn read<'a>(
             &'a self,
             _caller: StoreCaller<'a>,
-            _store: &'a StoreName,
-            _handle: &'a str,
+            _handle: uuid::Uuid,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async { Ok(RemoteRead::NotFound) })
         }
@@ -661,7 +695,12 @@ mod other_stores {
         );
         let schema = static_schema();
         assert!(schema["properties"].get("stores").is_none(), "{schema}");
-        assert_eq!(caller_input_schema(&ctx, schema.clone()).await, schema);
+        assert_eq!(
+            caller_input_schema(&ctx, schema.clone())
+                .await
+                .expect("no port"),
+            schema
+        );
     }
 
     #[tokio::test]
@@ -670,21 +709,21 @@ mod other_stores {
             crate::UserId::new(uuid::Uuid::now_v7()),
             Vec::new(),
         );
+        ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
         ctx.services = crate::FlavorServices::with(OtherStoresService::new(Arc::new(TwoStores)));
-        let schema = caller_input_schema(&ctx, static_schema()).await;
+        let schema = caller_input_schema(&ctx, static_schema())
+            .await
+            .expect("valid inventory");
         let stores = &schema["properties"]["stores"];
         assert_eq!(stores["type"], "array");
-        assert_eq!(
-            stores["items"]["enum"],
-            serde_json::json!(["local", "wiki", "crm"])
-        );
-        assert_eq!(stores["items"]["oneOf"][1]["const"], "wiki");
+        assert_eq!(stores["items"]["enum"], serde_json::json!([0, 1, 2]));
+        assert_eq!(stores["items"]["oneOf"][1]["const"], 1);
         assert_eq!(
             stores["items"]["oneOf"][1]["description"],
             "Team wiki pages"
         );
         let prose = stores["description"].as_str().expect("description");
-        assert!(prose.contains("`crm`: Customer records"), "{prose}");
+        assert!(prose.contains("`2` (crm): Customer records"), "{prose}");
         // Everything else is the static schema.
         let mut without = schema.clone();
         without["properties"]

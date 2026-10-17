@@ -127,7 +127,7 @@ async fn call(
 
 fn handle_id(value: &Value) -> TestResult<Uuid> {
     let handle = value["handle"].as_str().ok_or("handle")?;
-    let (_, id) = handle.split_once(':').ok_or("prefixed handle")?;
+    let id = handle;
     Ok(id.parse()?)
 }
 
@@ -884,6 +884,7 @@ async fn boot(
     let (runtime_url, platform_url) = split_role_urls(database).await?;
     let mut app = Proxima::<KindRuleApp>::app()
         .database_url(runtime_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
         .served_surface(ServedSurface::All)
@@ -1045,6 +1046,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("publication_outbox", Rows::NoKind),
     ("sketch", Rows::Kind),
     ("source_cursors", Rows::NoKind),
+    ("store_identity", Rows::NoKind),
     ("task_goal_v1", Rows::Goal),
     ("utterance_v1", Rows::FactSidecar),
     ("write_act_v1", Rows::FactSidecar),
@@ -1149,13 +1151,14 @@ async fn assert_fact_scope_sql(
         .execute(&mut *cool)
         .await?;
     cool.commit().await?;
-    // An other-store origin of the Abstraction (0029): the row reads and
+    // An other-store origin of the Abstraction: the row reads and
     // writes at its memory's kind.
     sqlx::query(
-        "INSERT INTO proxima_core.memory_external_origin (t, store, handle)
-         VALUES ($1, 'wiki', 'page-1')",
+        "INSERT INTO proxima_core.memory_external_origin (t, memory)
+         VALUES ($1, $2)",
     )
     .bind(abstraction)
+    .bind(proxima_core::new_memory_uuid(5))
     .execute(admin)
     .await?;
     sqlx::query(

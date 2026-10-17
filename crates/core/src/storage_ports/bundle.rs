@@ -213,6 +213,14 @@ impl StoragePorts {
 
     #[cfg(test)]
     #[must_use]
+    pub(crate) fn rejecting_with_memory_inspect(memory_inspect: MemoryInspectHandle) -> Self {
+        let mut ports = Self::rejecting();
+        ports.memory_inspect = memory_inspect;
+        ports
+    }
+
+    #[cfg(test)]
+    #[must_use]
     pub(crate) fn rejecting_with_write_session(write_session: WriteSessionFactoryHandle) -> Self {
         let mut ports = Self::rejecting();
         ports.write_session = write_session;

@@ -155,6 +155,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     let serve = |idle: Option<Duration>| {
         Proxima::<HostApp>::app()
             .database_url(db.runtime_url())
+            .store_number(0)
             .platform_database_url(db.platform_url())
             .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .served_surface(ServedSurface::All)

@@ -53,6 +53,7 @@ async fn boot_fixture(
 ) -> Result<proxima::BuiltProxima, Box<dyn std::error::Error>> {
     let mut app = Proxima::<HostFixtureApp>::app()
         .database_url(db_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
         .allow_insecure_single_owner()

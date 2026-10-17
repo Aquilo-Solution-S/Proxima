@@ -8,7 +8,7 @@ pub enum McpToolError {
     /// visible to the caller (deliberately indistinguishable). Resource
     /// reads surface this as JSON-RPC `resource_not_found`; tool calls as
     /// `invalid_params`. The message names the wire handle, e.g.
-    /// `memory F:<uuid> not found`.
+    /// `memory <uuid> not found`.
     #[error("{0}")]
     NotFound(String),
     #[error("tool not authorized: {0}")]
@@ -109,6 +109,7 @@ impl McpToolError {
                 crate::StorageError::Retryable(_)
                 | crate::StorageError::Unavailable(_)
                 | crate::StorageError::Internal(_)
+                | crate::StorageError::MemoryIdCollision
                 | crate::StorageError::SchemaResetRequired { .. } => McpToolErrorKind::Internal,
             },
             Self::Other(_) => McpToolErrorKind::Internal,

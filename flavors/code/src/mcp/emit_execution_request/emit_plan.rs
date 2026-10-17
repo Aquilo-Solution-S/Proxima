@@ -12,8 +12,8 @@ use crate::payloads::{
     ExecutionRequestV1, TestRequestV1,
 };
 
+use super::super::engine;
 use super::super::sql::resolve_repo_identifier;
-use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
     validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
     validate_plan_source_abstraction_in_owner, validate_repo,
@@ -58,9 +58,10 @@ impl Tool for CodeEmitExecutionPlanTool {
                     "caller_self_perspective is required to author an execution plan".into(),
                 )
             })?;
-            let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
-            let plan_source_memory_id = ctx.resolve_abstraction_memory(&args.plan_source_memory)?;
-            let evidence = resolve_evidence(&ctx, &args.evidence)?;
+            let goal_activated_memory_id =
+                crate::mcp::parse_memory_uuid(&args.goal_activated_memory)?;
+            let plan_source_memory_id = crate::mcp::parse_memory_uuid(&args.plan_source_memory)?;
+            let evidence = resolve_evidence(&args.evidence)?;
 
             let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&ctx, goal_id, planner_root).await?;
@@ -106,7 +107,7 @@ impl Tool for CodeEmitExecutionPlanTool {
             .await?;
             uow.commit().await.map_err(ToolError::Protocol)?;
             Ok(CodeEmitExecutionPlanOutput {
-                plan_handle: ctx.format_abstraction_memory(plan_outcome.memory_id),
+                plan_handle: plan_outcome.memory_id.into_inner().to_string(),
                 plan_edge_count: plan_outcome.edge_count,
                 plan_idempotent_replay: plan_outcome.idempotent_replay,
                 items: outputs,
@@ -207,7 +208,7 @@ async fn emit_plan_items(
         outputs.push(ExecutionPlanItemOutput {
             key,
             kind,
-            handle: ctx.format_fact_memory(outcome.memory_id),
+            handle: outcome.memory_id.into_inner().to_string(),
             idempotent_replay: outcome.idempotent_replay,
         });
     }

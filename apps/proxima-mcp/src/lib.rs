@@ -450,6 +450,11 @@ async fn maintenance_storage(
     let missing_policy =
         missing_migration_policy_from_lookup(&proxima_core::process_env)?.unwrap_or_default();
     let platform_url = maintenance_platform_url()?;
+    let store_number = proxima::parse_store_number(
+        &proxima_core::env_value(&proxima_core::process_env, "PROXIMA_STORE_NUMBER").ok_or_else(
+            || ProximaError::Config("PROXIMA_STORE_NUMBER is required for maintenance".into()),
+        )?,
+    )?;
     let config = proxima_storage_pg::PgPoolConfig::from_env()
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
     let tuning = proxima_storage_pg::PgTuning::from_env()
@@ -473,11 +478,16 @@ async fn maintenance_storage(
         proxima_storage_pg::PgPlatformScope::new(migration_pg.clone_pool_for_backend(), &schemas)
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    drop(migration_pg);
-    let storage = PgStorage::connect_with_config(database_url, config, tuning, platform_scope)
+    migration_pg
+        .initialize_store_number(store_number)
         .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?
-        .with_embedding_runtime_policy(embedding_policy);
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    drop(migration_pg);
+    let storage =
+        PgStorage::connect_with_config(database_url, config, tuning, platform_scope, store_number)
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?
+            .with_embedding_runtime_policy(embedding_policy);
     Ok(storage)
 }
 
@@ -1200,6 +1210,7 @@ mod tests {
         super::build_app(config, |key| {
             lookup(key)
                 .or_else(|| (key == "PROXIMA_PLATFORM_DATABASE_URL").then(|| platform.clone()))
+                .or_else(|| (key == "PROXIMA_STORE_NUMBER").then(|| "0".into()))
         })
     }
 
@@ -1216,6 +1227,7 @@ mod tests {
     fn blob_maintenance_resolves_without_env_and_serves_nothing() {
         let (config, _) = BlobMaintenanceApp::configure(RuntimeBuilder::default())
             .database_url(DEFAULT_DATABASE_URL)
+            .store_number(0)
             .platform_database_url(DEFAULT_DATABASE_URL)
             .resolve()
             .expect("maintain-blobs resolves");

@@ -62,7 +62,7 @@ pub struct RememberArgs {
 pub struct RememberCitation {
     #[serde(default)]
     #[schemars(
-        description = "Id of an ALREADY-STORED cited object to cite by reference (e.g. from core_upload's complete action or a citation read-back), optionally prefixed `C:`. Mutually exclusive with the three object_* fields. The object must belong to the Fact's owner."
+        description = "Id of an ALREADY-STORED cited object to cite by reference (e.g. from core_upload's complete action or a citation read-back), as a bare UUID. Mutually exclusive with the three object_* fields. The object must belong to the Fact's owner."
     )]
     pub cited_object_id: Option<String>,
     #[serde(default)]
@@ -154,7 +154,7 @@ impl McpTool for RememberTool {
             };
 
             Ok(RememberOutput {
-                handle: ctx.format_fact_memory(outcome.memory_id),
+                handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

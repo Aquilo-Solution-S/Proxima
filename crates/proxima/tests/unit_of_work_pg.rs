@@ -91,6 +91,7 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
         let owner = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .allow_insecure_single_owner()
@@ -310,6 +311,7 @@ async fn typed_goal_pending_foreign_perspective_rejects_cross_owner_assignment()
         let owner_b = company_owner(Uuid::now_v7());
         let built = Proxima::<EmptyApp>::app()
             .database_url(runtime_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner_a)
             .allow_insecure_single_owner()

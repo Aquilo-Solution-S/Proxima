@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ForgetArgs {
-    #[schemars(
-        description = "Memory to forget, in your current space: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`."
-    )]
+    #[schemars(description = "Memory to forget, in your current space: memory UUIDs.")]
     pub memory: String,
 }
 

@@ -20,8 +20,13 @@ impl FactIngestPort for PgStorage {
                 "typed Fact sidecars require the typed persistence path".into(),
             ));
         }
-        verbs::fact_ingest::ingest_authorized_fact_atomic(&self.pool, authorized, embedding_spaces)
-            .await
+        verbs::fact_ingest::ingest_authorized_fact_atomic(
+            &self.pool,
+            authorized,
+            embedding_spaces,
+            self.store_number,
+        )
+        .await
     }
 
     async fn ingest_fact_with_typed_sidecar(
@@ -63,6 +68,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
+                        store_number: self.store_number,
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,
@@ -143,6 +149,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
+                        store_number: self.store_number,
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,
@@ -225,6 +232,7 @@ impl FactIngestPort for PgStorage {
                     authorized,
                     embedding_spaces,
                     verbs::fact_ingest::FactAdmissionInput {
+                        store_number: self.store_number,
                         natural_key: natural_key.as_ref(),
                         sidecar_tables: &tables,
                         scopes: &scopes,

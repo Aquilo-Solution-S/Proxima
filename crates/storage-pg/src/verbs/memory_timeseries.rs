@@ -42,6 +42,7 @@ pub struct MemoryRow {
 /// parameters a call site could permute.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryAdmissionDraft<'a> {
+    pub(crate) store_number: u16,
     pub(crate) natural_key: Option<&'a MemoryNaturalKey>,
     pub(crate) owner: &'a OwnerId,
     pub(crate) draft: &'a FactWriteCommand,
@@ -94,6 +95,7 @@ pub(crate) struct PreparedMemoryAdmissionNew {
     goal_refs: Vec<Uuid>,
     sidecar_tables: Vec<String>,
     handle: Uuid,
+    fresh_handle: bool,
     t: Uuid,
     /// The `memory.occurred_at` this admission stores, resolved once here
     /// and handed unchanged to the row insert and the outbox seal: a Fact's
@@ -122,31 +124,11 @@ impl PreparedMemoryAdmission {
 /// `content_id` is the owner-scoped payload (required for A/P).
 pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
-    draft: &FactWriteCommand,
-    origins: &[EdgeEndpoint],
-    references: &[EdgeEndpoint],
-    sidecar_tables: &[String],
+    admission: MemoryAdmissionDraft<'_>,
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    // No scope set: this is the payload-less admission body — the Goal
-    // write-act Facts and the crate's own fixtures. A typed payload reaches
-    // storage through `fact_ingest::ingest_core` or
-    // `derive_append::append_derived_timeseries`, and those two are where a
-    // declared scope is read off the payload and fenced.
-    let prepared = prepare_memory_admission(
-        tx,
-        MemoryAdmissionDraft {
-            natural_key: None,
-            owner,
-            draft,
-            origins,
-            references,
-            sidecar_tables,
-            scopes: &[],
-        },
-    )
-    .await?;
+    let draft = admission.draft;
+    let prepared = prepare_memory_admission(tx, admission).await?;
     lock_prepared_memory_admission(tx, &prepared).await?;
     let prepared = claim_prepared_memory_admission(tx, prepared).await?;
     materialize_prepared_memory_admission(tx, prepared, draft.blob_id, content_id).await
@@ -210,6 +192,7 @@ pub(crate) async fn ingest_unpinned_fact_at(
     let prepared = prepare_memory_admission_at(
         tx,
         MemoryAdmissionDraft {
+            store_number: proxima_core::memory_store_number(identity.1),
             natural_key: None,
             owner,
             draft,
@@ -337,14 +320,21 @@ async fn prepare_memory_admission_at(
     // either waits for this write or observes it in the exact-scope
     // revalidation before deleting anything.
 
-    let handle = admission_handle(tx, admission, options.identity).await?;
+    let (handle, fresh_handle) = admission_handle(tx, admission, options.identity).await?;
+    let expected_head_t: Option<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(handle)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
     let t: Uuid = if let Some((_, t)) = options.identity {
         t
+    } else if let Some(head_t) = expected_head_t {
+        proxima_core::new_memory_uuid_after(admission.store_number, head_t).ok_or_else(|| {
+            StorageError::ConstraintViolation("memory UUID timestamp range exhausted".into())
+        })?
     } else {
-        sqlx::query_scalar("SELECT uuidv7()")
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?
+        proxima_core::new_memory_uuid(admission.store_number)
     };
     let occurred_at = (kind == "fact").then(|| {
         draft
@@ -352,12 +342,6 @@ async fn prepare_memory_admission_at(
             .unwrap_or_else(|| MemoryId::new(t).created_at())
     });
 
-    let expected_head_t: Option<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
-            .bind(handle)
-            .fetch_optional(tx.as_mut())
-            .await
-            .map_err(map_err)?;
     let mut targets = Vec::with_capacity(
         1 + usize::from(expected_head_t.is_some())
             + persisted_origins.len()
@@ -387,6 +371,7 @@ async fn prepare_memory_admission_at(
             goal_refs,
             sidecar_tables: admission.sidecar_tables.to_vec(),
             handle,
+            fresh_handle,
             t,
             occurred_at,
             expected_head_t,
@@ -432,20 +417,23 @@ async fn admission_handle(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,
     reserved: Option<(Uuid, Uuid)>,
-) -> Result<Uuid, StorageError> {
+) -> Result<(Uuid, bool), StorageError> {
     if let Some(handle) = reserved
         .map(|(handle, _)| handle)
         .or(admission.draft.handle)
     {
-        return Ok(handle);
+        return Ok((handle, reserved.is_some()));
     }
     let Some(key) = admission.natural_key else {
-        return Ok(Uuid::now_v7());
+        return Ok((proxima_core::new_memory_uuid(admission.store_number), true));
     };
     Ok(
-        resolve_natural_series_handle(tx, admission.owner, &admission.draft.schema_id, key)
+        match resolve_natural_series_handle(tx, admission.owner, &admission.draft.schema_id, key)
             .await?
-            .unwrap_or_else(Uuid::now_v7),
+        {
+            Some(handle) => (handle, false),
+            None => (proxima_core::new_memory_uuid(admission.store_number), true),
+        },
     )
 }
 
@@ -908,17 +896,28 @@ async fn advance_memory_head(
     prepared: &PreparedMemoryAdmissionNew,
     kind: &str,
 ) -> Result<(), StorageError> {
-    // `GREATEST`, not `EXCLUDED.t`: the head only ever moves forward. Every
-    // path that could rewind it is already refused — `validate_prepared_memory_head`
-    // rejects an admission whose prepared head is no longer current, and the
-    // reserved-identity path always carries a handle freshly minted by
-    // `reserve_fact_identity`, so it has no head to rewind. This is the
-    // invariant those checks add up to, written where the head is actually
-    // assigned rather than left implicit across two modules.
+    if prepared.fresh_handle {
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+        )
+        .bind(prepared.handle)
+        .bind(kind)
+        .bind(prepared.draft.schema_id.as_str())
+        .bind(prepared.owner_id)
+        .bind(prepared.t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        return Ok(());
+    }
+    // Preparation mints strictly above the expected head, and the locked
+    // comparison rejects a changed head. Reserved lifecycle identities use
+    // fresh handles. A successful admission therefore becomes the head even
+    // when another process minted its predecessor with a clock ahead of ours.
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
-         ON CONFLICT (handle) DO UPDATE SET t = GREATEST(proxima_core.memory_head.t, EXCLUDED.t)
+         ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
          WHERE proxima_core.memory_head.kind = EXCLUDED.kind
            AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
            AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id

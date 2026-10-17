@@ -235,6 +235,7 @@ async fn boot(database: &str, owner: OwnerId) -> TestResult<BuiltProxima> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
     Ok(Proxima::<CoreApp>::app()
         .database_url(runtime_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
         .served_surface(ServedSurface::All)

@@ -191,6 +191,7 @@ mod pg_tests {
             &authorized,
             embedding_spaces,
             crate::verbs::fact_ingest::FactAdmissionInput {
+                store_number: 1,
                 natural_key: None,
                 sidecar_tables: &[AGENT_NOTE.to_owned()],
                 scopes: &[],
@@ -836,10 +837,8 @@ mod pg_tests {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let observed = observe_owner_backfill_progress(&pg).await;
-        eprintln!("owner backfill progress: {observed:?}");
         drop(pg);
         let cleanup = drop_db(&db_name).await;
-        eprintln!("owner backfill database cleanup: {cleanup:?}");
         cleanup?;
         let observed = observed?;
         assert_eq!(observed.permanent_before, observed.permanent_after);

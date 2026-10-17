@@ -52,6 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let missing_policy =
         missing_migration_policy_from_lookup(&|key| std::env::var(key).ok())?.unwrap_or_default();
     let url = resolve_database_url(&args)?;
+    let store_number = proxima::parse_store_number(
+        &std::env::var("PROXIMA_STORE_NUMBER")
+            .map_err(|_| "PROXIMA_STORE_NUMBER is required to initialize the store")?,
+    )?;
     print_target(&url)?;
 
     let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
@@ -76,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         missing_policy,
     )
     .await?;
+    pg.initialize_store_number(store_number).await?;
     for source in report.sources {
         println!("{source} migrations applied");
     }

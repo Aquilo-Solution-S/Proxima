@@ -73,18 +73,9 @@ async fn fresh_pg() -> (String, PgStorage) {
     (db_name, pg)
 }
 
-/// The instant a v7 `t` was minted at, read out of the identifier itself:
-/// an answer that does not come through the query under test.
+/// Decode the minted time independently of the SQL query under test.
 fn minted_at(id: GoalId) -> time::OffsetDateTime {
-    let (secs, nanos) = id
-        .into_inner()
-        .get_timestamp()
-        .expect("a Goal t is a UUIDv7")
-        .to_unix();
-    time::OffsetDateTime::from_unix_timestamp_nanos(
-        i128::from(secs) * 1_000_000_000 + i128::from(nanos),
-    )
-    .expect("a minted instant is in range")
+    proxima_core::MemoryId::new(id.into_inner()).created_at()
 }
 
 /// One owner with an assigned Perspective, and the verbs that write Goals.
@@ -367,6 +358,47 @@ impl Harness {
         .await?;
         Ok(GoalId::new(t))
     }
+
+    /// Model another process's first version without moving this process's
+    /// clock or generator. Its saturated counter makes a successor advance
+    /// logical milliseconds as well as UUID order.
+    async fn insert_future_goal(&self, request_id: &str, state: GoalState) -> TestResult<GoalId> {
+        let handle = proxima_core::new_memory_uuid(self.pg.store_number());
+        let future_millis =
+            u64::try_from(MemoryId::new(handle).created_at().unix_timestamp_nanos() / 1_000_000)?
+                + 3_600_000;
+        let mut bytes = handle.into_bytes();
+        bytes[..6].copy_from_slice(&future_millis.to_be_bytes()[2..]);
+        bytes[6..8].copy_from_slice(&0x8fff_u16.to_be_bytes());
+        let t = Uuid::from_bytes(bytes);
+        assert!(MemoryId::new(t).created_at() > time::OffsetDateTime::now_utc());
+        let mut tx = self.pg.pool_for_tests().begin().await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(handle)
+        .bind(SimpleTextGoalV1::SCHEMA_ID)
+        .bind(self.owner.into_inner())
+        .bind(t)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, text, state, request_id, assignment_t)
+             VALUES ($1, $2, $3, 'another writer', 'the original prompt', $4, $5, $6)",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(self.owner.into_inner())
+        .bind(state)
+        .bind(request_id)
+        .bind(self.assignment.into_inner())
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
+        Ok(GoalId::new(t))
+    }
 }
 
 macro_rules! goal_test {
@@ -500,6 +532,67 @@ goal_test!(
             h.read(paused.goal_id).await?.text.as_deref(),
             Some("the second text")
         );
+        Ok(())
+    }
+);
+
+goal_test!(
+    modify_and_resume_after_future_heads_keep_the_original_set_time,
+    |h| async {
+        for (state, request) in [
+            (GoalState::Active, "future-modify"),
+            (GoalState::Paused, "future-resume"),
+        ] {
+            let prior = h
+                .insert_future_goal(&format!("{request}-first"), state)
+                .await?;
+            let before = h.read(prior).await?;
+            assert_eq!(before.set_at, minted_at(prior));
+            assert_eq!(before.changed_at, before.set_at);
+            let successor = match state {
+                GoalState::Active => {
+                    h.modify(prior, request, "new title", "the updated prompt")
+                        .await?
+                }
+                GoalState::Paused => h.transition(prior, GoalState::Active, request).await?,
+                GoalState::Achieved | GoalState::Abandoned => unreachable!(),
+            };
+            assert!(successor.goal_id.into_inner() > prior.into_inner());
+            assert_eq!(successor.goal_id.into_inner().get_version_num(), 8);
+            assert_eq!(
+                proxima_core::memory_store_number(successor.goal_id.into_inner()),
+                h.pg.store_number()
+            );
+            for row in [h.read(prior).await?, h.read(successor.goal_id).await?] {
+                assert_eq!(row.set_at, before.set_at);
+                assert_eq!(row.changed_at, minted_at(row.id));
+            }
+            let head = h
+                .heads()
+                .await?
+                .into_iter()
+                .find(|row| row.id == successor.goal_id)
+                .expect("successor is the current head");
+            assert_eq!(head.set_at, before.set_at);
+            assert_eq!(head.changed_at, minted_at(successor.goal_id));
+            assert!(head.changed_at > before.changed_at);
+            assert_eq!(head.state, GoalState::Active);
+
+            let stale = h
+                .transition(prior, GoalState::Active, &format!("{request}-stale"))
+                .await
+                .expect_err("a superseded prior cannot advance the head");
+            assert!(matches!(
+                stale.downcast_ref::<StorageError>(),
+                Some(StorageError::Conflict(_))
+            ));
+            assert!(
+                h.heads()
+                    .await?
+                    .iter()
+                    .any(|row| row.id == successor.goal_id)
+            );
+        }
         Ok(())
     }
 );

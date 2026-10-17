@@ -8,7 +8,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CitationOfFactArgs {
-    /// Fact memory reference: `F:<uuid>`.
+    /// Fact memory reference: `<uuid>`.
     pub fact: String,
 }
 
@@ -29,14 +29,14 @@ pub(super) async fn citation_of_fact(
     ctx: McpToolCtx,
     args: CitationOfFactArgs,
 ) -> Result<CitationOfFactOutput, McpToolError> {
-    let fact_memory_id = ctx.resolve_fact_memory(&args.fact)?;
+    let fact_memory_id = ctx.resolve_memory(&args.fact)?;
     let engine = ctx.require_engine()?;
     let citation = engine
         .read_fact_citation(&ctx.authz, &FactCitationReadRequest { fact_memory_id })
         .await?
         .map(|row| fact_citation_output(&row));
     Ok(CitationOfFactOutput {
-        fact: ctx.format_fact_memory(fact_memory_id),
+        fact: fact_memory_id.into_inner().to_string(),
         citation,
     })
 }

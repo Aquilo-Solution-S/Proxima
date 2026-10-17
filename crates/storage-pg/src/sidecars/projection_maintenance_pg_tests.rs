@@ -95,11 +95,16 @@ async fn write_note(
     let write = draft(language);
     let outcome = ingest_fact_timeseries(
         &mut tx,
-        &owner,
-        &write,
-        &[],
-        &[],
-        &[AGENT_NOTE.to_owned()],
+        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+            store_number: 1,
+            natural_key: None,
+            owner: &owner,
+            draft: &write,
+            origins: &[],
+            references: &[],
+            sidecar_tables: &[AGENT_NOTE.to_owned()],
+            scopes: &[],
+        },
         None,
     )
     .await?;
@@ -200,11 +205,16 @@ async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
         let mut tx = pool.begin().await?;
         let outcome = ingest_fact_timeseries(
             &mut tx,
-            &owner,
-            &write,
-            &[],
-            &[],
-            &[AGENT_NOTE.to_owned()],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: &owner,
+                draft: &write,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[AGENT_NOTE.to_owned()],
+                scopes: &[],
+            },
             None,
         )
         .await?;
@@ -641,7 +651,21 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
         // A legal memory row that declares NO sidecar table at all.
         let write = draft(None);
         let mut tx = pool.begin().await?;
-        let outcome = ingest_fact_timeseries(&mut tx, &owner, &write, &[], &[], &[], None).await?;
+        let outcome = ingest_fact_timeseries(
+            &mut tx,
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: &owner,
+                draft: &write,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[],
+                scopes: &[],
+            },
+            None,
+        )
+        .await?;
         tx.commit().await?;
 
         sqlx::query(
@@ -707,11 +731,16 @@ async fn a_stamp_with_no_row_is_refused_at_commit() {
         let write = draft(None);
         let outcome = ingest_fact_timeseries(
             &mut tx,
-            &owner,
-            &write,
-            &[],
-            &[],
-            &[AGENT_NOTE.to_owned()],
+            crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+                store_number: 1,
+                natural_key: None,
+                owner: &owner,
+                draft: &write,
+                origins: &[],
+                references: &[],
+                sidecar_tables: &[AGENT_NOTE.to_owned()],
+                scopes: &[],
+            },
             None,
         )
         .await?;

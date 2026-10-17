@@ -176,7 +176,7 @@ instance : Immutable Content := ⟨⟩
 -- ============================================================
 
 /-- One Memory version. `t` is the row id. `tick` is the kernel face of
-    uuidv7 `t` order (not a storage `created_at` column). Schema is not here.
+    UUIDv8 `t` order (not a storage `created_at` column). Schema is not here.
     `content_id` names the typed payload (shared across admissions). -/
 structure Memory where
   handle     : Handle

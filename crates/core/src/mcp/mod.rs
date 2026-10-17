@@ -14,7 +14,6 @@ mod error;
 mod ids;
 mod manifest;
 mod names;
-mod presentation;
 mod reply;
 mod tool;
 mod types;
@@ -32,17 +31,14 @@ pub use behavior::{
 // top-level field, so re-implementing this is how a nested one gets through.
 pub use core_tools::memory::util::operator_label;
 pub use error::{McpToolError, McpToolErrorKind};
-pub use handles::{
-    MemoryHandleClass, PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid,
-    parse_prefixed_uuid,
-};
+pub use handles::MemoryHandleClass;
+pub use ids::parse_wire_uuid;
 pub use manifest::{
     CoreActionMeta, McpToolAnnotations, Replay, ToolEffect, all_core_actions, all_core_resources,
     canonical_scope_keys, canonical_scope_keys_excluding, canonical_served_read_keys,
     core_action_meta, how_to_resource_declaration, how_to_resource_key,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
-pub use presentation::{McpPresentationExt, McpToolPresentation};
 pub use reply::{ToolContent, ToolReply};
 pub use schema::{
     McpActionSchema, McpDispatcherSchema, mcp_wire_output_schema, normalize_mcp_output_schema,

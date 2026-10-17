@@ -610,7 +610,7 @@ async fn rest_projects_headers_into_generic_tool_caller_context() {
     let router = app(caller_context_host());
     let ctx = auth(ToolScope::All);
     let caller_self_perspective = uuid::Uuid::now_v7();
-    let self_header = format!("P:{caller_self_perspective}");
+    let self_header = format!("{caller_self_perspective}");
 
     let answer = call_with_headers(
         &router,
@@ -1798,8 +1798,8 @@ async fn resource_reads_match_the_mcp_error_class() {
 
     for (rest_uri, resource_uri, expected) in [
         (
-            "/v1/resources/memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
-            "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
+            "/v1/resources/memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
+            "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
             StatusCode::BAD_REQUEST,
         ),
         (

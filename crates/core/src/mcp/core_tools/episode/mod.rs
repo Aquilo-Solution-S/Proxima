@@ -74,7 +74,7 @@ pub struct EpisodeDeriveItem {
     #[schemars(description = "Search tags, at most 16, 1 to 48 chars each; stored lowercase.")]
     pub tags: Vec<String>,
     #[schemars(
-        description = "What the Abstraction is made from, at least one and all one kind: Facts (`F:<uuid>` or this call's 0-based `remember:N`) or Abstractions (`A:<uuid>`)."
+        description = "What the Abstraction is made from, at least one and all one kind: Facts (`<uuid>` or this call's 0-based `remember:N`) or Abstractions (`<uuid>`)."
     )]
     pub source_handles: Vec<String>,
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct EpisodeStanceItem {
     #[schemars(range(max = 100), description = "Confidence 0..=100. Defaults to 80.")]
     pub confidence: u8,
     #[schemars(
-        description = "1 to 64 memories the claim is about: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`, or this call's `remember:N`, `derive` or an earlier `stance:N` (0-based)."
+        description = "1 to 64 memories the claim is about: memory UUIDs, or this call's `remember:N`, `derive` or an earlier `stance:N` (0-based)."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
@@ -117,12 +117,12 @@ pub struct EpisodeGoalItem {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstractions motivating the goal: `A:<uuid>` or this call's `derive`."
+        description = "Abstractions motivating the goal: `<uuid>` or this call's `derive`."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Perspective the goal is assigned to: `P:<uuid>` or this call's `stance:N`. Required unless the host supplies a caller Perspective."
+        description = "Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Required unless the host supplies a caller Perspective."
     )]
     pub target_perspective: Option<String>,
     #[serde(default)]
@@ -259,7 +259,7 @@ async fn episode_commit(
     let goals = write.write_goals(&args.goal).await?;
     let (slots, bound) = write.commit().await?;
     Ok(EpisodeCommitOutput {
-        write_act: ctx.format_memory_with_class(write_act.memory_id, MemoryHandleClass::Fact),
+        write_act: write_act.memory_id.into_inner().to_string(),
         remembered: slots.remember.into_iter().map(|slot| slot.handle).collect(),
         derived,
         stances: slots.stance.into_iter().map(|slot| slot.handle).collect(),
@@ -316,7 +316,6 @@ impl EpisodeWrite<'_> {
         &mut self,
         items: &[EpisodeRememberItem],
     ) -> Result<(), McpToolError> {
-        let ctx = self.ctx;
         let bind = self.bind;
         let act_id = self.act_id;
         for (idx, item) in items.iter().enumerate() {
@@ -351,7 +350,7 @@ impl EpisodeWrite<'_> {
                 .await
                 .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
-            let handle = ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Fact);
+            let handle = outcome.memory_id.into_inner().to_string();
             if pin {
                 self.bound.push(handle.clone());
             }
@@ -389,8 +388,9 @@ impl EpisodeWrite<'_> {
             MAX_SOURCE_HANDLES,
             "source_handles",
             "source_handles must be nonempty for operator derivation",
-            |handle| resolve_memory_source(ctx, &self.slots, handle),
-        )?;
+            |handle| Box::pin(resolve_memory_source(ctx, &self.slots, handle)),
+        )
+        .await?;
         let lexical_language = crate::lexical_language::resolve_lexical_language(
             item.language.as_deref(),
             &format!("{}\n{}", authored.title, authored.body),
@@ -431,8 +431,7 @@ impl EpisodeWrite<'_> {
             .await
             .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
         reject_bound_replay(pin, outcome.idempotent_replay, "derive")?;
-        let handle =
-            ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Abstraction);
+        let handle = outcome.memory_id.into_inner().to_string();
         if pin {
             self.bound.push(handle.clone());
         }
@@ -472,8 +471,9 @@ impl EpisodeWrite<'_> {
                 MAX_SUBJECTS,
                 "subjects",
                 "an interpretation must be about at least one memory",
-                |handle| resolve_stance_subject(ctx, &self.slots, handle),
-            )?
+                |handle| Box::pin(resolve_stance_subject(ctx, &self.slots, handle)),
+            )
+            .await?
             .into_iter()
             .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
             .unzip();
@@ -516,8 +516,7 @@ impl EpisodeWrite<'_> {
                 .await
                 .map_err(|err| map_bound_derived_error(err, "stance", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "stance")?;
-            let handle =
-                ctx.format_memory_with_class(outcome.memory_id, MemoryHandleClass::Perspective);
+            let handle = outcome.memory_id.into_inner().to_string();
             if pin {
                 self.bound.push(handle.clone());
             }
@@ -570,7 +569,7 @@ impl EpisodeWrite<'_> {
                 )
                 .await?;
             reject_bound_replay(pin, outcome.idempotent_replay, "goal")?;
-            let handle = ctx.format_goal(outcome.goal_id);
+            let handle = outcome.goal_id.into_inner().to_string();
             if pin {
                 self.bound.push(handle.clone());
             }
@@ -624,7 +623,7 @@ fn map_bound_derived_error(
     map_derive_authoring_error(err)
 }
 
-fn resolve_memory_source(
+async fn resolve_memory_source(
     ctx: &McpToolCtx,
     slots: &EpisodeSlots,
     handle: &str,
@@ -632,10 +631,10 @@ fn resolve_memory_source(
     if let Some(slot) = resolve_local_slot(slots, handle)? {
         return Ok((slot.id, slot.class));
     }
-    derive::resolve_source_memory(ctx, handle)
+    derive::resolve_source_memory(ctx, handle).await
 }
 
-fn resolve_stance_subject(
+async fn resolve_stance_subject(
     ctx: &McpToolCtx,
     slots: &EpisodeSlots,
     handle: &str,
@@ -648,7 +647,7 @@ fn resolve_stance_subject(
         };
         return Ok((slot.id, kind));
     }
-    interpret::resolve_subject(ctx, handle)
+    interpret::resolve_subject(ctx, handle).await
 }
 
 fn resolve_goal_evidence(
@@ -656,21 +655,23 @@ fn resolve_goal_evidence(
     slots: &EpisodeSlots,
     evidence: &[String],
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
-    evidence
-        .iter()
-        .map(|handle| {
-            if let Some(slot) = resolve_local_slot(slots, handle)? {
-                if slot.class != MemoryHandleClass::Abstraction {
-                    return Err(McpToolError::InvalidInput(
-                        "operator-authored Goal evidence must be Abstraction".into(),
-                    ));
-                }
-                return Ok(GoalEvidenceRef::new(slot.id));
+    let mut resolved = Vec::with_capacity(evidence.len());
+    for handle in evidence {
+        if let Some(slot) = resolve_local_slot(slots, handle)? {
+            if slot.class != MemoryHandleClass::Abstraction {
+                return Err(McpToolError::InvalidInput(
+                    "operator-authored Goal evidence must be Abstraction".into(),
+                ));
             }
-            super::goal::resolve_operator_goal_evidence(ctx, std::slice::from_ref(handle))
-                .map(|mut evidence| evidence.remove(0))
-        })
-        .collect()
+            resolved.push(GoalEvidenceRef::new(slot.id));
+        } else {
+            resolved.extend(super::goal::resolve_operator_goal_evidence(
+                ctx,
+                std::slice::from_ref(handle),
+            )?);
+        }
+    }
+    Ok(resolved)
 }
 
 fn resolve_goal_assignment(
@@ -688,7 +689,7 @@ fn resolve_goal_assignment(
                 }
                 return Ok(GoalAssignmentTarget::perspective(slot.id));
             }
-            ctx.resolve_perspective_memory(handle)
+            ctx.resolve_memory(handle)
                 .map(GoalAssignmentTarget::perspective)
         }
         None => ctx

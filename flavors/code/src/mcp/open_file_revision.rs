@@ -5,14 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::payloads::{CodeChunkV1, FileRevisionV1, FileState};
 
-use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::resolve_repo_identifier;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
     #[schemars(
-        description = "The repository: an `R:<uuid>` repo_handle from search output, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead."
+        description = "The repository: an `<uuid>` repo_handle from search output, or a registered repository's display name, path or directory name, case-insensitive. A name matching more than one repository is rejected; pass that repository's repo_handle instead."
     )]
     pub repo_handle: String,
     #[schemars(
@@ -199,12 +198,8 @@ async fn load_head_revision(
         Ok::<_, ToolError>((
             memory_id,
             FileRevisionInfo {
-                handle: ctx.format_fact_memory(memory_id),
-                repo_handle: ctx.format_flavor_object(
-                    super::REPO_HANDLE_KIND,
-                    row.repo_id,
-                    super::REPO_HANDLE_PREFIX,
-                ),
+                handle: memory_id.into_inner().to_string(),
+                repo_handle: (row.repo_id).to_string(),
                 file_path: row.file_path,
                 language: row.language,
                 size_bytes,
@@ -267,7 +262,7 @@ async fn load_head_chunks(
             text_truncated,
         } = projected;
         Ok::<_, ToolError>(ChunkSummary {
-            handle: ctx.format_abstraction_memory(memory_id),
+            handle: memory_id.into_inner().to_string(),
             chunk_index: i32::try_from(row.chunk_index)
                 .map_err(|_| ToolError::Other("chunk_index exceeds i32".into()))?,
             chunk_type: row.chunk_type,

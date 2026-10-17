@@ -3,7 +3,7 @@ Causa — Provenance grounding
 
 N1: persisted memories are grounded by well-founded descent inside an
 admitted memory graph. Descent runs along `origins[]` and `refs[]` (no
-Edge table). `tick` (uuidv7 order) makes the descent well-founded.
+Edge table). `tick` (UUIDv8 order) makes the descent well-founded.
 -/
 
 import Causa.Operators

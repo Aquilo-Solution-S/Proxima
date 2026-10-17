@@ -487,7 +487,7 @@ mod tests {
         let err = validate_action_args(
             CoreMembershipTool::NAME,
             CoreMembershipTool::ACTION_ARG_SPECS,
-            &serde_json::json!({"action": "transfer_to_owner", "entity": "F:00000000-0000-0000-0000-000000000001"}),
+            &serde_json::json!({"action": "transfer_to_owner", "entity": "00000000-0000-0000-0000-000000000001"}),
         )
         .expect_err("transfer_to_owner is a core_transfer action, not a membership action");
 

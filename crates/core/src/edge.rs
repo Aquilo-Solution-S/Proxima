@@ -254,7 +254,7 @@ impl PinNode {
     }
 }
 
-/// `created_at` of a pin is the source row's uuidv7 timestamp
+/// `created_at` of a pin is the source row's `UUIDv8` timestamp
 /// ([`MemoryId::created_at`]).
 #[must_use]
 pub fn pin_created_at(source: MemoryId) -> time::OffsetDateTime {

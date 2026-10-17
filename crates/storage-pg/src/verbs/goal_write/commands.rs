@@ -25,9 +25,10 @@ pub(crate) async fn create_goal_atomic(
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        create_goal_atomic_in_pool(pool, sidecars, req, permit).await
+        create_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
     })
     .await
 }
@@ -37,9 +38,10 @@ pub(crate) async fn transition_goal_atomic(
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        transition_goal_atomic_in_pool(pool, sidecars, req, permit).await
+        transition_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
     })
     .await
 }
@@ -49,9 +51,10 @@ pub(crate) async fn achieve_goal_atomic(
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        achieve_goal_atomic_in_pool(pool, sidecars, req, permit).await
+        achieve_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
     })
     .await
 }
@@ -61,9 +64,10 @@ pub(crate) async fn modify_goal_atomic(
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        modify_goal_atomic_in_pool(pool, sidecars, req, permit).await
+        modify_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
     })
     .await
 }
@@ -73,9 +77,10 @@ pub(crate) async fn decompose_goal_atomic(
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        decompose_goal_atomic_in_pool(pool, sidecars, req, permit).await
+        decompose_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
     })
     .await
 }
@@ -85,13 +90,14 @@ pub(crate) async fn create_goal_atomic_in_pool(
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = crate::owner_scope::begin_owner_transaction(
         pool,
         crate::owner_scope::require_owner_scope(permit.owner_scope())?,
     )
     .await?;
-    let outcome = create_goal_in_tx(&mut tx, sidecars, req, permit).await?;
+    let outcome = create_goal_in_tx(&mut tx, sidecars, req, permit, store_number).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -101,6 +107,7 @@ pub(crate) async fn create_goal_in_tx(
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
     _permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let owner = req.draft.owner();
     let declaration = create_replay_declaration(req)?;
@@ -119,6 +126,7 @@ pub(crate) async fn create_goal_in_tx(
         GoalChange::Set,
         req.context,
         RowColumns {
+            store_number,
             text: Some(&req.draft.text),
             write_act_t: req.write_act_t.map(proxima_core::MemoryId::into_inner),
         },
@@ -148,6 +156,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     // Constant-time command validation stays ahead of the replay probe: this
     // rejection ran before every prior write, so no stored declaration can
@@ -203,6 +212,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         // A lifecycle write declares no text: the version keeps the prior
         // one's, as stored, unknown included.
         RowColumns {
+            store_number,
             text: prior.text.as_deref(),
             write_act_t: None,
         },
@@ -240,6 +250,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     // See `transition_goal_atomic_in_pool`: an empty-evidence achievement was
     // never written, so no declaration can match one.
@@ -287,6 +298,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         // A lifecycle write declares no text: the version keeps the prior
         // one's, as stored, unknown included.
         RowColumns {
+            store_number,
             text: prior.text.as_deref(),
             write_act_t: None,
         },
@@ -334,6 +346,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = crate::owner_scope::begin_owner_transaction(
         pool,
@@ -385,6 +398,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         GoalChange::Modify,
         req.context,
         RowColumns {
+            store_number,
             text: Some(&draft.text),
             write_act_t: None,
         },
@@ -423,6 +437,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
     permit: &OwnerWritePermit,
+    store_number: u16,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     let mut tx = crate::owner_scope::begin_owner_transaction(
         pool,
@@ -460,6 +475,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             },
             req.context,
             RowColumns {
+                store_number,
                 text: Some(&draft.text),
                 write_act_t: None,
             },
@@ -672,6 +688,7 @@ mod lifecycle_lock_tests {
             owner,
             &successor(first_request_id),
             expected_prior_t,
+            1,
         )
         .await?;
         let mut second_tx = pool.begin().await?;
@@ -680,6 +697,7 @@ mod lifecycle_lock_tests {
             owner,
             &successor(second_request_id),
             expected_prior_t,
+            1,
         )
         .await?;
         let GoalWritePreparation::New(first) = first else {
@@ -753,6 +771,7 @@ mod lifecycle_lock_tests {
                 &owner,
                 &command("union-first", second.memory_id.into_inner()),
                 None,
+                1,
             )
             .await?;
             let prepared_second = prepare_goal_write(
@@ -760,6 +779,7 @@ mod lifecycle_lock_tests {
                 &owner,
                 &command("union-second", first.memory_id.into_inner()),
                 None,
+                1,
             )
             .await?;
             assert!(matches!(&prepared_first, GoalWritePreparation::New(_)));
@@ -849,6 +869,7 @@ mod lifecycle_lock_tests {
                     mint_write_act: false,
                     write_act_t: None,
                 },
+                1,
             )
             .await?;
             create_tx.commit().await?;
@@ -915,6 +936,7 @@ mod lifecycle_lock_tests {
                     write_act_t: None,
                 },
                 None,
+                1,
             )
             .await?;
             let GoalWritePreparation::New(prepared) = prepared else {
@@ -1007,6 +1029,7 @@ mod lifecycle_lock_tests {
                     publication: None,
                 },
                 RowColumns {
+                    store_number: 1,
                     text: Some(&draft.text),
                     write_act_t: None,
                 },

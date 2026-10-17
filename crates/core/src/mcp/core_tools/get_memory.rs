@@ -1,4 +1,4 @@
-//! `core/get_memory` — wire-facing single-memory read by prefixed id.
+//! `core/get_memory` — wire-facing single-memory read by UUID.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
-    /// Memory reference: `F:<uuid>`, `A:<uuid>`, or `P:<uuid>`.
+    /// Memory reference: Memory UUID.
     pub memory: String,
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
@@ -55,10 +55,11 @@ pub async fn get_memory(
     ctx: McpToolCtx,
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    if let Some(origin) = super::other_stores::qualified(&ctx, &args.memory) {
-        return remote_memory_output(&ctx, &origin).await;
-    }
     let memory_id = ctx.resolve_memory(&args.memory)?;
+    let engine = ctx.require_engine()?;
+    if crate::memory_store_number(memory_id.into_inner()) != engine.store_number() {
+        return remote_memory_output(&ctx, memory_id.into_inner()).await;
+    }
     // Space key `core_memory_spaces` advertises (`SpaceDefault::Current`).
     let output_space = super::memory_spaces::resolve_space_owner(
         &ctx,
@@ -66,7 +67,6 @@ pub async fn get_memory(
         super::memory_spaces::SpaceDefault::Current,
     )?
     .key;
-    let engine = ctx.require_engine()?;
     let response = engine
         .get_memory(
             &ctx.authz,
@@ -97,19 +97,26 @@ pub async fn get_memory(
     project_memory_snapshot(&ctx, snapshot, output_space, neighbor_edges)
 }
 
-/// `<store>:<handle>` read through the other-stores port, as the caller.
-/// The space is the store's name; a remote memory has no local payload,
+/// A remote UUID read through the other-stores port, as the caller.
+/// The space is the issuing store's number; a remote memory has no local payload,
 /// version or neighbor edges.
-async fn remote_memory_output(
+pub(super) async fn remote_memory_output(
     ctx: &McpToolCtx,
-    origin: &crate::storage_ports::other_stores::QualifiedHandle,
+    origin: uuid::Uuid,
 ) -> Result<GetMemoryOutput, McpToolError> {
     let (_, memory) = super::other_stores::read_origin(ctx, origin).await?;
-    let handle = origin.to_string();
-    Ok(GetMemoryOutput {
+    Ok(project_remote_memory(memory))
+}
+
+/// Project a UUID-checked remote row for either a single or a batch read.
+pub(super) fn project_remote_memory(
+    memory: crate::storage_ports::other_stores::RemoteMemory,
+) -> GetMemoryOutput {
+    let handle = memory.handle.to_string();
+    GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
-        space: origin.store.to_string(),
+        space: crate::memory_store_number(memory.handle).to_string(),
         kind: memory.kind.as_str().to_string(),
         schema_id: memory.schema_id,
         schema_version: 1,
@@ -120,20 +127,19 @@ async fn remote_memory_output(
         body: Some(memory.body),
         tags: memory.tags,
         neighbor_edges: None,
-    })
+    }
 }
 
 /// Project a storage snapshot into the wire output shape shared by
 /// `get_memory`, the `proxima://memories` batch read, and
 /// `facts_citing_object`.
 pub(super) fn project_memory_snapshot(
-    ctx: &McpToolCtx,
+    _ctx: &McpToolCtx,
     snapshot: crate::read_models::MemorySnapshot,
     space: String,
     neighbor_edges: Option<Vec<NeighborEdge>>,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let class = memory_class(snapshot.kind)?;
-    let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
+    let handle = snapshot.memory_id.into_inner().to_string();
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
     let title =
         payload_string(&payload, "title").or_else(|| payload_string(&payload, "conversation_id"));

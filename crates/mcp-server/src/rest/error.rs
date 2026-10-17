@@ -304,6 +304,7 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
         StorageError::Retryable(_)
         | StorageError::Unavailable(_)
         | StorageError::Internal(_)
+        | StorageError::MemoryIdCollision
         | StorageError::SchemaResetRequired { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -425,6 +426,10 @@ mod tests {
             ),
             (
                 StorageError::Internal("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                StorageError::MemoryIdCollision,
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
             (

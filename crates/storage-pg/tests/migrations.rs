@@ -1318,11 +1318,12 @@ async fn memory_is_append_only_and_head_t_only() {
         assert_eq!(moved, destination);
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id)
-             VALUES ($1, 'abstraction', $2, 'core/test-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $3, 'abstraction', $2, 'core/test-v1')",
         )
         .bind(handle)
         .bind(owner)
+        .bind(proxima_core::new_memory_uuid(1))
         .execute(pool)
         .await
         .expect_err("kind must match head");
@@ -2409,6 +2410,7 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
             proxima_storage_pg::PgPoolConfig::default(),
             proxima_storage_pg::PgTuning::default(),
             pg.platform_scope_for_host(),
+            1,
         )
         .await?;
         let settings = || async {

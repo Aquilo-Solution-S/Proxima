@@ -2,7 +2,7 @@ use futures::future::BoxFuture;
 
 use crate::{ActionName, CapabilitySet, ScopeKey, ScopeKeyError, ToolCaller, ToolCtx, ToolName};
 
-use super::{McpToolCtx, McpToolError, McpToolPresentation};
+use super::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpToolOrigin {
@@ -804,7 +804,6 @@ where
         ctx: McpToolCtx,
         args: Self::Args,
     ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
-        let presentation = McpToolPresentation::from_ctx(&ctx);
         let caller = ToolCaller::new(
             ctx.author.model_id.clone(),
             ctx.author.client_name.clone(),
@@ -828,8 +827,7 @@ where
                 }
             },
         };
-        let mut services = ctx.services.into_tool_services();
-        services.insert(presentation);
+        let services = ctx.services.into_tool_services();
         let tool_ctx = ToolCtx::from_parts(
             ctx.owner,
             ctx.authz,

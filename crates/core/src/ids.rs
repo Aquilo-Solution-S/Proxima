@@ -72,26 +72,10 @@ impl MemoryId {
         self.0
     }
 
-    /// The write time of this admission, read out of its `UUIDv7`: storage
-    /// mints `t` when it writes the row and stores no second clock reading.
-    /// Millisecond precision, which is all a v7 timestamp carries.
-    ///
-    /// An id that carries no timestamp reads as the Unix epoch, the same
-    /// value the Postgres reads give it
-    /// (`COALESCE(uuid_extract_timestamp(t), TIMESTAMPTZ '1970-01-01')`), so
-    /// a time computed here and one read back from the database agree.
+    /// The admission's write time, read from its `UUIDv8` with millisecond precision.
     #[must_use]
     pub fn created_at(self) -> time::OffsetDateTime {
-        self.0
-            .get_timestamp()
-            .and_then(|ts| {
-                let (secs, nanos) = ts.to_unix();
-                time::OffsetDateTime::from_unix_timestamp(i64::try_from(secs).ok()?)
-                    .ok()?
-                    .replace_nanosecond(nanos)
-                    .ok()
-            })
-            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        crate::memory_uuid::created_at(self.0)
     }
 }
 

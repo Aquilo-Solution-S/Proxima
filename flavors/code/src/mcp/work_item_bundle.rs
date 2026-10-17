@@ -16,14 +16,13 @@ use crate::payloads::{
     TestRequestV1, TestResultV1,
 };
 
-use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::map_storage;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeWorkItemBundleArgs {
     #[schemars(
-        description = "`F:<uuid>` of a proxima-code/work-requested-v1 or proxima-code/test-requested-v1 Fact."
+        description = "`<uuid>` of a proxima-code/work-requested-v1 or proxima-code/test-requested-v1 Fact."
     )]
     pub handle: String,
 }
@@ -127,7 +126,7 @@ impl Tool for CodeWorkItemBundleTool {
         args: CodeWorkItemBundleArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeWorkItemBundleOutput, ToolError>> {
         Box::pin(async move {
-            let memory_id = ctx.resolve_fact_memory(&args.handle)?;
+            let memory_id = crate::mcp::parse_memory_uuid(&args.handle)?;
             let item = load_work_item(&ctx, memory_id).await?;
             let repo = load_repo(&ctx, item.repo_id).await?;
             let criteria = load_criteria(&ctx, memory_id).await?;
@@ -142,7 +141,7 @@ impl Tool for CodeWorkItemBundleTool {
             )
             .await?
             .into_iter()
-            .map(|id| ctx.format_fact_memory(id))
+            .map(|id| id.into_inner().to_string())
             .collect();
             // Incoming references reach this item from several kinds of
             // node — the criteria Fact, the plan Abstraction, an assignment
@@ -156,7 +155,7 @@ impl Tool for CodeWorkItemBundleTool {
             )
             .await?
             .into_iter()
-            .map(|id| ctx.format_fact_memory(id))
+            .map(|id| id.into_inner().to_string())
             .collect();
             let derived_targets = load_memory_edge_targets(
                 &ctx,
@@ -173,35 +172,35 @@ impl Tool for CodeWorkItemBundleTool {
             let active_goal_provenance = activations
                 .into_iter()
                 .map(|(target, goal_id)| ActiveGoalProvenanceBundle {
-                    goal_activated_handle: ctx.format_fact_memory(target),
-                    goal_handle: ctx.format_goal(goal_id),
+                    goal_activated_handle: target.into_inner().to_string(),
+                    goal_handle: goal_id.into_inner().to_string(),
                 })
                 .collect();
             let evidence_handles = derived_targets
                 .into_iter()
                 .filter(|target| !activated.contains(target))
-                .map(|id| ctx.format_fact_memory(id))
+                .map(|id| id.into_inner().to_string())
                 .collect();
             let target_perspective_handles = load_target_perspectives(&ctx, memory_id)
                 .await?
                 .into_iter()
-                .map(|id| ctx.format_perspective_memory(id))
+                .map(|id| id.into_inner().to_string())
                 .collect();
             let plan_handles = load_plan_sources(&ctx, memory_id)
                 .await?
                 .into_iter()
-                .map(|id| ctx.format_abstraction_memory(id))
+                .map(|id| id.into_inner().to_string())
                 .collect();
             let result_handles = load_results(&ctx, memory_id, item.kind).await?;
             let acceptance_verifications = load_acceptance_verifications(&ctx, memory_id).await?;
             let acceptance_summary_handles = load_acceptance_summaries(&ctx, memory_id)
                 .await?
                 .into_iter()
-                .map(|id| ctx.format_abstraction_memory(id))
+                .map(|id| id.into_inner().to_string())
                 .collect();
 
             Ok(CodeWorkItemBundleOutput {
-                handle: ctx.format_fact_memory(memory_id),
+                handle: memory_id.into_inner().to_string(),
                 kind: item.kind,
                 repo,
                 payload: item.payload,
@@ -347,7 +346,7 @@ async fn load_criteria(
         .into_iter()
         .filter(|group| visible.contains(&group.memory_id))
         .map(|group| CriteriaBundle {
-            handle: ctx.format_fact_memory(group.memory_id),
+            handle: group.memory_id.into_inner().to_string(),
             criteria: group.criteria,
         })
         .collect())
@@ -566,7 +565,7 @@ async fn load_results(
         .into_iter()
         .filter(|row| visible.contains(&MemoryId::new(row.memory_id)))
         .map(|row| ResultBundle {
-            handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
+            handle: (MemoryId::new(row.memory_id)).into_inner().to_string(),
             status: row.status,
             summary: row.summary,
             artifact_refs: row.artifact_refs,
@@ -643,7 +642,7 @@ async fn load_acceptance_verifications(
     Ok(rows
         .into_iter()
         .map(|row| AcceptanceVerificationBundle {
-            handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
+            handle: (MemoryId::new(row.memory_id)).into_inner().to_string(),
             criterion_key: row.criterion_key,
             status: row.status,
             summary: row.summary,
@@ -651,7 +650,7 @@ async fn load_acceptance_verifications(
             verifier_handle: row
                 .verifier_memory_id
                 .filter(|id| visible_verifiers.contains(&MemoryId::new(*id)))
-                .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
+                .map(|id| (MemoryId::new(id)).into_inner().to_string()),
         })
         .collect())
 }

@@ -35,7 +35,7 @@ pub struct InterpretArgs {
     pub confidence: u8,
     #[schemars(
         length(max = 64),
-        description = "At least one memory the claim is about, of any layer: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`."
+        description = "At least one memory the claim is about, of any layer: memory UUIDs."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
@@ -53,7 +53,7 @@ pub struct InterpretArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InterpretOutput {
-    /// `P:<uuid>` handle of the interpretation Perspective.
+    /// `<uuid>` handle of the interpretation Perspective.
     pub handle: String,
     pub idempotent_replay: bool,
     /// Number of index rows the write asserted — one `reference` per
@@ -107,33 +107,33 @@ impl McpTool for InterpretTool {
                 super::super::memory_spaces::SpaceDefault::Current,
             )?;
 
-            // Other-store subjects split off first (only with a port wired)
-            // and are read as the caller before anything is written.
-            let (local_subjects, external) =
-                super::super::other_stores::partition_sources(&ctx, &args.subjects);
-            if !external.is_empty() && local_subjects.is_empty() {
+            let subjects =
+                super::super::other_stores::resolve_references(&ctx, &args.subjects).await?;
+            let mut local_subjects = Vec::new();
+            let mut read_subjects = Vec::new();
+            for subject in subjects {
+                let (id, kind) = subject.classified()?;
+                match subject {
+                    super::super::other_stores::ResolvedMemory::Local(..) => {
+                        local_subjects.push((id, subject_kind(kind)));
+                    }
+                    super::super::other_stores::ResolvedMemory::Remote(origin) => {
+                        read_subjects.push(origin);
+                    }
+                }
+            }
+            if local_subjects.is_empty() {
                 return Err(McpToolError::InvalidInput(
                     "subjects must include at least one memory of this store; memories of other stores only join local ones".into(),
                 ));
             }
-            let mut read_subjects = Vec::with_capacity(external.len());
-            for subject in &external {
-                read_subjects.push(
-                    super::super::other_stores::read_origin(&ctx, subject)
-                        .await?
-                        .0,
-                );
-            }
-            let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) =
-                super::util::dedup_resolved(
-                    &local_subjects,
-                    MAX_SUBJECTS,
-                    "subjects",
-                    "an interpretation must be about at least one memory",
-                    |handle| resolve_subject(&ctx, handle),
-                )?
+            let external = read_subjects
+                .iter()
+                .map(crate::storage_ports::other_stores::ReadOrigin::handle)
+                .collect::<Vec<_>>();
+            let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = local_subjects
                 .into_iter()
-                .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
+                .map(|(id, kind)| (id.into_inner(), kind))
                 .unzip();
 
             let memory_id = MemoryId::new(interpretation_memory_id(
@@ -173,7 +173,7 @@ impl McpTool for InterpretTool {
                 .await?;
 
             Ok(InterpretOutput {
-                handle: ctx.format_perspective_memory(outcome.memory_id),
+                handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
                 edge_count: outcome.edge_count,
             })
@@ -200,23 +200,20 @@ pub(crate) fn reject_self_subject(
     Ok(())
 }
 
-pub(crate) fn resolve_subject(
+pub(crate) async fn resolve_subject(
     ctx: &McpToolCtx,
     handle: &str,
 ) -> Result<(MemoryId, InterpretationSubjectKind), McpToolError> {
-    if let Ok(memory_id) = ctx.resolve_fact_memory(handle) {
-        return Ok((memory_id, InterpretationSubjectKind::Fact));
+    let (id, class) = ctx.resolve_memory_with_kind(handle).await?;
+    Ok((id, subject_kind(class)))
+}
+
+fn subject_kind(class: crate::mcp::MemoryHandleClass) -> InterpretationSubjectKind {
+    match class {
+        crate::mcp::MemoryHandleClass::Fact => InterpretationSubjectKind::Fact,
+        crate::mcp::MemoryHandleClass::Abstraction => InterpretationSubjectKind::Abstraction,
+        crate::mcp::MemoryHandleClass::Perspective => InterpretationSubjectKind::Perspective,
     }
-    if let Ok(memory_id) = ctx.resolve_abstraction_memory(handle) {
-        return Ok((memory_id, InterpretationSubjectKind::Abstraction));
-    }
-    if let Ok(memory_id) = ctx.resolve_perspective_memory(handle) {
-        return Ok((memory_id, InterpretationSubjectKind::Perspective));
-    }
-    // An unprefixed handle is a Fact by the same convention every other
-    // memory-resolving tool uses.
-    let memory_id = ctx.resolve_memory(handle)?;
-    Ok((memory_id, InterpretationSubjectKind::Fact))
 }
 
 /// Deterministic id folded from owner, model, claim, confidence and
@@ -225,10 +222,7 @@ pub(crate) fn resolve_subject(
 /// Fold other-store subjects into an interpretation's id, so the same
 /// claim about different remote memories is a different memory. With none
 /// the id is the one [`interpretation_memory_id`] always minted.
-pub(crate) fn fold_external_subjects(
-    id: uuid::Uuid,
-    external: &[crate::storage_ports::other_stores::QualifiedHandle],
-) -> uuid::Uuid {
+pub(crate) fn fold_external_subjects(id: uuid::Uuid, external: &[uuid::Uuid]) -> uuid::Uuid {
     if external.is_empty() {
         return id;
     }
@@ -301,7 +295,7 @@ mod tests {
     }
 
     fn subject() -> String {
-        format!("F:{}", uuid::Uuid::now_v7())
+        format!("{}", uuid::Uuid::now_v7())
     }
 
     /// 140 is not a confidence. Rejected rather than clamped: silently

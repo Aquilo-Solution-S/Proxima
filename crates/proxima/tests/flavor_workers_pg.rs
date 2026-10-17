@@ -88,6 +88,7 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
         let subject = UserId::new(Uuid::now_v7());
         let err = Proxima::<BindProbeApp>::app()
             .database_url(db_url.clone())
+            .store_number(0)
             .platform_database_url(platform_url.clone())
             .owner(owner)
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))

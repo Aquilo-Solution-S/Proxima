@@ -20,6 +20,7 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::{PgStorage, verbs};
 
 struct PgWriteSession {
+    store_number: u16,
     tx: Transaction<'static, Postgres>,
     sidecars: PgSidecarRegistryFrozen,
     surfaces: proxima_core::owner_inverse::OwnerSurfaces,
@@ -117,6 +118,7 @@ impl WriteSessionFactory for PgStorage {
         crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
         crate::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, permit.owner()).await?;
         Ok(Box::new(PgWriteSession {
+            store_number: self.store_number,
             tx,
             sidecars: self.sidecars.clone(),
             surfaces: self.surfaces.clone(),
@@ -146,6 +148,7 @@ impl PgStorage {
             crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
         }
         Ok(Box::new(PgWriteSession {
+            store_number: self.store_number,
             tx,
             sidecars: self.sidecars.clone(),
             surfaces: self.surfaces.clone(),
@@ -249,6 +252,7 @@ impl WriteSession for PgWriteSession {
             authorized,
             embedding_spaces,
             verbs::fact_ingest::FactAdmissionInput {
+                store_number: self.store_number,
                 natural_key: natural_key.as_ref(),
                 sidecar_tables: &tables,
                 scopes: &scopes,
@@ -292,18 +296,7 @@ impl WriteSession for PgWriteSession {
         req: &AuthorDerivedRequest<'_>,
         permit: &OwnerWritePermit,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
-        let draft = verbs::derive_append::DerivedDraft {
-            memory_id: req.memory_id.into_inner(),
-            owner: req.owner,
-            kind: req.kind,
-            schema_id: req.schema_id.clone(),
-            schema_version: req.schema_version,
-            text: req.text.clone(),
-            operator_kind: req.operator_kind,
-            supersedes: req.supersedes,
-            lexical_language: req.lexical_language,
-            queued_spaces: req.queued_spaces,
-        };
+        let draft = verbs::derive_append::DerivedDraft::from_request(req, self.store_number);
         verbs::derive_append::validate_derived_origins_in_tx(&mut self.tx, &draft, req.origins)
             .await?;
         verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut self.tx, req.references)
@@ -398,7 +391,14 @@ impl WriteSession for PgWriteSession {
         req: &CreateGoalAtomicRequest<'_>,
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::create_goal_in_tx(&mut self.tx, &self.sidecars, req, permit).await
+        verbs::goal_write::create_goal_in_tx(
+            &mut self.tx,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 
     async fn apply_host_state(

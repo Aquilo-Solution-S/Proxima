@@ -66,12 +66,17 @@ pub(in crate::engine) const ENTRY_NOT_FOUND_MESSAGE: &str = "entry not found";
 #[derive(Debug)]
 pub struct EntryReadPermit {
     owner: OwnerId,
+    kind: AccessKind,
 }
 
 impl EntryReadPermit {
     #[must_use]
     pub fn owner(&self) -> &OwnerId {
         &self.owner
+    }
+
+    pub(in crate::engine) const fn kind(&self) -> AccessKind {
+        self.kind
     }
 }
 
@@ -335,16 +340,16 @@ impl Engine {
         let read = self.authorize_read(authority).await?;
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
-        let owner = self
+        let (owner, kind) = self
             .storage()
             .pipeline
             .owner_access_read
             .visible_home_owner(authz.owner_scope(), entity, &read)
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
-            .and_then(|(owner, kind)| authz.may_read(&owner, kind).then_some(owner))
+            .filter(|(owner, kind)| authz.may_read(owner, *kind))
             .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-        Ok(EntryReadPermit { owner })
+        Ok(EntryReadPermit { owner, kind })
     }
 }
 
@@ -762,6 +767,7 @@ mod tests {
             .expect("readable entity should authorize");
 
         assert_eq!(permit.owner(), &p);
+        assert_eq!(permit.kind(), AccessKind::Fact);
     }
 
     #[tokio::test]

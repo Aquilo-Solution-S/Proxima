@@ -1,5 +1,5 @@
 -- Functions and aggregate definitions owned by the proxima_core catalog.
--- Bodies are emitted from the v0.0.36 reference catalog.
+-- This file is the source for current core function definitions.
 -- Definitions are replaceable; runtime and platform grants come from defaults.
 
 -- Assertion functions
@@ -2066,6 +2066,31 @@ BEGIN
 END;
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxima_core.memory_kind) FROM PUBLIC;
+
+-- Store identity functions
+
+CREATE OR REPLACE FUNCTION proxima_core.enforce_store_identity_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'write-once: the store number cannot be changed or removed'
+        USING ERRCODE = '25006';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.memory_created_at(id uuid)
+RETURNS timestamptz LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+    SELECT TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        + (millis / 1000) * INTERVAL '1 second'
+        + (millis % 1000) * INTERVAL '1 millisecond'
+    FROM (SELECT (
+        (get_byte(uuid_send(id), 0)::bigint << 40) |
+        (get_byte(uuid_send(id), 1)::bigint << 32) |
+        (get_byte(uuid_send(id), 2)::bigint << 24) |
+        (get_byte(uuid_send(id), 3)::bigint << 16) |
+        (get_byte(uuid_send(id), 4)::bigint << 8) |
+        get_byte(uuid_send(id), 5)::bigint
+    ) AS millis) AS timestamp_bits
+$$;
 
 -- Aggregates
 

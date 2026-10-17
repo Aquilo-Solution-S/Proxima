@@ -63,6 +63,7 @@ pub(in crate::engine) fn map_write_storage_error(
         | StorageError::Unavailable(message)
         | StorageError::Internal(message) => ProtocolError::internal(message),
         StorageError::SchemaResetRequired { details } => ProtocolError::internal(details),
+        StorageError::MemoryIdCollision => ProtocolError::internal("memory UUID collision"),
     }
 }
 

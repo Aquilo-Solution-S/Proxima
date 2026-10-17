@@ -2460,6 +2460,7 @@ async fn transfer_refuses_goal_entities() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;
@@ -4385,6 +4386,7 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
             },
             proxima_storage_pg::PgTuning::default(),
             pg.platform_scope_for_host(),
+            1,
         )
         .await?;
 

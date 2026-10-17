@@ -320,4 +320,6 @@ SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'pr
 -- write_act_v1
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxima_core', 'write_act_v1', 'fk_parent', NULL);
 
-
+-- store_identity
+SELECT proxima_core.owner_rls_apply_class(
+    'policies.sql', 'class ownerless', 'proxima_core', 'store_identity', 'ownerless', NULL);

@@ -28,7 +28,7 @@ pub enum CoreTransferArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TransferToOwnerArgs {
-    /// The memory to move: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`. Goals do not
+    /// The memory to move: memory UUIDs. Goals do not
     /// transfer.
     pub entity: String,
     /// Destination owner id, a bare `<uuid>`: a group the caller manages.
@@ -62,7 +62,7 @@ impl McpTool for CoreTransferTool {
             let engine = ctx.require_engine()?;
             match args {
                 CoreTransferArgs::TransferToOwner(args) => {
-                    let entity = resolve_transferable_entity(&ctx, &args.entity)?;
+                    let entity = resolve_transferable_entity(&ctx, &args.entity).await?;
                     let to_owner = parse_to_owner(&args.to_owner)?;
                     engine
                         .transfer_to_owner(&ctx.authz, entity, to_owner)
@@ -83,13 +83,39 @@ fn parse_to_owner(raw: &str) -> Result<crate::OwnerId, McpToolError> {
 /// Resolve a wire reference to a memory or goal entity. Goal references
 /// still resolve here so `Engine::transfer_to_owner` can refuse them with
 /// the typed "goals do not transfer" error instead of a parse error.
-fn resolve_transferable_entity(ctx: &McpToolCtx, raw: &str) -> Result<EntityId, McpToolError> {
-    match ctx.resolve_memory(raw) {
-        Ok(memory_id) => Ok(EntityId::Memory(memory_id)),
-        Err(memory_err) => match ctx.resolve_goal(raw) {
-            Ok(goal_id) => Ok(EntityId::Goal(goal_id)),
-            Err(_) => Err(memory_err),
-        },
+async fn resolve_transferable_entity(
+    ctx: &McpToolCtx,
+    raw: &str,
+) -> Result<EntityId, McpToolError> {
+    let memory_id = ctx.resolve_memory(raw)?;
+    let engine = ctx.require_engine()?;
+    let memories = engine
+        .get_memories(
+            &ctx.authz,
+            &crate::GetMemoriesReadRequest {
+                memory_ids: vec![memory_id],
+            },
+        )
+        .await?;
+    if !memories.memories.is_empty() {
+        return Ok(EntityId::Memory(memory_id));
+    }
+    let goal_id = crate::GoalId::new(memory_id.into_inner());
+    let mut request = crate::verbs::query::QueryRequest::readable();
+    request.entity_kind = Some(crate::EntityKind::Goal);
+    request.goal_ids = vec![goal_id];
+    request.limit = 1;
+    request.include_payloads = false;
+    let mut goals = engine.query(&ctx.authz, &request).await?;
+    if goals.goals.is_empty() {
+        request.goal_ids.clear();
+        request.goal_handles = vec![goal_id.into_inner()];
+        goals = engine.query(&ctx.authz, &request).await?;
+    }
+    if goals.goals.is_empty() {
+        Ok(EntityId::Memory(memory_id))
+    } else {
+        Ok(EntityId::Goal(goal_id))
     }
 }
 
@@ -130,7 +156,7 @@ mod tests {
             CoreTransferTool::ACTION_ARG_SPECS,
             &serde_json::json!({
                 "action": "transfer_to_owner",
-                "entity": "F:00000000-0000-0000-0000-000000000001"
+                "entity": "00000000-0000-0000-0000-000000000001"
             }),
         )
         .expect_err("to_owner is required");
@@ -145,7 +171,7 @@ mod tests {
             CoreTransferTool::ACTION_ARG_SPECS,
             &serde_json::json!({
                 "action": "transfer_to_owner",
-                "entity": "F:00000000-0000-0000-0000-000000000001",
+                "entity": "00000000-0000-0000-0000-000000000001",
                 "to_owner": "00000000-0000-0000-0000-000000000002",
                 "group": "00000000-0000-0000-0000-000000000002"
             }),

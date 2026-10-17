@@ -199,6 +199,76 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
 }
 
 #[tokio::test]
+async fn a_revision_after_a_future_head_becomes_the_new_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&db_name).await.expect("create database");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+
+        // Model a head committed by another process whose clock is an hour
+        // ahead, without changing this process's clock or generator state.
+        let future_millis =
+            u64::try_from(first.memory_id.created_at().unix_timestamp_nanos() / 1_000_000)?
+                + 3_600_000;
+        let mut bytes = first.memory_id.into_inner().into_bytes();
+        bytes[..6].copy_from_slice(&future_millis.to_be_bytes()[2..]);
+        bytes[6..8].copy_from_slice(&0x8fff_u16.to_be_bytes());
+        let future_t = Uuid::from_bytes(bytes);
+        assert!(
+            proxima_core::MemoryId::new(future_t).created_at() > time::OffsetDateTime::now_utc()
+        );
+        let mut seed = pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+             VALUES ($1, $2, 'fact', $3, $4, proxima_core.memory_created_at($2))",
+        )
+        .bind(first.handle)
+        .bind(future_t)
+        .bind(owner.into_inner())
+        .bind("core/test-fact-v1")
+        .execute(seed.as_mut())
+        .await?;
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(first.handle)
+            .bind(future_t)
+            .execute(seed.as_mut())
+            .await?;
+        seed.commit().await?;
+
+        let mut append = draft(None);
+        append.handle = Some(first.handle);
+        let revision = pg.ingest_fact_atomic(&permit, &append, None).await?;
+        assert!(revision.memory_id.into_inner() > future_t);
+        assert_eq!(revision.memory_id.into_inner().get_version_num(), 8);
+        assert_eq!(
+            proxima_core::memory_store_number(revision.memory_id.into_inner()),
+            pg.store_number()
+        );
+        let mut read = pool.begin().await?;
+        let head = read_memory_head(&mut read, first.handle)
+            .await?
+            .expect("series head");
+        assert_eq!(head.t, revision.memory_id.into_inner());
+        assert_eq!(head.occurred_at, Some(revision.memory_id.created_at()));
+        let revisions: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(read.as_mut())
+                .await?;
+        assert_eq!(revisions, 3);
+        read.commit().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a successful revision must advance a head from an ahead clock");
+}
+
+#[tokio::test]
 async fn memory_timeseries_pins_blob_and_closed_handle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {

@@ -46,15 +46,14 @@ pub use proxima_core::flavor::{
     TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
     TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
-/// Tool metadata and the MCP reference presentation bridge.
+/// Transport-neutral tool metadata.
 /// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
 /// Declare what the tool does once, as a [`ToolEffect`]: `Tool::EFFECT` on a
 /// flat tool, `McpActionArgSpec::effect` per action of a dispatcher.
-/// Import [`McpPresentationExt`] to format and parse MCP references on `ToolCtx`.
 /// Resolve dependencies with `ctx.service::<T>()` and model labels with
 /// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
 pub use proxima_core::mcp::{
-    KeyDeclaration, McpActionArgSpec, McpAuthorContext, McpPresentationExt, Replay, ToolEffect,
+    KeyDeclaration, McpActionArgSpec, McpAuthorContext, Replay, ToolEffect,
 };
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete

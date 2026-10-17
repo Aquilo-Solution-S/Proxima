@@ -186,7 +186,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let db_name = create_db().await?;
     let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry).await?;
+    let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry, 0).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
@@ -301,7 +301,7 @@ async fn start_host_auth_server(
     let db_name = create_db().await?;
     let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
     let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry).await?;
+    let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry, 0).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator));
     let (handle, addr) = serve_streamable_http_with_revalidation(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),

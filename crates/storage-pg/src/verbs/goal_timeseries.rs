@@ -59,6 +59,7 @@ pub(crate) struct ReservedFactIdentity {
 /// persists them in order without extending an already-held advisory set.
 #[derive(Debug)]
 pub(crate) struct PreparedGoalWrite {
+    fresh_handle: bool,
     owner: OwnerId,
     owner_id: Uuid,
     handle: Uuid,
@@ -148,6 +149,7 @@ pub(crate) async fn load_goal_by_request_id(
 pub async fn ingest_write_act(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
+    store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
         schema_id: proxima_core::SchemaId::new(WRITE_ACT_SCHEMA.to_string()),
@@ -166,20 +168,29 @@ pub async fn ingest_write_act(
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_fact_timeseries(tx, owner, &draft, &[], &[], &[], None).await
+    ingest_fact_timeseries(
+        tx,
+        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
+            store_number,
+            natural_key: None,
+            owner,
+            draft: &draft,
+            origins: &[],
+            references: &[],
+            sidecar_tables: &[],
+            scopes: &[],
+        },
+        None,
+    )
+    .await
 }
 
-pub(crate) async fn reserve_fact_identity(
-    tx: &mut Transaction<'_, Postgres>,
-) -> Result<ReservedFactIdentity, StorageError> {
-    let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    Ok(ReservedFactIdentity {
-        handle: Uuid::now_v7(),
+pub(crate) fn reserve_fact_identity(store_number: u16) -> ReservedFactIdentity {
+    let t = proxima_core::new_memory_uuid(store_number);
+    ReservedFactIdentity {
+        handle: proxima_core::new_memory_uuid(store_number),
         t,
-    })
+    }
 }
 
 pub(crate) async fn ingest_write_act_at(
@@ -216,6 +227,7 @@ pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     draft: &GoalWriteCommand,
+    store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
         return Ok(GoalWriteOutcome {
@@ -225,7 +237,7 @@ pub async fn write_goal(
             replay: true,
         });
     }
-    match prepare_goal_write(tx, owner, draft, None).await? {
+    match prepare_goal_write(tx, owner, draft, None, store_number).await? {
         GoalWritePreparation::Replay(outcome) => Ok(outcome),
         GoalWritePreparation::New(prepared) => {
             lock_prepared_goal_write(tx, &prepared).await?;
@@ -242,6 +254,7 @@ pub(crate) async fn prepare_goal_write(
     owner: &OwnerId,
     draft: &GoalWriteCommand,
     expected_prior_t: Option<Uuid>,
+    store_number: u16,
 ) -> Result<GoalWritePreparation, StorageError> {
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
         return Ok(GoalWritePreparation::Replay(GoalWriteOutcome {
@@ -261,18 +274,16 @@ pub(crate) async fn prepare_goal_write(
     // either waits for this complete Goal (including lifecycle Facts) or
     // observes it in exact-scope revalidation.
     let write_act_identity = if draft.mint_write_act {
-        Some(reserve_fact_identity(tx).await?)
+        Some(reserve_fact_identity(store_number))
     } else {
         None
     };
     let write_act_t = write_act_identity
         .map(|identity| identity.t)
         .or(draft.write_act_t);
-    let handle = draft.handle.unwrap_or_else(Uuid::now_v7);
-    let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    let handle = draft
+        .handle
+        .unwrap_or_else(|| proxima_core::new_memory_uuid(store_number));
     let mut command = draft.clone();
     command.mint_write_act = false;
     command.write_act_t = write_act_t;
@@ -282,6 +293,14 @@ pub(crate) async fn prepare_goal_write(
             .fetch_optional(tx.as_mut())
             .await
             .map_err(map_err)?;
+    let t = match expected_head_t.max(expected_prior_t) {
+        Some(floor) => {
+            proxima_core::new_memory_uuid_after(store_number, floor).ok_or_else(|| {
+                StorageError::ConstraintViolation("memory UUID timestamp range exhausted".into())
+            })?
+        }
+        None => proxima_core::new_memory_uuid(store_number),
+    };
     let mut targets = Vec::with_capacity(
         1 + usize::from(command.assignment_t.is_some())
             + command.dependency_t.len()
@@ -300,6 +319,7 @@ pub(crate) async fn prepare_goal_write(
     targets.extend(command.close_fact_t);
     targets.extend(command.write_act_t);
     Ok(GoalWritePreparation::New(Box::new(PreparedGoalWrite {
+        fresh_handle: draft.handle.is_none(),
         owner: *owner,
         owner_id,
         handle,
@@ -592,6 +612,17 @@ async fn advance_goal_head(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
+    if prepared.fresh_handle {
+        sqlx::query("INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t) VALUES ($1, $2, $3, $4)")
+            .bind(prepared.handle)
+            .bind(&prepared.command.schema_id)
+            .bind(prepared.owner_id)
+            .bind(prepared.t)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        return Ok(());
+    }
     let head = sqlx::query(
         "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, $2, $3, $4)

@@ -33,7 +33,14 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         validate_permit_owner(permit, &req.draft.owner())?;
-        verbs::goal_write::create_goal_atomic(&self.pool, &self.sidecars, req, permit).await
+        verbs::goal_write::create_goal_atomic(
+            &self.pool,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 
     async fn transition_goal_atomic(
@@ -42,7 +49,14 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         validate_permit_owner(permit, &req.owner)?;
-        verbs::goal_write::transition_goal_atomic(&self.pool, &self.sidecars, req, permit).await
+        verbs::goal_write::transition_goal_atomic(
+            &self.pool,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 
     async fn achieve_goal_atomic(
@@ -51,7 +65,14 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         validate_permit_owner(permit, &req.owner)?;
-        verbs::goal_write::achieve_goal_atomic(&self.pool, &self.sidecars, req, permit).await
+        verbs::goal_write::achieve_goal_atomic(
+            &self.pool,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 
     async fn modify_goal_atomic(
@@ -60,7 +81,14 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<GoalWriteOutcome, StorageError> {
         validate_permit_owner(permit, &req.owner)?;
-        verbs::goal_write::modify_goal_atomic(&self.pool, &self.sidecars, req, permit).await
+        verbs::goal_write::modify_goal_atomic(
+            &self.pool,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 
     async fn decompose_goal_atomic(
@@ -69,7 +97,14 @@ impl GoalWritePort for PgStorage {
         permit: &OwnerWritePermit,
     ) -> Result<DecomposeGoalOutcome, StorageError> {
         validate_permit_owner(permit, &req.owner)?;
-        verbs::goal_write::decompose_goal_atomic(&self.pool, &self.sidecars, req, permit).await
+        verbs::goal_write::decompose_goal_atomic(
+            &self.pool,
+            &self.sidecars,
+            req,
+            permit,
+            self.store_number,
+        )
+        .await
     }
 }
 

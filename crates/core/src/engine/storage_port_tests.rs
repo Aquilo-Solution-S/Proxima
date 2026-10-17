@@ -10,6 +10,10 @@ struct ReadOnlyFake;
 
 #[async_trait::async_trait]
 impl crate::MemoryReadPort for ReadOnlyFake {
+    fn store_number(&self) -> u16 {
+        0
+    }
+
     async fn load_fact_text(
         &self,
         _scope: Option<&crate::OwnerScope>,

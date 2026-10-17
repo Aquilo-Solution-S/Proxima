@@ -59,7 +59,7 @@ const CONTEXT_HEADERS: &[(&str, bool, &str)] = &[
     (
         "X-Proxima-Self-Perspective",
         false,
-        "`P:` reference for the caller's self perspective. Sending it in the \
+        "Bare UUID for the caller's self perspective. Sending it in the \
          request body is a `400`.",
     ),
 ];

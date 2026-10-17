@@ -71,6 +71,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 mint_write_act: true,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;
@@ -114,6 +115,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 mint_write_act: true,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;
@@ -140,6 +142,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;
@@ -164,6 +167,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await
         .expect_err("terminal admits no later t");
@@ -225,6 +229,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 mint_write_act: false,
                 write_act_t: None,
             },
+            1,
         )
         .await?;
         tx.commit().await?;

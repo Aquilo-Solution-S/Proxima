@@ -12,6 +12,7 @@
 # both: they record the replay, they are not what it produces.
 #
 # On-demand inspection only. Do not commit the output.
+# The disposable schema store uses the script-owned store number 0.
 #
 # Usage:
 #   scripts/regen-schema-sql.sh <output-dir>
@@ -43,7 +44,7 @@ SCRATCH_URL="${ADMIN_URL%/*}/${SCRATCH}"
 psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE \"$SCRATCH\";"
 trap 'psql "$ADMIN_URL" -q -c "DROP DATABASE IF EXISTS \"$SCRATCH\" WITH (FORCE);" >/dev/null' EXIT
 
-cargo run -q -p proxima-dev-migrate -- --database-url "$SCRATCH_URL"
+PROXIMA_STORE_NUMBER=0 cargo run -q -p proxima-dev-migrate -- --database-url "$SCRATCH_URL"
 
 # Normalization: version banners, psql \restrict guards, and session SET
 # preamble vary across pg_dump minor versions without describing schema.

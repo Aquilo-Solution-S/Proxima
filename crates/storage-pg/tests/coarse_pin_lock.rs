@@ -61,21 +61,30 @@ async fn insert_facts(
     owner_id: Uuid,
     rows: i64,
 ) -> Result<(), sqlx::Error> {
-    let handle: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES (uuidv7(), 'fact', 'core/test-fact-v1', $1, uuidv7())
-         RETURNING handle",
-    )
-    .bind(owner_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let handle = proxima_core::new_memory_uuid(1);
+    let ids: Vec<Uuid> = (0..rows)
+        .map(|_| proxima_core::new_memory_uuid(1))
+        .collect();
+    let head = ids
+        .last()
+        .copied()
+        .unwrap_or_else(|| proxima_core::new_memory_uuid(1));
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id, occurred_at)
-         SELECT $1, 'fact', $2, 'core/test-fact-v1', now() FROM generate_series(1, $3)",
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
     )
     .bind(handle)
     .bind(owner_id)
-    .bind(rows)
+    .bind(head)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
+         SELECT $1, t, 'fact', $2, 'core/test-fact-v1', now() FROM unnest($3::uuid[]) AS t",
+    )
+    .bind(handle)
+    .bind(owner_id)
+    .bind(&ids)
     .execute(&mut *conn)
     .await?;
     Ok(())

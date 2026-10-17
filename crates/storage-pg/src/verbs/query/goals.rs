@@ -53,10 +53,9 @@ pub(super) async fn query_goals_on_connection(
     Ok((goals, next_cursor))
 }
 
-/// The time a Goal `t` was minted at: the timestamp inside the `UUIDv7`, or the
-/// epoch for a `t` that carries none.
+/// The time a Goal `t` was minted at, decoded by the shared UUID timestamp function.
 fn t_timestamp_sql(t: &str) -> String {
-    format!("COALESCE(uuid_extract_timestamp({t}), TIMESTAMPTZ '1970-01-01')")
+    format!("proxima_core.memory_created_at({t})")
 }
 
 fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {

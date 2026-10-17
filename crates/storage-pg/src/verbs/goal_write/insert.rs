@@ -10,6 +10,7 @@ use crate::verbs::goal_timeseries::{
 };
 use proxima_core::publication::PublicationStamp;
 use proxima_core::{FactPayload, GoalChange, GoalChangeV1, SchemaVersion};
+use sqlx::Acquire;
 
 pub(super) struct PreparedGoalInsert<'a> {
     pub(super) draft: GoalDraft,
@@ -30,11 +31,38 @@ pub(super) async fn insert_or_replay_goal(
     context: GoalAtomicContext<'_>,
     columns: RowColumns<'_>,
 ) -> Result<InsertedGoal, StorageError> {
-    let prepared = prepare_goal_insert(tx, draft, expected_prior, change, context, columns).await?;
-    if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
-        lock_prepared_goal_write(tx, prepared_write).await?;
+    let mut retried_collision = false;
+    loop {
+        let mut attempt = tx.begin().await.map_err(crate::error::map_err)?;
+        let result = async {
+            let prepared = prepare_goal_insert(
+                &mut attempt,
+                draft,
+                expected_prior,
+                change,
+                context,
+                columns,
+            )
+            .await?;
+            if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
+                lock_prepared_goal_write(&mut attempt, prepared_write).await?;
+            }
+            persist_prepared_goal_insert(&mut attempt, sidecars, &prepared).await
+        }
+        .await;
+        match result {
+            Ok(outcome) => {
+                attempt.commit().await.map_err(crate::error::map_err)?;
+                return Ok(outcome);
+            }
+            Err(StorageError::MemoryIdCollision) if !retried_collision => {
+                attempt.rollback().await.map_err(crate::error::map_err)?;
+                retried_collision = true;
+            }
+            Err(StorageError::MemoryIdCollision) => return Err(crate::error::collision_exhausted()),
+            Err(error) => return Err(error),
+        }
     }
-    persist_prepared_goal_insert(tx, sidecars, &prepared).await
 }
 
 pub(super) async fn prepare_goal_insert<'a>(
@@ -45,6 +73,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     context: GoalAtomicContext<'a>,
     columns: RowColumns<'_>,
 ) -> Result<PreparedGoalInsert<'a>, StorageError> {
+    let store_number = columns.store_number;
     let owner = draft.owner();
 
     // Replay detection precedes prior-head lookups: a replay must
@@ -112,20 +141,26 @@ pub(super) async fn prepare_goal_insert<'a>(
         mint_write_act: false,
         write_act_t: columns.write_act_t,
     };
-    let preparation =
-        prepare_goal_write(tx, &owner, &command, expected_prior.map(GoalId::into_inner)).await?;
+    let preparation = prepare_goal_write(
+        tx,
+        &owner,
+        &command,
+        expected_prior.map(GoalId::into_inner),
+        store_number,
+    )
+    .await?;
     let close_fact = match &preparation {
         GoalWritePreparation::New(_)
             if matches!(draft.state, GoalState::Achieved | GoalState::Abandoned) =>
         {
-            Some(reserve_fact_identity(tx).await?)
+            Some(reserve_fact_identity(store_number))
         }
         GoalWritePreparation::Replay(_) | GoalWritePreparation::New(_) => None,
     };
     let preparation = attach_goal_close_fact_reservation(preparation, close_fact);
     let change_fact = match (&preparation, goal_change_stamp(context)?) {
         (GoalWritePreparation::New(_), Some(stamp)) => Some(GoalChangeFact::new(
-            reserve_fact_identity(tx).await?,
+            reserve_fact_identity(store_number),
             change,
             stamp,
         )),

@@ -30,7 +30,7 @@ impl FlavorApp for MyApp {
     }
 
     fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
-        builder.mcp_bind(SocketAddr::from(([127, 0, 0, 1], 31415)))
+        builder.store_number(3).mcp_bind(SocketAddr::from(([127, 0, 0, 1], 31415)))
     }
 }
 
@@ -143,6 +143,12 @@ fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
     Ok(FlavorServices::with(store))
 }
 ```
+
+Every memory handle is a bare UUID. The host assigns each store a unique
+16-bit number among the stores it routes between; configure it with
+`RuntimeBuilder::store_number` or `PROXIMA_STORE_NUMBER`. First boot persists
+the number; a later mismatch refuses startup. UUIDv8 handles carry that number
+and sort by timestamp and counter. Start fresh stores for this release.
 
 For a store accessed by flavor workers, register an `OtherStores` port with
 `RuntimeBuilder::other_stores`; the facade wraps it as a typed service with the

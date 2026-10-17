@@ -19,7 +19,7 @@ use crate::rest::error::Problem;
 
 /// Model label for the write's provenance.
 pub const MODEL_ID_HEADER: &str = "X-Proxima-Model-Id";
-/// The caller's own Self Perspective, as a `P:` reference.
+/// The caller's own Self Perspective, as a bare UUID.
 pub const SELF_PERSPECTIVE_HEADER: &str = "X-Proxima-Self-Perspective";
 
 /// Recorded as `client_name` when the caller sends no `User-Agent`.
@@ -88,7 +88,7 @@ where
 ///
 /// Returns a `400` problem when `X-Proxima-Model-Id` names a model other
 /// than the one the token binds, or when `X-Proxima-Self-Perspective` is
-/// not a `P:` reference to a UUID.
+/// not a bare UUID.
 pub fn author_from_headers(
     headers: &HeaderMap,
     auth: &McpAuthContext,
@@ -120,14 +120,11 @@ fn self_perspective(headers: &HeaderMap, instance: &str) -> Result<Option<Memory
     let Some(raw) = header_str(headers, SELF_PERSPECTIVE_HEADER) else {
         return Ok(None);
     };
-    // The wire grammar is prefixed (`P:<uuid>`); the bare form is accepted so
-    // a caller that already holds a raw id is not forced to re-prefix it.
-    let bare = raw.strip_prefix("P:").unwrap_or(raw);
-    uuid::Uuid::parse_str(bare)
+    proxima_core::mcp::parse_wire_uuid(raw)
         .map(|id| Some(MemoryId::new(id)))
         .map_err(|err| {
             Problem::invalid_input(
-                format!("{SELF_PERSPECTIVE_HEADER} must be a `P:<uuid>` reference: {err}"),
+                format!("{SELF_PERSPECTIVE_HEADER} must be a bare UUID: {err}"),
                 instance,
             )
         })
@@ -302,10 +299,10 @@ mod tests {
     }
 
     #[test]
-    fn self_perspective_accepts_the_prefixed_reference() {
+    fn self_perspective_accepts_bare_uuids_and_refuses_prefixes() {
         let id = uuid::Uuid::now_v7();
         let author = author_from_headers(
-            &headers(&[(SELF_PERSPECTIVE_HEADER, &format!("P:{id}"))]),
+            &headers(&[(SELF_PERSPECTIVE_HEADER, &format!("{id}"))]),
             &auth(None),
             "/v1/tools/core_remember",
         )
@@ -316,7 +313,7 @@ mod tests {
         );
 
         let err = author_from_headers(
-            &headers(&[(SELF_PERSPECTIVE_HEADER, "P:not-a-uuid")]),
+            &headers(&[(SELF_PERSPECTIVE_HEADER, &format!("P:{id}"))]),
             &auth(None),
             "/v1/tools/core_remember",
         )

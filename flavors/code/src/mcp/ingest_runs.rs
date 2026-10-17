@@ -65,9 +65,7 @@ pub struct IngestRunItem {
     pub finished_at: Option<String>,
 }
 
-fn run_item(ctx: &ToolCtx, run: RepoIngestionRun) -> Result<IngestRunItem, ToolError> {
-    use super::CodeToolCtxExt;
-
+fn run_item(_ctx: &ToolCtx, run: RepoIngestionRun) -> Result<IngestRunItem, ToolError> {
     let abandoned = matches!(run.status, RunStatus::Queued | RunStatus::Running)
         && time::OffsetDateTime::now_utc() - run.updated_at > RUN_STALE_AFTER;
     let (status, error_message) = if abandoned {
@@ -77,11 +75,7 @@ fn run_item(ctx: &ToolCtx, run: RepoIngestionRun) -> Result<IngestRunItem, ToolE
     };
     Ok(IngestRunItem {
         run_id: run.run_id.to_string(),
-        repo_handle: ctx.format_flavor_object(
-            super::REPO_HANDLE_KIND,
-            run.repo_id,
-            super::REPO_HANDLE_PREFIX,
-        ),
+        repo_handle: (run.repo_id).to_string(),
         status: status.as_str().to_owned(),
         stage: run.stage.as_str().to_owned(),
         commits_emitted: run.commits_emitted,
@@ -275,7 +269,7 @@ impl Drop for RunHeartbeat {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeStartIngestHeadSnapshotArgs {
     #[schemars(
-        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `R:<uuid>`."
+        description = "Repo handle returned by proxima-code_register_repo or proxima-code_list_repos, for example `<uuid>`."
     )]
     pub repo_handle: String,
 }

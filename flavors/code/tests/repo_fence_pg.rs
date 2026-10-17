@@ -171,7 +171,7 @@ async fn connect_storage(db_name: &str) -> Result<PgStorage, String> {
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_code"])
         .await
         .map_err(|err| err.to_string())?;
-    Ok(PgStorage::connect(&runtime_url, platform_scope)
+    Ok(PgStorage::connect(&runtime_url, platform_scope, 0)
         .await
         .map_err(|err| err.to_string())?
         .with_sidecars(code_pg_sidecars())

@@ -723,6 +723,7 @@ async fn recover_and_cleanup(
             proxima_storage_pg::PgPoolConfig::from_env()?,
             proxima_storage_pg::PgTuning::from_env()?,
             platform,
+            0,
         )
         .await?
         .with_cold(Arc::new(cold.clone()));
@@ -790,6 +791,7 @@ async fn boot(
     let (runtime_url, platform_url) = split_role_urls(database).await?;
     let mut app = Proxima::<CoreApp>::app()
         .database_url(runtime_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
         .served_surface(ServedSurface::All);

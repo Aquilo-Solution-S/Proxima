@@ -95,6 +95,10 @@ async fn the_bundle_carries_every_exportable_surface_of_both_flavors() {
 /// is not owner data under any reading and no flavor owns it.
 const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
     (
+        "proxima_core.store_identity",
+        "The deployment's immutable numeric routing identity. This singleton is platform configuration shared by every owner, with no owner data to export, transfer or erase.",
+    ),
+    (
         "proxima_core.owner_rls_epoch",
         "Platform-owned RLS epoch state used to invalidate owner-scope claims; it is migration and runtime metadata, not owner data or a flavor surface.",
     ),
@@ -141,7 +145,7 @@ const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
     ),
     (
         "proxima_core.memory_external_origin",
-        "Other-store origins of a derived memory (0029): (t, store, handle) \
+        "Other-store origins of a derived memory: (t, memory UUID) \
          with no owner column and no content of its own. Keyed on the \
          memory's t, so a transfer moves it with the memory, and owner \
          erase deletes it through a named leg over the selected memories.",

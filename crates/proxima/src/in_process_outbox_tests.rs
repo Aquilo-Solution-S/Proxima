@@ -141,6 +141,7 @@ impl World {
         let owner = crate::company_owner(Uuid::now_v7());
         let app = crate::Proxima::<OutboxProbeApp>::app()
             .database_url(db_url)
+            .store_number(0)
             .platform_database_url(platform_url)
             .owner(owner)
             .served_surface(crate::ServedSurface::All)
@@ -419,8 +420,8 @@ async fn a_pause_that_discards_pending_work_reaches_the_intake_as_a_goal_change(
             data("pause").expect("the pause event"),
             serde_json::json!({
                 "series": set_data["series"],
-                "goal": format!("G:{}", paused.into_inner()),
-                "prior": format!("G:{}", set.into_inner()),
+                "goal": paused.into_inner().to_string(),
+                "prior": set.into_inner().to_string(),
                 "revision": 2,
                 "state": "Paused",
                 "change": {"kind": "pause", "pending": "discard"},
@@ -468,6 +469,7 @@ async fn an_intake_without_a_publication_source_fails_boot_naming_the_goal_chang
         .expect("split fixture roles");
     let refused = crate::Proxima::<OutboxProbeApp>::app()
         .database_url(db_url)
+        .store_number(0)
         .platform_database_url(platform_url)
         .owner(crate::company_owner(Uuid::now_v7()))
         .served_surface(crate::ServedSurface::All)

@@ -1,10 +1,10 @@
 //! Host-facing facade exports.
 
+pub use proxima_core::mcp::parse_wire_uuid;
 /// Transport adapters for hosts; flavor implementations use `flavor::Tool`.
-pub use proxima_core::mcp::{
-    McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
-};
+pub use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind};
 pub use proxima_core::operator_label;
+pub use proxima_core::{memory_store_number, new_memory_uuid};
 
 pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
@@ -30,7 +30,7 @@ pub use crate::runtime_config::RuntimeAuthState;
 pub use crate::runtime_config::{
     McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
     RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
-    missing_migration_policy_from_lookup,
+    missing_migration_policy_from_lookup, parse_store_number,
 };
 /// The S3-backed cited-blob lane.
 ///
@@ -115,10 +115,13 @@ pub use proxima_core::read_models::MemorySnapshot;
 /// compares them with the engine-stamped permit before any handler runs.
 /// Host API only; Flavor SDK does not export it.
 pub use proxima_core::storage_ports::HostStatePayloadOwners;
-/// Other-store requests and replies used by [`RuntimeBuilder::other_stores`].
+/// Other-store ports for [`RuntimeBuilder::other_stores`] and
+/// [`Proxima::other_stores`], with every request, answer and bounded-service
+/// result nameable by hosts implementing or wiring the port.
 pub use proxima_core::storage_ports::other_stores::{
-    OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
-    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
+    OtherStores, OtherStoresError, OtherStoresService, ReadOrigin, RemoteHit, RemoteMemory,
+    RemoteOriginRead, RemoteRead, RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo,
+    StoreInventory,
 };
 /// Cited-blob verified-read and reconciliation surfaces.
 ///
@@ -392,11 +395,6 @@ pub use proxima_core::mcp::{
 /// The request-behavior onion. A behavior wraps [`McpToolCtx`] /
 /// [`McpToolError`]; flavors register one through `proxima::flavor`.
 pub use proxima_core::mcp::{Next, RequestBehavior, ToolCall};
-/// The `<prefix>:<uuid>` ids tool arguments carry. [`PrefixedUuidError`]
-/// is what [`parse_prefixed_uuid`] returns, so it travels with the parser.
-pub use proxima_core::mcp::{
-    PrefixedUuidClass, PrefixedUuidError, format_prefixed_uuid, parse_prefixed_uuid,
-};
 /// The host-built behavior chain: [`Next::new`] and
 /// [`McpToolHost::dispatch_through_behaviors`] take a [`TerminalDispatch`],
 /// and [`ScopeGateBehavior`] is the tool-scope gate a host that assembles its
@@ -511,7 +509,7 @@ pub use proxima_core::{
 /// [`AuthzContext::with_trusted_model_id`] gives.
 pub use proxima_core::{Identity, InvokingTool, TrustedModelIdError};
 /// The tool-descriptor and handle vocabulary of [`McpToolDescriptor`],
-/// [`McpTool`], [`McpToolPresentation`], [`McpToolError`],
+/// [`McpTool`], [`McpToolError`],
 /// [`RequestHeaderAllowlist::extract`]: a
 /// host that registers or presents its own tools names them.
 pub use proxima_core::{

@@ -30,6 +30,7 @@ Optional:
   -h, --help               Print this message
 
 Environment:
+  PROXIMA_STORE_NUMBER          Required immutable host-assigned store number (0..65535)
   PROXIMA_MCP_BIND              Bind address; allows non-loopback with
                                 PROXIMA_EXPOSE_NETWORK=true
                                 (e.g. 0.0.0.0:8080)

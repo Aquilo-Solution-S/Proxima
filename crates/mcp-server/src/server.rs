@@ -179,6 +179,7 @@ impl McpToolHost {
         runtime_url: &str,
         platform_url: &str,
         registry: FlavorRegistry,
+        store_number: u16,
     ) -> Result<Self, crate::McpServerError> {
         let pool_config = proxima_storage_pg::PgPoolConfig::from_env()?;
         let tuning = proxima_storage_pg::PgTuning::from_env()?;
@@ -189,6 +190,7 @@ impl McpToolHost {
         )
         .await?;
         migration.run_migrations().await?;
+        migration.initialize_store_number(store_number).await?;
         let frozen = registry.try_freeze()?;
         let schema_names = composed_schema_names(&frozen);
         let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
@@ -202,6 +204,7 @@ impl McpToolHost {
             pool_config,
             tuning,
             platform,
+            store_number,
         )
         .await?;
         let engine =
@@ -216,8 +219,7 @@ impl McpToolHost {
 
     /// Build a per-call `McpToolCtx` derived from the auth regime.
     ///
-    /// All references cross the wire as typed prefixed uuids
-    /// (`F:`/`A:`/`P:`/`G:`).
+    /// All entity references cross the wire as bare UUIDs.
     ///
     /// The author context is re-reconciled against the authenticated one
     /// rather than trusted as given. Both halves of the invariant
@@ -1358,7 +1360,7 @@ mod tests {
     #[test]
     fn parse_resource_uri_projects_known_resources() {
         let memory = parse_resource_uri(
-            "proxima://memory/F:018f0000-0000-7000-8000-000000000001?expand_neighbors=true",
+            "proxima://memory/018f0000-0000-7000-8000-000000000001?expand_neighbors=true",
         )
         .expect("memory resource");
         assert!(matches!(
@@ -1370,7 +1372,7 @@ mod tests {
         ));
 
         let lineage =
-            parse_resource_uri("proxima://memory/A:018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")
+            parse_resource_uri("proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")
                 .expect("lineage resource");
         assert!(matches!(
             lineage,
@@ -1387,7 +1389,7 @@ mod tests {
             ResourceUriError::UnknownPath
         );
         assert_eq!(
-            parse_resource_uri("proxima://memory/F:one/two/lineage").unwrap_err(),
+            parse_resource_uri("proxima://memory/one/two/lineage").unwrap_err(),
             ResourceUriError::UnknownPath
         );
     }
@@ -1404,7 +1406,7 @@ mod tests {
         // Parameterless like `proxima://tools`: a query is not read, and a
         // malformed one is still refused by the shared query parser.
         assert!(matches!(
-            parse_resource_uri("proxima://memories/counts?ids=F:one"),
+            parse_resource_uri("proxima://memories/counts?ids=unused"),
             Ok(ParsedResource::MemoryCounts)
         ));
         assert_eq!(
@@ -1426,11 +1428,11 @@ mod tests {
             );
         }
 
-        let batch = parse_resource_uri("proxima://memories?ids=F:one,A:two").expect("batch read");
+        let batch = parse_resource_uri("proxima://memories?ids=00000000-0000-8000-8000-000000000001,00000000-0000-8000-8000-000000000002").expect("batch read");
         assert_eq!(batch.scope_key(), protocol_resource::MEMORIES);
         assert!(matches!(
             batch,
-            ParsedResource::Memories(GetMemoriesArgs { memories }) if memories == ["F:one", "A:two"]
+            ParsedResource::Memories(GetMemoriesArgs { memories }) if memories == ["00000000-0000-8000-8000-000000000001", "00000000-0000-8000-8000-000000000002"]
         ));
         assert_eq!(
             parse_resource_uri("proxima://memories").unwrap_err(),
@@ -1468,7 +1470,7 @@ mod tests {
         // depth=300 does not collapse into "unknown resource": it parses
         // as a wide integer and the tool clamps it to the documented 1..=8.
         let lineage = parse_resource_uri(
-            "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?depth=300",
+            "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?depth=300",
         )
         .expect("oversized depth parses; the tool clamps");
         assert!(matches!(
@@ -1477,7 +1479,7 @@ mod tests {
         ));
         assert_eq!(
             parse_resource_uri(
-                "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways"
+                "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways"
             )
             .unwrap_err(),
             ResourceUriError::InvalidParam {
@@ -1529,7 +1531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctx_for_speaks_prefixed_ids() {
+    async fn ctx_for_speaks_bare_uuids() {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
@@ -1550,13 +1552,13 @@ mod tests {
             .ctx_for(author, &auth)
             .expect("no binding, no conflict");
         let id = proxima_core::MemoryId::new(uuid::Uuid::now_v7());
-        let wire = ctx.format_fact_memory(id);
-        assert_eq!(wire, format!("F:{}", id.into_inner()));
-        assert_eq!(ctx.resolve_fact_memory(&wire).expect("round trip"), id);
+        let wire = id.into_inner().to_string();
+        assert_eq!(wire, format!("{}", id.into_inner()));
+        assert_eq!(ctx.resolve_memory(&wire).expect("round trip"), id);
         assert!(
-            ctx.resolve_fact_memory(&id.into_inner().to_string())
+            ctx.resolve_memory(&format!("F:{}", id.into_inner()))
                 .is_err(),
-            "bare uuids must not be accepted on the wire"
+            "prefixed ids must be refused on the wire"
         );
     }
 

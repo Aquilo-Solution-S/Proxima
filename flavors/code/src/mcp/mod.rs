@@ -5,9 +5,6 @@ use std::sync::Arc;
 use crate::CodeFlavorStore;
 use proxima_core::{ToolCtx, ToolError};
 
-pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
-pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
-
 pub(crate) fn code_store(
     ctx: &ToolCtx,
 ) -> Result<Arc<crate::store::ScopedCodeFlavorStore>, ToolError> {
@@ -43,8 +40,14 @@ pub(crate) async fn read_owner_ids(
     proxima::flavor::read_owner_ids(engine, ctx.authz()).await
 }
 
-/// Wire-reference grammar on `ToolCtx` via core's extension trait.
-pub(crate) use proxima_core::mcp::McpPresentationExt as CodeToolCtxExt;
+/// Parse the memory UUID; each operation's authorized read validates its stored kind.
+pub(crate) fn parse_memory_uuid(raw: &str) -> Result<proxima_core::MemoryId, ToolError> {
+    parse_uuid(raw).map(proxima_core::MemoryId::new)
+}
+
+pub(crate) fn parse_uuid(raw: &str) -> Result<uuid::Uuid, ToolError> {
+    proxima_core::mcp::parse_wire_uuid(raw).map_err(|err| ToolError::InvalidInput(err.to_string()))
+}
 
 pub mod emit_execution_request;
 pub mod ingest_runs;

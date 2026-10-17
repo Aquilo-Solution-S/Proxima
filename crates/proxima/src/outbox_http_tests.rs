@@ -310,7 +310,7 @@ fn tokenless_http_is_only_allowed_to_loopback_or_a_named_host() {
 fn event(delivered_count: u64) -> ReceivedEvent {
     let raw: Vec<u8> = serde_json::to_vec(&serde_json::json!({
         "specversion": "1.0",
-        "id": "F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
         "source": "urn:test",
         "type": "probe/listenable-v1",
         "subject": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
@@ -319,7 +319,7 @@ fn event(delivered_count: u64) -> ReceivedEvent {
     }))
     .expect("envelope");
     ReceivedEvent {
-        id: "F:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned(),
+        id: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned(),
         owner: proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::nil())),
         delivered_count,
         envelope: serde_json::from_slice(&raw).expect("envelope parses"),

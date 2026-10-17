@@ -9,7 +9,6 @@ use proxima_core::test_fixtures::authenticated_context;
 use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, OwnerId, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
-use uuid::Uuid;
 
 fn owner_authz(owner: OwnerId) -> AuthzContext {
     authenticated_context(
@@ -20,8 +19,8 @@ fn owner_authz(owner: OwnerId) -> AuthzContext {
 }
 
 #[tokio::test]
-async fn core_read_resources_return_prefixed_ids_and_author()
--> Result<(), Box<dyn std::error::Error>> {
+async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dyn std::error::Error>>
+{
     let db_name = create_core_db().await?;
     let database_url = db_url(&db_name);
     let pg = storage(&database_url).await?;
@@ -45,51 +44,48 @@ async fn core_read_resources_return_prefixed_ids_and_author()
 
     let fetched = server
         .read_resource(
-            &format!("proxima://memory/A:{derived}"),
+            &format!("proxima://memory/{derived}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(fetched["memory"], format!("A:{derived}"));
+    assert_eq!(fetched["memory"], format!("{derived}"));
     assert_eq!(fetched["kind"], "Abstraction");
-    assert_eq!(fetched["handle"], format!("A:{derived}"));
+    assert_eq!(fetched["handle"], format!("{derived}"));
     assert_eq!(fetched["body"], "derived lineage memory");
     assert!(
         fetched.get("neighbor_edges").is_none(),
         "neighbor_edges should be omitted unless expand_neighbors is true"
     );
 
-    let bare_uuid_err = server
+    let prefixed_uuid_err = server
         .read_resource(
-            &format!("proxima://memory/{derived}"),
+            &format!("proxima://memory/A:{derived}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("bare uuid must be rejected; the wire speaks prefixed ids only");
+        .expect_err("prefixed UUID must be rejected");
     assert!(
-        bare_uuid_err.to_string().contains("malformed memory id"),
-        "unexpected error: {bare_uuid_err}"
+        prefixed_uuid_err.to_string().contains("hyphenated UUID"),
+        "a prefixed resource must report the bare UUID grammar"
     );
 
     let expanded = server
         .read_resource(
-            &format!("proxima://memory/A:{derived}?expand_neighbors=true"),
+            &format!("proxima://memory/{derived}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(expanded["memory"], format!("A:{derived}"));
+    assert_eq!(expanded["memory"], format!("{derived}"));
     // Four fields is the whole edge: no handle, no relation, no payload.
     assert_eq!(expanded["neighbor_edges"][0]["kind"], "origin");
     assert_eq!(
         expanded["neighbor_edges"][0]["source"],
-        format!("A:{derived}")
+        format!("{derived}")
     );
-    assert_eq!(
-        expanded["neighbor_edges"][0]["target"],
-        format!("A:{source}")
-    );
+    assert_eq!(expanded["neighbor_edges"][0]["target"], format!("{source}"));
     assert!(
         expanded["neighbor_edges"][0].get("edge").is_none(),
         "an edge has no id to hand back"
@@ -97,22 +93,22 @@ async fn core_read_resources_return_prefixed_ids_and_author()
 
     let lineage = server
         .read_resource(
-            &format!("proxima://memory/A:{derived}/lineage?direction=ancestors&depth=1"),
+            &format!("proxima://memory/{derived}/lineage?direction=ancestors&depth=1"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(lineage["start"], format!("A:{derived}"));
+    assert_eq!(lineage["start"], format!("{derived}"));
     assert!(
         lineage["nodes"]
             .as_array()
             .expect("nodes")
             .iter()
-            .any(|node| node["memory"] == format!("A:{source}"))
+            .any(|node| node["memory"] == format!("{source}"))
     );
     assert_eq!(lineage["edges"][0]["kind"], "origin");
-    assert_eq!(lineage["edges"][0]["source"], format!("A:{derived}"));
-    assert_eq!(lineage["edges"][0]["target"], format!("A:{source}"));
+    assert_eq!(lineage["edges"][0]["source"], format!("{derived}"));
+    assert_eq!(lineage["edges"][0]["target"], format!("{source}"));
 
     drop(server);
     drop(pg);
@@ -156,12 +152,38 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
         .expect("search returns the inserted memory");
     let structured_id = MemoryId::new(serde_json::from_value(result["memory_id"].clone())?);
     assert_eq!(structured_id.into_inner(), memory_id);
-    assert_eq!(result["memory"], format!("A:{memory_id}"));
+    assert_eq!(result["memory"], format!("{memory_id}"));
 
     drop(server);
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
+}
+
+async fn assert_goals_do_not_transfer(
+    server: &McpToolHost,
+    auth: &McpAuthContext,
+    references: &[uuid::Uuid],
+) {
+    for goal_reference in references {
+        let transfer = server
+            .call_tool(
+                "core_transfer",
+                serde_json::json!({
+                    "action": "transfer_to_owner",
+                    "entity": goal_reference.to_string(),
+                    "to_owner": auth.owner.to_string(),
+                }),
+                author_ctx(),
+                Some(auth.clone()),
+            )
+            .await
+            .expect_err("a stored Goal UUID retains the typed transfer refusal");
+        assert!(
+            transfer.to_string().contains("goals do not transfer"),
+            "{transfer}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -178,7 +200,7 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
     ]
     .into_iter()
     .unzip();
-    let foreign_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let foreign_owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let (foreign_handle, _) = insert_active_goal(&pg, &foreign_owner).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -190,6 +212,8 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
         owner,
         authz: owner_authz(owner),
     };
+
+    assert_goals_do_not_transfer(&server, &auth, &[goal_ids[0], goal_handles[0]]).await;
 
     // Paginate Active goals two-at-a-time: disjoint, exhaustive, terminated.
     let mut seen = Vec::new();
@@ -223,10 +247,10 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
     deduped.dedup();
     assert_eq!(deduped.len(), 3, "pages disjoint and exhaustive: {seen:?}");
     for goal_id in &goal_ids {
-        assert!(seen.contains(&format!("G:{goal_id}")));
+        assert!(seen.contains(&format!("{goal_id}")));
     }
 
-    let paused_head = Uuid::now_v7();
+    let paused_head = proxima_core::new_memory_uuid(0);
     insert_goal_version(
         &pg,
         &owner,
@@ -247,17 +271,17 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
 
     let goal = server
         .read_resource(
-            &format!("proxima://goal/G:{}", goal_handles[1]),
+            &format!("proxima://goal/{}", goal_handles[1]),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(goal["goal"], format!("G:{paused_head}"));
+    assert_eq!(goal["goal"], format!("{paused_head}"));
 
-    for handle in [foreign_handle, Uuid::now_v7()] {
+    for handle in [foreign_handle, proxima_core::new_memory_uuid(0)] {
         let error = server
             .read_resource(
-                &format!("proxima://goal/G:{handle}"),
+                &format!("proxima://goal/{handle}"),
                 author_ctx(),
                 Some(auth.clone()),
             )
@@ -321,14 +345,14 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
             .as_array()
             .expect("goals array")
             .iter()
-            .find(|row| row["goal"] == format!("G:{goal}"))
+            .find(|row| row["goal"] == format!("{goal}"))
             .unwrap_or_else(|| panic!("goal {goal} is listed: {listing}"))
             .clone()
     };
 
     // The listing returns the full text and both times.
     let series = listed(paused);
-    assert_eq!(series["handle"], format!("G:{handle}"));
+    assert_eq!(series["handle"], format!("{handle}"));
     assert_eq!(series["state"], "Paused");
     assert_eq!(series["text"], "write the report");
     assert_eq!(series["set_at"], "2023-11-14T22:13:20Z");
@@ -351,7 +375,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     // paused version at this point.
     let single = server
         .read_resource(
-            &format!("proxima://goal/G:{handle}"),
+            &format!("proxima://goal/{handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -360,7 +384,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     assert_version_id_reads_series_head(&server, &auth, set, &series).await;
     let single_unknown = server
         .read_resource(
-            &format!("proxima://goal/G:{unknown_handle}"),
+            &format!("proxima://goal/{unknown_handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -375,13 +399,13 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
             .await?;
     let current_read = server
         .read_resource(
-            &format!("proxima://goal/G:{handle}"),
+            &format!("proxima://goal/{handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(current_read["goal"], format!("G:{current}"));
-    assert_eq!(current_read["handle"], format!("G:{handle}"));
+    assert_eq!(current_read["goal"], format!("{current}"));
+    assert_eq!(current_read["handle"], format!("{handle}"));
     assert_eq!(current_read["state"], "Paused");
 
     drop(server);
@@ -421,7 +445,7 @@ async fn edge_resources_read_back_interpretation_references()
             serde_json::json!({
                 "claim": "the hub summarizes the spoke",
                 "confidence": 61,
-                "subjects": [format!("A:{hub}"), format!("A:{spoke}")],
+                "subjects": [format!("{hub}"), format!("{spoke}")],
             }),
             author_ctx(),
             Some(auth.clone()),
@@ -432,7 +456,7 @@ async fn edge_resources_read_back_interpretation_references()
         .expect("interpretation handle")
         .to_string();
     assert!(
-        handle.starts_with("P:"),
+        handle.parse::<uuid::Uuid>().is_ok(),
         "an interpretation is a Perspective"
     );
     assert_eq!(
@@ -456,12 +480,9 @@ async fn edge_resources_read_back_interpretation_references()
         .iter()
         .map(|edge| edge["target"].as_str().expect("target handle"))
         .collect();
+    assert!(targets.contains(&format!("{hub}").as_str()), "{targets:?}");
     assert!(
-        targets.contains(&format!("A:{hub}").as_str()),
-        "{targets:?}"
-    );
-    assert!(
-        targets.contains(&format!("A:{spoke}").as_str()),
+        targets.contains(&format!("{spoke}").as_str()),
         "{targets:?}"
     );
     for edge in edges {
@@ -485,7 +506,7 @@ async fn edge_resources_read_back_interpretation_references()
             serde_json::json!({
                 "claim": "the hub summarizes the spoke",
                 "confidence": 61,
-                "subjects": [format!("A:{hub}"), format!("A:{spoke}")],
+                "subjects": [format!("{hub}"), format!("{spoke}")],
             }),
             author_ctx(),
             Some(auth.clone()),
@@ -516,7 +537,7 @@ async fn edge_resources_read_back_interpretation_references()
     Ok(())
 }
 
-/// Class-checked reference and closed state vocabulary fail closed.
+/// A version UUID resolves to its series' current head.
 async fn assert_version_id_reads_series_head(
     server: &McpToolHost,
     auth: &McpAuthContext,
@@ -525,7 +546,7 @@ async fn assert_version_id_reads_series_head(
 ) {
     let from_version = server
         .read_resource(
-            &format!("proxima://goal/G:{version}"),
+            &format!("proxima://goal/{version}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -537,7 +558,7 @@ async fn assert_version_id_reads_series_head(
     );
     let missing = server
         .read_resource(
-            &format!("proxima://goal/G:{}", uuid::Uuid::now_v7()),
+            &format!("proxima://goal/{}", proxima_core::new_memory_uuid(0)),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -546,6 +567,7 @@ async fn assert_version_id_reads_series_head(
     assert!(missing.to_string().contains("not found"), "{missing}");
 }
 
+/// Goal UUIDs read successfully; prefixes and unknown states fail closed.
 async fn assert_goal_reference_and_state_rejections(
     server: &McpToolHost,
     auth: &McpAuthContext,
@@ -558,8 +580,20 @@ async fn assert_goal_reference_and_state_rejections(
             Some(auth.clone()),
         )
         .await
-        .expect_err("bare uuid goal reference must be rejected");
-    assert!(bare.to_string().contains("malformed Goal id"), "{bare}");
+        .expect("bare UUID goal reference reads the current head");
+    assert_eq!(bare["goal"], goal_id.to_string());
+    let prefixed = server
+        .read_resource(
+            &format!("proxima://goal/G:{goal_id}"),
+            author_ctx(),
+            Some(auth.clone()),
+        )
+        .await
+        .expect_err("prefixed goal references are refused");
+    assert!(
+        prefixed.to_string().contains("hyphenated UUID"),
+        "{prefixed}"
+    );
     let bad_state = server
         .read_resource(
             "proxima://goals?state=Everything",
@@ -589,8 +623,8 @@ async fn insert_active_goal(
     pg: &PgStorage,
     owner: &OwnerId,
 ) -> Result<(uuid::Uuid, uuid::Uuid), Box<dyn std::error::Error>> {
-    let handle = uuid::Uuid::now_v7();
-    let t = uuid::Uuid::now_v7();
+    let handle = proxima_core::new_memory_uuid(0);
+    let t = proxima_core::new_memory_uuid(0);
     let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -649,7 +683,7 @@ async fn insert_goal_version(
             .await?;
         handle
     } else {
-        let handle = uuid::Uuid::now_v7();
+        let handle = proxima_core::new_memory_uuid(0);
         sqlx::query(
             "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/simple-text-v1', $2, $3)",
@@ -688,8 +722,8 @@ async fn insert_memory_row(
     origins: &[uuid::Uuid],
     sidecars: &[&str],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let handle = uuid::Uuid::now_v7();
-    let t = uuid::Uuid::now_v7();
+    let handle = proxima_core::new_memory_uuid(0);
+    let t = proxima_core::new_memory_uuid(0);
     let mut origins = origins.to_vec();
     if kind != "fact" && origins.is_empty() {
         let fact_t = Box::pin(insert_memory_row(
@@ -758,7 +792,7 @@ async fn insert_memory_row(
     sqlx::query(
         "INSERT INTO proxima_core.memory
              (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END)",
     )
     .bind(handle)
     .bind(t)

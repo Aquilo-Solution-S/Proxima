@@ -7,6 +7,7 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::MemoryId;
 use crate::engine::SearchReadRequest;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
@@ -15,7 +16,6 @@ use crate::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use crate::{MemoryHandleClass, MemoryId};
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: u32 = 16;
@@ -37,7 +37,7 @@ pub struct RecallArgs {
     #[serde(default)]
     #[schemars(
         length(max = 16),
-        description = "Memories the situation is about: `F:<uuid>`, `A:<uuid>` or `P:<uuid>`."
+        description = "Memories the situation is about: memory UUIDs."
     )]
     pub subjects: Vec<String>,
     #[serde(default)]
@@ -417,7 +417,7 @@ impl Packet {
 
     fn insert(
         &mut self,
-        ctx: &McpToolCtx,
+        _ctx: &McpToolCtx,
         id: MemoryId,
         kind: EntityKind,
         sketch: &str,
@@ -427,13 +427,12 @@ impl Packet {
         if self.by_id.contains_key(&key) {
             return;
         }
-        let class = super::get_memory::memory_class(kind).unwrap_or(MemoryHandleClass::Fact);
         self.by_id.insert(
             key,
             Entry {
                 reason,
                 sketch: RecallSketch {
-                    handle: ctx.format_memory_with_class(id, class),
+                    handle: id.into_inner().to_string(),
                     kind: kind.as_str().to_string(),
                     sketch: truncate_sketch(sketch),
                     reason: reason.as_str().to_string(),
@@ -451,7 +450,7 @@ impl Packet {
         }
     }
 
-    fn insert_goal(&mut self, ctx: &McpToolCtx, id: crate::GoalId, title: &str) {
+    fn insert_goal(&mut self, _ctx: &McpToolCtx, id: crate::GoalId, title: &str) {
         let key = id.into_inner();
         if self.by_id.contains_key(&key) {
             return;
@@ -461,7 +460,7 @@ impl Packet {
             Entry {
                 reason: RecallReason::AssignedGoal,
                 sketch: RecallSketch {
-                    handle: ctx.format_goal(id),
+                    handle: id.into_inner().to_string(),
                     kind: EntityKind::Goal.as_str().to_string(),
                     sketch: truncate_sketch(title),
                     reason: RecallReason::AssignedGoal.as_str().to_string(),
@@ -582,6 +581,6 @@ mod tests {
     #[test]
     fn question_or_subject_is_enough() {
         assert!(require_cue(Some("what do I believe"), &[]).is_ok());
-        assert!(require_cue(None, &["P:x".into()]).is_ok());
+        assert!(require_cue(None, &["00000000-0000-8000-8000-000000000001".into()]).is_ok());
     }
 }

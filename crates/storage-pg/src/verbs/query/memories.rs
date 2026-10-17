@@ -327,7 +327,7 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
     // SQL-POLICY: fixed-fragment — head_join is chosen between two literals.
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
+                proxima_core.memory_created_at(m.t) AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at \
          FROM proxima_core.memory m \
@@ -349,7 +349,7 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
         "SELECT page.* \
          FROM proxima_core.owners o CROSS JOIN LATERAL ( \
            SELECT m.t AS memory_id, m.handle, \
-                  COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
+                  proxima_core.memory_created_at(m.t) AS created_at, \
                   m.owner_id, m.schema_id, m.sidecar_tables, \
                   m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at \
            FROM (SELECT h.handle, h.t FROM proxima_core.memory_head h \

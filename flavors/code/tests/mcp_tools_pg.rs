@@ -1687,7 +1687,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
 
     ingest_code_chunk(
         fixture.pg.pool_for_tests(),
@@ -1732,7 +1732,7 @@ async fn search_chunks_pages_with_cursor_not_raised_limit() -> Result<(), Box<dy
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
     for (index, (path, text)) in [
         ("src/a.rs", "fn pageable_unique_token_0() {}"),
         ("src/b.rs", "fn pageable_unique_token_1() {}"),
@@ -1822,7 +1822,7 @@ async fn search_commits_stems_english_and_likes_sha_prefix()
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
 
     ingest_commit(
         fixture.pg.pool_for_tests(),
@@ -1889,7 +1889,7 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
     register_repo(
         fixture.pg.pool_for_tests(),
         &owner_scope(&owner),
@@ -1915,7 +1915,7 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
             "title": "Harden the chunker",
             "instructions": "Split on syntax, not on bytes.",
             "idempotency_key": "criteria-1",
-            "goal_activated_memory": format!("F:{goal_activated}"),
+            "goal_activated_memory": format!("{goal_activated}"),
             "evidence": [],
             "acceptance_criteria": [{
                 "key": "build",
@@ -1928,17 +1928,10 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     )
     .await?;
 
-    let request_id: Uuid = output["handle"]
-        .as_str()
-        .expect("handle")
-        .strip_prefix("F:")
-        .expect("fact prefix")
-        .parse()?;
+    let request_id: Uuid = output["handle"].as_str().expect("handle").parse()?;
     let criteria_id: Uuid = output["acceptance_criteria_handle"]
         .as_str()
         .expect("acceptance criteria handle")
-        .strip_prefix("F:")
-        .expect("fact prefix")
         .parse()?;
 
     let work_item: Uuid = sqlx::query_scalar(
@@ -1973,7 +1966,7 @@ async fn retry_execution_request_uses_owner_write_authority()
     let registry = registry_for_mcp();
 
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
     let prior = ingest_execution_request_fixture(
         fixture.pg.pool_for_tests(),
         owner,
@@ -1991,8 +1984,8 @@ async fn retry_execution_request_uses_owner_write_authority()
             MemoryId::new(shell_self),
         ),
         json!({
-            "prior_execution_request": format!("F:{prior}"),
-            "target_perspective": format!("P:{target}"),
+            "prior_execution_request": format!("{prior}"),
+            "target_perspective": format!("{target}"),
             "idempotency_key": "retry-no-master",
         }),
     )
@@ -2000,7 +1993,11 @@ async fn retry_execution_request_uses_owner_write_authority()
 
     assert_eq!(result["idempotent_replay"], false);
     assert!(
-        result["handle"].as_str().expect("handle").starts_with("F:"),
+        result["handle"]
+            .as_str()
+            .expect("handle")
+            .parse::<uuid::Uuid>()
+            .is_ok(),
         "authorized non-master retry still writes a Fact"
     );
     Ok(())
@@ -2012,7 +2009,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
     register_repo(
         fixture.pg.pool_for_tests(),
         &owner_scope(&owner),
@@ -2028,6 +2025,25 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let plan_source =
         abstraction_memory(fixture.pg.pool_for_tests(), &owner, "planning context").await?;
 
+    let wrong_evidence = run_tool::<CodeEmitExecutionPlanTool>(
+        shell_ctx(fixture.pg.clone(), owner, registry.clone(), MemoryId::new(shell_self)),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "goal_activated_memory": goal_activated.to_string(),
+            "plan_source_memory": plan_source.to_string(),
+            "plan_key": "proof-plan-wrong-evidence",
+            "plan_summary": "Must reject an Abstraction as Fact evidence.",
+            "evidence": [plan_source.to_string()],
+            "items": [{"kind": "implementation", "key": "work", "title": "work", "instructions": "work", "idempotency_key": "wrong-evidence"}]
+        }),
+    ).await.expect_err("evidence kind comes from the stored row");
+    assert!(
+        wrong_evidence
+            .to_string()
+            .contains("evidence not visible or not a Fact"),
+        "{wrong_evidence}"
+    );
+
     let output = run_tool::<CodeEmitExecutionPlanTool>(
         shell_ctx(
             fixture.pg.clone(),
@@ -2037,8 +2053,8 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
         ),
         json!({
             "repo_handle": repo_id.to_string(),
-            "goal_activated_memory": format!("F:{goal_activated}"),
-            "plan_source_memory": format!("A:{plan_source}"),
+            "goal_activated_memory": format!("{goal_activated}"),
+            "plan_source_memory": format!("{plan_source}"),
             "plan_key": "proof-plan-1",
             "plan_summary": "Plan from Abstraction proof source.",
             "evidence": [],
@@ -2054,11 +2070,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     .await?;
 
     let plan_handle = output["plan_handle"].as_str().expect("plan handle");
-    let plan_id = Uuid::parse_str(
-        plan_handle
-            .strip_prefix("A:")
-            .expect("prefixed Abstraction handle"),
-    )?;
+    let plan_id = Uuid::parse_str(plan_handle)?;
     let origins: Vec<Uuid> =
         sqlx::query_scalar("SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1")
             .bind(plan_id)
@@ -2087,8 +2099,6 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
     let item_handle = output["items"][0]["handle"]
         .as_str()
         .expect("item handle")
-        .strip_prefix("F:")
-        .expect("fact prefix")
         .to_string();
     assert_eq!(item_request.to_string(), item_handle);
 
@@ -2110,7 +2120,7 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
 
     let shell_self = seed_perspective(&fixture.pg, &owner, "Shell author").await?;
 
-    let repo_id = Uuid::now_v7();
+    let repo_id = proxima_core::new_memory_uuid(0);
     let prior =
         ingest_execution_request_fixture(fixture.pg.pool_for_tests(), owner, repo_id, "prior")
             .await?;
@@ -2122,8 +2132,8 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
         MemoryId::new(shell_self),
     );
     let args: <CodeRetryExecutionRequestTool as McpTool>::Args = serde_json::from_value(json!({
-        "prior_execution_request": format!("F:{prior}"),
-        "target_perspective": format!("P:{}", Uuid::now_v7()),
+        "prior_execution_request": format!("{prior}"),
+        "target_perspective": format!("{}", proxima_core::new_memory_uuid(0)),
         "idempotency_key": "retry-1",
     }))?;
     let err = CodeRetryExecutionRequestTool::call(ctx, args)
@@ -2228,7 +2238,7 @@ async fn every_text_cap_rejects_zero_the_same_way() -> Result<(), Box<dyn std::e
 
     let bytes = run_tool::<CodeOpenFileRevisionTool>(
         ctx(fixture.pg.clone(), owner, registry.clone()),
-        json!({ "repo_handle": Uuid::now_v7().to_string(), "file_path": "src/x.rs", "max_text_bytes": 0 }),
+        json!({ "repo_handle": proxima_core::new_memory_uuid(0).to_string(), "file_path": "src/x.rs", "max_text_bytes": 0 }),
     )
     .await
     .expect_err("open_file_revision must reject max_text_bytes: 0");
@@ -2335,8 +2345,8 @@ async fn seed_active_goal_activation(
     owner: &OwnerId,
     self_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let goal_id = Uuid::now_v7();
-    let memory_id = Uuid::now_v7();
+    let goal_id = proxima_core::new_memory_uuid(0);
+    let memory_id = proxima_core::new_memory_uuid(0);
     let _ = common::seed_goal(
         pg.pool_for_tests(),
         owner,
@@ -2365,7 +2375,7 @@ async fn seed_perspective(
     owner: &OwnerId,
     label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let memory_id = Uuid::now_v7();
+    let memory_id = proxima_core::new_memory_uuid(0);
     // The stamp and the rows it promises land in one transaction: a
     // memory row that names a sidecar table it has no row in is refused
     // at COMMIT.
@@ -2464,7 +2474,7 @@ async fn work_item_bundle_admits_results_before_rendering_them()
     let registry = registry_for_mcp();
     let pool = fixture.pg.pool_for_tests();
 
-    let repo_a = Uuid::now_v7();
+    let repo_a = proxima_core::new_memory_uuid(0);
     let work_item = ingest_execution_request_fixture(pool, owner_a, repo_a, "bundle-authz").await?;
 
     // Owner A's own result, under A's repo: admitted, and must survive.
@@ -2472,7 +2482,7 @@ async fn work_item_bundle_admits_results_before_rendering_them()
 
     // Owner B's, under B's OWN repo — which is the whole of what the repo
     // fence checks — but pointed at A's work item.
-    let repo_b = Uuid::now_v7();
+    let repo_b = proxima_core::new_memory_uuid(0);
     let foreign =
         ingest_execution_result_fixture(pool, owner_b, repo_b, work_item, "B injected").await?;
 
@@ -2484,7 +2494,7 @@ async fn work_item_bundle_admits_results_before_rendering_them()
         MemoryId::new(shell_self),
     );
     let args: <CodeWorkItemBundleTool as McpTool>::Args =
-        serde_json::from_value(json!({ "handle": format!("F:{work_item}") }))?;
+        serde_json::from_value(json!({ "handle": format!("{work_item}") }))?;
     let output = serde_json::to_value(CodeWorkItemBundleTool::call(ctx, args).await?)?;
 
     let handles: Vec<String> = output["result_handles"]
@@ -2494,11 +2504,11 @@ async fn work_item_bundle_admits_results_before_rendering_them()
         .map(|row| row["handle"].as_str().expect("handle").to_string())
         .collect();
     assert!(
-        handles.contains(&format!("F:{own}")),
+        handles.contains(&format!("{own}")),
         "owner A's own result must still render: {handles:?}"
     );
     assert!(
-        !handles.contains(&format!("F:{foreign}")),
+        !handles.contains(&format!("{foreign}")),
         "foreign-owner result leaked into the bundle: {handles:?}"
     );
     Ok(())
@@ -3044,7 +3054,7 @@ async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
 
     // A real repository exists, so an empty answer would be about the
     // handle rather than about an empty index.
-    let real_repo = Uuid::now_v7();
+    let real_repo = proxima_core::new_memory_uuid(0);
     ingest_file_revision(
         fixture.pg.pool_for_tests(),
         owner,
@@ -3054,7 +3064,7 @@ async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
     )
     .await?;
 
-    let absent = Uuid::now_v7().to_string();
+    let absent = proxima_core::new_memory_uuid(0).to_string();
     for (tool, args) in [
         (
             "search_chunks",
@@ -3319,7 +3329,7 @@ async fn ensure_present_file_revision(
         owner,
         repo_id,
         file_path,
-        &format!("fixture-present-{}", Uuid::now_v7()),
+        &format!("fixture-present-{}", proxima_core::new_memory_uuid(0)),
     )
     .await
 }
@@ -3330,7 +3340,7 @@ async fn code_chunk_memory_in_tx(
     handle: Uuid,
     origins: &[Uuid],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let t = Uuid::now_v7();
+    let t = proxima_core::new_memory_uuid(0);
     let _ = common::seed_memory_with_sidecars_in_tx(
         stamped,
         owner,
@@ -3503,11 +3513,11 @@ async fn the_walk_does_not_read_origins_a_schema_declares_it_does_not_use()
     )
     .await?;
 
-    let origin_handle = format!("F:{origin_t}");
+    let origin_handle = format!("{origin_t}");
 
     let control = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
         ctx(fixture.pg.clone(), owner, Arc::clone(&registry)),
-        json!({ "seeds": [format!("A:{speaking_t}")], "direction": "ancestors", "depth": 2 }),
+        json!({ "seeds": [format!("{speaking_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
     assert!(
@@ -3519,7 +3529,7 @@ async fn the_walk_does_not_read_origins_a_schema_declares_it_does_not_use()
 
     let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
         ctx(fixture.pg.clone(), owner, registry),
-        json!({ "seeds": [format!("A:{silent_t}")], "direction": "ancestors", "depth": 2 }),
+        json!({ "seeds": [format!("{silent_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
     let handles = think_handles(&walked);
@@ -3601,7 +3611,7 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
          VALUES ($1, $2, $3, $4, 'a fixture')",
     )
     .bind(assignment_t)
-    .bind(Uuid::now_v7())
+    .bind(proxima_core::new_memory_uuid(0))
     .bind(target_t)
     .bind(work_item_t)
     .execute(&mut *stamped)
@@ -3621,23 +3631,23 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
 
     let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
         ctx(fixture.pg.clone(), owner, registry),
-        json!({ "seeds": [format!("P:{assignment_t}")], "direction": "ancestors", "depth": 2 }),
+        json!({ "seeds": [format!("{assignment_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
     let handles = think_handles(&walked);
 
     assert!(
-        handles.contains(&format!("F:{work_item_t}")),
+        handles.contains(&format!("{work_item_t}")),
         "the walk reaches the work item the assignment's payload names: {handles:?}"
     );
     assert!(
-        handles.contains(&format!("P:{target_t}")),
+        handles.contains(&format!("{target_t}")),
         "and the target perspective, which is the second declared subject and \
          the other endpoint kind: {handles:?}"
     );
     for origin in &assignment_origins {
         assert!(
-            !handles.contains(&format!("A:{origin}")),
+            !handles.contains(&format!("{origin}")),
             "PayloadOnly means the origins array is not lineage: {handles:?}"
         );
     }

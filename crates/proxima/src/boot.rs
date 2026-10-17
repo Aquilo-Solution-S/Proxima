@@ -208,6 +208,7 @@ async fn connect_serving_storage(
         config.pg_pool_config,
         config.pg_tuning,
         platform_scope,
+        config.store_number,
     )
     .await
     .map_err(storage_error)?;
@@ -306,6 +307,10 @@ async fn connect_and_migrate(
         .await
         .map_err(migration_error)?;
     }
+    migration_pg
+        .initialize_store_number(config.store_number)
+        .await
+        .map_err(storage_error)?;
     if let Some(grants) = runtime_grants {
         grants.apply(&migration_pg.clone_pool_for_backend()).await?;
     }

@@ -30,7 +30,6 @@ use std::str::FromStr;
 
 use uuid::Uuid;
 
-use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid};
 use crate::{OwnerId, SchemaId, SchemaVersion};
 
 pub mod intake;
@@ -793,7 +792,7 @@ pub struct SealedPublication {
     /// The Fact's `t`. Also the outbox row's primary key: one Fact, one
     /// record, enforced by the database rather than by the writer.
     pub id: Uuid,
-    /// `CloudEvents` `id`: the canonical wire form of `t` (`F:<uuid>`).
+    /// `CloudEvents` `id`: the canonical bare UUID form of `t`.
     pub event_id: String,
     /// The envelope, exactly as it will be delivered.
     pub bytes: Vec<u8>,
@@ -812,7 +811,7 @@ impl SealedPublication {
     ///
     /// The envelope's `time` is `occurred_at`: `CloudEvents` `time` is when
     /// the occurrence happened, and that is the Fact's `memory.occurred_at`.
-    /// A Fact written without one occurred at its write time, the `UUIDv7`
+    /// A Fact written without one occurred at its write time, the `UUIDv8`
     /// timestamp of `t` (millisecond precision); storage hands over the
     /// value it bound into the row, so the published time and the read one
     /// are the same value.
@@ -834,7 +833,7 @@ impl SealedPublication {
         position: SubjectPosition,
     ) -> Result<Self, PublicationError> {
         let PublicationPlan { draft, limits } = plan;
-        let event_id = format_prefixed_uuid(t, PrefixedUuidClass::Fact);
+        let event_id = t.to_string();
         let time = occurred_at
             .checked_to_offset(time::UtcOffset::UTC)
             .ok_or_else(|| "outside the UTC range".to_owned())
@@ -954,7 +953,7 @@ mod tests {
 
     fn position() -> SubjectPosition {
         SubjectPosition::new(
-            Uuid::parse_str("01930000-0000-7000-8000-0000000000aa").expect("v7 id"),
+            Uuid::parse_str("01930000-0000-8000-8000-0000000000aa").expect("v8 id"),
             NonZeroU64::new(7).expect("not zero"),
         )
     }
@@ -1015,7 +1014,7 @@ mod tests {
 
     #[test]
     fn the_envelope_key_order_is_fixed_and_the_time_is_the_write_time_by_default() {
-        let t = Uuid::parse_str("01930000-0000-7000-8000-000000000001").expect("v7 id");
+        let t = Uuid::parse_str("01930000-0000-8000-8000-000000000001").expect("v8 id");
         let mut draft = draft();
         draft.extensions = extensions();
         let sealed = SealedPublication::seal(
@@ -1038,7 +1037,7 @@ mod tests {
             "\"datacontenttype\"",
             "\"dataschema\"",
             "\"time\"",
-            "\"subject\":\"01930000-0000-7000-8000-0000000000aa\"",
+            "\"subject\":\"01930000-0000-8000-8000-0000000000aa\"",
             "\"sequence\":\"00000000000000000007\"",
             "\"proximaowner\"",
             "\"proximamodel\"",
@@ -1055,18 +1054,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("{key} missing or out of order in {text}"));
             cursor += at + key.len();
         }
-        assert_eq!(sealed.event_id, format!("F:{t}"));
+        assert_eq!(sealed.event_id, t.to_string());
 
-        let (seconds, nanos) = t.get_timestamp().expect("v7 timestamp").to_unix();
-        let expected = time::OffsetDateTime::from_unix_timestamp_nanos(
-            i128::from(seconds) * 1_000_000_000 + i128::from(nanos / 1_000_000) * 1_000_000,
-        )
-        .expect("moment")
-        .format(&time::format_description::well_known::Rfc3339)
-        .expect("rfc3339");
+        let expected = time::OffsetDateTime::from_unix_timestamp_nanos(1_730_871_820_288_000_000)
+            .expect("moment")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("rfc3339");
         assert!(
             text.contains(&format!("\"time\":\"{expected}\"")),
-            "{text} should carry the v7 time {expected}"
+            "{text} should carry the v8 time {expected}"
         );
         assert!(expected.ends_with('Z'), "{expected} must be UTC-normalized");
         assert_eq!(sealed.digest, *blake3::hash(&sealed.bytes).as_bytes());
@@ -1074,7 +1070,7 @@ mod tests {
 
     #[test]
     fn the_envelope_time_is_when_the_fact_occurred() {
-        let t = Uuid::now_v7();
+        let t = crate::new_memory_uuid(3);
         let occurred_at = time::OffsetDateTime::parse(
             "2023-03-22T10:15:00.123456+02:00",
             &time::format_description::well_known::Rfc3339,
@@ -1100,7 +1096,7 @@ mod tests {
             max_payload_bytes: 16,
             ..PublicationLimits::default()
         };
-        let t = Uuid::now_v7();
+        let t = crate::new_memory_uuid(3);
         let err = SealedPublication::seal(
             &PublicationPlan::new(draft(), limits),
             t,
@@ -1136,7 +1132,7 @@ mod tests {
 
     #[test]
     fn sealing_the_same_bindings_twice_produces_the_same_bytes() {
-        let t = Uuid::parse_str("01930000-0000-7000-8000-000000000002").expect("v7 id");
+        let t = Uuid::parse_str("01930000-0000-8000-8000-000000000002").expect("v8 id");
         let seal_once = |ext: PublicationExtensions| {
             let mut draft = draft();
             draft.extensions = ext;

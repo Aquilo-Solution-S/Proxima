@@ -33,7 +33,7 @@ pub enum SeriesSelection {
     Ids(Vec<MemoryId>),
     /// Every series of `schema` whose NEWEST version was admitted before
     /// `cutoff`, oldest first, up to the cap. Admission time is the version's
-    /// `UUIDv7` `t` at millisecond precision: the substrate stamps it, so a
+    /// `UUIDv8` `t` at millisecond precision: the substrate stamps it, so a
     /// payload can neither back-date nor future-date it.
     AdmittedBefore {
         schema: SchemaId,
