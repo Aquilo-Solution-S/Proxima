@@ -131,7 +131,7 @@ const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
 /// memory row that stamps a registered table and has no row in it is refused
 /// at `COMMIT`, so a fixture that stamps `AGENT_NOTE` inserts the note here
 /// rather than after this returns. Each statement binds `$1` to the new `t`.
-async fn ingest_stamped(
+pub(crate) async fn ingest_stamped(
     pool: &sqlx::PgPool,
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
@@ -469,7 +469,7 @@ async fn insert_unassigned_goal(
     Ok(goal.t)
 }
 
-fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
+pub(crate) fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/test-fact-v1".to_string()),
         schema_version: SchemaVersion::new(1),

@@ -71,23 +71,23 @@ impl ColdObjectStore for MemoryColdStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-struct HotRow {
-    handle: Uuid,
-    t: Uuid,
-    kind: String,
-    owner_id: Uuid,
-    by: Uuid,
-    via: Option<Uuid>,
-    schema_id: String,
-    source_id: Option<String>,
-    ingest_key: Option<String>,
-    blob_id: Option<Uuid>,
-    origins: Vec<Uuid>,
-    refs: Vec<Uuid>,
-    goal_refs: Vec<Uuid>,
-    sidecar_tables: Vec<String>,
-    content_id: Option<Uuid>,
-    occurred_at: Option<time::OffsetDateTime>,
+pub(crate) struct HotRow {
+    pub(crate) handle: Uuid,
+    pub(crate) t: Uuid,
+    pub(crate) kind: String,
+    pub(crate) owner_id: Uuid,
+    pub(crate) by: Uuid,
+    pub(crate) via: Option<Uuid>,
+    pub(crate) schema_id: String,
+    pub(crate) source_id: Option<String>,
+    pub(crate) ingest_key: Option<String>,
+    pub(crate) blob_id: Option<Uuid>,
+    pub(crate) origins: Vec<Uuid>,
+    pub(crate) refs: Vec<Uuid>,
+    pub(crate) goal_refs: Vec<Uuid>,
+    pub(crate) sidecar_tables: Vec<String>,
+    pub(crate) content_id: Option<Uuid>,
+    pub(crate) occurred_at: Option<time::OffsetDateTime>,
 }
 
 /// The rows a lifecycle call may reach: one owner's, of every stored Memory
@@ -131,40 +131,40 @@ pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<&'static str>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-struct CooledRow {
-    t: Uuid,
-    handle: Uuid,
-    owner_id: Uuid,
-    by: Uuid,
-    via: Option<Uuid>,
-    kind: String,
-    object_key: String,
-    blob_id: Option<Uuid>,
-    content_id: Option<Uuid>,
-    source_id: Option<String>,
-    ingest_key: Option<String>,
-    origins: Option<Vec<Uuid>>,
-    refs: Option<Vec<Uuid>>,
-    goal_refs: Option<Vec<Uuid>>,
-    cold_digest: Option<Vec<u8>>,
+pub(crate) struct CooledRow {
+    pub(crate) t: Uuid,
+    pub(crate) handle: Uuid,
+    pub(crate) owner_id: Uuid,
+    pub(crate) by: Uuid,
+    pub(crate) via: Option<Uuid>,
+    pub(crate) kind: String,
+    pub(crate) object_key: String,
+    pub(crate) blob_id: Option<Uuid>,
+    pub(crate) content_id: Option<Uuid>,
+    pub(crate) source_id: Option<String>,
+    pub(crate) ingest_key: Option<String>,
+    pub(crate) origins: Option<Vec<Uuid>>,
+    pub(crate) refs: Option<Vec<Uuid>>,
+    pub(crate) goal_refs: Option<Vec<Uuid>>,
+    pub(crate) cold_digest: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColdRecord {
-    row: HotRow,
-    schema_id: String,
-    sidecar_dumps: Vec<(String, String)>,
+    pub(crate) row: HotRow,
+    pub(crate) schema_id: String,
+    pub(crate) sidecar_dumps: Vec<(String, String)>,
     /// Contract-declared `ON DELETE CASCADE` detail rows. Each declaration is
     /// present even when it has zero rows, so a cold record cannot add a
     /// forged table or omit a surface during restore.
-    detail_dumps: Vec<(String, Vec<String>)>,
+    pub(crate) detail_dumps: Vec<(String, Vec<String>)>,
     /// Embedding spaces that had vectors. Vectors stay out of the object;
     /// hydrate enqueues embed jobs in these spaces.
-    embed_spaces: Vec<proxima_core::EmbeddingSpace>,
+    pub(crate) embed_spaces: Vec<proxima_core::EmbeddingSpace>,
     /// Exact persisted one-liner.
-    sketch: Option<String>,
+    pub(crate) sketch: Option<String>,
     /// Format version of the record.
-    format_version: u8,
+    pub(crate) format_version: u8,
 }
 
 fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
@@ -216,7 +216,7 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     Ok(out)
 }
 
-fn cold_digest(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn cold_digest(bytes: &[u8]) -> Vec<u8> {
     blake3::hash(bytes).as_bytes().to_vec()
 }
 
@@ -2299,6 +2299,99 @@ enum HydrationPlan {
     Rejected(ColdRejection),
 }
 
+/// Fetch, verify and decode one cooled row's cold object: THE definition of
+/// a valid cold object, shared by hydrate and export so the two cannot
+/// disagree about one (#478).
+///
+/// The outer `Err` is a store or transport fault (anything but `NotFound`);
+/// the inner `Err` is a permanent verdict about this object.
+pub(crate) async fn read_verified_cold_record(
+    cold: &dyn ColdObjectStore,
+    cooled: &CooledRow,
+) -> Result<Result<ColdRecord, ColdRejection>, StorageError> {
+    // A pre-witness locator has neither a digest nor the split pin arrays,
+    // and its object predates the stamped cold format. Nothing can prove the
+    // bytes belong to this admission, so it fails closed rather than being
+    // admitted on the object's own say-so.
+    let (Some(origins), Some(refs), Some(goal_refs), Some(expected_digest)) = (
+        cooled.origins.as_ref(),
+        cooled.refs.as_ref(),
+        cooled.goal_refs.as_ref(),
+        cooled.cold_digest.as_ref(),
+    ) else {
+        return Ok(Err(ColdRejection::UnsupportedObject));
+    };
+    let bytes = match cold.get(&cooled.object_key).await {
+        Ok(bytes) => bytes,
+        Err(StorageError::NotFound) => return Ok(Err(ColdRejection::MissingObject)),
+        Err(error) => return Err(error),
+    };
+    if expected_digest.len() != 32 || cold_digest(&bytes) != *expected_digest {
+        return Ok(Err(ColdRejection::InvalidObject));
+    }
+    // Format is untrusted object metadata; keep its version in the refusal
+    // before the current-format decoder interprets any field.
+    let Some(&format_version) = bytes.first() else {
+        return Ok(Err(ColdRejection::InvalidObject));
+    };
+    if format_version != COLD_FORMAT_VERSION {
+        return Ok(Err(ColdRejection::UnsupportedFormat(format_version)));
+    }
+    let Ok(rec) = decode_record(&bytes) else {
+        return Ok(Err(ColdRejection::InvalidObject));
+    };
+    if rec.row.t != cooled.t
+        || rec.row.handle != cooled.handle
+        || rec.row.kind != cooled.kind
+        || rec.row.by != cooled.by
+        || rec.row.via != cooled.via
+        || rec.row.source_id != cooled.source_id
+        || rec.row.ingest_key != cooled.ingest_key
+        || rec.row.origins != *origins
+        || rec.row.refs != *refs
+        || rec.row.goal_refs != *goal_refs
+    {
+        return Ok(Err(ColdRejection::InvalidObject));
+    }
+    Ok(Ok(rec))
+}
+
+/// Every cooled row of one owner, with its locator, in `t` order. Export
+/// reads them in its snapshot; the locators never enter the bundle.
+pub(crate) async fn owner_cooled_rows(
+    conn: &mut PgConnection,
+    owner_id: Uuid,
+) -> Result<Vec<CooledRow>, StorageError> {
+    sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
+           FROM proxima_core.cooled
+          WHERE owner_id = $1
+          ORDER BY t",
+    )
+    .bind(owner_id)
+    .fetch_all(conn)
+    .await
+    .map_err(map_err)
+}
+
+/// One cooled row by `t`, whoever owns it: export's revalidation re-read.
+pub(crate) async fn cooled_row(
+    conn: &mut PgConnection,
+    t: Uuid,
+) -> Result<Option<CooledRow>, StorageError> {
+    sqlx::query_as(
+        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
+           FROM proxima_core.cooled
+          WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(conn)
+    .await
+    .map_err(map_err)
+}
+
 /// Classify one owner-scoped id and, when it is a restorable cooled
 /// admission, do every read and every check the restore depends on.
 ///
@@ -2319,55 +2412,14 @@ async fn plan_hydration(
     let Some(cooled) = owned_cooled_row(tx, t, reach).await? else {
         return Ok(HydrationPlan::NotFound);
     };
-    // A pre-witness locator has neither a digest nor the split pin arrays,
-    // and its object predates the stamped cold format. Nothing can prove the
-    // bytes belong to this admission, so it fails closed rather than being
-    // admitted on the object's own say-so.
-    let (Some(origins), Some(refs), Some(goal_refs), Some(expected_digest)) = (
-        cooled.origins.clone(),
-        cooled.refs.clone(),
-        cooled.goal_refs.clone(),
-        cooled.cold_digest.clone(),
-    ) else {
-        return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedObject));
+    let rec = match read_verified_cold_record(cold, &cooled).await? {
+        Ok(rec) => rec,
+        Err(rejection) => return Ok(HydrationPlan::Rejected(rejection)),
     };
-
-    let bytes = match cold.get(&cooled.object_key).await {
-        Ok(bytes) => bytes,
-        Err(StorageError::NotFound) => {
-            return Ok(HydrationPlan::Rejected(ColdRejection::MissingObject));
-        }
-        Err(error) => return Err(error),
-    };
-    if expected_digest.len() != 32 || cold_digest(&bytes) != expected_digest {
-        return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
-    }
-    // Format is untrusted object metadata; keep its version in the refusal
-    // before the current-format decoder interprets any field.
-    let Some(&format_version) = bytes.first() else {
-        return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
-    };
-    if format_version != COLD_FORMAT_VERSION {
-        return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedFormat(
-            format_version,
-        )));
-    }
-    let Ok(rec) = decode_record(&bytes) else {
-        return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
-    };
-    if rec.row.t != cooled.t
-        || rec.row.handle != cooled.handle
-        || rec.row.kind != cooled.kind
-        || rec.row.by != cooled.by
-        || rec.row.via != cooled.via
-        || rec.row.source_id != cooled.source_id
-        || rec.row.ingest_key != cooled.ingest_key
-        || rec.row.origins != origins
-        || rec.row.refs != refs
-        || rec.row.goal_refs != goal_refs
-    {
-        return Ok(HydrationPlan::Rejected(ColdRejection::InvalidObject));
-    }
+    // The verifier proved these present and equal to the record's own.
+    let origins = rec.row.origins.clone();
+    let refs = rec.row.refs.clone();
+    let goal_refs = rec.row.goal_refs.clone();
     if !cold_sidecar_stamp_matches(&rec, sidecars) {
         return Ok(HydrationPlan::Rejected(ColdRejection::UnsupportedSidecar));
     }
@@ -3788,7 +3840,7 @@ SELECT object_key, backend FROM enqueued";
 // drafts, which is exactly why the test cannot be written above it.
 #[cfg(test)]
 #[path = "forget_pg_tests.rs"]
-mod forget_pg_tests;
+pub(crate) mod forget_pg_tests;
 
 #[cfg(test)]
 mod tests {
