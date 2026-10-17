@@ -901,8 +901,8 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
     let mut sections: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for (table, rows) in &bundle.tables {
         // #478 began exporting these (allowlisted); the pinned baseline did
-        // not. Their erase is still compared through the database dump, and
-        // `owner_export` pins their bundle rows.
+        // not. Their erase is still compared through the database dump;
+        // `tests/owner_export.rs` pins their exported field lists.
         if names_relation(table, "content") || names_relation(table, "blob_uploads") {
             continue;
         }

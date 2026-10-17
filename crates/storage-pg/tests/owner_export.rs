@@ -234,6 +234,31 @@ async fn export_carries_cooled_locators_and_sketches() {
         .await?;
         assert_eq!(witness_kind, "fact");
 
+        // A completed upload names where its bytes live (bucket, object key,
+        // etag). The export carries the upload row, never those locators.
+        let upload_blob: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+             VALUES ($1, 'opaque/archive-v1', $2)
+             RETURNING blob_id",
+        )
+        .bind(owner.into_inner())
+        .bind(vec![5u8; 32])
+        .fetch_one(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.blob_uploads
+                (owner_id, bucket, object_key, filename, mime, expected_byte_len, status,
+                 blob_id, sha256, etag, expires_at, completed_at, content_hash)
+             VALUES ($1, 'leak-scan-bucket', 'uploads/leak-scan-object', 'a.zip',
+                     'application/zip', 3, 'completed', $2, $3, 'leak-scan-etag',
+                     now() + interval '1 hour', now(), $3)",
+        )
+        .bind(owner.into_inner())
+        .bind(upload_blob)
+        .bind(vec![5u8; 32])
+        .execute(pool)
+        .await?;
+
         let auth =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
@@ -257,6 +282,35 @@ async fn export_carries_cooled_locators_and_sketches() {
             "the cooled allowlist carries the memory, not where its cold object lives: {:?}",
             cooled_rows[0]
         );
+        let uploads = bundle.table("proxima_core.blob_uploads");
+        assert_eq!(uploads.len(), 1, "the completed upload is exported");
+        assert_eq!(uploads[0]["status"].as_str(), Some("completed"));
+        let mut upload_fields: Vec<&str> = uploads[0]
+            .as_object()
+            .expect("upload export row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        upload_fields.sort_unstable();
+        assert_eq!(
+            upload_fields,
+            vec![
+                "aborted_at",
+                "blob_id",
+                "completed_at",
+                "content_hash",
+                "expected_byte_len",
+                "expires_at",
+                "filename",
+                "mime",
+                "mounted_from_upload_id",
+                "sha256",
+                "status",
+                "upload_id",
+            ],
+            "the upload export is a stable allowlist without bucket, object_key, etag \
+             or error_message"
+        );
         // Acceptance 4 of #478: no storage locator anywhere in the bundle.
         let whole = serde_json::to_value(&bundle.tables)?;
         let mut leaks = Vec::new();
@@ -266,6 +320,12 @@ async fn export_carries_cooled_locators_and_sketches() {
             !serde_json::to_string(&whole)?.contains(key.as_str()),
             "the cold object key leaked into the bundle"
         );
+        for locator in ["leak-scan-bucket", "uploads/leak-scan-object", "leak-scan-etag"] {
+            assert!(
+                !serde_json::to_string(&whole)?.contains(locator),
+                "the upload locator {locator} leaked into the bundle"
+            );
+        }
 
         let sketches = bundle.table("proxima_core.sketch");
         assert_eq!(

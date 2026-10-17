@@ -11,7 +11,9 @@ use proxima_core::owner_inverse::{
     ExportAuthorization, OwnerExportBundle, OwnerExportTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit};
-use proxima_core::{AccessKind, ColdObjectStore, MemoryId, OwnerId, StorageError, UserId};
+use proxima_core::{
+    AccessKind, ColdObjectStore, EntityKind, MemoryId, OwnerId, StorageError, UserId,
+};
 use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,6 +24,7 @@ use crate::verbs::forget::forget_pg_tests::{draft, ingest_stamped};
 use crate::verbs::forget::{MemoryColdStore, cold_digest, cold_object_key};
 
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const AGENT_DERIVATION: &str = "proxima_core.agent_derivation_v1";
 const PASS: u8 = 0;
 const TAMPER: u8 = 1;
 const FAIL: u8 = 2;
@@ -426,6 +429,191 @@ async fn a_lifecycle_verb_during_the_object_reads_blocks_or_forces_a_retry() {
         Err(StorageError::Retryable(_)) => {}
         Err(other) => panic!("neither a consistent bundle nor a retry: {other:?}"),
     }
+    let fx = Arc::into_inner(fx).expect("tasks done");
+    finish(fx).await;
+}
+
+/// One agent-derivation memory (Abstraction or Perspective) made from
+/// `origin`, through the typed write so `sidecar_tables` is stamped and the
+/// owner's content row is ensured.
+async fn derive(fx: &Fixture, kind: &str, origin: (EntityKind, Uuid), body: &str) -> Uuid {
+    use proxima_core::verbs::fact_ingest::AuthorizedFactWrite;
+    use proxima_core::{AbstractionPayload, AgentDerivationV1, SchemaId, SidecarPayload};
+    let mut cmd = draft(None);
+    cmd.kind = kind.into();
+    cmd.schema_id = SchemaId::new(AgentDerivationV1::SCHEMA_ID.into());
+    cmd.lexical_language =
+        Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+    cmd.additional_references = vec![proxima_core::EdgeEndpoint::memory(
+        origin.0,
+        MemoryId::new(origin.1),
+    )];
+    let payload = AgentDerivationV1 {
+        title: format!("{kind} title"),
+        body: body.into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+        source_memory_ids: vec![origin.1],
+        model_id: "test".into(),
+        client_name: "test".into(),
+        client_version: "1".into(),
+    };
+    let payload = if kind == "perspective" {
+        SidecarPayload::perspective(payload)
+    } else {
+        SidecarPayload::abstraction(payload)
+    };
+    let authorized = AuthorizedFactWrite::new_for_tests(
+        OwnerWritePermit::new_for_tests(*fx.permit.owner(), AccessKind::Fact),
+        cmd,
+        Some(AgentDerivationV1::sidecar_table().to_owned()),
+        Vec::new(),
+    )
+    .with_sidecar_payloads_for_tests(vec![payload]);
+    proxima_core::storage_ports::FactIngestPort::ingest_fact_with_typed_sidecar(
+        &fx.pg,
+        &authorized,
+        &[],
+    )
+    .await
+    .expect("derivation")
+    .memory_id
+    .into_inner()
+}
+
+/// The content row an A/P memory (hot or cooled) names.
+async fn content_of(fx: &Fixture, t: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "SELECT content_id FROM proxima_core.memory WHERE t = $1
+         UNION ALL
+         SELECT content_id FROM proxima_core.cooled WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_one(&fx.cold.admin)
+    .await
+    .expect("content id")
+}
+
+/// Round-2 review of #478: a forgotten Abstraction and Perspective carry
+/// their `agent_derivation_v1` bodies in their cold objects, and the export
+/// decodes them beside a hot one; each one's content row is in the bundle.
+#[tokio::test]
+async fn export_decodes_forgotten_abstraction_and_perspective_bodies() {
+    let fx = fixture().await;
+    let fact = (EntityKind::Fact, fx.hot);
+    let hot_a = derive(&fx, "abstraction", fact, "hot abstraction body").await;
+    let cold_a = derive(&fx, "abstraction", fact, "cold abstraction body").await;
+    // A Perspective is made from an Abstraction.
+    let cold_p = derive(
+        &fx,
+        "perspective",
+        (EntityKind::Abstraction, hot_a),
+        "cold perspective body",
+    )
+    .await;
+    for (t, kind) in [
+        (cold_a, AccessKind::Abstraction),
+        (cold_p, AccessKind::Perspective),
+    ] {
+        let permit = OwnerWritePermit::new_for_tests(*fx.permit.owner(), kind);
+        MemoryAuthoringPort::forget_memory(&fx.pg, &permit, MemoryId::new(t))
+            .await
+            .expect("forget derivation");
+    }
+    let bundle = export(&fx).await.expect("export");
+    assert!(
+        bundle.cold_unavailable.is_empty(),
+        "{:?}",
+        bundle.cold_unavailable
+    );
+    for (t, body) in [
+        (hot_a, "hot abstraction body"),
+        (cold_a, "cold abstraction body"),
+        (cold_p, "cold perspective body"),
+    ] {
+        let rows = rows_for(&bundle, AGENT_DERIVATION, t);
+        assert_eq!(rows.len(), 1, "the derivation body of {t} is exported");
+        assert_eq!(rows[0]["body"].as_str(), Some(body));
+        let content = content_of(&fx, t).await.to_string();
+        assert!(
+            bundle
+                .table("proxima_core.content")
+                .iter()
+                .any(|row| row["content_id"].as_str() == Some(content.as_str())),
+            "the content row of {t} is exported"
+        );
+    }
+    for t in [cold_a, cold_p] {
+        assert_eq!(rows_for(&bundle, "proxima_core.cooled", t).len(), 1);
+        assert!(rows_for(&bundle, "proxima_core.memory", t).is_empty());
+    }
+    assert_eq!(
+        bundle.count(AGENT_DERIVATION),
+        bundle.table(AGENT_DERIVATION).len()
+    );
+    finish(fx).await;
+}
+
+/// Round-2 review of #478: between the snapshot and the object read, the
+/// memory is hydrated and forgotten again (a new cooled row for the same
+/// memory) and its object deleted. The read finds no object, but the row it
+/// would report changed, so the export answers `Retryable` rather than a
+/// `missing` the bundle's own snapshot contradicts. Exported again, the
+/// row is unchanged and its object really is gone: `missing`.
+#[tokio::test]
+async fn a_cooled_row_replaced_during_the_object_read_forces_a_retry() {
+    let fx = Arc::new(fixture().await);
+    let owner_id = fx.permit.owner().into_inner();
+    let gate = crate::pause_point::arm(crate::pause_point::AFTER_EXPORT_SNAPSHOT, owner_id);
+    let exporting = {
+        let fx = fx.clone();
+        tokio::spawn(async move { export(&fx).await })
+    };
+    gate.reached().await;
+
+    let before: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT cold_digest FROM proxima_core.cooled WHERE t = $1")
+            .bind(fx.forgotten)
+            .fetch_one(&fx.cold.admin)
+            .await
+            .expect("cooled digest");
+    MemoryAuthoringPort::hydrate_memories(&fx.pg, &fx.permit, &[MemoryId::new(fx.forgotten)], &[])
+        .await
+        .expect("hydrate while the export is parked");
+    // Change what the object will hold, so the re-forget writes a new one.
+    sqlx::query("UPDATE proxima_core.sketch SET text = 'Warmed and changed' WHERE t = $1")
+        .bind(fx.forgotten)
+        .execute(&fx.cold.admin)
+        .await
+        .expect("change the sketch");
+    MemoryAuthoringPort::forget_memory(&fx.pg, &fx.permit, MemoryId::new(fx.forgotten))
+        .await
+        .expect("forget again while the export is parked");
+    let after: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT cold_digest FROM proxima_core.cooled WHERE t = $1")
+            .bind(fx.forgotten)
+            .fetch_one(&fx.cold.admin)
+            .await
+            .expect("cooled digest");
+    assert_ne!(before, after, "the re-forget wrote a different cooled row");
+    fx.cold
+        .inner
+        .delete(&cold_object_key(fx.forgotten))
+        .await
+        .expect("delete object");
+    gate.resume().await;
+    let exported = exporting.await.expect("export task");
+    assert!(
+        matches!(exported, Err(StorageError::Retryable(_))),
+        "a replaced cooled row must force a retry: {:?}",
+        exported.as_ref().map(|bundle| &bundle.cold_unavailable)
+    );
+
+    let bundle = export(&fx).await.expect("unchanged row exports");
+    assert_eq!(
+        unavailable(&bundle),
+        vec![(fx.forgotten.to_string(), "missing".to_owned())]
+    );
     let fx = Arc::into_inner(fx).expect("tasks done");
     finish(fx).await;
 }

@@ -209,13 +209,15 @@ async fn fetch_cold_records(
 /// The fence rule. The export holds the host-lifecycle fence shared and the
 /// owner fence exclusive for its whole run, which every owner-fenced verb
 /// (ingest, write sessions, goal and memory timeseries, goal writes, owner
-/// erase) waits on. Forget, hydrate and transfer do not take the owner
-/// fence, so a `missing` or `invalid` verdict is only reported after the
-/// cooled row is re-read unchanged in a fresh transaction; a row that is
-/// gone or names another object means one of them got in between the
-/// snapshot and the read, and the export answers `Retryable` rather than a
-/// bundle that disagrees with itself. A present, digest-verified object is
-/// exported even when a purge is queued for it: the digest decides.
+/// erase) waits on. Transfer takes both owners' fences exclusive
+/// (`owner_columns::transfer_to_owner`), so it cannot move a row
+/// mid-export. Forget and hydrate do not take the owner fence, so a
+/// `missing` or `invalid` verdict is only reported after the cooled row is
+/// re-read unchanged in a fresh transaction; a row that is gone or names
+/// another object means one of them got in between the snapshot and the
+/// read, and the export answers `Retryable` rather than a bundle that
+/// disagrees with itself. A present, digest-verified object is exported
+/// even when a purge is queued for it: the digest decides.
 async fn merge_cold_records(
     conn: &mut sqlx::postgres::PgConnection,
     platform: &crate::PgPlatformScope,
