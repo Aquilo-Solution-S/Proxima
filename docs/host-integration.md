@@ -86,6 +86,28 @@ policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor
 or add a caller-controlled ACL/share set.
 
+For subjects in `PROXIMA_FORWARDER_SUBJECTS`, the signed token must carry an
+`owner` UUID claim. The forwarder remains the authenticated subject; its
+`PROXIMA_FORWARDER_ROLE` applies only to that registered personal or group
+owner. An absent owner header uses the claim. A present `X-Proxima-Owner`
+header and any live session must agree with it before the target is resolved.
+An unknown owner grants no role. Ordinary subjects ignore the claim.
+
+With the PostgreSQL registry, a personal owner is registered by its first
+ordinary authenticated write. Complete that write before forwarding to a new
+person, or supply an authoritative `OwnerRegistry` for provisioned owners.
+Forwarding does not register an unknown owner.
+
+Forwarding never unions ordinary memberships into the request, grants group
+management, or permits delegation. `ForwarderRole` is the closed choice
+`Viewer`, `Ingest`, or `Editor`; none writes Goals or manages groups.
+`OwnerRegistry` probes both owner kinds. Custom authenticators use
+`AuthzContext::from_verified_forwarded_owner` only after verifying the
+credential. That pending context grants no roles until the edge resolves its
+claim through the configured policy and registry. Host role shaping must
+preserve the binding. Replace implementations of the retired `GroupRegistry`
+with `OwnerRegistry::is_registered_owner` when upgrading.
+
 Attaching a subgroup or changing its relation requires manage authority on
 both groups. Detaching it requires manage authority on either endpoint;
 removing a person requires manage authority on the parent group. PostgreSQL

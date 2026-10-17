@@ -19,7 +19,7 @@ pub use crate::migrations::{
     preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
     run_core_and_flavor_migrations_with_policy,
 };
-pub use crate::owner_access::{ForwarderPolicy, GroupRegistry};
+pub use crate::owner_access::{ForwarderPolicy, OwnerRegistry};
 pub use crate::proxima_host::ProximaHost;
 pub use crate::runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
@@ -272,7 +272,7 @@ pub use proxima_core::{
     DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
     EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
-    FlavorServiceError, FlavorServices, GroupId, MemoryId, OwnerAccessPort, OwnerId,
+    FlavorServiceError, FlavorServices, ForwarderRole, GroupId, MemoryId, OwnerAccessPort, OwnerId,
     OwnerIdParseError, OwnerRoles, Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError,
     SourceId, StorageError, ToolName, ToolScope, UserId, canonical_json_bytes, env_value,
     provider_safe_tool_name,

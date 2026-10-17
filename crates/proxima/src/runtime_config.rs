@@ -505,8 +505,8 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Trusted forwarder subjects and the fixed role each holds in whichever
-    /// Group it selects; wraps the owner-access port. Env equivalent:
+    /// Trusted forwarder subjects and their fixed role for a verified,
+    /// registered owner; wraps the owner-access port. Env equivalent:
     /// `PROXIMA_FORWARDER_SUBJECTS` + `PROXIMA_FORWARDER_ROLE`.
     #[must_use]
     pub fn forwarder(mut self, policy: ForwarderPolicy) -> Self {
@@ -1093,7 +1093,7 @@ pub struct RuntimeConfig {
     /// Inbound headers copied to tools as `RequestHeaders`
     /// (`PROXIMA_REQUEST_HEADERS`). Empty publishes nothing.
     pub request_headers: RequestHeaderAllowlist,
-    /// Trusted forwarder subjects and their fixed per-Group role
+    /// Trusted forwarder subjects and their fixed verified-owner role
     /// (`PROXIMA_FORWARDER_*`), wrapped around the owner-access port.
     pub forwarder: Option<ForwarderPolicy>,
     /// Anonymous `/healthz` and `/readyz` on the MCP listener
