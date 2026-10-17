@@ -420,6 +420,7 @@ mod other_stores {
             next_cursor: None,
             has_more: false,
             unanswered: None,
+            inventory_unanswered: None,
         };
         merge_store_hits(
             &mut output,
@@ -481,6 +482,7 @@ mod other_stores {
             next_cursor: Some("opaque-local-cursor".into()),
             has_more: true,
             unanswered: None,
+            inventory_unanswered: None,
         };
         merge_store_hits(
             &mut output,

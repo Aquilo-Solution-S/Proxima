@@ -216,11 +216,16 @@ pub struct SearchMemoriesOutput {
     pub neighbor_edges: Vec<NeighborEdge>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
-    /// Present only when other stores were searched: the ones that did not
-    /// answer within the time bound (or failed). Their hits are missing
-    /// from this page; the rest is returned.
+    /// Present only when other stores were searched (or should have been):
+    /// the ones that did not answer within the time bound (or failed).
+    /// Their hits are missing from this page; the rest is returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unanswered: Option<Vec<u16>>,
+    /// `true` when other stores are wired but their list did not answer
+    /// (failed or timed out): the search ran on this store only, and other
+    /// stores' hits are missing. Retry for a complete page. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inventory_unanswered: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -323,8 +328,13 @@ impl McpTool for SearchMemoriesTool {
                     next_cursor: None,
                     has_more: false,
                     unanswered: None,
+                    inventory_unanswered: None,
                 }
             };
+            if stores.inventory_unanswered {
+                output.inventory_unanswered = Some(true);
+                output.unanswered = Some(Vec::new());
+            }
             if let Some(service) = stores.service.as_deref()
                 && !stores.route.remotes.is_empty()
                 && args.cursor.is_none()
@@ -588,6 +598,7 @@ async fn search_local(
         next_cursor,
         has_more,
         unanswered: None,
+        inventory_unanswered: None,
     })
 }
 

@@ -83,6 +83,13 @@ reported as unanswered, without a retry that drops filters. Recency orders the
 combined candidates newest first before the result limit. Other stores answer
 on the first page; the local page retains its own cursor.
 
+When other stores are wired but their list does not answer (it failed or timed
+out), a search that names no store returns this store's hits with
+`inventory_unanswered: true` and `unanswered: []`: other stores' hits are
+missing, so retry for a complete page. A search that names another store fails
+retryable with `store_unavailable`; one that names only this store runs as
+asked.
+
 ## Writes
 
 Typed payload registration fixes each schema's kind, references, validation,

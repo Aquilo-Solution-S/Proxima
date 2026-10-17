@@ -848,3 +848,101 @@ async fn interpret_about_a_remote_memory_reads_it_first_and_walks_it_through_the
     .await;
     result.expect("cross-store interpret test failed");
 }
+
+/// Other stores whose list never answers.
+struct DownInventory;
+
+impl OtherStores for DownInventory {
+    fn stores<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+    ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+        Box::pin(async { Err(OtherStoresError::Unavailable("store list down".into())) })
+    }
+
+    fn search<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+        store: u16,
+        _args: &'a RemoteSearch,
+    ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+        Box::pin(async move { panic!("store {store} searched without an inventory") })
+    }
+
+    fn read<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+        _id: Uuid,
+    ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+        Box::pin(async { Ok(RemoteRead::NotFound) })
+    }
+}
+
+/// Acceptance 1a of #480: when the store list fails, a search still returns
+/// the local hits, and says the inventory went unanswered instead of
+/// passing for "there are no other stores". Naming a store is retryable.
+#[tokio::test]
+async fn a_failed_store_list_is_reported_on_search_and_refuses_named_stores() {
+    let split_db = clone_split_core_db("proxima_other_stores_inventory_down")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .services(FlavorServices::with(OtherStoresService::new(Arc::new(
+                DownInventory,
+            ))))
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let local = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({"title":"zebra","body":"a local zebra fact","tags":[]}),
+        )
+        .await?;
+        let found = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_search_memories",
+            serde_json::json!({"query":"zebra","mode":"lexical"}),
+        )
+        .await?;
+        assert_eq!(found["inventory_unanswered"], true, "{found}");
+        assert_eq!(found["unanswered"], serde_json::json!([]), "{found}");
+        let memories = found["memories"].as_array().expect("memories");
+        assert!(
+            memories.iter().any(|hit| hit["memory"] == local["handle"]),
+            "the local hit is still returned: {found}"
+        );
+
+        let named = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_search_memories",
+            serde_json::json!({"query":"zebra","mode":"lexical","stores":[1]}),
+        )
+        .await
+        .expect_err("a named store without an inventory");
+        assert_eq!(
+            named.kind(),
+            proxima::CoreMcpErrorKind::StoreUnavailable,
+            "{named:?}"
+        );
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("failed inventory search test failed");
+}

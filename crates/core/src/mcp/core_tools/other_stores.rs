@@ -133,8 +133,17 @@ async fn resolve_remote_origins(
 pub(crate) struct SearchStores {
     pub(crate) route: StoreRoute,
     pub(crate) service: Option<Arc<OtherStoresService>>,
+    /// Other stores are wired but their list did not answer (failed or
+    /// timed out), so the search ran locally only.
+    pub(crate) inventory_unanswered: bool,
 }
 
+/// Route a search over the stores the caller may read.
+///
+/// When other stores are wired but their list does not answer, a search
+/// that names a remote store fails retryable (`StoreUnavailable` for the
+/// first one named), one that names only this store runs as asked, and
+/// one that names none runs locally and reports `inventory_unanswered`.
 pub(crate) async fn route_search(
     ctx: &McpToolCtx,
     requested: Option<&[u16]>,
@@ -142,14 +151,30 @@ pub(crate) async fn route_search(
 ) -> Result<SearchStores, McpToolError> {
     let local_number = ctx.require_engine()?.store_number();
     let service = service(ctx);
-    let readable = match &service {
-        Some(service) => service
-            .stores_bounded(caller(ctx), local_number)
-            .await
-            .map_err(|error| McpToolError::Other(error.to_string()))?,
+    let answered = match &service {
+        Some(service) => Some(
+            service
+                .stores_bounded(caller(ctx), local_number)
+                .await
+                .map_err(|error| McpToolError::Other(error.to_string()))?,
+        ),
         None => None,
+    };
+    let mut inventory_unanswered = false;
+    if matches!(answered, Some(None)) {
+        if let Some(store) = requested
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|number| *number != local_number)
+        {
+            return Err(McpToolError::StoreUnavailable { store });
+        }
+        inventory_unanswered = requested.is_none();
     }
-    .unwrap_or_else(|| StoreInventory::empty(local_number));
+    let readable = answered
+        .flatten()
+        .unwrap_or_else(|| StoreInventory::empty(local_number));
     let local_declares = |schema_id: &str| {
         ctx.engine().is_some_and(|engine| {
             engine
@@ -161,7 +186,11 @@ pub(crate) async fn route_search(
     };
     let route = route_stores(requested, schema_id, local_declares, &readable)
         .map_err(McpToolError::InvalidInput)?;
-    Ok(SearchStores { route, service })
+    Ok(SearchStores {
+        route,
+        service,
+        inventory_unanswered,
+    })
 }
 
 pub(crate) async fn search_remotes(
@@ -452,8 +481,14 @@ mod tests {
         }
     }
 
+    /// Acceptance 1 of #480: a store list that failed or timed out is not
+    /// "there are no other stores". A search that names no store still runs
+    /// locally but says the inventory went unanswered; one that names a
+    /// remote store is a retryable `StoreUnavailable` (not "unknown store");
+    /// one that names only the local store needed no inventory. The tool
+    /// listing keeps its static schema.
     #[tokio::test(start_paused = true)]
-    async fn unavailable_inventory_preserves_local_routing_and_static_metadata() {
+    async fn unavailable_inventory_is_reported_and_refuses_named_stores() {
         for reply in [InventoryReply::Unavailable, InventoryReply::Pending] {
             let (ctx, port) = inventory_ctx(reply);
             let schema = serde_json::json!({"type": "object", "properties": {}});
@@ -471,12 +506,27 @@ mod tests {
                     remotes: Vec::new()
                 }
             );
-            let error = route_search(&ctx, Some(&[1]), None)
+            assert!(routed.inventory_unanswered);
+            let error = route_search(&ctx, Some(&[0, 2, 1]), None)
                 .await
                 .err()
-                .expect("unknown remote");
-            assert!(matches!(error, McpToolError::InvalidInput(_)));
-            assert_eq!(port.listings.load(std::sync::atomic::Ordering::Relaxed), 3);
+                .expect("a named remote store");
+            assert!(
+                matches!(error, McpToolError::StoreUnavailable { store: 2 }),
+                "{error:?}"
+            );
+            let local_only = route_search(&ctx, Some(&[0]), None)
+                .await
+                .expect("local only");
+            assert_eq!(
+                local_only.route,
+                StoreRoute {
+                    local: true,
+                    remotes: Vec::new()
+                }
+            );
+            assert!(!local_only.inventory_unanswered);
+            assert_eq!(port.listings.load(std::sync::atomic::Ordering::Relaxed), 4);
             assert!(port.searches.lock().expect("search calls").is_empty());
         }
     }

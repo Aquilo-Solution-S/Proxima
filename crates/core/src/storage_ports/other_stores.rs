@@ -305,8 +305,9 @@ impl OtherStoresService {
     }
 
     /// Read and check the remote-store inventory under the time bound.
-    /// An unavailable port returns `None`; an answered inventory is validated
-    /// before either routing or schema rendering can use it.
+    /// `None` means the list did not answer: it failed or timed out, which
+    /// says nothing about which stores exist. An answered inventory is
+    /// validated before either routing or schema rendering can use it.
     ///
     /// # Errors
     ///
