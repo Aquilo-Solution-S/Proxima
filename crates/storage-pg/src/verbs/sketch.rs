@@ -82,6 +82,26 @@ pub async fn upsert_sketch(
     Ok(())
 }
 
+/// The persisted sketch text of each memory in `ids` that has one: the
+/// memory's own text, the display body a read falls back to when the schema
+/// names no body field and the payload has no `body`/`text` key. Callers
+/// pass ids that are already admitted; this lookup authorizes nothing.
+pub async fn load_sketch_texts_on_connection(
+    connection: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, String>, StorageError> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT s.t, s.text FROM proxima_core.sketch s WHERE s.t = ANY($1::uuid[])")
+            .bind(ids)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(map_err)?;
+    Ok(rows.into_iter().collect())
+}
+
 pub async fn load_sketches_on_connection(
     connection: &mut PgConnection,
     read_owners: &[OwnerId],

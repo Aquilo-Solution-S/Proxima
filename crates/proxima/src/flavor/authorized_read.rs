@@ -148,7 +148,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns `Forbidden` when the context resolves to an empty read set.
+/// Returns `Forbidden` when the context authorizes no reads. When the host
+/// vetoes every readable owner the list is empty and `Ok`; a scan bound to
+/// it reads nothing.
 pub async fn read_owner_ids(
     engine: &Engine,
     authz: &AuthzContext,

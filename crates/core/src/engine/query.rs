@@ -33,9 +33,10 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the authorization context resolves to an empty
-    /// read set (a denied context authorizes nothing), `InvalidArgument` when
-    /// `req.limit == 0`, or `Internal` when the storage query fails.
+    /// Returns `Forbidden` when the context authorizes no reads (a denied
+    /// context authorizes nothing), `InvalidArgument` when `req.limit == 0`,
+    /// or `Internal` when the storage query fails. A read set the host vetoes
+    /// down to nothing answers an empty page, not an error.
     pub async fn query(
         &self,
         authz: &AuthzContext,
@@ -70,8 +71,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context resolves to an empty read set (a
-    /// denied context authorizes nothing).
+    /// Returns `Forbidden` when the context authorizes no reads (a denied
+    /// context authorizes nothing). An all-vetoed set is `Ok` and empty.
     pub async fn authorized_read_owners(
         &self,
         authz: &AuthzContext,
@@ -87,9 +88,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the authorization context resolves to an empty
-    /// read set, `InvalidArgument` when `req.limit == 0`, or `Internal` when
-    /// storage fails.
+    /// Returns `Forbidden` when the context authorizes no reads,
+    /// `InvalidArgument` when `req.limit == 0`, or `Internal` when storage
+    /// fails. An all-vetoed read set answers no edges, not an error.
     pub async fn read_edges(
         &self,
         authz: &AuthzContext,
@@ -105,8 +106,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the authorization context resolves to an empty
-    /// read set, or `Internal` when storage fails.
+    /// Returns `Forbidden` when the context authorizes no reads, or `Internal`
+    /// when storage fails. An all-vetoed read set answers `false`.
     pub async fn edge_exists(
         &self,
         authz: &AuthzContext,
@@ -121,8 +122,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context reads nothing, or `Internal`
-    /// when storage fails.
+    /// Returns `Forbidden` when the context authorizes no reads, or
+    /// `Internal` when storage fails. An all-vetoed read set walks nothing.
     pub async fn walk_memory_lineage(
         &self,
         authz: &AuthzContext,

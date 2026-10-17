@@ -180,16 +180,33 @@ pub async fn load_memory_graph_payloads_on_connection(
     }
     // Body and tags follow the schema's display rule, the same one by-id
     // reads use, so a search hit and a read of the same memory agree.
+    let sketches = if include_body {
+        let needs_fallback = identities
+            .iter()
+            .map(|identity| {
+                let spec = resolve_memory_schema(schemas, identity.kind, &identity.schema_id)?;
+                Ok(spec
+                    .display_body(payloads.get(&identity.memory_id), None)
+                    .is_none()
+                    .then(|| identity.memory_id.into_inner()))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let needs_fallback: Vec<uuid::Uuid> = needs_fallback.into_iter().flatten().collect();
+        crate::verbs::sketch::load_sketch_texts_on_connection(connection, &needs_fallback).await?
+    } else {
+        HashMap::new()
+    };
     identities
         .iter()
         .map(|identity| {
             let spec = resolve_memory_schema(schemas, identity.kind, &identity.schema_id)?;
             let payload = payloads.get(&identity.memory_id);
+            let sketch = sketches.get(&identity.memory_id.into_inner());
             Ok(MemoryGraphPayloadRow {
                 memory_id: identity.memory_id,
                 tags: payload.map(|payload| spec.display_tags(Some(payload))),
                 body: include_body
-                    .then(|| spec.display_body(payload, None))
+                    .then(|| spec.display_body(payload, sketch.map(String::as_str)))
                     .flatten(),
             })
         })
@@ -268,6 +285,21 @@ async fn snapshots_from_rows_on_connection(
     let mut payloads =
         load_memory_sidecar_payloads_batch_on_connection(connection, pg_sidecars, ids_by_key)
             .await?;
+    let needs_fallback = rows
+        .iter()
+        .map(|row| {
+            let spec =
+                resolve_memory_schema(schemas, row.kind, &SchemaId::new(row.schema_id.clone()))?;
+            let id = MemoryId::new(row.memory_id);
+            Ok(spec
+                .display_body(payloads.get(&id), None)
+                .is_none()
+                .then_some(row.memory_id))
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    let needs_fallback: Vec<uuid::Uuid> = needs_fallback.into_iter().flatten().collect();
+    let sketches =
+        crate::verbs::sketch::load_sketch_texts_on_connection(connection, &needs_fallback).await?;
     let mut snapshots = Vec::with_capacity(rows.len());
     for row in rows {
         let id = MemoryId::new(row.memory_id);
@@ -288,7 +320,10 @@ async fn snapshots_from_rows_on_connection(
             owner: row.owner,
             writer: row.writer,
             occurred_at: row.occurred_at,
-            text: spec.display_body(payload.as_ref(), None),
+            text: spec.display_body(
+                payload.as_ref(),
+                sketches.get(&row.memory_id).map(String::as_str),
+            ),
             tags: spec.display_tags(payload.as_ref()),
             payload,
         });
