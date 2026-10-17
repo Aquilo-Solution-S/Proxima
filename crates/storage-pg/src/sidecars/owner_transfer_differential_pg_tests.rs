@@ -660,8 +660,10 @@ pub async fn dump_database(
         // lanes after the pinned baseline. Neither carries an owner column; a
         // transfer moves the record they hang off, which the outbox section
         // compares, and `publication_outbox_pg_tests` pins the lanes. 0029's
-        // other-store origins are keyed on a memory `t` with no owner
-        // column, so they follow the memory a transfer moves. 0034's
+        // other-store origins are skipped only because the pinned baseline
+        // lacks them: they are a flavor #0 surface (#478), keyed on a memory
+        // `t` with no owner column, so they follow the memory, hot or
+        // cooled, that a transfer moves. 0034's
         // publication counter moves with the series head;
         // `publication_outbox_pg_tests` pins it.
         if matches!(

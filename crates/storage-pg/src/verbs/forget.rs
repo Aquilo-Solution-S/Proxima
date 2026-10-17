@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use proxima_core::flavor::ForgetLeg;
+use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{
     ColdObjectStore, MemoryHydrationBatchOutcome, MemoryHydrationOutcome, MemoryHydrationStatus,
@@ -838,7 +838,15 @@ async fn persist_cooled_after_put(
     .await
     .map_err(map_err)?;
 
-    delete_memory_dependents(tx, sidecars, surfaces, &current.row.sidecar_tables, t).await?;
+    delete_memory_dependents(
+        tx,
+        sidecars,
+        surfaces,
+        &current.row.sidecar_tables,
+        t,
+        DependentsFor::Forget,
+    )
+    .await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(expected_owner_id)
@@ -1892,6 +1900,7 @@ async fn delete_memory_dependents(
     surfaces: &OwnerSurfaces,
     sidecar_tables: &[String],
     t: Uuid,
+    lifecycle: DependentsFor,
 ) -> Result<(), StorageError> {
     let mut legs: Vec<(&str, &str)> = Vec::with_capacity(sidecar_tables.len() + 4);
     for table in sidecar_tables {
@@ -1937,6 +1946,9 @@ async fn delete_memory_dependents(
         legs.push((table.as_str(), key_column));
     }
     legs.extend(surfaces.generated_forget_legs());
+    if lifecycle == DependentsFor::Erase {
+        legs.extend(erase_kept_memory_legs(surfaces));
+    }
     for (table, key_column) in legs {
         let sql = forget_leg_sql(table, key_column)?;
         // SQL-POLICY: generated
@@ -1947,6 +1959,45 @@ async fn delete_memory_dependents(
             .map_err(map_err)?;
     }
     Ok(())
+}
+
+/// Which lifecycle verb [`delete_memory_dependents`] serves. A forget keeps
+/// what its declarations say it keeps; a hard erase also destroys those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DependentsFor {
+    Forget,
+    Erase,
+}
+
+/// The surfaces [`erase_memory`] deletes with a hand-written statement of
+/// its own, because each needs an owner predicate or an ordering the
+/// generated `DELETE ... WHERE <key> = $1` does not carry.
+const ERASE_MEMORY_EXPLICIT: &[&str] = &[
+    "proxima_core.memory",
+    "proxima_core.cooled",
+    "proxima_core.ingest_keys",
+];
+
+/// Every memory-keyed surface a forget KEEPS (its rows outlive a cool) and
+/// owner erase deletes by key, minus the ones [`erase_memory`] deletes
+/// explicitly. A hard erase of one admission owes these rows the same
+/// delete owner erase gives them, and reading the set off the declarations
+/// means a newly declared kept surface is reached without a named leg
+/// (`memory_external_origin`, #478).
+fn erase_kept_memory_legs(surfaces: &OwnerSurfaces) -> Vec<(&'static str, &'static str)> {
+    surfaces
+        .surfaces()
+        .iter()
+        .filter_map(|surface| {
+            let EraseLeg::Keyed(KeyShape::MemoryT { column }) = surfaces.erase_leg(surface.table)
+            else {
+                return None;
+            };
+            (matches!(surfaces.forget_leg(surface.table), ForgetLeg::Kept { .. })
+                && !ERASE_MEMORY_EXPLICIT.contains(&surface.table))
+            .then_some((surface.table, column))
+        })
+        .collect()
 }
 
 /// The one statement a forget leg runs, over the forgotten `t`.
@@ -3107,12 +3158,6 @@ pub async fn erase_memory(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
-        .bind(t)
-        .bind(owner.into_inner())
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
     let stamped: Vec<String> = sqlx::query_scalar(
         "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
     )
@@ -3121,13 +3166,13 @@ pub async fn erase_memory(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
-    // Its other-store origins (0029). Keyed on `t` with no foreign key and
-    // declared by no surface, so no generated leg reaches them; they go with
-    // the memory they describe, as in owner erase. Before the memory row:
-    // their owner policy finds the owner through it.
-    sqlx::query("DELETE FROM proxima_core.memory_external_origin WHERE t = $1")
+    // Before the memory and cooled rows: a kept surface with no owner column
+    // (memory_external_origin) finds its owner through its memory, hot OR
+    // cooled, so its delete must run while that parent is still there.
+    delete_memory_dependents(tx, sidecars, surfaces, &stamped, t, DependentsFor::Erase).await?;
+    sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
         .bind(t)
+        .bind(owner.into_inner())
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -3982,5 +4027,54 @@ mod tests {
             "got {err:?}"
         );
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod erase_kept_partition_tests {
+    use super::{ERASE_MEMORY_EXPLICIT, erase_kept_memory_legs};
+    use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
+    use proxima_core::owner_inverse::OwnerSurfaces;
+
+    /// The hard erase of one admission reaches every memory-keyed surface a
+    /// forget keeps: either by a named statement of its own or by the
+    /// generated set, never both and never neither.
+    #[test]
+    fn explicit_and_generated_sets_partition_every_kept_memory_keyed_surface() {
+        let surfaces = OwnerSurfaces::for_registry(
+            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+        );
+        let generated: Vec<&str> = erase_kept_memory_legs(&surfaces)
+            .into_iter()
+            .map(|(table, _)| table)
+            .collect();
+        let kept_keyed: Vec<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| {
+                matches!(
+                    surfaces.erase_leg(surface.table),
+                    EraseLeg::Keyed(KeyShape::MemoryT { .. })
+                ) && matches!(surfaces.forget_leg(surface.table), ForgetLeg::Kept { .. })
+            })
+            .map(|surface| surface.table)
+            .collect();
+        for table in &kept_keyed {
+            let explicit = ERASE_MEMORY_EXPLICIT.contains(table);
+            assert!(
+                explicit != generated.contains(table),
+                "{table} must be reached by exactly one of the explicit and generated sets"
+            );
+        }
+        for table in &generated {
+            assert!(
+                kept_keyed.contains(table),
+                "{table} is not a kept memory-keyed surface"
+            );
+        }
+        assert!(
+            generated.contains(&"proxima_core.memory_external_origin"),
+            "the other-store origins are reached by the generated set: {generated:?}"
+        );
     }
 }

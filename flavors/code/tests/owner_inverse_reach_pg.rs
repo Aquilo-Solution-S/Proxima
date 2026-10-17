@@ -91,66 +91,10 @@ async fn the_bundle_carries_every_exportable_surface_of_both_flavors() {
 /// require every base table to be either a declared surface or an entry on
 /// this list with a stated reason.
 ///
-/// Migration bookkeeping is excluded structurally (`_sqlx_migrations`); it
-/// is not owner data under any reading and no flavor owns it.
-const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
-    (
-        "proxima_core.store_identity",
-        "The deployment's immutable numeric routing identity. This singleton is platform configuration shared by every owner, with no owner data to export, transfer or erase.",
-    ),
-    (
-        "proxima_core.owner_rls_epoch",
-        "Platform-owned RLS epoch state used to invalidate owner-scope claims; it is migration and runtime metadata, not owner data or a flavor surface.",
-    ),
-    (
-        "proxima_core.closed_handle",
-        "A tombstone for a handle, not a row about an owner: it records that \
-         a handle may never be reused, which has to outlive every owner that \
-         ever held it. Erasing it would let the id come back.",
-    ),
-    (
-        "proxima_core.flavor_surface",
-        "The registry's own stamp domain — which tables a memory row may \
-         stamp. Schema metadata written by migrations, identical for every \
-         owner, and the relation the surface declarations are checked \
-         AGAINST.",
-    ),
-    (
-        "proxima_core.lexical_languages",
-        "The FK domain of permitted regconfig values. Schema metadata \
-         written by migrations, identical for every owner.",
-    ),
-    (
-        "proxima_core.lexical_default",
-        "The deployment's default lexical configuration — one row, an \
-         operator setting, owned by nobody.",
-    ),
-    (
-        "proxima_core.installation",
-        "This deployment's own identity — one row minted at install, write-once, \
-         identical for every owner and about none of them. Erasing it would \
-         orphan every broker message already stamped with it.",
-    ),
-    (
-        "proxima_core.publication_consumer",
-        "The deployment's registry of outbox consumers — operator \
-         configuration, platform-written, identical for every owner and about \
-         none of them.",
-    ),
-    (
-        "proxima_core.publication_delivery",
-        "Delivery bookkeeping of a publication_outbox record, one lane per \
-         consumer: no owner column and no content. It is deleted with its \
-         record (ON DELETE CASCADE), so the record's surface reaches it.",
-    ),
-    (
-        "proxima_core.memory_external_origin",
-        "Other-store origins of a derived memory: (t, memory UUID) \
-         with no owner column and no content of its own. Keyed on the \
-         memory's t, so a transfer moves it with the memory, and owner \
-         erase deletes it through a named leg over the selected memories.",
-    ),
-];
+/// The core list is shipped data (`proxima_storage_pg::STORE_WIDE_TABLES`,
+/// checked against `proxima_core` alone in storage-pg). This test reuses it
+/// and adds the code flavor's schema, so the declared set is both flavors'.
+const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = proxima_storage_pg::STORE_WIDE_TABLES;
 
 #[tokio::test]
 async fn every_base_table_is_a_declared_surface_or_a_stated_exemption() {

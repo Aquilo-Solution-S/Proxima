@@ -666,8 +666,9 @@ pub const DROPPED_TABLES: &[&str] = &[
     "publication_consumer",
     "publication_delivery",
     // Added after the baseline by 0029: other-store origins of a derived
-    // memory, keyed on its `t` and deleted with it by a named erase leg.
-    // `other_stores` tests in core_mcp_pg pin the rows.
+    // memory, keyed on its `t`. Skipped here only because the pinned
+    // baseline lacks it; it is a flavor #0 surface (#478), so its erase leg
+    // is generated, hot and cooled, and `external_origin_reach` pins it.
     "memory_external_origin",
     // Added after the baseline by 0034: a series' publication position,
     // deleted by owner erase once nothing of its series is left.

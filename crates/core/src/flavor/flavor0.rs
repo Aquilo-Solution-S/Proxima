@@ -621,9 +621,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         // The sketch has no reader: the search verb scans exactly the four
         // declared sidecars, and export strips the column.
         lexical_language_column: None,
-        // DECLARED GAP — the erase destroys these rows and no receipt
-        // reports them: there is no `sketches` key in the final counts and
-        // no audit-log column.
+        // Counted under `sketches` by the named sketch leg in owner erase,
+        // which records how many rows it deleted.
         counter: CounterRule::Counted("sketches"),
         // No FK: `t` is a Memory t OR a Goal t, and there is no constraint
         // that can span two home tables.
@@ -699,6 +698,27 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.memory_external_origin",
+        // Other-store origins of a derived memory: (t, remote memory UUID).
+        // No owner column; the owner policy finds the owner through the
+        // memory, hot OR cooled, so every verb reaches the rows of a
+        // forgotten memory too (#478).
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "an other-store origin outlives the cool of the memory it describes; \
+                  hydrate finds it again",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("external_origins"),
+        // No FK, by design: nothing points at the remote side, and the row
+        // must outlive forget's delete of the hot memory row.
+        completeness: None,
+    },
+    Surface {
         table: "proxima_core.publication_outbox",
         key: KeyShape::MemoryT { column: "t" },
         owner_column: Some("owner_id"),
@@ -735,6 +755,37 @@ const KERNEL_SURFACES: &[Surface] = &[
             relation: "proxima_core.publication_outbox",
             name: "publication_outbox_owner_id_fkey",
         }),
+    },
+    Surface {
+        table: "proxima_core.publication_delivery",
+        // Delivery bookkeeping of one outbox record, one lane per consumer:
+        // no owner column and no content of its own.
+        key: KeyShape::Custom(&["t", "consumer"]),
+        owner_column: None,
+        transfer: TransferRule::RetainAtSource {
+            why: "a delivery lane follows its outbox record, which stays with the owner \
+                  the event was captured for",
+        },
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxima_core.publication_delivery",
+                name: "publication_delivery_t_fkey",
+            },
+        },
+        export: ExportRule::Excluded {
+            why: "delivery state of a publication_outbox record, which the bundle derives \
+                  from; it carries no content of its own",
+        },
+        forget: ForgetRule::Keep {
+            why: "cooling a Fact does not un-commit its captured event, nor that event's \
+                  delivery lanes",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "removed by its outbox record's cascade; the record is counted under \
+                  publications",
+        },
+        completeness: None,
     },
     Surface {
         table: "proxima_core.publication_origin",

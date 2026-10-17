@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use proxima_core::StorageError;
-use proxima_core::flavor::{ExportRule, Surface};
+use proxima_core::flavor::{ExportRule, ForgetLeg, KeyShape, Surface};
 use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerSurfaces};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -64,7 +64,11 @@ async fn export_owner_bundle_snapshot(
     platform.bind_transaction(tx.as_mut()).await?;
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for surface in surfaces.generic_surfaces() {
-        let Some(sql) = export_statement(surface)? else {
+        if matches!(surface.export, ExportRule::Excluded { .. }) {
+            continue;
+        }
+        let primary_key = primary_key_columns(&mut tx, surface.table).await?;
+        let Some(sql) = export_statement(surface, &primary_key)? else {
             continue;
         };
         // SQL-POLICY: PgIdent
@@ -266,7 +270,10 @@ fn validate_host_export_rows(
 /// there. `try_freeze` refuses a flavor that declares an exportable surface
 /// which is neither, so the `Internal` arm below is unreachable through a
 /// frozen registry and is kept for the synthetic surfaces tests build.
-fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
+fn export_statement(
+    surface: &Surface,
+    primary_key: &[String],
+) -> Result<Option<String>, StorageError> {
     let projection = match surface.export {
         ExportRule::Excluded { .. } => return Ok(None),
         // The surface is aliased `s`, never `t`. With a single range table
@@ -292,7 +299,7 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
         }
     };
     let table = PgIdent::table(surface.table)?;
-    let order = order_by(surface)?;
+    let order = order_by(surface, primary_key)?;
     // SQL-POLICY: PgIdent
     let sql = if let Some(owner_column) = surface.owner_column {
         // `s.{owner}` is the surface's OWN owner column as it declares it.
@@ -316,7 +323,17 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
                 surface.table
             )));
         };
-        let base_table = PgIdent::table(base_table)?;
+        // A memory-keyed surface whose rows outlive a cool (forget keeps
+        // them) belongs to a memory that may now be a `cooled` stub, so its
+        // home is the memory spine hot OR cooled. Derived from the
+        // declaration (see `KeyShape::home`), never from a table name.
+        let base = if cooled_rows_reach_home(surface) {
+            "(SELECT t, owner_id FROM proxima_core.memory \
+              UNION ALL SELECT t, owner_id FROM proxima_core.cooled)"
+                .to_owned()
+        } else {
+            PgIdent::table(base_table)?.as_str().to_owned()
+        };
         let base_column = PgIdent::column(base_column)?;
         let key_column = PgIdent::column(key_column)?;
         format!(
@@ -327,7 +344,6 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
               WHERE base.owner_id IS NOT DISTINCT FROM $1
               ORDER BY {order}",
             table = table.as_str(),
-            base = base_table.as_str(),
             base_column = base_column.as_str(),
             key_column = key_column.as_str(),
         )
@@ -335,37 +351,64 @@ fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
     Ok(Some(sql))
 }
 
-/// Row order is part of the bundle's bytes, so it comes off the declared
-/// key.
+/// Whether an owner-less surface reaches its owner through the memory
+/// spine hot OR cooled: keyed on a memory `t`, and kept by forget, so its
+/// rows outlive the hot row they hang off.
+fn cooled_rows_reach_home(surface: &Surface) -> bool {
+    surface.owner_column.is_none()
+        && matches!(surface.key, KeyShape::MemoryT { .. })
+        && matches!(ForgetLeg::derive(surface), ForgetLeg::Kept { .. })
+}
+
+/// Row order is part of the bundle's bytes, so it is TOTAL: the declared
+/// key first, then the table's remaining primary-key columns in index order.
 ///
-/// THE ORDER IS NOT ALWAYS TOTAL. Five of flavor #0's twenty-eight declared
-/// keys are backed by no unique index — `embeddings`, `embedding_heads` and
-/// `embedding_jobs` on `entity_id`, `projection` on `memory_id`, and
-/// `ingest_keys` on `t`, whose primary key is
-/// `(owner_id, source_id, ingest_key)`.
+/// A declared key need not be unique. It is what the erase and transfer
+/// select by (`ingest_keys` on `t`, `memory_external_origin` on `t`), and one
+/// memory may hold several such rows. Ordering by the key alone would leave
+/// their byte order to whatever the executor returns; the primary key breaks
+/// every tie, so the bundle is a function of the rows (#478). The columns
+/// come from the catalog (`primary_key_columns`), never from a table name.
 ///
-/// Four of the five are `ExportRule::Excluded`, so they never reach this
-/// function. `ingest_keys` is `ExportRule::Rows`, and it is the one that
-/// matters: one memory may hold several admission receipts — a different
-/// `(source_id, ingest_key)` pair each — and for those rows `ORDER BY s.t`
-/// leaves the bundle's byte order to whatever the executor returns.
-/// `every_declared_key_that_is_unique_is_unique_in_the_catalog` pins that
-/// set, so the exception is recorded rather than assumed away.
-///
-/// THE ERASE IS UNAFFECTED. `WHERE t = ANY(...)` destroys every receipt of
-/// an erased memory, which is what an erase owes, and it does not care what
-/// order it finds them in. That predicate is a `Seq Scan`: `ingest_keys`
-/// carries one index and it is the primary key.
-///
-/// A total export order needs the surface to carry a tiebreak the erase does
-/// not use, because the two verbs want different things from one `key`: the
-/// erase wants the memory column, the export wants a unique row identity.
-fn order_by(surface: &Surface) -> Result<String, StorageError> {
+/// A surface with no primary key has no total order to offer and is refused
+/// rather than exported in an order nobody chose.
+fn order_by(surface: &Surface, primary_key: &[String]) -> Result<String, StorageError> {
+    if primary_key.is_empty() {
+        return Err(StorageError::Internal(format!(
+            "{} has no primary key, so its export order would not be total",
+            surface.table
+        )));
+    }
+    let key = surface.key.columns();
     let mut parts = Vec::new();
-    for column in surface.key.columns() {
+    let tiebreak = primary_key
+        .iter()
+        .map(String::as_str)
+        .filter(|column| !key.contains(column));
+    for column in key.iter().copied().chain(tiebreak) {
         parts.push(format!("s.{}", PgIdent::column(column)?.as_str()));
     }
     Ok(parts.join(", "))
+}
+
+/// The table's primary-key columns in index order, read from the catalog.
+async fn primary_key_columns(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    table: &str,
+) -> Result<Vec<String>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT a.attname::text
+           FROM pg_index i
+          CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          WHERE i.indrelid = $1::regclass
+            AND i.indisprimary
+          ORDER BY k.ord",
+    )
+    .bind(table)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
 }
 
 fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
@@ -416,6 +459,28 @@ mod tests {
     use proxima_core::flavor::{ExportRule, Surface};
     use serde_json::json;
 
+    fn pk(columns: &[&str]) -> Vec<String> {
+        columns.iter().map(|column| (*column).to_owned()).collect()
+    }
+
+    /// The declared key comes first; the rest of the primary key breaks its
+    /// ties, so a non-unique key still gives a total order.
+    #[test]
+    fn export_order_is_the_key_then_the_rest_of_the_primary_key() {
+        let ingest = surface("proxima_core.ingest_keys");
+        let sql = export_statement(&ingest, &pk(&["owner_id", "source_id", "ingest_key"]))
+            .expect("generates")
+            .expect("ingest keys are exported");
+        assert!(
+            sql.contains("ORDER BY s.t, s.owner_id, s.source_id, s.ingest_key"),
+            "{sql}"
+        );
+        assert!(
+            export_statement(&ingest, &[]).is_err(),
+            "a surface with no primary key has no total order and is refused"
+        );
+    }
+
     fn surface(table: &str) -> Surface {
         FLAVOR_0
             .all_surfaces()
@@ -457,7 +522,7 @@ mod tests {
     /// rather than a comment.
     #[test]
     fn an_allowlisted_surface_generates_exactly_its_declared_fields() {
-        let sql = export_statement(&surface("proxima_core.blob"))
+        let sql = export_statement(&surface("proxima_core.blob"), &pk(&["blob_id"]))
             .expect("generates")
             .expect("blob is exported");
         assert!(
@@ -474,7 +539,7 @@ mod tests {
     /// key's owner, and the generated join is what makes the claim true.
     #[test]
     fn a_keyed_sidecar_reaches_the_owner_through_its_home_table() {
-        let sql = export_statement(&surface("proxima_core.agent_note_v1"))
+        let sql = export_statement(&surface("proxima_core.agent_note_v1"), &pk(&["t"]))
             .expect("generates")
             .expect("the note sidecar is exported");
         assert!(sql.contains("JOIN proxima_core.memory base"), "{sql}");
@@ -483,6 +548,26 @@ mod tests {
             "{sql}"
         );
         assert!(sql.contains("to_jsonb(s)"), "{sql}");
+    }
+
+    /// Other-store origins outlive a cool, so the export finds their owner
+    /// on the memory spine hot OR cooled, not on `memory` alone (#478).
+    #[test]
+    fn external_origins_reach_the_owner_through_hot_or_cooled_memories() {
+        let sql = export_statement(
+            &surface("proxima_core.memory_external_origin"),
+            &pk(&["t", "memory"]),
+        )
+        .expect("generates")
+        .expect("external origins are exported");
+        let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            flat,
+            "SELECT to_jsonb(s) FROM proxima_core.memory_external_origin s \
+             JOIN (SELECT t, owner_id FROM proxima_core.memory UNION ALL \
+             SELECT t, owner_id FROM proxima_core.cooled) base ON base.t = s.t \
+             WHERE base.owner_id IS NOT DISTINCT FROM $1 ORDER BY s.t, s.memory"
+        );
     }
 
     #[test]
@@ -495,7 +580,9 @@ mod tests {
             let declared = surface(table);
             assert!(matches!(declared.export, ExportRule::Excluded { .. }));
             assert!(
-                export_statement(&declared).expect("generates").is_none(),
+                export_statement(&declared, &[])
+                    .expect("generates")
+                    .is_none(),
                 "{table} declares Excluded and must emit no statement"
             );
         }
@@ -506,7 +593,13 @@ mod tests {
     #[test]
     fn no_generated_statement_aliases_a_table_t() {
         for surface in FLAVOR_0.all_surfaces() {
-            let Some(sql) = export_statement(&surface).expect("generates") else {
+            let key = surface
+                .key
+                .columns()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let Some(sql) = export_statement(&surface, &key).expect("generates") else {
                 continue;
             };
             assert!(

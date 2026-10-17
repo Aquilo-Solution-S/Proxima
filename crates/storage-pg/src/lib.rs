@@ -59,6 +59,8 @@ mod ports;
 pub mod projection;
 mod rls_guard;
 pub mod sidecars;
+mod store_wide;
+pub use store_wide::STORE_WIDE_TABLES;
 pub mod query {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
     pub use crate::verbs::query::file_revision_heads_sql_for_tests;

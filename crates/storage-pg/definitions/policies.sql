@@ -208,25 +208,43 @@ ALTER POLICY proxima_owner_read ON proxima_core.memory USING (((owner_id = ANY (
 ALTER POLICY proxima_owner_write ON proxima_core.memory USING (((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])))))) WITH CHECK (((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))))));
 
 -- memory_external_origin
+-- Reached through the memory it describes, hot OR cooled (#478): forget
+-- keeps these rows, so a cooled parent must still find its owner, or
+-- reads, export and the single-admission erase lose them. New rows still
+-- need a hot parent (WITH CHECK), as at derive time.
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class memory_owner', 'proxima_core', 'memory_external_origin', 'memory_owner', NULL);
 
-ALTER POLICY proxima_owner_read ON proxima_core.memory_external_origin USING ((EXISTS ( SELECT 1
+ALTER POLICY proxima_owner_read ON proxima_core.memory_external_origin USING (((EXISTS ( SELECT 1
    FROM proxima_core.memory parent
   WHERE ((parent.t = memory_external_origin.t) AND (parent.owner_id = ANY (
         CASE (parent.kind)::text
             WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
             WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.read_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
             ELSE ( SELECT COALESCE((NULLIF(current_setting('app.read_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
-        END))))));
+        END))))) OR (EXISTS ( SELECT 1
+   FROM proxima_core.cooled parent
+  WHERE ((parent.t = memory_external_origin.t) AND (parent.owner_id = ANY (
+        CASE (parent.kind)::text
+            WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+            WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.read_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+            ELSE ( SELECT COALESCE((NULLIF(current_setting('app.read_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+        END)))))));
 
-ALTER POLICY proxima_owner_write ON proxima_core.memory_external_origin USING ((EXISTS ( SELECT 1
+ALTER POLICY proxima_owner_write ON proxima_core.memory_external_origin USING (((EXISTS ( SELECT 1
    FROM proxima_core.memory parent
   WHERE ((parent.t = memory_external_origin.t) AND (parent.owner_id = ANY (
         CASE (parent.kind)::text
             WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
             WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
             ELSE ( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
-        END)))))) WITH CHECK ((EXISTS ( SELECT 1
+        END))))) OR (EXISTS ( SELECT 1
+   FROM proxima_core.cooled parent
+  WHERE ((parent.t = memory_external_origin.t) AND (parent.owner_id = ANY (
+        CASE (parent.kind)::text
+            WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+            WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+            ELSE ( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+        END))))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM proxima_core.memory parent
   WHERE ((parent.t = memory_external_origin.t) AND (parent.owner_id = ANY (
         CASE (parent.kind)::text

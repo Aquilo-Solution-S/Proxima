@@ -905,44 +905,41 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 
 // ── which declared keys are actually unique ─────────────────────────────
 
-/// `KeyShape` names the columns the erase joins on and the export orders by.
-/// Whether those columns identify ONE row is a property of the schema, not of
-/// the declaration. `owner_export::order_by` assumes they always do — "every
-/// declared key is unique, so every generated order is total". Five of flavor
-/// #0's twenty-eight are not, and the list below is the measurement rather than
-/// a guess.
+/// `KeyShape` names the columns the erase joins on and the export orders by
+/// first. Whether those columns identify ONE row is a property of the
+/// schema, not of the declaration, and the list below is the measurement
+/// rather than a guess.
 ///
-/// Four of the five are `ExportRule::Excluded`, so a non-total order costs
-/// nothing: no bundle orders by them. `ingest_keys` is `ExportRule::Rows`
-/// and its key is `t` while its primary key is
-/// `(owner_id, source_id, ingest_key)` — one memory can hold several
-/// admission receipts, and their order in a bundle is whatever the executor
-/// returns. That is the live one, and `order_by` states it: a total export
-/// order needs the surface to carry a tiebreak the erase does not use.
+/// A non-unique exported key is ALLOWED, because the export order is total
+/// without it: `owner_export::order_by` sorts by the declared key and then
+/// by the table's remaining primary-key columns, so every tie breaks and a
+/// bundle's bytes are a function of its rows (#478). What this test pins
+/// instead is that every exported surface HAS a primary key to break ties
+/// with.
 ///
-/// The assertion is EQUALITY, not containment, so both directions are
-/// pinned: a new non-unique key has to be added here deliberately, and a
-/// schema change that makes one of these unique has to remove it. Either
-/// way somebody has to look at the export order.
+/// The non-unique assertion is EQUALITY, not containment, so a schema change
+/// in either direction is noticed and the export order gets looked at.
 #[tokio::test]
 async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     /// Declared keys with no unique index behind them, and why each is
     /// tolerable. Alphabetical.
-    const NOT_UNIQUE: [&str; 6] = [
+    const NOT_UNIQUE: [&str; 7] = [
         // One row per (entity, model, version); the key names the entity.
         "proxima_core.embedding_heads",
         // One job per (owner, entity, model).
         "proxima_core.embedding_jobs",
         // One vector per (entity, model, version).
         "proxima_core.embeddings",
-        // THE LIVE ONE: PK is (owner_id, source_id, ingest_key), and this
-        // surface is the only ExportRule::Rows member of the list.
+        // PK is (owner_id, source_id, ingest_key): one memory may hold
+        // several admission receipts. Exported; the PK breaks the ties.
         "proxima_core.ingest_keys",
+        // PK is (t, memory): one memory may have several other-store
+        // origins. Exported; the PK breaks the ties.
+        "proxima_core.memory_external_origin",
         // PK is (memory_id, schema_id): one memory projects per schema.
         "proxima_core.projection",
         // The declared key is the owner column, and an owner publishes many
-        // Facts. Tolerable because the surface is ExportRule::Excluded, so
-        // there is no bundle whose row order the repeat could make undefined.
+        // Facts. ExportRule::Excluded, so no bundle orders by it.
         "proxima_core.publication_origin",
     ];
 
@@ -999,22 +996,34 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
              key repeats; a departure means one fewer place to think about"
         );
 
-        // The one that reaches the export generator, named separately so
-        // the reason this list matters is not buried in it.
-        let exported_and_not_unique: Vec<&str> = surfaces
-            .surfaces()
-            .iter()
-            .filter(|surface| {
-                NOT_UNIQUE.contains(&surface.table)
-                    && matches!(surface.export, proxima_core::flavor::ExportRule::Rows)
-            })
-            .map(|surface| surface.table)
-            .collect();
-        assert_eq!(
-            exported_and_not_unique,
-            vec!["proxima_core.ingest_keys"],
-            "a second exported surface with a non-unique key is a second \
-             place the bundle's bytes stop being a function of its contents"
+        // The export order is total only because the primary key breaks
+        // the declared key's ties, so every exported surface must have one.
+        let mut exported_without_primary_key = Vec::new();
+        for surface in surfaces.surfaces() {
+            if matches!(
+                surface.export,
+                proxima_core::flavor::ExportRule::Excluded { .. }
+            ) {
+                continue;
+            }
+            let has_primary_key: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_index
+                      WHERE indrelid = $1::regclass AND indisprimary
+                 )",
+            )
+            .bind(surface.table)
+            .fetch_one(pool)
+            .await?;
+            if !has_primary_key {
+                exported_without_primary_key.push(surface.table);
+            }
+        }
+        assert!(
+            exported_without_primary_key.is_empty(),
+            "these exported surfaces have no primary key, so no tie in their \
+             declared key can be broken and their bundle order is undefined: \
+             {exported_without_primary_key:?}"
         );
         Ok(())
     }
