@@ -30,6 +30,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 MAX_PROBES = 8
 # verify.yml names each probe job `probe <sha>`; the jobs it calls from
@@ -135,6 +136,8 @@ def emit(verdict: Verdict) -> str:
             return f"verdict=range\nafter={after}\nupto={upto}\n"
         case Healed():
             return "verdict=healed\n"
+        case _:
+            assert_never(verdict)
 
 
 def self_test() -> None:
