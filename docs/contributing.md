@@ -48,8 +48,8 @@ proving fresh and adopted schemas and seed rows identical.
 
 ## Local verification
 
-Use the smallest relevant check during iteration, then the complete gates for
-a reviewable change:
+Use the smallest relevant check during iteration, then the complete gates
+before pushing. This is the one list; CI runs the same commands.
 
 ```sh
 cargo fmt --all -- --check
@@ -67,6 +67,9 @@ python3 scripts/check-doc-status.py
 python3 scripts/check-settings.py --self-test
 python3 scripts/check-settings.py
 python3 scripts/check-upgrade-notes.py --self-test
+python3 scripts/check-release-version.py --self-test
+python3 scripts/check-release-version.py
+python3 scripts/verify-culprit.py --self-test
 python3 scripts/check-architecture-guardrails.py --self-test
 python3 scripts/check-architecture-guardrails.py
 python3 scripts/check-sql-policy.py --self-test

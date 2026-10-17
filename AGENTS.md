@@ -14,8 +14,8 @@ concepts and integration; avoid a second invariant or configuration ledger.
   `scripts/check-settings.py`. Action/resource schemas: the live catalog.
 - Keep work within existing crates/packages. Adding a binary, crate, service,
   migration, protocol surface, or registration path requires an explicit task;
-  scope review enforces this boundary. Example: a retrieval fix does not
-  authorize a new inference service.
+  the pre-push review enforces this boundary. Example: a retrieval fix does
+  not authorize a new inference service.
 - Scratch plans and bulky review evidence belong in ignored `.local/`. This is
   a review judgment: tracked docs should survive the task; a failed-command
   transcript belongs in a ledger, a lasting decision in `docs/decisions.md`.
@@ -37,7 +37,10 @@ concepts and integration; avoid a second invariant or configuration ledger.
 ## Branch and release policy
 
 1. Push to `main` directly. History stays linear: rebase, never merge or
-   force-push. Run the local gates for what you touched before pushing.
+   force-push. Before pushing, run the complete local gates and an independent
+   review of `origin/main..HEAD` by a vendor other than the one the commits'
+   `Co-Authored-By` trailers name. Every rule in this file that says "review"
+   means this review; nothing else reads a change before it lands.
 2. `verified` is the last `main` commit that passed CI; only `verify.yml`
    moves it. Start work from `origin/verified`, not `origin/main`: commits on
    `main` past `verified` are untested and are not ground truth.
@@ -88,28 +91,19 @@ These boundaries are enforced by worker briefs and orchestrator diff review.
 
 ## Verification and failures
 
-CI-equivalent Rust gates:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked
-cargo clippy --workspace --all-targets --locked
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
-cargo nextest run --workspace --all-targets --all-features
-```
-
-Workspace lints deny warnings and Clippy pedantic findings. Use `cargo check`
-and selected nextest tests during iteration; per-package success does not
-verify a flavor's served catalog. Changes to `mcp_tools` require the host e2e
-path. Verify both the all-features lane and the default substrate-only host.
+The complete local gates are listed once, in
+[contributing](docs/contributing.md#local-verification); CI runs the same
+commands. Workspace lints deny warnings and Clippy pedantic findings. Use
+`cargo check` and selected nextest tests during iteration; per-package success
+does not verify a flavor's served catalog. Changes to `mcp_tools` require the
+host e2e path. Verify both the all-features lane and the default substrate-only
+host.
 
 PG tests require `PROXIMA_TEST_PG_URL`, an admin URL for a server you own.
 Testkit sweep/GC touches every matching test database behind that URL.
 `admin_url_or_skip()` skips locally and fails in CI; report every skip.
 `PROXIMA_TEST_DATABASE_URL` is the separate e2e database connection.
 
-Docs, settings, architecture, SQL, schema, migration, release, and Lean commands
-are listed in [contributing](docs/contributing.md#local-verification) and CI.
 If any check fails, fix it, ledger exact command/output and a concrete deferral
 reason under `.local`, or escalate a blocker. Review must account for every
 observed failure; never report required checks green while one still fails.
@@ -130,8 +124,11 @@ Never weaken, delete, or ignore a surviving behavioral assertion to pass.
   operator action. Review judgment: readers need one usable upgrade note;
   e.g. `Upgrade: Replace the retired resource with the host outbox intake.`
   `cliff.toml` renders the footer; its fixture gate verifies rendering.
-- AI commits use `Co-Authored-By: Codex <noreply@openai.com>`, matching existing
-  commits. Add `Tesla-Valve:` trailers for decisions made under that skill.
+- AI commits carry a `Co-Authored-By` trailer naming the model that wrote
+  them, e.g. `Codex <noreply@openai.com>` or
+  `Claude Opus 5.5 <noreply@anthropic.com>`. The independent review reads it
+  to exclude the authoring vendor, so a borrowed trailer defeats the review.
+  Add `Tesla-Valve:` trailers for decisions made under that skill.
 
 If a requirement is ambiguous or conflicts with a principle, ask before making
 an architectural choice. Judgment: such choices compound; an unfamiliar helper

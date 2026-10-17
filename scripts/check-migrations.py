@@ -3,8 +3,10 @@
 
 Released migration files are pinned by release tags from ``RELEASE_EPOCH``.
 Files added after the latest release must have a version greater than every
-version previously released in the same migration directory. Definitions are
-edited in place and are deliberately outside this check.
+version previously released in the same migration directory, and no two files
+in a directory may share a version: agents push to `main` in parallel, and two
+new files with one number rebase without a conflict. Definitions are edited in
+place and are deliberately outside this check.
 """
 from __future__ import annotations
 
@@ -164,9 +166,20 @@ def check_new_versions(root: Path, env: dict[str, str] | None = None) -> list[st
     return diagnostics
 
 
+def check_unique_versions(root: Path) -> list[str]:
+    paths: dict[tuple[str, int], list[str]] = {}
+    for path, key in migration_files(root).items():
+        paths.setdefault(key, []).append(path)
+    return [
+        f"{directory}: version {version} is used by {', '.join(sorted(found))}; renumber the newer file"
+        for (directory, version), found in sorted(paths.items())
+        if len(found) > 1
+    ]
+
+
 def run(root: Path) -> int:
     released, summary = check_released_migrations(root)
-    diagnostics = released + check_new_versions(root)
+    diagnostics = released + check_new_versions(root) + check_unique_versions(root)
     if diagnostics:
         print("migration check failed:", file=sys.stderr)
         for diagnostic in diagnostics:
@@ -234,6 +247,15 @@ def self_test() -> int:
         if not check_new_versions(repo.root, repo.env):
             failures.append("a new version at or below the released maximum should fail")
         (repo.root / "crates/storage-pg/migrations/0032_reused.sql").unlink()
+        repo.write("crates/storage-pg/migrations/0034_first.sql", "-- one agent\n")
+        if check_unique_versions(repo.root):
+            failures.append("one new migration per version should pass")
+        repo.write("crates/storage-pg/migrations/0034_second.sql", "-- another agent\n")
+        if not check_unique_versions(repo.root):
+            failures.append("two new migrations with one version should fail")
+        repo.write("flavors/code/migrations/0034_flavor.sql", "-- other directory\n")
+        if len(check_unique_versions(repo.root)) != 1:
+            failures.append("versions are unique per directory, not across directories")
         repo.write("crates/storage-pg/definitions/functions.sql", "-- changed definitions\n")
         if any(
             "definitions" in diagnostic
