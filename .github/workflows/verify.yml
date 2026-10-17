@@ -43,6 +43,14 @@ jobs:
           fetch-depth: 0
       - id: range
         run: |
+          # Every commit verify checks out, probes or advances `verified` to
+          # comes from main's history. That is what makes running it with
+          # main's cache scope safe, and a dispatch from any other branch
+          # would otherwise verify and release an unmerged commit.
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::verify runs on main only, not ${GITHUB_REF}"
+            exit 1
+          fi
           base="$(git rev-parse origin/verified)"
           tip="${GITHUB_SHA}"
           echo "base=${base}" >> "${GITHUB_OUTPUT}"
