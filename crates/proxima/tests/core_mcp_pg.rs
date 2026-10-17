@@ -30,6 +30,9 @@ mod hybrid_search;
 #[path = "core_mcp_pg/other_stores.rs"]
 mod other_stores;
 
+#[path = "core_mcp_pg/read_veto.rs"]
+mod read_veto;
+
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
