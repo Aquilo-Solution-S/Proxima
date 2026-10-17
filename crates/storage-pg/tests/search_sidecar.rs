@@ -468,7 +468,16 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         assert!(miss.results.is_empty());
 
         let flavor = MemorySearchProjection {
+            schema_id: SchemaId::new("proxima-code/code-chunk-v1".into()),
             sidecar_table: "proxima_code.code_chunk_v1".into(),
+            projection_table: "proxima_code.projection".into(),
+            band_comparability: BandComparability::Divergent {
+                why: "the flavor has its own score bands",
+            },
+            rank_source: RankSource::SidecarWithProjectionOwner {
+                why: "the flavor supplies its own renderer",
+            },
+            render_bands: None,
             ..note_projection()
         };
         let skipped = pg
@@ -480,7 +489,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             .await?;
         assert!(
             skipped.results.is_empty(),
-            "unscoped core_search_memories does not scan flavor sidecars"
+            "a divergent sidecar-ranked flavor stays outside the core renderer"
         );
 
         Ok(())
@@ -549,125 +558,160 @@ async fn tagged_search_scans_flavor_sidecars() {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let owner_id = owner.into_inner();
+        let other_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal')
-             ON CONFLICT DO NOTHING",
+             SELECT unnest($1::uuid[]), 'personal' ON CONFLICT DO NOTHING",
         )
-        .bind(owner_id)
+        .bind(vec![owner.into_inner(), other_owner.into_inner()])
         .execute(pool)
         .await?;
         create_docs_search_surface(pool).await?;
-
-        let handle = Uuid::now_v7();
-        let t = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-             VALUES ($1, 'abstraction', 'proxima-docs/section-text-v1', $2, $3)",
+        let origin = seed_note_lang(pool, owner, "Origin", "origin body", None, &[]).await?;
+        let t = seed_docs_note(
+            pool,
+            owner,
+            origin,
+            "Antriebswelle im Getriebe",
+            &["proxima-docs", "shared"],
         )
-        .bind(handle)
-        .bind(owner_id)
-        .bind(t)
-        .execute(pool)
         .await?;
-        let mut hash = [0_u8; 32];
-        hash[..16].copy_from_slice(t.as_bytes());
-        hash[16..].copy_from_slice(t.as_bytes());
-        let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
-             VALUES ($1, 'proxima-docs/section-text-v1', $2)
-             RETURNING content_id",
+        let other_t = seed_docs_note(
+            pool,
+            owner,
+            origin,
+            "Antriebswelle im Motor",
+            &["other", "shared"],
         )
-        .bind(owner_id)
-        .bind(hash.as_slice())
-        .fetch_one(pool)
         .await?;
-        let fact_handle = Uuid::now_v7();
-        let fact_t = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        let other_origin =
+            seed_note_lang(pool, other_owner, "Origin", "origin body", None, &[]).await?;
+        let hidden_t = seed_docs_note(
+            pool,
+            other_owner,
+            other_origin,
+            "Antriebswelle im Getriebe",
+            &["proxima-docs", "shared"],
         )
-        .bind(fact_handle)
-        .bind(owner_id)
-        .bind(fact_t)
-        .execute(pool)
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
-        )
-        .bind(fact_handle)
-        .bind(fact_t)
-        .bind(owner_id)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, content_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5)",
-        )
-        .bind(handle)
-        .bind(t)
-        .bind(owner_id)
-        .bind(fact_t)
-        .bind(content_id)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_docs.section_text_v1 (t, text, tags)
-             VALUES ($1, 'Antriebswelle im Getriebe', ARRAY['proxima-docs'])",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_docs.projection
-                (memory_id, schema_id, owner_id, search_tsv, tag)
-             SELECT c.t,
-                    'proxima-docs/section-text-v1',
-                    m.owner_id,
-                    COALESCE(
-                        proxima_core.lexical_tsv(
-                            proxima_core.lexical_config(),
-                            proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '')])
-                        ),
-                        ''::tsvector
-                    ),
-                    c.tags
-               FROM proxima_docs.section_text_v1 c
-               JOIN proxima_core.memory m ON m.t = c.t
-              WHERE c.t = $1",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
-
         let projection = docs_projection();
-
-        let unscoped = pg
-            .search_memories(Some(&owner_scope_for_tests(&[owner])),
+        let projections = std::slice::from_ref(&projection);
+        let scope = owner_scope_for_tests(&[owner]);
+        let ids = |page: &proxima_core::verbs::query::MemorySearchPage| {
+            let mut ids = page
+                .results
+                .iter()
+                .map(|result| result.memory_id.into_inner())
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        };
+        let wrong_kind = pg
+            .search_memories(
+                Some(&scope),
                 &search_req(owner, "Antriebswelle"),
-                std::slice::from_ref(&projection),
+                projections,
             )
             .await?;
         assert!(
-            unscoped.results.is_empty(),
-            "unscoped search must not open a flavor table"
+            wrong_kind.results.is_empty(),
+            "a Fact query must exclude Abstraction rows"
         );
 
-        let mut tagged = search_req(owner, "Antriebswelle");
-        tagged.kind = Some(EntityKind::Abstraction);
+        let mut unscoped = search_req(owner, "Antriebswelle");
+        unscoped.kind = Some(EntityKind::Abstraction);
+        let mut expected = vec![t, other_t];
+        expected.sort_unstable();
+        let page = pg
+            .search_memories(Some(&scope), &unscoped, projections)
+            .await?;
+        assert_eq!(
+            ids(&page),
+            expected,
+            "unscoped search must reach matching flavor text"
+        );
+        assert!(!page.has_more, "hidden owners cannot add continuation");
+
+        let mut schema_scoped = unscoped.clone();
+        schema_scoped.schema_id = Some(projection.schema_id.clone());
+        let page = pg
+            .search_memories(Some(&scope), &schema_scoped, projections)
+            .await?;
+        assert_eq!(
+            ids(&page),
+            expected,
+            "a schema id reaches the flavor without tags"
+        );
+
+        let mut no_tags = projection.clone();
+        no_tags.tag_column = None;
+        let page = pg
+            .search_memories(Some(&scope), &unscoped, std::slice::from_ref(&no_tags))
+            .await?;
+        assert_eq!(
+            ids(&page),
+            expected,
+            "a projection need not declare tags to be searched"
+        );
+
+        for (tag_match, tags, mut expected_ids) in [
+            (TagMatch::Any, vec!["proxima-docs"], vec![t]),
+            (
+                TagMatch::Any,
+                vec!["proxima-docs", "other"],
+                vec![t, other_t],
+            ),
+            (TagMatch::All, vec!["proxima-docs", "shared"], vec![t]),
+            (TagMatch::All, vec!["proxima-docs", "other"], Vec::new()),
+            (TagMatch::Any, vec!["absent"], Vec::new()),
+        ] {
+            let mut tagged = unscoped.clone();
+            tagged.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
+            tagged.tag_match = tag_match;
+            let page = pg
+                .search_memories(Some(&scope), &tagged, projections)
+                .await?;
+            expected_ids.sort_unstable();
+            assert_eq!(
+                ids(&page),
+                expected_ids,
+                "{tag_match:?} tags {tags:?} narrow flavor rows"
+            );
+        }
+
+        let mut tagged = unscoped.clone();
         tagged.tags = vec!["proxima-docs".into()];
-        let page = pg.search_memories(Some(&owner_scope_for_tests(&[owner])), &tagged, &[projection]).await?;
+        let page = pg
+            .search_memories(Some(&scope), &tagged, projections)
+            .await?;
         assert_eq!(page.results.len(), 1, "tagged search must hit flavor text");
         assert_eq!(page.results[0].memory_id.into_inner(), t);
+        let page = pg
+            .search_memories(Some(&scope), &tagged, std::slice::from_ref(&no_tags))
+            .await?;
+        assert!(
+            page.results.is_empty(),
+            "tag filtering requires a declared tag column"
+        );
+
+        let mut overbroad = unscoped;
+        overbroad.read_owners.push(other_owner);
+        overbroad.limit = 2;
+        let page = pg
+            .search_memories(Some(&scope), &overbroad, projections)
+            .await?;
+        assert_eq!(
+            ids(&page),
+            expected,
+            "the owner witness still bounds admission"
+        );
+        assert!(!ids(&page).contains(&hidden_t));
+        assert!(!page.has_more);
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("tagged flavor sidecar search failed");
+    result.expect("flavor sidecar search failed");
 }
 
 #[tokio::test]
@@ -1212,10 +1256,10 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
 
 /// Semantic candidates come from one shared embedding table, while the
 /// participating flavor set is the projection contract. A foreign flavor
-/// must not leak into an untagged Semantic/Hybrid scan, even when more than
-/// the semantic overfetch window of foreign rows is closer than the core row.
-/// A tag is the explicit flavor scope and must admit the eligible foreign
-/// rows for both modes; Any/All and an empty participating set remain real
+/// must not consume an explicitly core-scoped Semantic/Hybrid window, even
+/// when more than that window of foreign rows is closer than the core row.
+/// Without that schema restriction, eligible foreign projections participate;
+/// tags narrow them. Any/All and an empty participating set remain real
 /// candidate-side cases.
 #[tokio::test]
 async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
@@ -1280,6 +1324,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         semantic.kind = None;
         semantic.limit = 1;
         semantic.mode = SearchMode::Semantic;
+        semantic.schema_id = Some(note_projection().schema_id);
         semantic.semantic = Some(test_semantic(query_vec.clone()));
         let page = pg
             .search_memories(
@@ -1291,7 +1336,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         assert_eq!(
             ids(&page),
             vec![core_t],
-            "untagged Semantic must filter before its limit, despite 22 closer foreign rows"
+            "core-scoped Semantic must filter before its limit, despite 22 closer foreign rows"
         );
 
         let mut hybrid = semantic.clone();
@@ -1306,10 +1351,41 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         assert_eq!(
             ids(&page),
             vec![core_t],
-            "untagged Hybrid must keep the semantic arm on core projections"
+            "core-scoped Hybrid must keep the semantic arm on core projections"
         );
 
+        for mode in [SearchMode::Semantic, SearchMode::Hybrid] {
+            let mut unscoped = semantic.clone();
+            unscoped.schema_id = None;
+            unscoped.limit = 8;
+            unscoped.mode = mode;
+            let page = pg
+                .search_memories(
+                    Some(&owner_scope_for_tests(&[owner])),
+                    &unscoped,
+                    &projections,
+                )
+                .await?;
+            assert!(
+                ids(&page).iter().any(|id| foreign.contains(id)),
+                "unscoped {mode:?} must reach eligible foreign projections"
+            );
+            unscoped.schema_id = Some(docs.schema_id.clone());
+            let page = pg
+                .search_memories(
+                    Some(&owner_scope_for_tests(&[owner])),
+                    &unscoped,
+                    &projections,
+                )
+                .await?;
+            assert!(
+                !page.results.is_empty() && ids(&page).iter().all(|id| foreign.contains(id)),
+                "schema-scoped {mode:?} reaches only its foreign projection without tags"
+            );
+        }
+
         let mut tagged = semantic.clone();
+        tagged.schema_id = None;
         tagged.limit = 8;
         tagged.tags = vec!["foreign".into()];
         let page = pg
@@ -1404,7 +1480,15 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
             .await?;
         assert!(
             page.results.is_empty(),
-            "untagged search with no participating core projection must be empty"
+            "a core schema restriction with only foreign projections must be empty"
+        );
+        no_projection.schema_id = None;
+        let page = pg
+            .search_memories(Some(&owner_scope_for_tests(&[owner])), &no_projection, &[])
+            .await?;
+        assert!(
+            page.results.is_empty(),
+            "an empty projection set must remain empty"
         );
         Ok(())
     }

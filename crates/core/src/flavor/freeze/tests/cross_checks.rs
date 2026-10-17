@@ -24,8 +24,8 @@ use super::projection_fixtures::{
     BANDS_NOT_UNIFORM, EMBEDDED_SIDECAR_RIGHT_KEY, EMBEDDED_SIDECAR_WRONG_KEY,
     EMBEDDING_DISAGREEMENT, EMBEDDING_NEVER_ON_AN_EMBEDDED_ID, EMPTY_EMBEDDING_UNITS,
     LANGUAGE_NOT_UNIFORM, NATURAL_KEY_DISAGREEMENT, PROJECTED_SIDECAR_UNDECLARED,
-    PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES, PROJECTION_NO_QUERY_REACHES,
-    PROJECTION_OUTSIDE_THE_MERGE, TOO_MANY_WEIGHT_LEVELS, WEIGHTS_NOT_UNIFORM,
+    PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES, PROJECTION_OUTSIDE_THE_MERGE,
+    PROJECTION_WITHOUT_TAGS, TOO_MANY_WEIGHT_LEVELS, WEIGHTS_NOT_UNIFORM,
 };
 use crate::mcp::ToolEffect;
 use crate::verbs::schema::PayloadKind;
@@ -522,20 +522,6 @@ fn each_contract_cross_check_rejects_its_own_shape() {
             },
         ),
         (
-            "a non-core projection declares no tag column, so no query shape reaches it",
-            |registry| {
-                register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
-                registry.contracts.push(&PROJECTION_NO_QUERY_REACHES);
-            },
-            |err| {
-                matches!(
-                    err,
-                    FlavorRegistryError::UnreachableSearchProjection { why, .. }
-                        if why.contains("tag_column")
-                )
-            },
-        ),
-        (
             "a non-core projection's flavor declares a score the merge cannot compare",
             |registry| {
                 register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
@@ -592,7 +578,7 @@ fn each_contract_cross_check_rejects_its_own_shape() {
 /// A refusal with no accepted twin proves only that freeze can fail.
 /// Both cases here are one edit away from the rejected fixtures the table
 /// draws on —
-/// a contract registered beside the descriptor; a `tag_column` and a
+/// a contract registered beside the descriptor; a
 /// memory-keyed sidecar surface declared beside the projection — so
 /// what the checks cost a correct flavor is pinned alongside what they
 /// catch.
@@ -611,11 +597,23 @@ fn the_shapes_the_new_refusals_must_accept_freeze() {
         panic!("a linked flavor that declares a contract must freeze: {err}");
     }
 
-    let mut reachable = FlavorRegistry::new();
-    register_fixture_schema(&mut reachable, "thing", "test_flavor.thing_v1");
-    reachable.contracts.push(&PROJECTION_A_QUERY_REACHES);
-    if let Err(err) = reachable.try_freeze() {
-        panic!("a tag-filtered request reaches this projection: {err}");
+    for contract in [&PROJECTION_A_QUERY_REACHES, &PROJECTION_WITHOUT_TAGS] {
+        let mut reachable = FlavorRegistry::new();
+        register_fixture_schema(&mut reachable, "thing", "test_flavor.thing_v1");
+        reachable.contracts.push(contract);
+        let frozen = reachable.try_freeze().unwrap_or_else(|err| {
+            panic!("a comparable memory-keyed projection must freeze with or without tags: {err}")
+        });
+        let projection = frozen
+            .search_projections()
+            .iter()
+            .find(|projection| projection.schema_id == contract.schemas[0].schema_id())
+            .expect("the declared projection is reachable");
+        assert_eq!(
+            projection.tag_column.as_deref(),
+            contract.schemas[0].search.tag_column()
+        );
+        assert!(projection.render_bands.is_some());
     }
 
     // The embedding lane's twin: the same embed unit over a sidecar

@@ -38,8 +38,8 @@ pub const FLAVOR_ID: &str = "proxima-code";
 /// the registry statement they have to agree with.
 const CODE_SCOPES: &[ScopeDecl] = &[crate::repos::CODE_REPO_SCOPE_DECL];
 
-/// Non-zero, so the flavor stays out of unscoped `core_search_memories`
-/// (`FlavorContract::declares_sidecar_table` is asked of flavor #0 only).
+/// The Code flavor's identity, distinct from the non-removable core.
+/// Its divergent, independently ranked projection stays outside core search.
 pub const CODE_ORDINAL: u16 = 1;
 
 /// Commit search's three arms: flavor #0's windows, referenced rather than

@@ -12,9 +12,8 @@
 //!   project the registry itself — a kernel axiom's read surface — and they
 //!   live here because a second resource list would be a second place to
 //!   forget one.
-//! - **Its ordinal is load-bearing.** Unscoped search stays on core sidecars;
-//!   `ordinal == 0` is what says so, rather than a `"proxima_core."`
-//!   table-name prefix test.
+//! - **Its ordinal identifies the non-removable substrate.** Search selects
+//!   declared comparable projections from every flavor, independently of ordinal.
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{

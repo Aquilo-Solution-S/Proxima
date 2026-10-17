@@ -259,22 +259,18 @@ pub(super) const fn divergent_contract(schemas: &'static [SchemaContract]) -> Fl
     }
 }
 
-/// A non-core corpus that pays a projection row and a GIN entry per
-/// write and that no request shape scans: unscoped search stays on
-/// flavor #0's sidecars, and the tag-filtered query that would reach a
-/// flavor skips a projection declaring no `tag_column`.
-pub(super) static PROJECTION_NO_QUERY_REACHES: FlavorContract =
+/// A comparable projection without tags, reachable by an unscoped or
+/// schema-scoped request.
+pub(super) static PROJECTION_WITHOUT_TAGS: FlavorContract =
     uniformity_contract(&[reachability_schema(None, MEMORY_KEYED_SIDECAR)]);
 
-/// The same corpus with the tag gate satisfied and the OTHER gate
-/// closed: `RankSource::Projection` says core's renderer serves this
+/// `RankSource::Projection` says core's renderer serves this
 /// flavor, and `Divergent` says core's merge may not compare its
 /// scores. Nothing is left to scan it.
 pub(super) static PROJECTION_OUTSIDE_THE_MERGE: FlavorContract =
     divergent_contract(&[reachability_schema(Some("tags"), MEMORY_KEYED_SIDECAR)]);
 
-/// The reachable declaration, which must freeze: a tag-filtered request
-/// reaches it, and its flavor claims a score the merge can compare.
+/// A comparable projection with tags, which narrow the rows a request reaches.
 pub(super) static PROJECTION_A_QUERY_REACHES: FlavorContract =
     uniformity_contract(&[reachability_schema(Some("tags"), MEMORY_KEYED_SIDECAR)]);
 

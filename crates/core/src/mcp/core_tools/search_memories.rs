@@ -293,6 +293,8 @@ impl McpTool for SearchMemoriesTool {
             validate_body_max_chars(args.body_max_chars)?;
             crate::reject_zero_limit(Some(args.limit))?;
             validate_list_caps(&args)?;
+            let since = parse_rfc3339(args.since.as_deref(), "since")?;
+            let until = parse_rfc3339(args.until.as_deref(), "until")?;
             // Fold the filter the way the write side folds a stored tag, and
             // before anything reads `args.tags`: both the storage request and
             // the cursor fingerprint consume it, and a cursor must rebind to
@@ -306,7 +308,7 @@ impl McpTool for SearchMemoriesTool {
             )
             .await?;
             let mut output = if stores.route.local {
-                search_local(&ctx, &args, query).await?
+                search_local(&ctx, &args, query, since, until).await?
             } else if args.cursor.is_some() {
                 return Err(McpToolError::InvalidInput(
                     "cursor: a search of other stores only has no next page".into(),
@@ -332,6 +334,15 @@ impl McpTool for SearchMemoriesTool {
                     limit: args.limit.min(50),
                     kind: args.kind.map(EntityKind::from),
                     schema_id: args.schema_id.clone(),
+                    tags: args.tags.clone(),
+                    tag_match: args.tag_match,
+                    mode: SearchMode::from(args.mode),
+                    since,
+                    until,
+                    order: args.order,
+                    supersession: SupersessionStatus::from(args.supersession),
+                    min_score: args.min_score,
+                    semantic_weight: args.semantic_weight,
                 };
                 let (answered, unanswered) = super::other_stores::search_remotes(
                     &ctx,
@@ -340,7 +351,7 @@ impl McpTool for SearchMemoriesTool {
                     &remote,
                 )
                 .await;
-                merge_store_hits(&mut output, answered, unanswered, remote.limit);
+                merge_store_hits(&mut output, answered, unanswered, remote.limit, args.order);
             }
             Ok(output)
         })
@@ -405,18 +416,19 @@ fn with_stores_property(
 }
 
 /// Fuse this store's page with every other store's hits by reciprocal
-/// rank (k=60) and keep the best `limit`. Other stores answer on the first
-/// page only. The local page keeps its own cursor, so a local hit the
-/// merge pushes past `limit` is not repeated on the next page; a caller
-/// that needs every local hit pages with `stores: ["local"]`.
+/// rank (k=60), or newest first for recency, before keeping `limit`. Other
+/// stores answer on the first page only. The local page keeps its own cursor,
+/// so a local hit the merge pushes past `limit` is not repeated on the next
+/// page; a caller that needs every local hit pages with `stores: ["local"]`.
 fn merge_store_hits(
     output: &mut SearchMemoriesOutput,
     answered: Vec<(
         crate::storage_ports::other_stores::StoreName,
-        Vec<crate::storage_ports::other_stores::RemoteHit>,
+        crate::storage_ports::other_stores::RemoteSearchResult,
     )>,
     unanswered: Vec<String>,
     limit: u32,
+    order: SearchOrder,
 ) {
     let local = std::mem::take(&mut output.memories);
     let mut lists = vec![
@@ -428,14 +440,22 @@ fn merge_store_hits(
             })
             .collect::<Vec<_>>(),
     ];
-    for (store, hits) in answered {
+    for (store, result) in answered {
+        output.degraded_to_lexical |= result.degraded_to_lexical;
         lists.push(
-            hits.into_iter()
+            result
+                .hits
+                .into_iter()
                 .map(|hit| remote_hit_output(&store, hit))
                 .collect(),
         );
     }
-    output.memories = crate::storage_ports::other_stores::rrf_merge(lists)
+    let mut merged = crate::storage_ports::other_stores::rrf_merge(lists);
+    match order {
+        SearchOrder::Relevance => {}
+        SearchOrder::Recency => merged.sort_by_key(|(hit, _)| std::cmp::Reverse(hit.created_at)),
+    }
+    output.memories = merged
         .into_iter()
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .map(|(mut hit, score)| {
@@ -476,10 +496,10 @@ async fn search_local(
     ctx: &McpToolCtx,
     args: &SearchMemoriesArgs,
     query: &str,
+    since: Option<time::OffsetDateTime>,
+    until: Option<time::OffsetDateTime>,
 ) -> Result<SearchMemoriesOutput, McpToolError> {
     let mode = SearchMode::from(args.mode);
-    let since = parse_rfc3339(args.since.as_deref(), "since")?;
-    let until = parse_rfc3339(args.until.as_deref(), "until")?;
     let spaces = resolve_search_spaces(ctx, &args.spaces)?;
     let lanes = plan_owner_lanes(ctx, mode, query, spaces).await?;
     let mut degraded_to_lexical = lanes

@@ -58,10 +58,9 @@ pub use proxima_core::cursor::Cursor;
 /// re-implement search against raw SQL, which is exactly the coupling the
 /// tiered facade exists to prevent.
 ///
-/// [`MemorySearchRequest::tags`] is the only predicate that narrows a
-/// search to a subset of a corpus. `schema_id` is exact-match and there is
-/// no per-column filter, so a flavor that wants "search inside this book"
-/// declares a `tag_column` on its projection and filters here.
+/// Declared comparable projections participate without tags. A `schema_id`
+/// selects one schema, while [`MemorySearchRequest::tags`] narrows rows through
+/// its declared tag column; for example, a book tag selects one book's corpus.
 pub use proxima_core::engine::{
     FactWrite, HostStateCommand, HostStateMaintenanceAuthority, HostStateOutcome,
     HostStateUnitOfWork, SearchReadRequest, SearchReadResponse, UnitOfWork,
@@ -116,6 +115,11 @@ pub use proxima_core::read_models::MemorySnapshot;
 /// compares them with the engine-stamped permit before any handler runs.
 /// Host API only; Flavor SDK does not export it.
 pub use proxima_core::storage_ports::HostStatePayloadOwners;
+/// Other-store requests and replies used by [`RuntimeBuilder::other_stores`].
+pub use proxima_core::storage_ports::other_stores::{
+    OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
+    RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo, StoreName,
+};
 /// Cited-blob verified-read and reconciliation surfaces.
 ///
 /// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's

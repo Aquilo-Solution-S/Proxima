@@ -414,7 +414,7 @@ mod tests {
     use super::{LINEAGE_CURSOR, LineageNodeOutput, append_external_origins, lineage_fingerprint};
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
     use crate::storage_ports::other_stores::{
-        OtherStores, OtherStoresError, RemoteHit, RemoteMemory, RemoteRead, RemoteSearch,
+        OtherStores, OtherStoresError, RemoteMemory, RemoteRead, RemoteSearch, RemoteSearchResult,
         StoreCaller, StoreInfo, StoreName,
     };
     use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection};
@@ -471,8 +471,13 @@ mod tests {
             _caller: StoreCaller<'a>,
             _store: &'a StoreName,
             _args: &'a RemoteSearch,
-        ) -> BoxFuture<'a, Result<Vec<RemoteHit>, OtherStoresError>> {
-            Box::pin(async { Ok(Vec::new()) })
+        ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+            Box::pin(async {
+                Ok(RemoteSearchResult {
+                    hits: Vec::new(),
+                    degraded_to_lexical: false,
+                })
+            })
         }
         fn read<'a>(
             &'a self,

@@ -104,6 +104,11 @@ Each stored surface declares erase/export/transfer behavior. A surface that is
 not searchable or embeddable says so explicitly with its reason. See
 [data and erasure](data-and-erasure.md#declared-inverses).
 
+Core search includes every declared projection with comparable score bands and
+a supported projection renderer, both unscoped and when selected by schema.
+Tags narrow those results; they are not needed to reach a flavor's projection.
+A tag-filtered query requires the projection to declare its tag column.
+
 Use `proxima::flavor_bundle!` to register the payloads, contract, sidecars, and
 `NamedMigrator` together. Its rustdoc shows all parameters. Use a manual
 `FlavorBundle` implementation only when composition needs it. Registry freeze
