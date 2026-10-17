@@ -36,6 +36,9 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
+#[path = "blob_roundtrip_pg/public_endpoint.rs"]
+mod public_endpoint;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
@@ -258,6 +261,7 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
             .expect("S3 target required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
         region: std::env::var("PROXIMA_S3_REGION").expect("PROXIMA_S3_REGION"),
         endpoint_url: std::env::var("PROXIMA_S3_ENDPOINT_URL").ok(),
+        public_endpoint_url: None,
         plaintext_hosts: proxima_core::PlaintextHosts::none(),
         key_pair: proxima_blob_s3::S3KeyPair::new(
             std::env::var("PROXIMA_S3_ACCESS_KEY_ID").expect("PROXIMA_S3_ACCESS_KEY_ID"),
