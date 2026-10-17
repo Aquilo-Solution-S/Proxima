@@ -8,7 +8,7 @@
 
 use std::time::SystemTime;
 
-use crate::{AccessKind, GroupId, OwnerId, OwnerRoles, Role, UserId};
+use crate::{AccessKind, GroupId, OwnerId, OwnerRoles, Role, UserId, WriterAttribution};
 
 /// Server-authenticated owner authority carried alongside an [`AuthzContext`](crate::AuthzContext).
 ///
@@ -18,14 +18,20 @@ use crate::{AccessKind, GroupId, OwnerId, OwnerRoles, Role, UserId};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerScope {
     pub(crate) roles: OwnerRoles,
+    writer: WriterAttribution,
     expires_at: Option<SystemTime>,
     selected: Option<OwnerId>,
 }
 
 impl OwnerScope {
-    pub(crate) fn from_verified_roles(roles: OwnerRoles, expires_at: Option<SystemTime>) -> Self {
+    pub(crate) fn from_verified_roles(
+        roles: OwnerRoles,
+        expires_at: Option<SystemTime>,
+        writer: WriterAttribution,
+    ) -> Self {
         Self {
             roles,
+            writer,
             expires_at,
             selected: None,
         }
@@ -39,6 +45,7 @@ impl OwnerScope {
         }
         Some(Self {
             roles: self.roles.clone().with_group_role(group, role),
+            writer: self.writer,
             expires_at: self.expires_at,
             selected: None,
         })
@@ -49,9 +56,30 @@ impl OwnerScope {
         let role = self.roles.role_for(&owner)?;
         Some(Self {
             roles: OwnerRoles::scoped_to(subject, owner, role),
+            writer: self.writer,
             expires_at: self.expires_at,
             selected: Some(owner),
         })
+    }
+
+    /// The immutable writer captured when authentication sealed this scope.
+    ///
+    /// ```
+    /// # use proxima_core::{OwnerScope, WriterAttribution};
+    /// fn inspect(scope: &OwnerScope) -> WriterAttribution {
+    ///     scope.writer()
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// # use proxima_core::{OwnerScope, WriterAttribution};
+    /// # fn replace(scope: &mut OwnerScope, writer: WriterAttribution) {
+    /// scope.writer = writer;
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn writer(&self) -> WriterAttribution {
+        self.writer
     }
 
     #[must_use]
@@ -123,11 +151,23 @@ mod tests {
         let other = GroupId::new(uuid::Uuid::now_v7());
         let roles =
             OwnerRoles::for_subject(subject, [(OwnerId::from(group), Role::editor())]).unwrap();
-        let original = OwnerScope::from_verified_roles(roles, None);
+        let writer = WriterAttribution {
+            by: subject.into_inner(),
+            via: Some(uuid::Uuid::now_v7()),
+        };
+        let original = OwnerScope::from_verified_roles(roles, None, writer);
         let narrowed = original.narrow(OwnerId::from(group)).unwrap();
         assert!(narrowed.narrow(OwnerId::from(subject)).is_none());
         assert!(narrowed.add_group_role(other, Role::admin()).is_none());
         assert!(narrowed.narrow(OwnerId::from(group)).is_some());
         assert!(original.narrow(OwnerId::from(subject)).is_some());
+        assert_eq!(narrowed.writer(), writer);
+        assert_eq!(
+            original
+                .add_group_role(other, Role::viewer())
+                .unwrap()
+                .writer(),
+            writer
+        );
     }
 }

@@ -134,6 +134,23 @@ theorem principle_content_share_preserves_t
     memory_t m1 ≠ memory_t m2 :=
   shared_content_preserves_distinct_admissions m1 m2 h
 
+/-- Writer attribution belongs to the recorded version, not its series head
+    or shared payload. -/
+theorem principle_memory_version_has_one_writer
+    (memories : Set Memory) (hunique : MemoryIdUnique memories)
+    (m1 m2 : Memory) (hm1 : m1 ∈ memories) (hm2 : m2 ∈ memories)
+    (ht : memory_t m1 = memory_t m2) :
+    memory_writer m1 = memory_writer m2 :=
+  memory_version_writer_unique memories hunique m1 m2 hm1 hm2 ht
+
+/-- Each Goal revision records its own attribution. -/
+theorem principle_goal_version_has_one_writer
+    (goals : Set Goal) (hunique : GoalIdUnique goals)
+    (g1 g2 : Goal) (hg1 : g1 ∈ goals) (hg2 : g2 ∈ goals)
+    (ht : goal_t g1 = goal_t g2) :
+    goal_writer g1 = goal_writer g2 :=
+  goal_version_writer_unique goals hunique g1 g2 hg1 hg2 ht
+
 /-- H8 — Self is cue-indexed; the owner-wide P set is not Self. -/
 theorem principle_situated_self_touches_cue :
     ∀ memories heads o cue m,

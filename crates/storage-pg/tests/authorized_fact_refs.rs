@@ -983,8 +983,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
+                 sidecar_tables, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(reference_handle)
         .bind(owner.into_inner())
@@ -1006,8 +1006,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}', uuid_extract_timestamp($1))",
+                 sidecar_tables, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(memory_ref_handle)
         .bind(owner.into_inner())
@@ -1038,8 +1038,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                 sidecar_tables, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
+                 sidecar_tables, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(goal_ref_handle)
         .bind(owner.into_inner())
@@ -1066,8 +1066,8 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .await?;
         let error = sqlx::query(
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}', uuid_extract_timestamp($1))",
+                (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(origin_handle)
         .bind(owner.into_inner())
@@ -1129,8 +1129,8 @@ async fn goal_erase_serializes_against_reference_admission() {
             sqlx::query(
                 "INSERT INTO proxima_core.memory
                     (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
-                     sidecar_tables, occurred_at)
-                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1))",
+                     sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(handle)
             .bind(owner_id)
@@ -1226,8 +1226,8 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
                 .map_err(|_| sqlx::Error::Protocol("lock-wait observer was dropped".to_owned()))?;
             let inserted = sqlx::query(
                 "INSERT INTO proxima_core.memory
-                    (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at)
-                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, $4, '{}', uuid_extract_timestamp($1))",
+                    (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, $4, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(handle)
             .bind(owner_id)

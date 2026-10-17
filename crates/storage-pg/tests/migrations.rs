@@ -689,8 +689,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id)
-             VALUES ($1, $2, $3, 'reference target', 'Active', 'reference-goal')",
+                 (handle, t, owner_id, title, state, request_id, \"by\", via)
+             VALUES ($1, $2, $3, 'reference target', 'Active', 'reference-goal', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(goal_handle)
         .bind(goal_t)
@@ -711,8 +711,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, goal_refs, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[], uuid_extract_timestamp($2))",
+                 (handle, t, kind, owner_id, schema_id, goal_refs, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(fact_handle)
         .bind(fact_t)
@@ -736,8 +736,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'test/source-v1', uuid_extract_timestamp($2))",
+                 (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'test/source-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(source_handle)
         .bind(source_t)
@@ -767,9 +767,9 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         .await?;
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, origins, content_id)
+                 (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
              VALUES ($1, $2, 'abstraction', $3, 'test/abstraction-v1',
-                     ARRAY[$4, $5]::uuid[], $6)",
+                     ARRAY[$4, $5]::uuid[], $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(abstraction_handle)
         .bind(abstraction_t)
@@ -789,8 +789,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
         let cooled_t = Uuid::now_v7();
         let err = sqlx::query(
             "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, origins)
-             VALUES ($1, $2, $3, 'fact', 'cold/null-origin', ARRAY[NULL]::uuid[])",
+                 (t, handle, owner_id, kind, object_key, origins, \"by\", via)
+             VALUES ($1, $2, $3, 'fact', 'cold/null-origin', ARRAY[NULL]::uuid[], '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(cooled_t)
         .bind(Uuid::now_v7())
@@ -805,8 +805,8 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, refs)
-             VALUES ($1, $2, $3, 'fact', 'cold/null-ref', ARRAY[NULL]::uuid[])",
+                 (t, handle, owner_id, kind, object_key, refs, \"by\", via)
+             VALUES ($1, $2, $3, 'fact', 'cold/null-ref', ARRAY[NULL]::uuid[], '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
@@ -848,8 +848,8 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         let null_cooled_t = Uuid::now_v7();
         let err = sqlx::query(
             "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key)
-             VALUES ($1, $2, $3, 'fact', 'cold/unsealed-null')",
+                 (t, handle, owner_id, kind, object_key, \"by\", via)
+             VALUES ($1, $2, $3, 'fact', 'cold/unsealed-null', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(null_cooled_t)
         .bind(Uuid::now_v7())
@@ -872,8 +872,8 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
+                 (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -883,8 +883,8 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, origins, refs)
-             SELECT t, handle, owner_id, kind, 'cold/partial-goal-refs', origins, refs
+                 (t, handle, owner_id, kind, object_key, origins, refs, \"by\", via)
+             SELECT t, handle, owner_id, kind, 'cold/partial-goal-refs', origins, refs, \"by\", via
                FROM proxima_core.memory WHERE t = $1",
         )
         .bind(t)
@@ -978,8 +978,8 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -1013,8 +1013,8 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .await?;
         let err = sqlx::query(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id)
-             VALUES ($1, $2, $3, 'reused', 'Active', 'reused-witness')",
+                 (handle, t, owner_id, title, state, request_id, \"by\", via)
+             VALUES ($1, $2, $3, 'reused', 'Active', 'reused-witness', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(goal_handle)
         .bind(t)
@@ -1052,8 +1052,8 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(replacement_handle)
         .bind(t)
@@ -1125,6 +1125,48 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
     result.expect("conflicting witness rollback test failed");
 }
 
+async fn assert_cooled_writer_seal(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
+    for (by, via) in [
+        (Uuid::now_v7(), None),
+        (Uuid::from_u128(0x509), Some(Uuid::now_v7())),
+    ] {
+        let error = sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, \"by\", via)
+             SELECT t, handle, owner_id, kind, 'cold/forged-writer', origins, refs, goal_refs, $2, $3
+               FROM proxima_core.memory WHERE t = $1",
+        ).bind(t).bind(by).bind(via).execute(pool).await
+            .expect_err("cooled writer must seal the hot writer");
+        assert!(
+            error.to_string().contains("does not seal its hot Memory"),
+            "{error}"
+        );
+    }
+    sqlx::query(
+        "INSERT INTO proxima_core.cooled
+             (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, \"by\", via)
+         SELECT t, handle, owner_id, kind, 'cold/sealed', origins, refs, goal_refs, \"by\", via
+           FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(t)
+    .execute(pool)
+    .await?;
+
+    for query in [
+        sqlx::query("UPDATE proxima_core.cooled SET \"by\" = $2 WHERE t = $1"),
+        sqlx::query("UPDATE proxima_core.cooled SET via = $2 WHERE t = $1"),
+    ] {
+        let error = query
+            .bind(t)
+            .bind(Uuid::now_v7())
+            .execute(pool)
+            .await
+            .expect_err("cooled writer is sealed");
+        assert!(error.to_string().contains("frozen"), "{error}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1159,29 +1201,24 @@ async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2))",
+                 (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
         .bind(owner)
         .execute(pool)
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, origins, refs, goal_refs)
-             SELECT t, handle, owner_id, kind, 'cold/sealed', origins, refs, goal_refs
-               FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
-
+        assert_cooled_writer_seal(pool, t).await?;
         sqlx::query("UPDATE proxima_core.cooled SET owner_id = $2 WHERE t = $1")
             .bind(t)
             .bind(destination)
             .execute(pool)
             .await?;
+        let writer: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1",
+        ).bind(t).fetch_one(pool).await?;
+        assert_eq!(writer, (Uuid::from_u128(0x509), None));
         let err = sqlx::query("UPDATE proxima_core.cooled SET handle = $2 WHERE t = $1")
             .bind(t)
             .bind(Uuid::now_v7())
@@ -1249,8 +1286,8 @@ async fn memory_is_append_only_and_head_t_only() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -1264,6 +1301,15 @@ async fn memory_is_append_only_and_head_t_only() {
             .await
             .expect_err("memory is append-only");
         assert!(err.to_string().contains("append-only"), "got: {err}");
+
+        for query in [
+            sqlx::query("UPDATE proxima_core.memory SET \"by\" = $2 WHERE t = $1"),
+            sqlx::query("UPDATE proxima_core.memory SET via = $2 WHERE t = $1"),
+        ] {
+            let error = query.bind(t).bind(Uuid::now_v7())
+                .execute(pool).await.expect_err("writer attribution is append-only");
+            assert!(error.to_string().contains("append-only"), "{error}");
+        }
 
         let later = Uuid::now_v7();
         sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
@@ -1316,10 +1362,44 @@ async fn memory_is_append_only_and_head_t_only() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(moved, destination);
+        let writer: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
+        ).bind(t).fetch_one(pool).await?;
+        assert_eq!(writer, (Uuid::from_u128(0x509), None));
+
+        let delegation_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.delegated_authority_grants
+                (delegation_id, subject_user_id, owner_id, tool_name,
+                 read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
+             VALUES ($1, $2, $2, 'core_remember', 'fact', 'fact',
+                     TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
+                     TIMESTAMPTZ '2026-01-01 00:00:00Z', $3, $4)",
+        ).bind(delegation_id).bind(owner).bind(writer.0).bind(Uuid::from_u128(0x510))
+            .execute(pool).await?;
+        for query in [
+            sqlx::query("UPDATE proxima_core.delegated_authority_grants SET \"by\" = $2 WHERE delegation_id = $1"),
+            sqlx::query("UPDATE proxima_core.delegated_authority_grants SET via = $2 WHERE delegation_id = $1"),
+        ] {
+            let error = query.bind(delegation_id).bind(Uuid::now_v7())
+                .execute(pool).await.expect_err("delegated writer is immutable");
+            assert!(error.to_string().contains("append-only"), "{error}");
+        }
+        let revoked = sqlx::query(
+            "UPDATE proxima_core.delegated_authority_grants
+                SET revoked_at = TIMESTAMPTZ '2027-01-01 00:00:00Z', revoked_by_user_id = $2
+              WHERE delegation_id = $1",
+        ).bind(delegation_id).bind(owner).execute(pool).await?;
+        assert_eq!(revoked.rows_affected(), 1, "writer guard must preserve revocation");
+        let grant_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT \"by\", via FROM proxima_core.delegated_authority_grants WHERE delegation_id = $1",
+        ).bind(delegation_id).fetch_one(pool).await?;
+        assert_eq!(grant_writer, (writer.0, Some(Uuid::from_u128(0x510))));
+
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $3, 'abstraction', $2, 'core/test-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, \"by\", via)
+             VALUES ($1, $3, 'abstraction', $2, 'core/test-v1', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner)
@@ -1366,8 +1446,8 @@ async fn memory_reference_arrays_remain_append_only() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, refs, goal_refs, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($1))",
+                 (handle, t, kind, owner_id, schema_id, refs, goal_refs, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner)
@@ -1431,8 +1511,8 @@ async fn fact_occurred_at_is_immutable_and_required() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $1, 'fact', $2, 'core/test-v1', uuid_extract_timestamp($1))",
+                 (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner)
@@ -1459,8 +1539,8 @@ async fn fact_occurred_at_is_immutable_and_required() {
         .await?;
         let refused = sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $1, 'fact', $2, 'core/test-v1')",
+                 (handle, t, kind, owner_id, schema_id, \"by\", via)
+             VALUES ($1, $1, 'fact', $2, 'core/test-v1', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(missing)
         .bind(owner)
@@ -1532,9 +1612,9 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+                 (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1',
-                     ARRAY['proxima_core.not_a_declared_surface'], uuid_extract_timestamp($1))",
+                     ARRAY['proxima_core.not_a_declared_surface'], uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner_id)
@@ -1825,8 +1905,8 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             };
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(handle)
             .bind(owner_id)
@@ -1907,8 +1987,8 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id)
-             VALUES ($1, $1, $2, 'replay', 'Active', 'replay-test')",
+                 (handle, t, owner_id, title, state, request_id, \"by\", via)
+             VALUES ($1, $1, $2, 'replay', 'Active', 'replay-test', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner)
@@ -2324,8 +2404,8 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
             .await?;
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(t)
             .bind(owner_id)
@@ -2604,8 +2684,8 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
             };
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
-                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1))",
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(handle)
             .bind(owner_id)

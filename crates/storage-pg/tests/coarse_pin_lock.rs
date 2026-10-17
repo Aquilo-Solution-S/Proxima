@@ -79,8 +79,8 @@ async fn insert_facts(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-         SELECT $1, t, 'fact', $2, 'core/test-fact-v1', now() FROM unnest($3::uuid[]) AS t",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+         SELECT $1, t, 'fact', $2, 'core/test-fact-v1', now(), '00000000-0000-0000-0000-000000000509'::uuid, NULL FROM unnest($3::uuid[]) AS t",
     )
     .bind(handle)
     .bind(owner_id)
@@ -118,8 +118,8 @@ async fn insert_derived(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)

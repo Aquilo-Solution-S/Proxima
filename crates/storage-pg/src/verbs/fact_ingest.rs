@@ -158,21 +158,24 @@ pub(crate) fn fact_natural_key(
 #[derive(Debug, Clone, Copy)]
 struct AuthorizedFactInput<'a> {
     owner: &'a OwnerId,
+    writer: proxima_core::WriterAttribution,
     draft: &'a FactWriteCommand,
     links: &'a AuthorizedNodeLinks,
 }
 
 impl<'a> AuthorizedFactInput<'a> {
-    const fn new(
-        owner: &'a OwnerId,
+    fn new(
+        permit: &'a proxima_core::storage_ports::OwnerWritePermit,
         draft: &'a FactWriteCommand,
         links: &'a AuthorizedNodeLinks,
-    ) -> Self {
-        Self {
-            owner,
+    ) -> Result<Self, StorageError> {
+        let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+        Ok(Self {
+            owner: permit.owner(),
+            writer: scope.writer(),
             draft,
             links,
-        }
+        })
     }
 }
 
@@ -254,10 +257,10 @@ pub(crate) async fn ingest_fact_command_in_tx(
     ingest_core(
         tx,
         AuthorizedFactInput::new(
-            authorized.owner_write_permit().owner(),
+            authorized.owner_write_permit(),
             authorized.draft(),
             authorized.links(),
-        ),
+        )?,
         options,
         FactAdmissionInput {
             store_number,
@@ -314,11 +317,7 @@ where
     };
     ingest_core(
         tx,
-        AuthorizedFactInput::new(
-            authorized.owner_write_permit().owner(),
-            draft,
-            authorized.links(),
-        ),
+        AuthorizedFactInput::new(authorized.owner_write_permit(), draft, authorized.links())?,
         options,
         input,
         fact_sidecar,
@@ -365,11 +364,7 @@ where
     };
     ingest_core(
         tx,
-        AuthorizedFactInput::new(
-            authorized.owner_write_permit().owner(),
-            draft,
-            authorized.links(),
-        ),
+        AuthorizedFactInput::new(authorized.owner_write_permit(), draft, authorized.links())?,
         options,
         input,
         fact_sidecar,
@@ -540,11 +535,7 @@ where
     };
     ingest_core(
         tx,
-        AuthorizedFactInput::new(
-            authorized.owner_write_permit().owner(),
-            draft,
-            authorized.links(),
-        ),
+        AuthorizedFactInput::new(authorized.owner_write_permit(), draft, authorized.links())?,
         options,
         input,
         sidecar,
@@ -637,6 +628,7 @@ async fn admit_fact(
 > {
     let AuthorizedFactInput {
         owner,
+        writer,
         draft,
         links,
     } = authorized;
@@ -646,6 +638,7 @@ async fn admit_fact(
             store_number: input.store_number,
             natural_key: input.natural_key,
             owner,
+            writer,
             draft,
             origins: links.origins(),
             references: links.references(),

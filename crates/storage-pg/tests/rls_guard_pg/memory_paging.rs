@@ -25,7 +25,7 @@ async fn insert_record(pool: &PgPool, handle: Uuid, row: &Record, anchor: Option
             .execute(pool).await.unwrap();
         Some(id)
     };
-    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs, occurred_at) VALUES ($1,$2,$3::text::proxima_core.memory_kind,$4,$5,$6,$7, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)")
+    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs, occurred_at, \"by\", via) VALUES ($1,$2,$3::text::proxima_core.memory_kind,$4,$5,$6,$7, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(handle).bind(row.t).bind(row.kind).bind(row.owner).bind(&row.schema)
         .bind(content).bind(anchor.into_iter().collect::<Vec<_>>())
         .execute(pool).await.unwrap();

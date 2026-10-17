@@ -90,7 +90,7 @@ async fn seed(pool: &PgPool, owners: &[Uuid]) -> Vec<RowSpec> {
         let ts: Vec<_> = chunk.iter().map(|x| x.t).collect();
         let owner_ids: Vec<_> = chunk.iter().map(|x| x.owner).collect();
         let schemas: Vec<_> = chunk.iter().map(|x| x.schema).collect();
-        sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,occurred_at) SELECT h,t,k::proxima_core.memory_kind,o,s,uuid_extract_timestamp(t) FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::uuid[],$5::text[]) AS x(h,t,k,o,s)")
+        sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,occurred_at, \"by\", via) SELECT h,t,k::proxima_core.memory_kind,o,s,uuid_extract_timestamp(t), '00000000-0000-0000-0000-000000000509'::uuid, NULL FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::uuid[],$5::text[]) AS x(h,t,k,o,s)")
             .bind(&handles).bind(&ts).bind(vec!["fact"; chunk.len()]).bind(&owner_ids).bind(&schemas)
             .execute(pool).await.unwrap();
     }

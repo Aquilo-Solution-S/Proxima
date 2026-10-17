@@ -548,8 +548,8 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2), $3, NULL)",
         )
         .bind(fact_handle)
         .bind(fact_t)
@@ -563,11 +563,11 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, content_id,
-                 sidecar_tables)
+                 sidecar_tables, \"by\", via)
              SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     'abstraction', $1, $4, ARRAY[$5]::uuid[], c.content_id,
-                    ARRAY['proxima_code.code_chunk_v1']
+                    ARRAY['proxima_code.code_chunk_v1'], $1, NULL
                FROM generate_series($2::int, $3::int) AS g(i)
                JOIN proxima_core.content c
                  ON c.owner_id = $1

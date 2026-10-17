@@ -38,7 +38,8 @@ fn cold_detail_offset(bytes: &[u8]) -> usize {
     assert_eq!(bytes[0], 9, "the test requires the v9 cold format");
     let mut offset = 1 + 16 + 16;
     skip_str(bytes, &mut offset);
-    offset += 16;
+    offset += 16 + 16; // owner and recorded writer
+    skip_opt_uuid(bytes, &mut offset);
     skip_opt_str(bytes, &mut offset);
     skip_opt_str(bytes, &mut offset);
     skip_opt_uuid(bytes, &mut offset);

@@ -11,7 +11,9 @@ pub use crate::edge::EdgeTargetProjection;
 use crate::edge::{Edge, EdgeKind};
 use crate::entity::EntityRef;
 use crate::verbs::goal_write::GoalState;
-use crate::{GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload};
+use crate::{
+    GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, WriterAttribution,
+};
 
 /// Re-export the canonical `EntityKind` from `entity` so query
 /// callers don't need a second import path.
@@ -213,6 +215,8 @@ pub struct MemorySearchRequest {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchResult {
     pub memory_id: MemoryId,
+    #[serde(flatten)]
+    pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub created_at: time::OffsetDateTime,
@@ -441,6 +445,7 @@ pub struct MemoryRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: OwnerId,
+    pub writer: WriterAttribution,
     /// Made-from pins (`memory.origins`). Empty on Facts.
     pub origins: Vec<MemoryId>,
     /// Points-at pins (`memory.refs`).
@@ -481,6 +486,8 @@ pub struct GoalRow {
     pub id: GoalId,
     pub schema_id: SchemaId,
     pub owner: OwnerId,
+    #[serde(flatten)]
+    pub writer: WriterAttribution,
     pub title: String,
     /// The Goal's prompt text as of this version (`goal.text`); `None` when
     /// unknown: a version written before the text was stored whose replay
@@ -635,6 +642,90 @@ pub struct QueryResponse {
 #[cfg(test)]
 mod tests {
     use super::{SidecarAtom, like_pattern};
+
+    #[test]
+    fn search_result_serialization_flattens_required_writer() {
+        for via in [None, Some(uuid::Uuid::from_u128(2))] {
+            let writer = crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(1),
+                via,
+            };
+            let result = super::MemorySearchResult {
+                memory_id: crate::MemoryId::new(crate::new_memory_uuid(0)),
+                writer,
+                kind: crate::EntityKind::Fact,
+                schema_id: crate::SchemaId::new("core/agent-note-v1".into()),
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                occurred_at: None,
+                snippet: "stored note".into(),
+                score: 1.0,
+                lexical_score: 1.0,
+                similarity_score: 0.0,
+            };
+            let wire = serde_json::to_value(&result).expect("serialized result");
+            assert_eq!(wire["by"], serde_json::json!(writer.by));
+            assert_eq!(wire.get("via"), Some(&serde_json::json!(writer.via)));
+            assert!(wire.get("writer").is_none());
+            assert_eq!(
+                serde_json::from_value::<super::MemorySearchResult>(wire.clone())
+                    .expect("stored writer round trips"),
+                result
+            );
+            for field in ["by", "via"] {
+                let mut missing = wire.clone();
+                missing
+                    .as_object_mut()
+                    .expect("result object")
+                    .remove(field);
+                assert!(
+                    serde_json::from_value::<super::MemorySearchResult>(missing).is_err(),
+                    "missing {field} must refuse"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn goal_row_serialization_flattens_required_writer() {
+        for via in [None, Some(uuid::Uuid::from_u128(2))] {
+            let writer = crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(1),
+                via,
+            };
+            let row = super::GoalRow {
+                handle: crate::new_memory_uuid(0),
+                id: crate::GoalId::new(crate::new_memory_uuid(0)),
+                schema_id: crate::SchemaId::new("core/goal-v1".into()),
+                owner: crate::OwnerId::new(uuid::Uuid::from_u128(3)),
+                writer,
+                title: "stored goal".into(),
+                text: Some("stored prompt".into()),
+                state: super::GoalState::Active,
+                dependency_goal_ids: Vec::new(),
+                assignment: None,
+                evidence: Vec::new(),
+                set_at: time::OffsetDateTime::UNIX_EPOCH,
+                changed_at: time::OffsetDateTime::UNIX_EPOCH,
+            };
+            let wire = serde_json::to_value(&row).expect("serialized goal");
+            assert_eq!(wire["by"], serde_json::json!(writer.by));
+            assert_eq!(wire.get("via"), Some(&serde_json::json!(writer.via)));
+            assert!(wire.get("writer").is_none());
+            assert_eq!(
+                serde_json::from_value::<super::GoalRow>(wire.clone())
+                    .expect("stored writer round trips"),
+                row
+            );
+            for field in ["by", "via"] {
+                let mut missing = wire.clone();
+                missing.as_object_mut().expect("goal object").remove(field);
+                assert!(
+                    serde_json::from_value::<super::GoalRow>(missing).is_err(),
+                    "missing {field} must refuse"
+                );
+            }
+        }
+    }
 
     #[test]
     fn like_pattern_escapes_wildcards() {

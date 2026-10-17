@@ -1134,9 +1134,9 @@ async fn assert_fact_scope_sql(
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs)
+              ingest_key, origins, refs, goal_refs, \"by\", via)
          SELECT t, handle, owner_id, kind, 'kindrule/cooled', blob_id, content_id, source_id,
-                ingest_key, origins, refs, goal_refs
+                ingest_key, origins, refs, goal_refs, \"by\", via
            FROM proxima_core.memory WHERE t = $1",
     )
     .bind(handle_id(&seeded.unpinned)?)

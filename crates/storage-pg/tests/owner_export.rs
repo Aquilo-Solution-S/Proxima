@@ -105,6 +105,11 @@ async fn export_edges_are_the_pins_already_on_memory() {
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
         assert_eq!(bundle.count("proxima_core.memory"), 2);
+        let writer = permit.owner_scope().expect("sealed fixture scope").writer();
+        for row in &bundle.tables["proxima_core.memory"] {
+            assert_eq!(row["by"].as_str(), Some(writer.by.to_string()).as_deref());
+            assert!(row["via"].is_null());
+        }
         assert_eq!(bundle.count("edges"), 1);
         assert_eq!(bundle.edges.len(), 1);
         assert_eq!(
@@ -209,8 +214,8 @@ async fn export_carries_cooled_locators_and_sketches() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(witnessed_handle)
         .bind(witnessed_t)

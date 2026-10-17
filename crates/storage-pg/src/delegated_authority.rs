@@ -86,8 +86,8 @@ impl DelegationStorePort for PgDelegationStore {
             "INSERT INTO proxima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id,
                  tool_name, action_name, read_ceiling, write_ceiling,
-                 expires_at, auth_epoch, issued_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 expires_at, auth_epoch, issued_at, \"by\", via)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(grant.delegation_id().into_uuid())
         .bind(grant.subject().into_inner())
@@ -99,6 +99,8 @@ impl DelegationStorePort for PgDelegationStore {
         .bind(OffsetDateTime::from(grant.expires_at()))
         .bind(auth_epoch)
         .bind(OffsetDateTime::from(grant.issued_at()))
+        .bind(grant.writer().by)
+        .bind(grant.writer().via)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
@@ -118,7 +120,7 @@ impl DelegationStorePort for PgDelegationStore {
             "SELECT delegation_id, subject_user_id, owner_id,
                     tool_name, action_name, read_ceiling, write_ceiling,
                     expires_at, auth_epoch, issued_at, revoked_at,
-                    revoked_by_user_id
+                    revoked_by_user_id, \"by\", via
                FROM proxima_core.delegated_authority_grants
               WHERE delegation_id = $1
                 AND owner_id IS NOT DISTINCT FROM $2",
@@ -184,6 +186,10 @@ fn decode_grant(
             delegation_id: DelegationId::from_uuid(row.try_get("delegation_id").map_err(internal)?),
             subject: UserId::new(row.try_get("subject_user_id").map_err(internal)?),
             owner,
+            writer: proxima_core::WriterAttribution {
+                by: row.try_get("by").map_err(internal)?,
+                via: row.try_get("via").map_err(internal)?,
+            },
             tool: row.try_get::<String, _>("tool_name").map_err(internal)?,
             action: row
                 .try_get::<Option<String>, _>("action_name")

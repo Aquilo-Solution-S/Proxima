@@ -3,7 +3,7 @@
 #[path = "support/migration_reset.rs"]
 pub mod migration_reset_support;
 
-use migration_reset_support::apply_pre_identity_schema;
+use migration_reset_support::{apply_historical_schema, apply_pre_identity_schema};
 use proxima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls};
 use proxima_storage_pg::{
     MissingMigrationPolicy, begin_migration_transaction, core_migrator, definitions,
@@ -21,6 +21,7 @@ enum ExistingIdentity {
     Cooled,
     Erased,
     ExternalOrigin,
+    DelegationGrant,
 }
 
 async fn seed_identity(pool: &PgPool, existing: ExistingIdentity) -> TestResult {
@@ -72,6 +73,14 @@ async fn seed_identity(pool: &PgPool, existing: ExistingIdentity) -> TestResult 
                     .bind(handle)
                     .execute(pool)
                     .await?;
+                if matches!(existing, ExistingIdentity::Erased) {
+                    sqlx::query(
+                        "INSERT INTO proxima_core.erased_pin_target (t, kind) VALUES ($1, 'fact')",
+                    )
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+                }
                 let hot_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory")
                     .fetch_one(pool)
                     .await?;
@@ -112,7 +121,24 @@ async fn seed_identity(pool: &PgPool, existing: ExistingIdentity) -> TestResult 
             .execute(pool)
             .await?;
         }
+        ExistingIdentity::DelegationGrant => seed_delegation_grant(pool, id, owner).await?,
     }
+    Ok(())
+}
+
+async fn seed_delegation_grant(pool: &PgPool, id: Uuid, owner: Uuid) -> TestResult {
+    sqlx::query(
+        "INSERT INTO proxima_core.delegated_authority_grants
+             (delegation_id, subject_user_id, owner_id, tool_name,
+              read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
+         VALUES ($1, $2, $2, 'core_remember', 'fact', 'fact',
+                 TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
+                 TIMESTAMPTZ '2026-01-01 00:00:00Z')",
+    )
+    .bind(id)
+    .bind(owner)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -161,6 +187,13 @@ async fn schema_state(pool: &PgPool) -> Result<serde_json::Value, sqlx::Error> {
              'origin_columns', (SELECT jsonb_agg(jsonb_build_object('column', column_name, 'type', data_type) ORDER BY ordinal_position)
                                   FROM information_schema.columns
                                  WHERE table_schema = 'proxima_core' AND table_name = 'memory_external_origin'),
+             'writer_columns', (SELECT jsonb_agg(jsonb_build_object('table', table_name, 'column', column_name,
+                                      'type', data_type, 'nullable', is_nullable, 'default', column_default)
+                                      ORDER BY table_name, ordinal_position)
+                                  FROM information_schema.columns
+                                 WHERE table_schema = 'proxima_core'
+                                   AND table_name IN ('memory', 'cooled', 'goal', 'delegated_authority_grants')
+                                   AND column_name IN ('by', 'via')),
              'ledger', (SELECT jsonb_agg(to_jsonb(m) ORDER BY m.version) FROM public._sqlx_migrations m))",
     )
     .fetch_one(pool)
@@ -251,6 +284,109 @@ async fn orphan_origin_refuses_identity_migration_without_changes() -> TestResul
     refuses_without_changes(ExistingIdentity::ExternalOrigin).await
 }
 
+async fn writer_rows(pool: &PgPool) -> Result<serde_json::Value, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object(
+             'memory', (SELECT jsonb_agg(to_jsonb(m) ORDER BY m.t) FROM proxima_core.memory m),
+             'cooled', (SELECT jsonb_agg(to_jsonb(c) ORDER BY c.t) FROM proxima_core.cooled c),
+             'goal', (SELECT jsonb_agg(to_jsonb(g) ORDER BY g.t) FROM proxima_core.goal g),
+             'grants', (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.delegation_id)
+                          FROM proxima_core.delegated_authority_grants d))",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+async fn refuses_writer_migration(
+    platform: &PgPool,
+    admin: &PgPool,
+    existing: ExistingIdentity,
+) -> TestResult {
+    seed_identity(admin, existing).await?;
+    let before = writer_rows(admin).await?;
+    assert_eq!(
+        before
+            .as_object()
+            .expect("writer-bearing rows")
+            .values()
+            .filter(|rows| rows.as_array().is_some_and(|rows| !rows.is_empty()))
+            .count(),
+        1,
+        "{existing:?} must populate exactly one writer-bearing table"
+    );
+    if matches!(existing, ExistingIdentity::DelegationGrant) {
+        assert_eq!(before["grants"].as_array().map(Vec::len), Some(1));
+    }
+    let schema_before = schema_state(admin).await?;
+    assert!(schema_before["writer_columns"].is_null());
+    let versions: Vec<_> = schema_before["ledger"]
+        .as_array()
+        .expect("migration ledger")
+        .iter()
+        .map(|row| row["version"].as_i64().expect("migration version"))
+        .collect();
+    assert_eq!(versions, [33, 34]);
+    let mut connection = platform.acquire().await?;
+    let mut transaction = begin_migration_transaction(&mut connection).await?;
+    sqlx::query("SELECT set_config('app.proxima_scope', '', true)")
+        .execute(transaction.as_mut())
+        .await?;
+    let visible: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM proxima_core.memory)
+              + (SELECT count(*) FROM proxima_core.cooled)
+              + (SELECT count(*) FROM proxima_core.goal)
+              + (SELECT count(*) FROM proxima_core.delegated_authority_grants)",
+    )
+    .fetch_one(transaction.as_mut())
+    .await?;
+    assert_eq!(visible, 0, "empty scope must hide the populated fixture");
+    let error = core_migrator()
+        .run(transaction.as_mut())
+        .await
+        .expect_err("used stores must refuse writer attribution migration");
+    let sqlx::migrate::MigrateError::ExecuteMigration(error, 35) = error else {
+        panic!("expected the attribution migration to refuse: {error}");
+    };
+    let database_error = error.as_database_error().expect("typed database refusal");
+    assert_eq!(database_error.code().as_deref(), Some("55000"));
+    assert!(database_error.message().contains("fresh store required"));
+    assert_eq!(
+        database_error
+            .downcast_ref::<sqlx::postgres::PgDatabaseError>()
+            .hint(),
+        Some("Create a fresh store before starting this release.")
+    );
+    transaction.rollback().await?;
+    assert_eq!(writer_rows(admin).await?, before, "{existing:?}");
+    assert_eq!(schema_state(admin).await?, schema_before, "{existing:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_writer_rows_refuse_attribution_migration_without_changes() -> TestResult {
+    let (_guard, platform, admin) = empty_store().await?;
+    apply_historical_schema(&platform, &[33, 34], definitions::POLICIES).await?;
+    for existing in [
+        ExistingIdentity::Memory,
+        ExistingIdentity::Cooled,
+        ExistingIdentity::Goal,
+        ExistingIdentity::DelegationGrant,
+    ] {
+        refuses_writer_migration(&platform, &admin, existing).await?;
+        sqlx::raw_sql(
+            "DELETE FROM proxima_core.memory;
+             DELETE FROM proxima_core.cooled;
+             DELETE FROM proxima_core.goal;
+             DELETE FROM proxima_core.delegated_authority_grants;
+             DELETE FROM proxima_core.memory_head;
+             DELETE FROM proxima_core.goal_head;",
+        )
+        .execute(&admin)
+        .await?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn empty_store_accepts_identity_schema_and_current_definitions() -> TestResult {
     let (_guard, platform, admin) = empty_store().await?;
@@ -270,7 +406,18 @@ async fn empty_store_accepts_identity_schema_and_current_definitions() -> TestRe
     )
     .fetch_one(&admin)
     .await?;
-    assert_eq!(installed, (true, true, 34));
+    let current_version = core_migrator()
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .expect("current core migration");
+    assert_eq!(installed, (true, true, current_version));
+    let identity_migration_applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM public._sqlx_migrations WHERE version = 34 AND success)",
+    )
+    .fetch_one(&admin)
+    .await?;
+    assert!(identity_migration_applied);
     let origin_columns: Vec<(String, String)> = sqlx::query_as(
         "SELECT column_name::text, data_type::text FROM information_schema.columns
           WHERE table_schema = 'proxima_core' AND table_name = 'memory_external_origin'

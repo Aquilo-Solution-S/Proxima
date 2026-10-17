@@ -86,6 +86,7 @@ mod tests {
         let t = uuid::Uuid::from_u128(t);
         (
             MemorySearchResult {
+                writer: crate::test_fixtures::writer(),
                 memory_id: MemoryId::new(t),
                 kind: EntityKind::Fact,
                 schema_id: SchemaId::new("core/agent-note-v1".into()),

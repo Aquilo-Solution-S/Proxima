@@ -206,6 +206,10 @@ mod tests {
     fn a_search_response_must_carry_the_requested_store_number() {
         let hit = RemoteHit {
             handle: crate::new_memory_uuid(2),
+            writer: crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(3),
+                via: None,
+            },
             kind: crate::EntityKind::Fact,
             schema_id: "remote/note".into(),
             snippet: "remote result".into(),
@@ -490,6 +494,10 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
                 Ok(RemoteRead::Found(RemoteMemory {
                     handle: id,
+                    writer: crate::WriterAttribution {
+                        by: uuid::Uuid::from_u128(3),
+                        via: None,
+                    },
                     kind: crate::EntityKind::Fact,
                     schema_id: "test/fact-v1".into(),
                     title: None,

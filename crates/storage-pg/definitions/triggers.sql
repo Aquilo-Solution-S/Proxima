@@ -51,6 +51,12 @@ CREATE OR REPLACE TRIGGER cooled_forget_grounding BEFORE INSERT ON proxima_core.
 CREATE OR REPLACE TRIGGER cooled_identity_seal BEFORE INSERT ON proxima_core.cooled FOR EACH ROW EXECUTE FUNCTION proxima_core.cooled_identity_seal();
 
 
+-- delegated_authority_grants
+CREATE OR REPLACE TRIGGER delegated_authority_writer_immutable
+    BEFORE UPDATE OF "by", via ON proxima_core.delegated_authority_grants
+    FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+
 -- erased_pin_target
 CREATE OR REPLACE TRIGGER erased_pin_target_append_only BEFORE DELETE OR UPDATE ON proxima_core.erased_pin_target FOR EACH ROW EXECUTE FUNCTION proxima_core.erased_pin_target_append_only();
 CREATE OR REPLACE TRIGGER erased_pin_target_insert_guard BEFORE INSERT ON proxima_core.erased_pin_target FOR EACH ROW EXECUTE FUNCTION proxima_core.assert_erased_pin_target_insert();

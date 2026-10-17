@@ -220,19 +220,41 @@ impl Idp {
     }
 
     fn bearer(&self, sub: &str) -> TestResult<String> {
-        self.bearer_with_owner(sub, None)
+        self.bearer_with_writer(sub, None)
     }
 
     fn bearer_for_owner(&self, sub: &str, owner: Uuid) -> TestResult<String> {
-        self.bearer_with_owner(sub, Some(owner))
+        self.bearer_for_writer(
+            sub,
+            owner,
+            proxima_core::WriterAttribution {
+                by: owner,
+                via: None,
+            },
+        )
     }
 
-    fn bearer_with_owner(&self, sub: &str, owner: Option<Uuid>) -> TestResult<String> {
+    fn bearer_for_writer(
+        &self,
+        sub: &str,
+        owner: Uuid,
+        writer: proxima_core::WriterAttribution,
+    ) -> TestResult<String> {
+        self.bearer_with_writer(sub, Some((owner, writer)))
+    }
+
+    fn bearer_with_writer(
+        &self,
+        sub: &str,
+        owner: Option<(Uuid, proxima_core::WriterAttribution)>,
+    ) -> TestResult<String> {
         let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600;
         let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
         let mut claims = json!({"iss": self.issuer, "aud": AUDIENCE, "sub": sub, "exp": exp});
-        if let Some(owner) = owner {
+        if let Some((owner, writer)) = owner {
             claims["owner"] = json!(owner);
+            claims["by"] = json!(writer.by);
+            claims["via"] = json!(writer.via);
         }
         let signing_input = format!(
             "{}.{}",
@@ -651,6 +673,91 @@ async fn a_viewer_forwarder_is_refused_the_write_an_editor_forwarder_gets() {
     result.expect("viewer forwarder test failed");
 }
 
+async fn remember_and_read_writer(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    session: &str,
+    owner: Uuid,
+    body: &str,
+    writer: proxima_core::WriterAttribution,
+) -> TestResult<String> {
+    let arguments = json!({
+        "title":"Forwarded personal memory", "body":body,
+        "idempotency_key":format!("personal-{owner}")
+    });
+    let mut forged = arguments.clone();
+    forged["by"] = json!(Uuid::nil());
+    forged["via"] = json!(Uuid::nil());
+    let refused = call_tool(
+        client,
+        base,
+        token,
+        session,
+        &json!({"name":"core_remember","arguments":forged}),
+        &[],
+    )
+    .await?;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    let remembered = call_tool(
+        client,
+        base,
+        token,
+        session,
+        &json!({"name":"core_remember","arguments":arguments}),
+        &[
+            ("x-proxima-by", "00000000-0000-0000-0000-000000000000"),
+            ("x-proxima-via", "00000000-0000-0000-0000-000000000000"),
+        ],
+    )
+    .await?;
+    assert_ne!(remembered["result"]["isError"], true, "{remembered}");
+    let output = tool_output(&remembered)?;
+    assert_eq!(
+        output["idempotent_replay"], false,
+        "the refused call wrote nothing"
+    );
+    let memory = output["handle"]
+        .as_str()
+        .ok_or("missing remembered handle")?
+        .to_owned();
+    // Handles stay opaque: the existing read tool owns their parsing.
+    let read = read_memory(client, base, token, session, &memory).await?;
+    assert_eq!(read["missing"], json!([]), "{read}");
+    assert_eq!(read["memories"].as_array().map(Vec::len), Some(1), "{read}");
+    assert!(read.to_string().contains(body), "{read}");
+    assert_eq!(read["memories"][0]["by"], json!(writer.by), "{read}");
+    assert_eq!(
+        read["memories"][0].get("via"),
+        Some(&json!(writer.via)),
+        "{read}"
+    );
+    let found = call_tool(
+        client,
+        base,
+        token,
+        session,
+        &json!({"name":"core_search_memories","arguments":{
+            "query":"personal private memory", "mode":"lexical", "kind":"Fact"
+        }}),
+        &[],
+    )
+    .await?;
+    let found = tool_output(&found)?;
+    assert_eq!(
+        found["memories"].as_array().map(Vec::len),
+        Some(1),
+        "{found}"
+    );
+    assert_eq!(found["memories"][0]["by"], json!(writer.by), "{found}");
+    assert_eq!(
+        found["memories"][0].get("via"),
+        Some(&json!(writer.via)),
+        "{found}"
+    );
+    Ok(memory)
+}
+
 /// Real stock authentication, target-owner registry, scoped writes and RLS reads.
 #[tokio::test]
 async fn forwarded_owner_claim_reaches_personal_memory_and_isolates_every_request() {
@@ -665,7 +772,13 @@ async fn forwarded_owner_claim_reaches_personal_memory_and_isolates_every_reques
             (first, "first personal private memory"),
             (second, "second personal private memory"),
         ] {
-            let token = stack.idp.bearer_for_owner(FORWARDER_SUB, owner)?;
+            let writer = proxima_core::WriterAttribution {
+                by: Uuid::now_v7(),
+                via: (owner == first).then(Uuid::now_v7),
+            };
+            assert_ne!(writer.by, owner);
+            assert_ne!(writer.by, stack.forwarder);
+            let token = stack.idp.bearer_for_writer(FORWARDER_SUB, owner, writer)?;
             // No owner header: the verified claim is the mandatory selection.
             let session = open_session(&client, &base, &token, None).await?;
             let probe = call_probe(&client, &base, &token, &session, &[]).await?;
@@ -674,29 +787,9 @@ async fn forwarded_owner_claim_reaches_personal_memory_and_isolates_every_reques
             assert_eq!(probe["readable_owners"], json!([owner.to_string()]));
             assert_eq!(probe["role"], format!("{:?}", Role::editor()));
             assert_eq!(probe["may_manage"], false);
-            let remembered = call_tool(
-                &client,
-                &base,
-                &token,
-                &session,
-                &json!({"name":"core_remember","arguments":{
-                    "title":"Forwarded personal memory", "body":body,
-                    "idempotency_key":format!("personal-{owner}")
-                }}),
-                &[],
-            )
-            .await?;
-            assert_ne!(remembered["result"]["isError"], true, "{remembered}");
-            let output = tool_output(&remembered)?;
-            let memory = output["handle"]
-                .as_str()
-                .ok_or("missing remembered handle")?
-                .to_owned();
-            // Handles stay opaque: the existing read tool owns their parsing.
-            let read = read_memory(&client, &base, &token, &session, &memory).await?;
-            assert_eq!(read["missing"], json!([]), "{read}");
-            assert_eq!(read["memories"].as_array().map(Vec::len), Some(1), "{read}");
-            assert!(read.to_string().contains(body), "{read}");
+            let memory =
+                remember_and_read_writer(&client, &base, &token, &session, owner, body, writer)
+                    .await?;
             memories.push((token, session, memory, body));
         }
         let missing = stack.idp.bearer(FORWARDER_SUB)?;

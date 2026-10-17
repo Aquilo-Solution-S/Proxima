@@ -177,12 +177,15 @@ instance : Immutable Content := ⟨⟩
 
 /-- One Memory version. `t` is the row id. `tick` is the kernel face of
     UUIDv8 `t` order (not a storage `created_at` column). Schema is not here.
-    `content_id` names the typed payload (shared across admissions). -/
+    `content_id` names the typed payload (shared across admissions).
+    `writer` records this version's authenticated attribution, separately
+    from its owner, shared payload and grounding pins. -/
 structure Memory where
   handle     : Handle
   t          : MemoryId
   kind       : MemoryKind
   owner      : Owner
+  writer     : WriterAttribution
   origins    : List MemoryId
   /-- Reference pins onto the Memory spine. Since the Goal-reference split this column is
       Memory-only: a Goal reference lives in `goal_refs`, so the column
@@ -208,6 +211,7 @@ def memory_t : Memory → MemoryId := Memory.t
 def memory_id : Memory → MemoryId := Memory.t
 def memory_kind : Memory → MemoryKind := Memory.kind
 def memory_owner : Memory → Owner := Memory.owner
+def memory_writer : Memory → WriterAttribution := Memory.writer
 def memory_origins : Memory → List MemoryId := Memory.origins
 def memory_refs : Memory → List MemoryId := Memory.refs
 def memory_goal_refs : Memory → List GoalId := Memory.goal_refs
@@ -217,6 +221,7 @@ def memory_tick : Memory → Instant := Memory.tick
 
 theorem memory_field_projection
     (handle : Handle) (t : MemoryId) (kind : MemoryKind) (owner : Owner)
+    (writer : WriterAttribution)
     (origins refs : List MemoryId) (goal_refs : List GoalId)
     (blob_id : Option BlobId)
     (content_id : Option ContentId) (tick : Instant)
@@ -224,7 +229,7 @@ theorem memory_field_projection
     (perspective_never_cites : kind = .Perspective → blob_id = none)
     (blob_fa_only : blob_id ≠ none → kind = .Fact ∨ kind = .Abstraction) :
     memory_t
-      (Memory.mk handle t kind owner origins refs goal_refs blob_id content_id
+      (Memory.mk handle t kind owner writer origins refs goal_refs blob_id content_id
         tick fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
 
 /-- `t` uniqueness is a table/store invariant. -/
@@ -234,6 +239,15 @@ def MemoryIdUnique (memories : Set Memory) : Prop :=
     m2 ∈ memories →
     memory_t m1 = memory_t m2 →
     m1 = m2
+
+/-- A recorded version has one writer. This does not identify the writers
+    of different versions on the same handle. -/
+theorem memory_version_writer_unique
+    (memories : Set Memory) (hunique : MemoryIdUnique memories)
+    (m1 m2 : Memory) (hm1 : m1 ∈ memories) (hm2 : m2 ∈ memories)
+    (ht : memory_t m1 = memory_t m2) :
+    memory_writer m1 = memory_writer m2 :=
+  congrArg memory_writer (hunique m1 m2 hm1 hm2 ht)
 
 instance : AppendOnly Memory := ⟨⟩
 

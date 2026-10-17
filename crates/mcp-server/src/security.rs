@@ -1119,6 +1119,10 @@ mod tests {
             Ok(AuthzContext::from_verified_forwarded_owner(
                 self.subject,
                 *owner,
+                proxima_core::WriterAttribution {
+                    by: uuid::Uuid::from_u128(509),
+                    via: None,
+                },
             ))
         }
     }

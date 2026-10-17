@@ -1,6 +1,6 @@
 //! Custom-host compile/example coverage for the validation-only API.
 //!
-//! Proves a Centauri-style host can validate two Zitadel audiences, branch
+//! Proves a custom host can validate two OIDC audiences, branch
 //! on which one accepted the token, resolve roles itself, and construct
 //! `AuthzContext::server_resolved(...).with_tool_scope(...)` — all built on
 //! `OidcTokenValidator`/`ValidatedOidcClaims`, with no
@@ -25,7 +25,7 @@ use proxima_auth_oidc::{
 use proxima_core::{
     AccessError, AccessKind, ActionName, AuthError, AuthPath, Authenticator, AuthzContext,
     Credentials, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, ScopeKey, ToolName,
-    ToolScope, UserId,
+    ToolScope, UserId, WriterAttribution,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -489,12 +489,21 @@ fn forwarding_authenticators(keys: &TestKeys) -> [(&'static str, Arc<dyn Authent
     ]
 }
 
+fn forwarded_writer() -> WriterAttribution {
+    WriterAttribution {
+        by: Uuid::from_u128(201),
+        via: Some(Uuid::from_u128(202)),
+    }
+}
+
 fn forwarding_claims(owner: Option<serde_json::Value>) -> serde_json::Value {
     let mut claims = serde_json::json!({
         "iss": ISSUER,
         "aud": FORWARDING_AUDIENCE,
         "sub": FORWARDING_SUBJECT,
         "exp": future_exp(),
+        "by": forwarded_writer().by,
+        "via": forwarded_writer().via,
     });
     if let Some(owner) = owner {
         claims["owner"] = owner;
@@ -519,6 +528,12 @@ async fn forwarded_owner_remains_pending_in_single_and_multiple_bindings() {
             "{path}"
         );
         assert_eq!(context.verified_forwarded_owner(), Some(owner), "{path}");
+        assert_eq!(context.writer(), Some(forwarded_writer()), "{path}");
+        assert_eq!(
+            context.owner_scope().unwrap().writer(),
+            forwarded_writer(),
+            "{path}"
+        );
         assert_eq!(context.trusted_model_id(), Some(FORWARDING_MODEL), "{path}");
         assert!(context.expires_at().is_some(), "{path}");
         assert!(
@@ -571,6 +586,75 @@ async fn forwarded_owner_requires_a_plain_uuid_claim() {
 }
 
 #[tokio::test]
+async fn forwarded_writer_requires_by_and_a_present_nullable_via() {
+    let keys = test_keys();
+    let valid = forwarding_claims(Some(serde_json::json!(Uuid::now_v7())));
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        for via in [
+            serde_json::Value::Null,
+            serde_json::json!(forwarded_writer().via.unwrap()),
+        ] {
+            let mut claims = valid.clone();
+            claims["via"] = via;
+            let context = proxima_core::authenticate(
+                authenticator.as_ref(),
+                &Credentials::Bearer(signed_claims(&keys, &claims, "JWT")),
+            )
+            .await
+            .expect("a signed direct or session writer");
+            let writer = WriterAttribution {
+                by: forwarded_writer().by,
+                via: if claims["via"].is_null() {
+                    None
+                } else {
+                    forwarded_writer().via
+                },
+            };
+            assert_eq!(context.writer(), Some(writer), "{path}");
+            assert_eq!(context.owner_scope().unwrap().writer(), writer, "{path}");
+            assert_eq!(
+                context.principal(),
+                OwnerId::from(forwarding_subject()),
+                "{path}"
+            );
+        }
+        let mut invalid = Vec::new();
+        for field in ["by", "via"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            invalid.push(missing);
+            for value in [
+                serde_json::json!(17),
+                serde_json::json!(true),
+                serde_json::json!([]),
+                serde_json::json!({ "id": Uuid::now_v7() }),
+                serde_json::json!("not-a-uuid"),
+                serde_json::json!(Uuid::now_v7().simple().to_string()),
+                serde_json::json!(Uuid::now_v7().urn().to_string()),
+            ] {
+                let mut claims = valid.clone();
+                claims[field] = value;
+                invalid.push(claims);
+            }
+        }
+        let mut null_by = valid.clone();
+        null_by["by"] = serde_json::Value::Null;
+        invalid.push(null_by);
+        for claims in invalid {
+            assert_eq!(
+                authenticator
+                    .authenticate(&Credentials::Bearer(signed_claims(&keys, &claims, "JWT")))
+                    .await,
+                Err(AuthError::InvalidCredentials),
+                "{path}: by={}, via={}",
+                claims["by"],
+                claims["via"]
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn forwarded_owner_claim_is_ignored_for_an_ordinary_subject() {
     let keys = test_keys();
     for (path, authenticator) in forwarding_authenticators(&keys) {
@@ -589,10 +673,47 @@ async fn forwarded_owner_claim_is_ignored_for_an_ordinary_subject() {
             assert_eq!(context.verified_forwarded_owner(), None, "{path}");
             assert_eq!(context.default_owner(), None, "{path}");
             assert_eq!(
+                context.writer(),
+                Some(WriterAttribution {
+                    by: ordinary_subject().into_inner(),
+                    via: None,
+                }),
+                "{path}"
+            );
+            assert_eq!(
                 context.readable_owners(AccessKind::Fact),
                 vec![OwnerId::from(ordinary_subject())],
                 "{path}"
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_writer_ignores_forwarded_attribution_claims() {
+    let keys = test_keys();
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!(Uuid::now_v7()),
+        ] {
+            let mut claims = forwarding_claims(None);
+            claims["sub"] = serde_json::json!(ORDINARY_SUBJECT);
+            claims["by"] = value.clone();
+            claims["via"] = value;
+            let context = proxima_core::authenticate(
+                authenticator.as_ref(),
+                &Credentials::Bearer(signed_claims(&keys, &claims, "JWT")),
+            )
+            .await
+            .expect("ordinary claims do not attest a forwarded writer");
+            let direct = WriterAttribution {
+                by: ordinary_subject().into_inner(),
+                via: None,
+            };
+            assert_eq!(context.writer(), Some(direct), "{path}");
+            assert_eq!(context.owner_scope().unwrap().writer(), direct, "{path}");
         }
     }
 }
@@ -667,6 +788,7 @@ enum ForwardingShape {
     Preserve,
     Clear,
     Change,
+    ChangeWriter,
     Grant,
 }
 
@@ -686,7 +808,14 @@ impl OidcRoleShaper for ForwardingShape {
             Self::Change => AuthzContext::from_verified_forwarded_owner(
                 subject,
                 OwnerId::from(UserId::new(Uuid::now_v7())),
+                context.writer().expect("attested writer"),
             ),
+            Self::ChangeWriter => context
+                .with_attested_writer(WriterAttribution {
+                    by: Uuid::now_v7(),
+                    via: None,
+                })
+                .expect("pending binding"),
             Self::Grant => AuthzContext::for_subject_with_role(
                 subject,
                 [(owner, Role::editor())],
@@ -725,6 +854,7 @@ async fn forwarded_owner_host_shaping_preserves_the_pending_binding() {
         .expect("narrowing shape");
     assert_eq!(context.verified_forwarded_owner(), Some(owner));
     assert_eq!(context.subject(), Some(forwarding_subject()));
+    assert_eq!(context.writer(), Some(forwarded_writer()));
     assert_eq!(context.trusted_model_id(), Some(FORWARDING_MODEL));
     assert_eq!(
         context.publication_extensions().get("forwarding"),
@@ -740,6 +870,7 @@ async fn forwarded_owner_host_shaping_preserves_the_pending_binding() {
     for shape in [
         ForwardingShape::Clear,
         ForwardingShape::Change,
+        ForwardingShape::ChangeWriter,
         ForwardingShape::Grant,
     ] {
         let bindings = forwarding_bindings(&keys, OidcRoleShape::Host(Arc::new(shape)));

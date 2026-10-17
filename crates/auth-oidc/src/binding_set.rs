@@ -27,8 +27,8 @@ pub type OidcClaimMap = serde_json::Map<String, serde_json::Value>;
 /// It receives the server-resolved context and every verified claim, and
 /// returns the context to use. It may narrow (a tool palette, a default
 /// owner, publication extensions, fewer owners or rights) or refuse. A
-/// returned context with another subject, auth path, trusted model id or
-/// mandatory forwarded owner, or any owner right the resolved roles lack,
+/// returned context with another subject, attested writer, auth path,
+/// trusted model id or mandatory forwarded owner, or any owner right the resolved roles lack,
 /// refuses the token; its tool scope is intersected with the given one and
 /// its expiry clamped to the token's.
 pub trait OidcRoleShaper: Send + Sync + std::fmt::Debug {
@@ -94,10 +94,10 @@ impl OidcRoleShape {
 }
 
 /// Accept a host shaper's context only when it narrows the one it was given:
-/// the same `HostBearer` subject, trusted model id and mandatory forwarded
-/// owner, no owner, kind or manage right the resolved roles lack. The tool
-/// scope is intersected with the given one and the expiry clamped to the
-/// token's, so neither can widen either.
+/// the same `HostBearer` subject, attested writer, trusted model id and
+/// mandatory forwarded owner, no owner, kind or manage right the resolved
+/// roles lack. The tool scope is intersected with the given one and the expiry
+/// clamped to the token's, so neither can widen either.
 fn narrowed_by_host(
     resolved: &AuthzContext,
     shaped: AuthzContext,
@@ -114,6 +114,7 @@ fn narrowed_by_host(
     });
     if shaped.auth_path() != AuthPath::HostBearer
         || shaped.subject() != resolved.subject()
+        || shaped.writer() != resolved.writer()
         || shaped.trusted_model_id() != resolved.trusted_model_id()
         || shaped.verified_forwarded_owner() != resolved.verified_forwarded_owner()
         || rights_widened

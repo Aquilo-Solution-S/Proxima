@@ -64,6 +64,7 @@ structure Goal where
   handle        : Handle
   t             : GoalId
   owner         : Owner
+  writer        : WriterAttribution
   title         : Text
   text          : Option Text
   state         : GoalState
@@ -89,6 +90,7 @@ def goal_handle : Goal → Handle := Goal.handle
 def goal_t : Goal → GoalId := Goal.t
 def goal_id : Goal → GoalId := Goal.t
 def goal_owner : Goal → Owner := Goal.owner
+def goal_writer : Goal → WriterAttribution := Goal.writer
 def goal_title : Goal → Text := Goal.title
 def goal_text : Goal → Option Text := Goal.text
 def goal_state : Goal → GoalState := Goal.state
@@ -134,6 +136,15 @@ theorem goal_id_injective :
         goal_t g1 = goal_t g2 → g1 = g2 := by
   intro goals huniq g1 g2 hg1 hg2 hid
   exact huniq g1 g2 hg1 hg2 hid
+
+/-- Each recorded Goal version keeps its own writer, independently of
+    optional write-act Facts or later versions on the same handle. -/
+theorem goal_version_writer_unique
+    (goals : Set Goal) (hunique : GoalIdUnique goals)
+    (g1 g2 : Goal) (hg1 : g1 ∈ goals) (hg2 : g2 ∈ goals)
+    (ht : goal_t g1 = goal_t g2) :
+    goal_writer g1 = goal_writer g2 :=
+  congrArg goal_writer (hunique g1 g2 hg1 hg2 ht)
 
 /-- Same `(owner, request_id)` is the same Goal version (UML §3). -/
 def GoalRequestUnique (goals : Set Goal) : Prop :=

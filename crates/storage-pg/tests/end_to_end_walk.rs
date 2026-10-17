@@ -125,6 +125,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         let _g = write_goal(
             &mut tx,
             &owner,
+            proxima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "task".into(),
@@ -146,6 +147,11 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
 
         let chunks = query_heads(pool, owner.into_inner(), "chunk").await?;
         assert_eq!(chunks.len(), 2);
+        let writer = permit.owner_scope().expect("fixture owner scope").writer();
+        for chunk in &chunks {
+            assert_eq!(chunk.by, writer.by);
+            assert_eq!(chunk.via, writer.via);
+        }
 
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let transfer_permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);

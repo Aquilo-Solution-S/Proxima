@@ -1160,7 +1160,22 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
-        let authz = host_authz(&owner, ToolScope::All);
+        let writer = proxima_core::WriterAttribution {
+            by: Uuid::now_v7(),
+            via: Some(Uuid::now_v7()),
+        };
+        let next_writer = proxima_core::WriterAttribution {
+            by: Uuid::now_v7(),
+            via: None,
+        };
+        let attested = |writer| {
+            verified(
+                AuthzContext::for_subject(owner.as_user(), AuthPath::HostBearer)
+                    .with_attested_writer(writer)
+                    .expect("unsealed host attestation"),
+            )
+        };
+        let authz = attested(writer);
         let rfc3339 = &time::format_description::well_known::Rfc3339;
         let parse = |value: &serde_json::Value| {
             time::OffsetDateTime::parse(value.as_str().expect("an RFC 3339 string"), rfc3339)
@@ -1177,14 +1192,33 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
                 "title": "Quay survey",
                 "body": "occurrence needle seen last summer",
                 "tags": ["occurrence"],
-                "observed_at": "2021-06-01T12:20:30.456789+02:00"
+                "observed_at": "2021-06-01T12:20:30.456789+02:00",
+                "idempotency_key": "writer-first-observation"
             }),
         )
         .await?;
         let backdated = backdated["handle"].as_str().expect("handle").to_owned();
+        let replay = call_test_model_tool(
+            &tools,
+            attested(next_writer),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Quay survey",
+                "body": "occurrence needle seen last summer",
+                "tags": ["occurrence"],
+                "observed_at": "2021-06-01T12:20:30.456789+02:00",
+                "idempotency_key": "writer-first-observation"
+            }),
+        )
+        .await?;
+        assert_eq!(
+            replay["handle"], backdated,
+            "exact replay retains its first version"
+        );
         let current = call_test_model_tool(
             &tools,
-            authz.clone(),
+            attested(next_writer),
             owner,
             "core_remember",
             serde_json::json!({
@@ -1211,6 +1245,8 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
         .await?;
         let backdated_id = memory_id(&read);
         assert_eq!(parse(&read["occurred_at"]), observed);
+        assert_eq!(read["by"], serde_json::json!(writer.by));
+        assert_eq!(read.get("via"), Some(&serde_json::json!(writer.via)));
         let read = read_test_model_resource(
             &tools,
             authz.clone(),
@@ -1219,6 +1255,8 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
         )
         .await?;
         let current_id = memory_id(&read);
+        assert_eq!(read["by"], serde_json::json!(next_writer.by));
+        assert_eq!(read.get("via"), Some(&serde_json::Value::Null));
         assert_eq!(
             parse(&read["occurred_at"]),
             current_id.created_at(),
@@ -1241,6 +1279,8 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
             .find(|hit| hit["memory_id"] == backdated_id.into_inner().to_string())
             .unwrap_or_else(|| panic!("the backdated Fact is found: {found}"));
         assert_eq!(parse(&hit["occurred_at"]), observed);
+        assert_eq!(hit["by"], serde_json::json!(writer.by));
+        assert_eq!(hit.get("via"), Some(&serde_json::json!(writer.via)));
 
         // An Abstraction is a conclusion, not an observation.
         let derived = call_test_model_tool(
@@ -1267,6 +1307,8 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
         )
         .await?;
         let derived_id = memory_id(&read);
+        assert_eq!(read["by"], serde_json::json!(writer.by));
+        assert_eq!(read.get("via"), Some(&serde_json::json!(writer.via)));
         assert!(read.get("occurred_at").is_none(), "{read}");
 
         // The query verb's `MemoryRow`.
@@ -1282,6 +1324,16 @@ async fn a_remembered_observation_reads_back_when_it_occurred() {
             )
             .await?
             .memories;
+        let writers: std::collections::HashMap<_, _> =
+            rows.iter().map(|row| (row.id, row.writer)).collect();
+        assert_eq!(
+            writers,
+            std::collections::HashMap::from([
+                (backdated_id, writer),
+                (current_id, next_writer),
+                (derived_id, writer),
+            ])
+        );
         let occurred: std::collections::HashMap<_, _> =
             rows.iter().map(|row| (row.id, row.occurred_at)).collect();
         assert_eq!(

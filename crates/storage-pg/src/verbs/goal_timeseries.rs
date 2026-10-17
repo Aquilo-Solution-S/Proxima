@@ -62,6 +62,7 @@ pub(crate) struct PreparedGoalWrite {
     fresh_handle: bool,
     owner: OwnerId,
     owner_id: Uuid,
+    writer: proxima_core::WriterAttribution,
     handle: Uuid,
     t: Uuid,
     /// The predecessor named by a Goal successor request. This is kept
@@ -148,7 +149,7 @@ pub(crate) async fn load_goal_by_request_id(
 
 pub async fn ingest_write_act(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
+    permit: &proxima_core::storage_ports::OwnerWritePermit,
     store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
@@ -168,12 +169,14 @@ pub async fn ingest_write_act(
         blob_id: None,
         kind: "fact".into(),
     };
+    let writer = crate::owner_scope::require_owner_scope(permit.owner_scope())?.writer();
     ingest_fact_timeseries(
         tx,
         crate::verbs::memory_timeseries::MemoryAdmissionDraft {
             store_number,
             natural_key: None,
-            owner,
+            owner: permit.owner(),
+            writer,
             draft: &draft,
             origins: &[],
             references: &[],
@@ -196,6 +199,7 @@ pub(crate) fn reserve_fact_identity(store_number: u16) -> ReservedFactIdentity {
 pub(crate) async fn ingest_write_act_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
+    writer: proxima_core::WriterAttribution,
     identity: ReservedFactIdentity,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
@@ -215,9 +219,16 @@ pub(crate) async fn ingest_write_act_at(
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_unpinned_fact_at(tx, owner, &draft, (identity.handle, identity.t), &[])
-        .await
-        .map(|(outcome, _)| outcome)
+    ingest_unpinned_fact_at(
+        tx,
+        owner,
+        writer,
+        &draft,
+        (identity.handle, identity.t),
+        &[],
+    )
+    .await
+    .map(|(outcome, _)| outcome)
 }
 
 /// Test-fixtures only: it writes `draft.text` as given and carries nothing.
@@ -226,6 +237,7 @@ pub(crate) async fn ingest_write_act_at(
 pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
+    writer: proxima_core::WriterAttribution,
     draft: &GoalWriteCommand,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
@@ -237,7 +249,7 @@ pub async fn write_goal(
             replay: true,
         });
     }
-    match prepare_goal_write(tx, owner, draft, None, store_number).await? {
+    match prepare_goal_write(tx, owner, writer, draft, None, store_number).await? {
         GoalWritePreparation::Replay(outcome) => Ok(outcome),
         GoalWritePreparation::New(prepared) => {
             lock_prepared_goal_write(tx, &prepared).await?;
@@ -252,6 +264,7 @@ pub async fn write_goal(
 pub(crate) async fn prepare_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
+    writer: proxima_core::WriterAttribution,
     draft: &GoalWriteCommand,
     expected_prior_t: Option<Uuid>,
     store_number: u16,
@@ -322,6 +335,7 @@ pub(crate) async fn prepare_goal_write(
         fresh_handle: draft.handle.is_none(),
         owner: *owner,
         owner_id,
+        writer,
         handle,
         t,
         expected_prior_t,
@@ -503,6 +517,7 @@ pub(crate) async fn persist_goal_change_fact(
     let (outcome, occurred_at) = ingest_unpinned_fact_at(
         tx,
         &prepared.owner,
+        prepared.writer,
         &draft,
         (fact.identity.handle, fact.identity.t),
         &tables,
@@ -598,10 +613,10 @@ async fn persist_goal_lifecycle_rows(
     // Persist them only after the caller has acquired the complete union, so
     // a blocked Goal preparation cannot leave a write-act or close Fact.
     if let Some(identity) = prepared.write_act_identity {
-        ingest_write_act_at(tx, &prepared.owner, identity).await?;
+        ingest_write_act_at(tx, &prepared.owner, prepared.writer, identity).await?;
     }
     if let Some(identity) = prepared.close_fact_identity {
-        ingest_write_act_at(tx, &prepared.owner, identity).await?;
+        ingest_write_act_at(tx, &prepared.owner, prepared.writer, identity).await?;
     }
     Ok(())
 }
@@ -690,8 +705,8 @@ async fn insert_goal_revision(
     sqlx::query(
         "INSERT INTO proxima_core.goal
             (handle, t, owner_id, title, text, state, request_id, close_fact_t,
-            assignment_t, dependency_t, evidence_t, write_act_t)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            assignment_t, dependency_t, evidence_t, write_act_t, \"by\", via)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -705,6 +720,8 @@ async fn insert_goal_revision(
     .bind(&prepared.command.dependency_t)
     .bind(&prepared.command.evidence_t)
     .bind(prepared.command.write_act_t)
+    .bind(prepared.writer.by)
+    .bind(prepared.writer.via)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

@@ -207,3 +207,12 @@ pub async fn register_group_for_tests(
         .map_err(|err| proxima_core::StorageError::Unavailable(err.to_string()))?;
     crate::access::owner_columns::register_group(&mut conn, group).await
 }
+
+/// Stable writer for synthetic storage rows with no authenticated request.
+#[must_use]
+pub const fn writer() -> proxima_core::WriterAttribution {
+    proxima_core::WriterAttribution {
+        by: uuid::Uuid::from_u128(0x509),
+        via: None,
+    }
+}

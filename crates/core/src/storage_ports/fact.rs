@@ -26,7 +26,11 @@ pub trait FactIngestPort: Send + Sync {
         draft: &FactWriteCommand,
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        let permit = OwnerWritePermit::new_for_tests(*permit.owner(), permit.access_kind());
+        let permit = OwnerWritePermit::new(
+            *permit.owner(),
+            permit.access_kind(),
+            permit.owner_scope().cloned(),
+        );
         let authorized =
             AuthorizedFactWrite::new_for_tests(permit, draft.clone(), None, Vec::new());
         let spaces: Vec<crate::EmbeddingSpace> = embedding_model_id

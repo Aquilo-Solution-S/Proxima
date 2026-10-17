@@ -643,8 +643,8 @@ async fn insert_active_goal(
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id)
-         VALUES ($1, $2, $3, 'goal', 'Active', $4)",
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
+         VALUES ($1, $2, $3, 'goal', 'Active', $4, $3, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -696,8 +696,8 @@ async fn insert_goal_version(
         handle
     };
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id)
-         VALUES ($1, $2, $3, 'report', $4, $5::proxima_core.goal_state, $6)",
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id, \"by\", via)
+         VALUES ($1, $2, $3, 'report', $4, $5::proxima_core.goal_state, $6, $3, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -791,8 +791,8 @@ async fn insert_memory_row(
     let sidecars: Vec<String> = sidecars.iter().map(|table| (*table).to_owned()).collect();
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END)",
+             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END, $4, NULL)",
     )
     .bind(handle)
     .bind(t)

@@ -2031,10 +2031,10 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         sqlx::query(
             "INSERT INTO proxima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id, tool_name,
-                 read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
+                 read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
              VALUES ($1, $2, $3, 'core_remember', 'fact', 'fact',
                      TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
-                     TIMESTAMPTZ '2026-01-01 00:00:00Z')",
+                     TIMESTAMPTZ '2026-01-01 00:00:00Z', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(delegation_id)
         .bind(subject_id)

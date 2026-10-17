@@ -86,6 +86,7 @@ async fn goal(
     let result = write_goal(
         &mut tx,
         &owner,
+        proxima_storage_pg::test_fixtures::writer(),
         &GoalWriteCommand {
             handle,
             schema_id: "core/task-v1".into(),
@@ -353,7 +354,7 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
             .await?;
         sqlx::query("INSERT INTO proxima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$2,$3,'core/task-v1')")
             .bind(handle).bind(t).bind(owner).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id) VALUES ($1,$2,$3,'RLS goal','Active',$4)")
+        sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$2,$3,'RLS goal','Active',$4, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
             .bind(handle).bind(t).bind(owner).bind(t.to_string()).execute(&mut *tx).await?;
         tx.commit().await?;
         handles.push(handle);
@@ -370,7 +371,7 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
         let mut tx = admin.begin().await?;
         sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,owner_id,schema_id,kind) VALUES ($1,$1,$2,$3,'fact')")
             .bind(t).bind(source).bind(FACT_SCHEMA).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.memory(handle,t,owner_id,schema_id,kind,goal_refs,occurred_at) VALUES ($1,$1,$2,$3,'fact',ARRAY[$4]::uuid[],uuid_extract_timestamp($1))")
+        sqlx::query("INSERT INTO proxima_core.memory(handle,t,owner_id,schema_id,kind,goal_refs,occurred_at, \"by\", via) VALUES ($1,$1,$2,$3,'fact',ARRAY[$4]::uuid[],uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
             .bind(t).bind(source).bind(FACT_SCHEMA).bind(target).execute(&mut *tx).await?;
         tx.commit().await?;
         facts.push(MemoryId::new(t));

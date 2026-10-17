@@ -1477,9 +1477,16 @@ mod tests {
             .authorize_transfer_destination_out_of_band(&ordinary, &destination.into())
             .await
             .expect("ordinary membership supplies receiving-side consent");
-        let forwarded = AuthzContext::from_verified_forwarded_owner(caller, source)
-            .seal_verified_scope()
-            .unwrap();
+        let forwarded = AuthzContext::from_verified_forwarded_owner(
+            caller,
+            source,
+            crate::WriterAttribution {
+                by: Uuid::now_v7(),
+                via: None,
+            },
+        )
+        .seal_verified_scope()
+        .unwrap();
         let refusal = engine
             .authorize_transfer_destination_out_of_band(&forwarded, &destination.into())
             .await

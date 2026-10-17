@@ -103,7 +103,10 @@ authorization and command ports. Do not recreate owner predicates in a flavor
 or add a caller-controlled ACL/share set.
 
 For subjects in `PROXIMA_FORWARDER_SUBJECTS`, the signed token must carry an
-`owner` UUID claim. The forwarder remains the authenticated subject; its
+`owner` UUID claim, a `by` principal UUID and an explicitly present `via`
+claim containing a session UUID or `null` for a direct principal call.
+Missing or malformed writer claims refuse authentication. The forwarder
+remains the authenticated subject; its
 `PROXIMA_FORWARDER_ROLE` applies only to that registered personal or group
 owner. An absent owner header uses the claim. A present `X-Proxima-Owner`
 header and any live session must agree with it before the target is resolved.
@@ -121,8 +124,18 @@ management, or permits delegation. `ForwarderRole` is the closed choice
 `AuthzContext::from_verified_forwarded_owner` only after verifying the
 credential. That pending context grants no roles until the edge resolves its
 claim through the configured policy and registry. Host role shaping must
-preserve the binding. Replace implementations of the retired `GroupRegistry`
+preserve the owner and writer bindings. Replace implementations of the retired `GroupRegistry`
 with `OwnerRegistry::is_registered_owner` when upgrading.
+
+Each memory or Goal revision records the writer captured in its sealed
+`OwnerScope`, separately from its owner, credential subject, payload author
+or grounding sources. A custom authenticator binds `WriterAttribution` with
+`AuthzContext::with_attested_writer` before `proxima::authenticate` seals the
+context. For a forwarder it supplies the verified pair to
+`AuthzContext::from_verified_forwarded_owner(subject, owner, writer)`.
+Ordinary OIDC calls record their mapped principal with `via: null`.
+There are no author headers or caller-supplied author arguments. A host role
+shaper must preserve the attested pair, and a sealed context cannot replace it.
 
 Attaching a subgroup or changing its relation requires manage authority on
 both groups. Detaching it requires manage authority on either endpoint;

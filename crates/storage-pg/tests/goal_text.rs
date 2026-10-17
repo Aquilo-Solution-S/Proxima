@@ -345,8 +345,8 @@ impl Harness {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, state, request_id, assignment_t)
-             VALUES ($1, $2, $3, 'written before v0.0.13', $4::proxima_core.goal_state, $5, $6)",
+                 (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
+             VALUES ($1, $2, $3, 'written before v0.0.13', $4::proxima_core.goal_state, $5, $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -385,8 +385,8 @@ impl Harness {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.goal
-                 (handle, t, owner_id, title, text, state, request_id, assignment_t)
-             VALUES ($1, $2, $3, 'another writer', 'the original prompt', $4, $5, $6)",
+                 (handle, t, owner_id, title, text, state, request_id, assignment_t, \"by\", via)
+             VALUES ($1, $2, $3, 'another writer', 'the original prompt', $4, $5, $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -792,8 +792,8 @@ goal_test!(
         let recorded = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.goal
-             (handle, t, owner_id, title, state, request_id, assignment_t)
-         SELECT handle, $1, owner_id, title, 'Active', 'recorded-before', assignment_t
+             (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
+         SELECT handle, $1, owner_id, title, 'Active', 'recorded-before', assignment_t, '00000000-0000-0000-0000-000000000509'::uuid, NULL
            FROM proxima_core.goal WHERE t = $2",
         )
         .bind(recorded)
@@ -879,8 +879,8 @@ goal_test!(
         let legacy = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.goal
-             (handle, t, owner_id, title, state, request_id, assignment_t)
-         SELECT handle, $1, owner_id, title, 'Paused', 'recorded-pause', assignment_t
+             (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
+         SELECT handle, $1, owner_id, title, 'Paused', 'recorded-pause', assignment_t, '00000000-0000-0000-0000-000000000509'::uuid, NULL
            FROM proxima_core.goal WHERE t = $2",
         )
         .bind(legacy)

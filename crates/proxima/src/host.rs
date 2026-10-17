@@ -440,7 +440,7 @@ pub use proxima_core::{
 /// Host authentication: the argument and error types of
 /// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the
 /// [`OwnerScope`] witness [`AuthzContext::owner_scope`] returns.
-pub use proxima_core::{AuthError, Credentials, OwnerScope, authenticate};
+pub use proxima_core::{AuthError, Credentials, OwnerScope, WriterAttribution, authenticate};
 /// Authorization witnesses, permits and the audit contexts the Engine derives
 /// for them, so a signature that takes or returns one can be written down.
 /// Naming a witness does not let anyone mint it: only the Engine's authorization

@@ -336,12 +336,19 @@ mod tests {
         let scope = ToolScope::Palette(vec![]);
         for owner in [fake_owner(), fake_group_owner()] {
             let access = Arc::new(ForwardedOwnerAccess::new(subject, owner));
-            let authz = AuthzContext::from_verified_forwarded_owner(subject, owner)
-                .with_expires_at(Some(expires_at))
-                .with_auth_epoch(7)
-                .with_tool_scope(scope.clone())
-                .with_trusted_model_id("acme/runner-v3")
-                .unwrap();
+            let authz = AuthzContext::from_verified_forwarded_owner(
+                subject,
+                owner,
+                proxima_core::WriterAttribution {
+                    by: uuid::Uuid::now_v7(),
+                    via: None,
+                },
+            )
+            .with_expires_at(Some(expires_at))
+            .with_auth_epoch(7)
+            .with_tool_scope(scope.clone())
+            .with_trusted_model_id("acme/runner-v3")
+            .unwrap();
             let auth = McpEdgeAuth::headless()
                 .with_host(Arc::new(StubHostAuth { result: Ok(authz) }))
                 .with_owner_access(access.clone());
@@ -371,7 +378,12 @@ mod tests {
         let auth = McpEdgeAuth::headless()
             .with_host(Arc::new(StubHostAuth {
                 result: Ok(AuthzContext::from_verified_forwarded_owner(
-                    subject, claimed,
+                    subject,
+                    claimed,
+                    proxima_core::WriterAttribution {
+                        by: uuid::Uuid::now_v7(),
+                        via: None,
+                    },
                 )),
             }))
             .with_owner_access(access.clone());
@@ -387,7 +399,14 @@ mod tests {
     async fn forwarded_owner_requires_registered_owner_and_configured_port_subject() {
         let subject = fake_user();
         let owner = fake_owner();
-        let authz = AuthzContext::from_verified_forwarded_owner(subject, owner);
+        let authz = AuthzContext::from_verified_forwarded_owner(
+            subject,
+            owner,
+            proxima_core::WriterAttribution {
+                by: uuid::Uuid::now_v7(),
+                via: None,
+            },
+        );
         let without_port = McpEdgeAuth::headless().with_host(Arc::new(StubHostAuth {
             result: Ok(authz.clone()),
         }));

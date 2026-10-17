@@ -51,6 +51,70 @@ fn stores_require_numbers_in_the_store_number_range() {
 }
 
 #[test]
+fn local_and_remote_search_outputs_keep_the_recorded_writer() {
+    use crate::storage_ports::other_stores::RemoteHit;
+    use crate::verbs::query::{EntityKind, MemorySearchResult};
+    use crate::{SchemaId, WriterAttribution};
+
+    let store = 1;
+    for via in [None, Some(uuid::Uuid::from_u128(3))] {
+        let writer = WriterAttribution {
+            by: uuid::Uuid::from_u128(2),
+            via,
+        };
+        let local = super::search_memory_output(
+            "current",
+            MemorySearchResult {
+                memory_id: MemoryId::new(crate::new_memory_uuid(0)),
+                writer,
+                kind: EntityKind::Fact,
+                schema_id: SchemaId::new("core/agent-note-v1".into()),
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+                snippet: "stored note".into(),
+                score: 1.0,
+                lexical_score: 1.0,
+                similarity_score: 0.0,
+            },
+            Vec::new(),
+            None,
+            None,
+        );
+        let remote = super::remote_hit_output(
+            store,
+            RemoteHit {
+                handle: crate::new_memory_uuid(store),
+                writer,
+                kind: EntityKind::Fact,
+                schema_id: "remote/note".into(),
+                snippet: "stored remote note".into(),
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                tags: Vec::new(),
+            },
+        );
+        for output in [local, remote] {
+            let wire = serde_json::to_value(output).expect("wire output");
+            assert_eq!(wire["by"], serde_json::json!(writer.by));
+            assert_eq!(wire.get("via"), Some(&serde_json::json!(writer.via)));
+        }
+    }
+}
+
+#[test]
+fn search_output_schema_requires_the_nullable_caller() {
+    let schema = crate::mcp::schema::mcp_output_schema::<super::SearchMemoryOutput>()
+        .expect("search output schema");
+    let required = schema["required"].as_array().expect("required fields");
+    assert!(required.contains(&serde_json::json!("by")));
+    assert!(required.contains(&serde_json::json!("via")));
+    assert_eq!(schema["properties"]["by"]["type"], "string");
+    assert_eq!(
+        schema["properties"]["via"]["type"],
+        serde_json::json!(["string", "null"])
+    );
+}
+
+#[test]
 fn score_args_reject_out_of_range_and_non_hybrid_weight() {
     let mut floor_too_high = args(SearchMemoriesMode::Hybrid);
     floor_too_high.min_score = Some(1.01);
@@ -89,7 +153,7 @@ fn score_args_reject_out_of_range_and_non_hybrid_weight() {
 fn cursor_round_trips_and_rejects_foreign_or_garbled_tokens() {
     let cursor = SearchCursor::Relevance {
         score_bits: 0.75_f32.to_bits(),
-        memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+        memory_id: MemoryId::new(crate::new_memory_uuid(0)),
         seen: 42,
     };
     let token = encode_cursor(&PageCursor::Keyset(cursor), "fp-aaaa");
@@ -304,6 +368,8 @@ mod other_stores {
             memory_id,
             memory: memory_id.to_string(),
             space: "current".into(),
+            by: uuid::Uuid::from_u128(10),
+            via: None,
             kind: "Fact".into(),
             schema_id: "core/agent-note-v1".into(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
@@ -322,6 +388,10 @@ mod other_stores {
     fn remote_hit(store: u16) -> RemoteHit {
         RemoteHit {
             handle: crate::new_memory_uuid(store),
+            writer: crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(20),
+                via: Some(uuid::Uuid::from_u128(21)),
+            },
             kind: EntityKind::Fact,
             schema_id: "remote/note".into(),
             snippet: String::new(),

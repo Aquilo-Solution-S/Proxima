@@ -1,7 +1,7 @@
 //! The series-head lookup against a sidecar keyed on its own column name.
 
 use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::test_fixtures::owner_fixture;
+use proxima_core::test_fixtures::{authenticated_context, owner_fixture};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
@@ -42,7 +42,7 @@ async fn write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError>
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     engine
         .authorize_owner_write(
-            &AuthzContext::for_subject(user_id, AuthPath::HostBearer),
+            &authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer)),
             owner,
             AccessKind::Fact,
         )

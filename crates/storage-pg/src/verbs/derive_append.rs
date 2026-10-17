@@ -93,6 +93,7 @@ pub(crate) struct DerivedAdmissionInput<'a> {
 async fn append_derived_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
+    writer: proxima_core::WriterAttribution,
     input: DerivedAdmissionInput<'_>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
@@ -102,7 +103,7 @@ async fn append_derived_timeseries(
     let mut retried_collision = false;
     let outcome = loop {
         let mut attempt = tx.begin().await.map_err(map_err)?;
-        match admit_derived(&mut attempt, draft, input).await {
+        match admit_derived(&mut attempt, draft, writer, input).await {
             Ok(outcome) => {
                 attempt.commit().await.map_err(map_err)?;
                 break outcome;
@@ -128,6 +129,7 @@ async fn append_derived_timeseries(
 async fn admit_derived(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
+    writer: proxima_core::WriterAttribution,
     input: DerivedAdmissionInput<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
     let kind = match draft.kind {
@@ -173,6 +175,7 @@ async fn admit_derived(
             store_number: draft.store_number,
             natural_key: None,
             owner: &draft.owner,
+            writer,
             draft: &cmd,
             origins: input.origins,
             references: input.references,
@@ -358,7 +361,8 @@ pub(crate) async fn append_derived_with_content_payloads_in_tx(
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
-    append_derived_timeseries(tx, draft, input, sidecar).await
+    let writer = crate::owner_scope::require_owner_scope(permit.owner_scope())?.writer();
+    append_derived_timeseries(tx, draft, writer, input, sidecar).await
 }
 
 /// Count declared pins; on replay, re-read stored `origins`/`refs` and

@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use super::{GetMemoriesArgs, GetMemoriesOutput, MAX_BATCH_GET_MEMORIES, get_memories};
+use crate::mcp::core_tools::get_memory::GetMemoryOutput;
 use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::{MemorySchemaSpec, MemorySnapshot};
@@ -21,6 +22,10 @@ use crate::storage_ports::other_stores::{
 use crate::{EntityKind, MemoryId, MemoryInspectPort, OwnerId, OwnerScope, StorageError, UserId};
 
 const PROGRESS_BOUND: Duration = Duration::from_secs(30);
+const REMOTE_WRITER: crate::WriterAttribution = crate::WriterAttribution {
+    by: Uuid::from_u128(3),
+    via: Some(Uuid::from_u128(4)),
+};
 type StartedRead = (Uuid, oneshot::Sender<RemoteRead>);
 
 struct ControlledStore {
@@ -134,6 +139,10 @@ fn fixture() -> Fixture {
             schema_id: crate::SchemaId::new("test/local-note".into()),
             schema_version: crate::SchemaVersion::new(1),
             owner: ctx.owner,
+            writer: crate::WriterAttribution {
+                by: Uuid::from_u128(2),
+                via: None,
+            },
             occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
             text: Some("local body".into()),
             payload: None,
@@ -186,6 +195,7 @@ async fn started_reads(
 fn memory(id: Uuid) -> RemoteMemory {
     RemoteMemory {
         handle: id,
+        writer: REMOTE_WRITER,
         kind: EntityKind::Fact,
         schema_id: "remote/note".into(),
         title: Some("remote title".into()),
@@ -316,16 +326,7 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
         ["1", "current", "2", "1"]
     );
     for row in output.memories {
-        assert_eq!(row.handle, row.memory);
-        assert_eq!(row.kind, "Fact");
-        if row.memory == local_found.to_string() {
-            assert_eq!(row.body.as_deref(), Some("local body"));
-            assert_eq!(row.occurred_at, Some(time::OffsetDateTime::UNIX_EPOCH));
-        } else {
-            assert_eq!(row.title.as_deref(), Some("remote title"));
-            assert_eq!(row.body.as_deref(), Some("remote body"));
-            assert_eq!(row.tags, ["remote"]);
-        }
+        assert_read_projection(&row, &local.memory);
     }
     assert_eq!(port.active.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -335,4 +336,20 @@ async fn batch_preserves_request_order_and_omits_erased_and_mismatched_answers()
             MemoryId::new(local_missing)
         ]]
     );
+}
+
+fn assert_read_projection(row: &GetMemoryOutput, local: &MemorySnapshot) {
+    assert_eq!(row.handle, row.memory);
+    assert_eq!(row.kind, "Fact");
+    let writer = if row.memory == local.memory_id.into_inner().to_string() {
+        assert_eq!(row.body.as_deref(), Some("local body"));
+        assert_eq!(row.occurred_at, Some(time::OffsetDateTime::UNIX_EPOCH));
+        local.writer
+    } else {
+        assert_eq!(row.title.as_deref(), Some("remote title"));
+        assert_eq!(row.body.as_deref(), Some("remote body"));
+        assert_eq!(row.tags, ["remote"]);
+        REMOTE_WRITER
+    };
+    assert_eq!((row.by, row.via), (writer.by, writer.via));
 }

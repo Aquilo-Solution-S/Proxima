@@ -226,8 +226,8 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2), $3, NULL)",
         )
         .bind(fact_handle)
         .bind(fact_t)
@@ -244,9 +244,9 @@ async fn flavor_migrations_apply_to_fresh_db() {
             // stamp, and since the declaration trigger the database refuses
             // the row without it.
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables)
+                (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, \"by\", via)
              VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', ARRAY[$4]::uuid[], $5,
-                     ARRAY['proxima_code.code_chunk_v1'])",
+                     ARRAY['proxima_code.code_chunk_v1'], $3, NULL)",
         )
         .bind(handle)
         .bind(memory_id)

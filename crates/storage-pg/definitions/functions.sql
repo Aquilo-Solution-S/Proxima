@@ -190,6 +190,8 @@ BEGIN
     IF NEW.t IS DISTINCT FROM OLD.t
        OR NEW.handle IS DISTINCT FROM OLD.handle
        OR NEW.kind IS DISTINCT FROM OLD.kind
+       OR NEW."by" IS DISTINCT FROM OLD."by"
+       OR NEW.via IS DISTINCT FROM OLD.via
        OR NEW.object_key IS DISTINCT FROM OLD.object_key
        OR NEW.source_id IS DISTINCT FROM OLD.source_id
        OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key
@@ -325,6 +327,8 @@ BEGIN
          WHERE m.t = NEW.t
            AND m.handle = NEW.handle
            AND m.owner_id = NEW.owner_id
+           AND m."by" = NEW."by"
+           AND m.via IS NOT DISTINCT FROM NEW.via
            AND m.kind = NEW.kind
            AND m.blob_id IS NOT DISTINCT FROM NEW.blob_id
            AND m.content_id IS NOT DISTINCT FROM NEW.content_id
@@ -1396,6 +1400,8 @@ BEGIN
     IF NEW.handle IS DISTINCT FROM OLD.handle
        OR NEW.t IS DISTINCT FROM OLD.t
        OR NEW.kind IS DISTINCT FROM OLD.kind
+       OR NEW."by" IS DISTINCT FROM OLD."by"
+       OR NEW.via IS DISTINCT FROM OLD.via
        OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
        OR NEW.source_id IS DISTINCT FROM OLD.source_id
        OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key

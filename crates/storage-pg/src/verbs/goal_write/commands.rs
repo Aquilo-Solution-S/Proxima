@@ -106,9 +106,10 @@ pub(crate) async fn create_goal_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
-    _permit: &OwnerWritePermit,
+    permit: &OwnerWritePermit,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
+    let writer = crate::owner_scope::require_owner_scope(permit.owner_scope())?.writer();
     let owner = req.draft.owner();
     let declaration = create_replay_declaration(req)?;
     if let Some(replay) =
@@ -127,6 +128,7 @@ pub(crate) async fn create_goal_in_tx(
         req.context,
         RowColumns {
             store_number,
+            writer,
             text: Some(&req.draft.text),
             write_act_t: req.write_act_t.map(proxima_core::MemoryId::into_inner),
         },
@@ -171,11 +173,9 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             "operator-authored Goal transition requires explicit Abstraction evidence".into(),
         ));
     }
-    let mut tx = crate::owner_scope::begin_owner_transaction(
-        pool,
-        crate::owner_scope::require_owner_scope(permit.owner_scope())?,
-    )
-    .await?;
+    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let writer = scope.writer();
+    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
     let declaration = transition_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -213,6 +213,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         // one's, as stored, unknown included.
         RowColumns {
             store_number,
+            writer,
             text: prior.text.as_deref(),
             write_act_t: None,
         },
@@ -259,11 +260,9 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
             "achievement evidence must be nonempty".into(),
         ));
     }
-    let mut tx = crate::owner_scope::begin_owner_transaction(
-        pool,
-        crate::owner_scope::require_owner_scope(permit.owner_scope())?,
-    )
-    .await?;
+    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let writer = scope.writer();
+    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
     let declaration = achieve_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -299,6 +298,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         // one's, as stored, unknown included.
         RowColumns {
             store_number,
+            writer,
             text: prior.text.as_deref(),
             write_act_t: None,
         },
@@ -348,11 +348,9 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     permit: &OwnerWritePermit,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = crate::owner_scope::begin_owner_transaction(
-        pool,
-        crate::owner_scope::require_owner_scope(permit.owner_scope())?,
-    )
-    .await?;
+    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let writer = scope.writer();
+    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
     let declaration = modify_replay_declaration(req)?;
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -399,6 +397,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         req.context,
         RowColumns {
             store_number,
+            writer,
             text: Some(&draft.text),
             write_act_t: None,
         },
@@ -439,11 +438,9 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     permit: &OwnerWritePermit,
     store_number: u16,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
-    let mut tx = crate::owner_scope::begin_owner_transaction(
-        pool,
-        crate::owner_scope::require_owner_scope(permit.owner_scope())?,
-    )
-    .await?;
+    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let writer = scope.writer();
+    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
     let declarations = decompose_replay_declarations(req)?;
     if let Some(replay) = resolve_decompose_replay_set(tx.as_mut(), req, &declarations).await? {
         tx.commit().await.map_err(map_err)?;
@@ -476,6 +473,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             req.context,
             RowColumns {
                 store_number,
+                writer,
                 text: Some(&draft.text),
                 write_act_t: None,
             },
@@ -686,6 +684,7 @@ mod lifecycle_lock_tests {
         let first = prepare_goal_write(
             &mut first_tx,
             owner,
+            crate::test_fixtures::writer(),
             &successor(first_request_id),
             expected_prior_t,
             1,
@@ -695,6 +694,7 @@ mod lifecycle_lock_tests {
         let second = prepare_goal_write(
             &mut second_tx,
             owner,
+            crate::test_fixtures::writer(),
             &successor(second_request_id),
             expected_prior_t,
             1,
@@ -769,6 +769,7 @@ mod lifecycle_lock_tests {
             let prepared_first = prepare_goal_write(
                 &mut tx,
                 &owner,
+                crate::test_fixtures::writer(),
                 &command("union-first", second.memory_id.into_inner()),
                 None,
                 1,
@@ -777,6 +778,7 @@ mod lifecycle_lock_tests {
             let prepared_second = prepare_goal_write(
                 &mut tx,
                 &owner,
+                crate::test_fixtures::writer(),
                 &command("union-second", first.memory_id.into_inner()),
                 None,
                 1,
@@ -855,6 +857,7 @@ mod lifecycle_lock_tests {
             let created = write_goal(
                 &mut create_tx,
                 &owner,
+                crate::test_fixtures::writer(),
                 &GoalWriteCommand {
                     handle: None,
                     schema_id: "core/task-v1".into(),
@@ -921,6 +924,7 @@ mod lifecycle_lock_tests {
             let prepared = prepare_goal_write(
                 &mut tx,
                 &owner,
+                crate::test_fixtures::writer(),
                 &GoalWriteCommand {
                     handle: None,
                     schema_id: "core/task-v1".into(),
@@ -1030,6 +1034,7 @@ mod lifecycle_lock_tests {
                 },
                 RowColumns {
                     store_number: 1,
+                    writer: crate::test_fixtures::writer(),
                     text: Some(&draft.text),
                     write_act_t: None,
                 },

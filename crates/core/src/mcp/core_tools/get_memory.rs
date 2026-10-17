@@ -27,6 +27,8 @@ pub struct GetMemoryOutput {
     pub handle: String,
     pub memory: String,
     pub space: String,
+    pub by: uuid::Uuid,
+    pub via: Option<uuid::Uuid>,
     pub kind: String,
     pub schema_id: String,
     pub schema_version: u32,
@@ -117,6 +119,8 @@ pub(super) fn project_remote_memory(
         handle: handle.clone(),
         memory: handle,
         space: crate::memory_store_number(memory.handle).to_string(),
+        by: memory.writer.by,
+        via: memory.writer.via,
         kind: memory.kind.as_str().to_string(),
         schema_id: memory.schema_id,
         schema_version: 1,
@@ -156,6 +160,8 @@ pub(super) fn project_memory_snapshot(
         handle: handle.clone(),
         memory: handle,
         space,
+        by: snapshot.writer.by,
+        via: snapshot.writer.via,
         kind: snapshot.kind.as_str().to_string(),
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),
@@ -190,4 +196,71 @@ pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<S
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GetMemoryOutput, project_memory_snapshot, project_remote_memory};
+    use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
+    use crate::read_models::MemorySnapshot;
+    use crate::storage_ports::other_stores::RemoteMemory;
+    use crate::{EntityKind, MemoryId, SchemaId, SchemaVersion, UserId, WriterAttribution};
+
+    #[test]
+    fn local_and_remote_memory_outputs_keep_the_recorded_writer() {
+        let ctx = ctx_for(UserId::new(uuid::Uuid::from_u128(1)), Vec::new());
+        let origin = crate::new_memory_uuid(1);
+        for via in [None, Some(uuid::Uuid::from_u128(3))] {
+            let writer = WriterAttribution {
+                by: uuid::Uuid::from_u128(2),
+                via,
+            };
+            let local = project_memory_snapshot(
+                &ctx,
+                MemorySnapshot {
+                    memory_id: MemoryId::new(crate::new_memory_uuid(0)),
+                    kind: EntityKind::Fact,
+                    schema_id: SchemaId::new("core/agent-note-v1".into()),
+                    schema_version: SchemaVersion::new(1),
+                    owner: ctx.owner,
+                    writer,
+                    occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+                    text: Some("stored note".into()),
+                    payload: None,
+                },
+                "current".into(),
+                None,
+            )
+            .expect("local projection");
+            let remote = project_remote_memory(RemoteMemory {
+                handle: origin,
+                writer,
+                kind: EntityKind::Fact,
+                schema_id: "remote/note".into(),
+                title: None,
+                body: "stored remote note".into(),
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                tags: Vec::new(),
+            });
+            for output in [local, remote] {
+                let wire = serde_json::to_value(output).expect("wire output");
+                assert_eq!(wire["by"], serde_json::json!(writer.by));
+                assert_eq!(wire.get("via"), Some(&serde_json::json!(writer.via)));
+            }
+        }
+    }
+
+    #[test]
+    fn memory_output_schema_requires_the_nullable_caller() {
+        let schema = crate::mcp::schema::mcp_output_schema::<GetMemoryOutput>()
+            .expect("memory output schema");
+        let required = schema["required"].as_array().expect("required fields");
+        assert!(required.contains(&serde_json::json!("by")));
+        assert!(required.contains(&serde_json::json!("via")));
+        assert_eq!(schema["properties"]["by"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["via"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+    }
 }

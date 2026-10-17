@@ -47,6 +47,8 @@ pub struct GoalItem {
     /// Stable series handle (`<uuid>`). `goal` is this version's `t` and is
     /// retained for write references.
     pub handle: String,
+    pub by: uuid::Uuid,
+    pub via: Option<uuid::Uuid>,
     pub title: String,
     /// The goal's prompt text as of this version; `null` when unknown (a
     /// version written before the text was stored, with no recorded
@@ -169,6 +171,8 @@ fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
         .map(|row| GoalItem {
             goal: row.id.into_inner().to_string(),
             handle: row.handle.to_string(),
+            by: row.writer.by,
+            via: row.writer.via,
             title: row.title,
             text: row.text,
             state: state_str(row.state).to_string(),
@@ -249,6 +253,54 @@ mod tests {
     use crate::McpToolError;
     use crate::verbs::query::QueryCursor;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn goal_reads_keep_each_versions_recorded_writer() {
+        let handle = crate::new_memory_uuid(0);
+        let writers = [
+            crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(1),
+                via: Some(uuid::Uuid::from_u128(2)),
+            },
+            crate::WriterAttribution {
+                by: uuid::Uuid::from_u128(3),
+                via: None,
+            },
+        ];
+        let rows = writers
+            .into_iter()
+            .map(|writer| crate::verbs::query::GoalRow {
+                handle,
+                id: crate::GoalId::new(crate::new_memory_uuid(0)),
+                schema_id: crate::SchemaId::new("core/goal-v1".into()),
+                owner: crate::OwnerId::new(uuid::Uuid::from_u128(4)),
+                writer,
+                title: "stored goal".into(),
+                text: Some("stored prompt".into()),
+                state: super::GoalState::Active,
+                dependency_goal_ids: Vec::new(),
+                assignment: None,
+                evidence: Vec::new(),
+                set_at: time::OffsetDateTime::UNIX_EPOCH,
+                changed_at: time::OffsetDateTime::UNIX_EPOCH,
+            })
+            .collect();
+        let goals = super::project_goals(rows);
+        let single = serde_json::to_value(&goals[0]).expect("single goal output");
+        let list = serde_json::to_value(super::ListGoalsOutput {
+            goals,
+            next_cursor: None,
+            has_more: false,
+        })
+        .expect("goal list output");
+        let reads = list["goals"].as_array().expect("goal versions");
+        assert_eq!(reads.len(), writers.len());
+        assert_eq!(single, reads[0]);
+        for (read, writer) in reads.iter().zip(writers) {
+            assert_eq!(read["by"], serde_json::json!(writer.by));
+            assert_eq!(read.get("via"), Some(&serde_json::json!(writer.via)));
+        }
+    }
 
     #[test]
     fn goal_cursor_round_trips_and_binds_to_state() {

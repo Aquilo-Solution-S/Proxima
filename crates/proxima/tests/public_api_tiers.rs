@@ -816,6 +816,24 @@ fn host_api_exposes_role_for_authenticated_adapters() {
     let _: Option<proxima::AccessError> = None;
 }
 
+#[test]
+fn writer_attribution_is_shared_by_host_and_flavor_facades() {
+    fn copy_writer(scope: &proxima::OwnerScope) -> proxima::host::WriterAttribution {
+        let mut copy = scope.writer();
+        copy.via = None;
+        copy
+    }
+
+    let writer: proxima::host::WriterAttribution = proxima::flavor::WriterAttribution {
+        by: uuid::Uuid::from_u128(1),
+        via: Some(uuid::Uuid::from_u128(2)),
+    };
+    let _: proxima::WriterAttribution = writer;
+    let _: fn(&proxima::OwnerScope) -> proxima::flavor::WriterAttribution =
+        proxima::OwnerScope::writer;
+    std::hint::black_box(copy_writer);
+}
+
 /// A flavor-owned Abstraction, defined through the SDK alone. Note
 /// `sidecar_table` is required rather than optional on this trait: unlike
 /// a Fact, a derived memory always has a typed sidecar, so a flavor

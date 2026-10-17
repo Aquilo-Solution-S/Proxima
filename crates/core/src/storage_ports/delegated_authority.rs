@@ -27,7 +27,7 @@ use crate::{
     AccessError, ActionName, AuthPath, Authenticator, AuthzContext, CapabilitySet, DelegatedPhase,
     DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerId, OwnerRoles,
     ProtocolError, Role, ScopeKey, ScopeKeyError, ServedSurface, StorageError, ToolName, ToolScope,
-    UserId,
+    UserId, WriterAttribution,
 };
 
 /// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
@@ -294,6 +294,7 @@ impl DelegationMutationPermit {
 pub struct DelegationGrantStorage {
     pub delegation_id: DelegationId,
     pub subject: UserId,
+    pub writer: WriterAttribution,
     pub owner: OwnerId,
     pub tool: String,
     pub action: Option<String>,
@@ -312,6 +313,7 @@ pub struct DelegationGrantStorage {
 pub struct DelegationGrant {
     delegation_id: DelegationId,
     subject: UserId,
+    writer: WriterAttribution,
     owner: OwnerId,
     command: DelegatedCommand,
     role_ceiling: Role,
@@ -324,7 +326,7 @@ pub struct DelegationGrant {
 
 impl DelegationGrant {
     fn issued(
-        subject: UserId,
+        source: &crate::OwnerScope,
         owner: OwnerId,
         command: DelegatedCommand,
         role_ceiling: Role,
@@ -334,7 +336,8 @@ impl DelegationGrant {
     ) -> Self {
         Self {
             delegation_id: DelegationId::from_uuid(Uuid::now_v7()),
-            subject,
+            subject: source.subject(),
+            writer: source.writer(),
             owner,
             command,
             role_ceiling,
@@ -371,6 +374,7 @@ impl DelegationGrant {
         Ok(Self {
             delegation_id: stored.delegation_id,
             subject: stored.subject,
+            writer: stored.writer,
             owner: stored.owner,
             command,
             role_ceiling: stored.role_ceiling,
@@ -392,6 +396,12 @@ impl DelegationGrant {
     #[must_use]
     pub const fn subject(&self) -> UserId {
         self.subject
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn writer(&self) -> WriterAttribution {
+        self.writer
     }
 
     #[doc(hidden)]
@@ -560,7 +570,7 @@ impl DelegatedAuthorityService {
         self.validate_scopes(source.capabilities(), &command)?;
 
         let grant = DelegationGrant::issued(
-            subject,
+            scope,
             owner,
             command,
             role_ceiling,
@@ -622,9 +632,10 @@ impl DelegatedAuthorityService {
             DelegatedAuthorityError::CommandUnavailable(grant.command().to_string())
         })?;
 
-        let authz = AuthzContext::server_resolved(
+        let authz = AuthzContext::server_resolved_with_writer(
             OwnerRoles::scoped_to(grant.subject(), expected_owner, effective_role),
             AuthPath::Delegated,
+            grant.writer(),
         )
         .with_expires_at(Some(grant.expires_at()))
         .with_auth_epoch(grant.auth_epoch())
@@ -1119,6 +1130,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writer_survives_durable_delegation_and_redemption() {
+        let (subject, owner, store, access, authenticator) = fixtures();
+        let (engine, service, command) = runtime(
+            registry(true),
+            store.clone(),
+            access,
+            authenticator,
+            ServedSurface::All,
+        );
+        for via in [None, Some(Uuid::now_v7())] {
+            let writer = WriterAttribution {
+                by: Uuid::now_v7(),
+                via,
+            };
+            let caller = AuthzContext::for_subject_with_role(
+                subject,
+                [(owner, Role::editor())],
+                AuthPath::HostBearer,
+            )
+            .with_attested_writer(writer)
+            .unwrap()
+            .with_expires_at(Some(SystemTime::now() + Duration::from_mins(1)))
+            .seal_verified_scope()
+            .unwrap();
+            let issued = service
+                .issue(&caller, owner, command.clone(), Role::editor())
+                .await
+                .unwrap();
+            let stored = store.grant.lock().unwrap().clone().unwrap();
+            assert_eq!(stored.writer(), writer);
+            assert_eq!(stored.subject(), subject);
+            let decoded = DelegationGrant::from_storage(
+                &service.mutation_permit,
+                &DelegationGrantStorage {
+                    delegation_id: stored.delegation_id(),
+                    subject: stored.subject(),
+                    writer: stored.writer(),
+                    owner: stored.owner(),
+                    tool: stored.command().tool().as_str().to_owned(),
+                    action: stored
+                        .command()
+                        .action()
+                        .map(|action| action.as_str().to_owned()),
+                    role_ceiling: stored.role_ceiling(),
+                    expires_at: stored.expires_at(),
+                    auth_epoch: stored.auth_epoch(),
+                    issued_at: stored.issued_at(),
+                    revoked_at: stored.revoked_at(),
+                    revoked_by: stored.revoked_by(),
+                },
+            )
+            .unwrap();
+            assert_eq!(decoded.writer(), writer);
+            *store.grant.lock().unwrap() = Some(decoded);
+            let phase = service
+                .redeem_phase(issued.id, owner, &command)
+                .await
+                .unwrap();
+            let operation = crate::authz::context_for_engine_operation(&phase).unwrap();
+            assert_eq!(operation.authz().writer(), Some(writer));
+            assert_eq!(operation.authz().owner_scope().unwrap().writer(), writer);
+            assert_eq!(operation.authz().subject(), Some(subject));
+            let authorized = engine
+                .authorize_fact_ingest(&phase, fact(), &[])
+                .await
+                .unwrap();
+            assert_eq!(
+                authorized
+                    .owner_write_permit()
+                    .owner_scope()
+                    .unwrap()
+                    .writer(),
+                writer
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn split_fact_witness_rechecks_expiry_before_commit() {
         let (subject, owner, store, access, authenticator) = fixtures();
         let (engine, service, command) = runtime(
@@ -1395,10 +1484,17 @@ mod tests {
     async fn forwarded_owner_cannot_delegate_even_with_ordinary_membership() {
         let (subject, owner, store, access, authenticator) = fixtures();
         let policy = ForwardedAccess(access.clone());
-        let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
-            .with_expires_at(Some(SystemTime::now() + Duration::from_mins(1)))
-            .seal_verified_scope()
-            .unwrap();
+        let pending = AuthzContext::from_verified_forwarded_owner(
+            subject,
+            owner,
+            WriterAttribution {
+                by: owner.into_inner(),
+                via: Some(Uuid::now_v7()),
+            },
+        )
+        .with_expires_at(Some(SystemTime::now() + Duration::from_mins(1)))
+        .seal_verified_scope()
+        .unwrap();
         let forwarded = pending
             .with_authenticated_forwarded_owner(&policy, owner)
             .await

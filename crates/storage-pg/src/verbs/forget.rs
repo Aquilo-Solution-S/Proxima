@@ -76,6 +76,8 @@ struct HotRow {
     t: Uuid,
     kind: String,
     owner_id: Uuid,
+    by: Uuid,
+    via: Option<Uuid>,
     schema_id: String,
     source_id: Option<String>,
     ingest_key: Option<String>,
@@ -133,6 +135,8 @@ struct CooledRow {
     t: Uuid,
     handle: Uuid,
     owner_id: Uuid,
+    by: Uuid,
+    via: Option<Uuid>,
     kind: String,
     object_key: String,
     blob_id: Option<Uuid>,
@@ -169,6 +173,8 @@ fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     write_uuid(&mut out, rec.row.t);
     write_str(&mut out, &rec.row.kind)?;
     write_uuid(&mut out, rec.row.owner_id);
+    write_uuid(&mut out, rec.row.by);
+    write_opt_uuid(&mut out, rec.row.via);
     write_opt_str(&mut out, rec.row.source_id.as_deref())?;
     write_opt_str(&mut out, rec.row.ingest_key.as_deref())?;
     write_opt_uuid(&mut out, rec.row.blob_id);
@@ -250,6 +256,8 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         t: read_uuid(bytes, &mut i)?,
         kind: read_str(bytes, &mut i)?,
         owner_id: read_uuid(bytes, &mut i)?,
+        by: read_uuid(bytes, &mut i)?,
+        via: read_opt_uuid(bytes, &mut i)?,
         schema_id: String::new(),
         source_id: read_opt_str(bytes, &mut i)?,
         ingest_key: read_opt_str(bytes, &mut i)?,
@@ -691,11 +699,11 @@ async fn load_embed_spaces(
         .collect()
 }
 
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
+const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
            FROM proxima_core.memory
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
@@ -808,8 +816,8 @@ async fn persist_cooled_after_put(
     sqlx::query(
         "INSERT INTO proxima_core.cooled
             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
-             origins, refs, goal_refs, cold_digest)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+             origins, refs, goal_refs, cold_digest, \"by\", via)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
@@ -824,6 +832,8 @@ async fn persist_cooled_after_put(
     .bind(&current.row.refs)
     .bind(&current.row.goal_refs)
     .bind(cold_digest(&encode_record(current)?))
+    .bind(current.row.by)
+    .bind(current.row.via)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -2297,6 +2307,8 @@ async fn plan_hydration(
     if rec.row.t != cooled.t
         || rec.row.handle != cooled.handle
         || rec.row.kind != cooled.kind
+        || rec.row.by != cooled.by
+        || rec.row.via != cooled.via
         || rec.row.source_id != cooled.source_id
         || rec.row.ingest_key != cooled.ingest_key
         || rec.row.origins != origins
@@ -2484,9 +2496,9 @@ async fn insert_hydrated_memory_row(
     let result = sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at)
+             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14)",
+                 $13, $14, $15, $16)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
@@ -2502,6 +2514,8 @@ async fn insert_hydrated_memory_row(
     .bind(goal_refs)
     .bind(rec.row.sidecar_tables.clone())
     .bind(rec.row.occurred_at)
+    .bind(rec.row.by)
+    .bind(rec.row.via)
     .execute(tx.as_mut())
     .await;
     if let Err(error) = result {
@@ -2573,7 +2587,7 @@ async fn owned_cooled_row_for_update(
 ) -> Result<Option<CooledRow>, StorageError> {
     sqlx::query_as(
         "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, cold_digest
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
            FROM proxima_core.cooled
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE",
@@ -2592,7 +2606,7 @@ async fn owned_cooled_row(
 ) -> Result<Option<CooledRow>, StorageError> {
     sqlx::query_as(
         "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, cold_digest
+                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
            FROM proxima_core.cooled
           WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)",
     )
@@ -3849,6 +3863,8 @@ mod tests {
     fn cold_row(refs: Vec<uuid::Uuid>, goal_refs: Vec<uuid::Uuid>) -> super::ColdRecord {
         super::ColdRecord {
             row: super::HotRow {
+                by: uuid::Uuid::from_u128(0x509),
+                via: Some(uuid::Uuid::from_u128(0x510)),
                 handle: uuid::Uuid::now_v7(),
                 t: uuid::Uuid::now_v7(),
                 kind: "fact".to_owned(),
@@ -3870,6 +3886,18 @@ mod tests {
             embed_spaces: Vec::new(),
             sketch: None,
             format_version: super::COLD_FORMAT_VERSION,
+        }
+    }
+
+    #[test]
+    fn cold_writer_round_trips_with_and_without_a_caller() {
+        let mut record = cold_row(Vec::new(), Vec::new());
+        for via in [Some(uuid::Uuid::from_u128(0x510)), None] {
+            record.row.via = via;
+            let decoded = super::decode_record(&super::encode_record(&record).expect("encode"))
+                .expect("decode");
+            assert_eq!(decoded.row.by, record.row.by);
+            assert_eq!(decoded.row.via, via);
         }
     }
 

@@ -32,10 +32,30 @@ pub use hooks::{
 };
 pub use scope_key::{ActionName, ResourceKey, ScopeKey, ScopeKeyError, ScopeKeyPart, ToolName};
 
+/// The principal and optional caller an authenticator attested for a write.
+///
+/// Separate from the authenticated credential subject and the selected owner.
+/// A direct principal call has no `via`; a session call names its session UUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WriterAttribution {
+    pub by: uuid::Uuid,
+    /// Required on serialized reads; `null` denotes a direct principal call.
+    #[serde(deserialize_with = "deserialize_writer_via")]
+    pub via: Option<uuid::Uuid>,
+}
+
+fn deserialize_writer_via<'de, D>(deserializer: D) -> Result<Option<uuid::Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer)
+}
+
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     subject: Option<UserId>,
+    writer: Option<WriterAttribution>,
     principal: OwnerId,
     accessible_principals: HashSet<OwnerId>,
     /// Streams terminate past this; `None` = no expiry.
@@ -557,8 +577,13 @@ impl AuthzContext {
     /// that Engine's witness.
     #[must_use]
     pub fn for_system(authority: &SystemAuthority, owner_roles: OwnerRoles) -> Self {
-        let mut context = Self::server_resolved(owner_roles.clone(), AuthPath::System);
-        context.owner_scope = Some(OwnerScope::from_verified_roles(owner_roles, None));
+        let writer = WriterAttribution {
+            by: owner_roles.subject().into_inner(),
+            via: None,
+        };
+        let mut context =
+            Self::server_resolved_with_writer(owner_roles.clone(), AuthPath::System, writer);
+        context.owner_scope = Some(OwnerScope::from_verified_roles(owner_roles, None, writer));
         context.system_binding = Some(authority.binding());
         context
     }
@@ -587,8 +612,13 @@ impl AuthzContext {
         // it holds the personal role, which never manages.
         let subject = owner.as_user();
         let roles = OwnerRoles::scoped_to(subject, owner, Role::personal());
-        let mut context = Self::server_resolved(roles.clone(), AuthPath::HostBearer);
-        context.owner_scope = Some(OwnerScope::from_verified_roles(roles, None));
+        let writer = WriterAttribution {
+            by: subject.into_inner(),
+            via: None,
+        };
+        let mut context =
+            Self::server_resolved_with_writer(roles.clone(), AuthPath::HostBearer, writer);
+        context.owner_scope = Some(OwnerScope::from_verified_roles(roles, None, writer));
         context
             .narrowed_to_owner(owner)
             .expect("single owner's verified role is self-accessible")
@@ -599,7 +629,12 @@ impl AuthzContext {
             .owner_roles
             .clone()
             .ok_or(AuthError::InvalidCredentials)?;
-        self.owner_scope = Some(OwnerScope::from_verified_roles(roles, self.expires_at()));
+        let writer = self.writer().ok_or(AuthError::InvalidCredentials)?;
+        self.owner_scope = Some(OwnerScope::from_verified_roles(
+            roles,
+            self.expires_at(),
+            writer,
+        ));
         Ok(self)
     }
 
@@ -655,6 +690,25 @@ impl AuthzContext {
     #[must_use]
     pub const fn default_owner(&self) -> Option<OwnerId> {
         self.default_owner
+    }
+
+    /// The writer attested by the authenticator, before or after scope sealing.
+    #[must_use]
+    pub const fn writer(&self) -> Option<WriterAttribution> {
+        self.identity.writer
+    }
+
+    /// Bind the writer verified by the host authenticator before authentication seals it.
+    ///
+    /// The pair must come from authenticated identity, never a tool argument,
+    /// request header or publication extension. A sealed scope cannot be rebound.
+    #[must_use]
+    pub fn with_attested_writer(mut self, writer: WriterAttribution) -> Option<Self> {
+        if self.owner_scope.is_some() || self.auth_path == AuthPath::Denied {
+            return None;
+        }
+        self.identity.writer = Some(writer);
+        Some(self)
     }
 
     #[must_use]
@@ -741,6 +795,18 @@ impl AuthzContext {
 
     #[must_use]
     pub fn server_resolved(owner_roles: OwnerRoles, auth_path: AuthPath) -> Self {
+        let writer = WriterAttribution {
+            by: owner_roles.subject().into_inner(),
+            via: None,
+        };
+        Self::server_resolved_with_writer(owner_roles, auth_path, writer)
+    }
+
+    pub(crate) fn server_resolved_with_writer(
+        owner_roles: OwnerRoles,
+        auth_path: AuthPath,
+        writer: WriterAttribution,
+    ) -> Self {
         let subject = owner_roles.subject();
         let accessible_principals = owner_roles
             .readable_owners(AccessKind::Fact)
@@ -749,6 +815,10 @@ impl AuthzContext {
         Self {
             identity: Identity {
                 subject: Some(subject),
+                writer: match auth_path {
+                    AuthPath::HostBearer | AuthPath::Delegated | AuthPath::System => Some(writer),
+                    AuthPath::Denied => None,
+                },
                 principal: OwnerId::from(subject),
                 accessible_principals,
                 expires_at: None,
@@ -771,12 +841,20 @@ impl AuthzContext {
     ///
     /// For trusted authenticators only: `subject` is the authenticated
     /// forwarder and `owner` comes from its verified credential, never a
-    /// request header or tool argument. The edge must check selection
-    /// agreement and resolve the registered owner before any role is granted.
+    /// request header or tool argument. `writer` is attested by the same
+    /// credential. The edge must check selection agreement and resolve the
+    /// registered owner before any role is granted.
     #[must_use]
-    pub fn from_verified_forwarded_owner(subject: UserId, owner: OwnerId) -> Self {
-        let mut context =
-            Self::server_resolved(OwnerRoles::without_access(subject), AuthPath::HostBearer);
+    pub fn from_verified_forwarded_owner(
+        subject: UserId,
+        owner: OwnerId,
+        writer: WriterAttribution,
+    ) -> Self {
+        let mut context = Self::server_resolved_with_writer(
+            OwnerRoles::without_access(subject),
+            AuthPath::HostBearer,
+            writer,
+        );
         context.forwarded_owner = Some(owner);
         context
     }
@@ -831,7 +909,11 @@ impl AuthzContext {
             .collect();
         next.owner_roles = Some(roles.clone());
         next.identity.expires_at = expires_at;
-        next.owner_scope = Some(OwnerScope::from_verified_roles(roles, expires_at));
+        next.owner_scope = Some(OwnerScope::from_verified_roles(
+            roles,
+            expires_at,
+            scope.writer(),
+        ));
         next.narrowed_to_owner(owner)
     }
 
@@ -1084,6 +1166,7 @@ impl AuthzContext {
         Self {
             identity: Identity {
                 subject: None,
+                writer: None,
                 principal: *owner,
                 accessible_principals: HashSet::new(),
                 expires_at: None,
@@ -1315,8 +1398,103 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time;
 
+    fn forwarded_writer() -> WriterAttribution {
+        WriterAttribution {
+            by: uuid::Uuid::from_u128(101),
+            via: Some(uuid::Uuid::from_u128(102)),
+        }
+    }
+
     fn owner() -> OwnerId {
         OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    #[test]
+    fn writer_attribution_requires_by_and_explicit_nullable_via() {
+        let by = uuid::Uuid::now_v7();
+        let via = uuid::Uuid::now_v7();
+        for via in [None, Some(via)] {
+            let writer = WriterAttribution { by, via };
+            let json = serde_json::to_value(writer).unwrap();
+            assert_eq!(json, serde_json::json!({ "by": by, "via": via }));
+            assert_eq!(
+                serde_json::from_value::<WriterAttribution>(json).unwrap(),
+                writer
+            );
+        }
+        for invalid in [
+            serde_json::json!({ "by": by }),
+            serde_json::json!({ "via": null }),
+            serde_json::json!({ "by": null, "via": null }),
+            serde_json::json!({ "by": "not-a-uuid", "via": null }),
+            serde_json::json!({ "by": by, "via": "not-a-uuid" }),
+            serde_json::json!({ "by": by, "via": 17 }),
+        ] {
+            assert!(
+                serde_json::from_value::<WriterAttribution>(invalid.clone()).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_is_sealed_once_and_preserved_by_narrowing_and_revalidation() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let context = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, Role::editor())],
+            AuthPath::HostBearer,
+        );
+        assert_eq!(
+            context.writer(),
+            Some(WriterAttribution {
+                by: subject.into_inner(),
+                via: None
+            })
+        );
+        let writer = forwarded_writer();
+        let context = context.with_attested_writer(writer).unwrap();
+        let sealed = authenticate(
+            &VerifiedAuthenticator { context },
+            &Credentials::Bearer("verified".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sealed.writer(), Some(writer));
+        assert_eq!(sealed.owner_scope().unwrap().writer(), writer);
+        let narrowed = sealed.clone().narrowed_to_owner(group).unwrap();
+        assert_eq!(narrowed.writer(), Some(writer));
+        assert_eq!(narrowed.owner_scope().unwrap().writer(), writer);
+        assert_eq!(narrowed.identity_for_revalidation().writer, Some(writer));
+        assert_eq!(narrowed.subject(), Some(subject));
+        assert_eq!(narrowed.principal(), OwnerId::from(subject));
+        assert!(
+            sealed
+                .with_attested_writer(WriterAttribution {
+                    by: uuid::Uuid::now_v7(),
+                    via: None,
+                })
+                .is_none()
+        );
+        let denied = AuthzContext::denied_for_owner(&group);
+        assert_eq!(denied.writer(), None);
+        assert!(denied.with_attested_writer(writer).is_none());
+    }
+
+    #[tokio::test]
+    async fn writer_missing_at_authentication_refuses_to_seal() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let mut context = AuthzContext::for_subject(subject, AuthPath::HostBearer);
+        context.identity.writer = None;
+        assert_eq!(
+            authenticate(
+                &VerifiedAuthenticator { context },
+                &Credentials::Bearer("verified".into()),
+            )
+            .await,
+            Err(AuthError::InvalidCredentials)
+        );
     }
 
     /// No bearer, no authenticator: the runtime's witness alone mints a
@@ -1332,6 +1510,12 @@ mod tests {
 
         assert_eq!(context.auth_path(), AuthPath::System);
         assert_eq!(context.subject(), Some(subject));
+        let writer = WriterAttribution {
+            by: subject.into_inner(),
+            via: None,
+        };
+        assert_eq!(context.writer(), Some(writer));
+        assert_eq!(context.owner_scope().unwrap().writer(), writer);
         assert!(context.owner_scope().is_some(), "the owner scope is sealed");
         assert!(context.may_write(&group, AccessKind::Fact));
         assert!(
@@ -1357,6 +1541,14 @@ mod tests {
         let scope = context.owner_scope().expect("sealed single-owner scope");
         assert_eq!(scope.readable_owners(AccessKind::Fact), vec![group]);
         assert_eq!(scope.writable_owners(AccessKind::Fact), vec![group]);
+        assert_eq!(
+            context.writer(),
+            Some(WriterAttribution {
+                by: group.into_inner(),
+                via: None
+            })
+        );
+        assert_eq!(scope.writer(), context.writer().unwrap());
         assert!(!context.can_access_owner(&personal));
         assert!(!scope.may_write(&personal, AccessKind::Fact));
         assert!(
@@ -1374,6 +1566,10 @@ mod tests {
         accessible_principals.insert(principal);
         Identity {
             subject: Some(principal.as_user()),
+            writer: Some(WriterAttribution {
+                by: principal.into_inner(),
+                via: None,
+            }),
             principal,
             accessible_principals,
             expires_at,
@@ -1494,12 +1690,13 @@ mod tests {
                     registered: true,
                     probes: std::sync::atomic::AtomicUsize::new(0),
                 };
-                let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
-                    .with_expires_at(Some(expires))
-                    .with_auth_epoch(7)
-                    .with_tool_scope(ToolScope::Palette(Vec::new()))
-                    .with_trusted_model_id("trusted-forwarder-model")
-                    .unwrap();
+                let pending =
+                    AuthzContext::from_verified_forwarded_owner(subject, owner, forwarded_writer())
+                        .with_expires_at(Some(expires))
+                        .with_auth_epoch(7)
+                        .with_tool_scope(ToolScope::Palette(Vec::new()))
+                        .with_trusted_model_id("trusted-forwarder-model")
+                        .unwrap();
                 assert!(pending.readable_owners(AccessKind::Fact).is_empty());
                 assert!(!pending.can_access_owner(&OwnerId::from(subject)));
                 assert!(
@@ -1538,6 +1735,11 @@ mod tests {
                     .unwrap();
                 assert_eq!(port.probes.load(Ordering::SeqCst), 1);
                 assert_eq!(bound.subject(), Some(subject));
+                assert_eq!(bound.writer(), Some(forwarded_writer()));
+                assert_eq!(
+                    bound.identity_for_revalidation().writer,
+                    Some(forwarded_writer())
+                );
                 assert_eq!(bound.principal(), OwnerId::from(subject));
                 assert_eq!(bound.verified_forwarded_owner(), Some(owner));
                 assert_eq!(bound.role_for_owner(&owner), Some(role));
@@ -1565,6 +1767,7 @@ mod tests {
                 );
                 let scope = bound.owner_scope().unwrap();
                 assert_eq!(scope.subject(), subject);
+                assert_eq!(scope.writer(), forwarded_writer());
                 assert_eq!(scope.readable_owners(AccessKind::Fact), [owner]);
                 assert!(scope.managed_owners().is_empty());
             }
@@ -1582,20 +1785,24 @@ mod tests {
             registered: false,
             probes: std::sync::atomic::AtomicUsize::new(0),
         };
-        let expired = AuthzContext::from_verified_forwarded_owner(subject, owner)
-            .with_expires_at(Some(SystemTime::UNIX_EPOCH))
-            .seal_verified_scope()
-            .unwrap();
+        let expired =
+            AuthzContext::from_verified_forwarded_owner(subject, owner, forwarded_writer())
+                .with_expires_at(Some(SystemTime::UNIX_EPOCH))
+                .seal_verified_scope()
+                .unwrap();
         assert!(
             expired
                 .with_authenticated_forwarded_owner(&port, owner)
                 .await
                 .is_none()
         );
-        let unconfigured =
-            AuthzContext::from_verified_forwarded_owner(UserId::new(uuid::Uuid::now_v7()), owner)
-                .seal_verified_scope()
-                .unwrap();
+        let unconfigured = AuthzContext::from_verified_forwarded_owner(
+            UserId::new(uuid::Uuid::now_v7()),
+            owner,
+            forwarded_writer(),
+        )
+        .seal_verified_scope()
+        .unwrap();
         assert!(
             unconfigured
                 .with_authenticated_forwarded_owner(&port, owner)
@@ -1603,9 +1810,10 @@ mod tests {
                 .is_none()
         );
         assert_eq!(port.probes.load(Ordering::SeqCst), 0);
-        let unknown = AuthzContext::from_verified_forwarded_owner(subject, owner)
-            .seal_verified_scope()
-            .unwrap();
+        let unknown =
+            AuthzContext::from_verified_forwarded_owner(subject, owner, forwarded_writer())
+                .seal_verified_scope()
+                .unwrap();
         assert!(
             unknown
                 .with_authenticated_forwarded_owner(&port, owner)
@@ -1627,10 +1835,11 @@ mod tests {
             probes: std::sync::atomic::AtomicUsize::new(0),
         };
         let sealed_expiry = SystemTime::now() + Duration::from_mins(2);
-        let pending = AuthzContext::from_verified_forwarded_owner(subject, owner)
-            .with_expires_at(Some(sealed_expiry))
-            .seal_verified_scope()
-            .unwrap();
+        let pending =
+            AuthzContext::from_verified_forwarded_owner(subject, owner, forwarded_writer())
+                .with_expires_at(Some(sealed_expiry))
+                .seal_verified_scope()
+                .unwrap();
         let earlier = sealed_expiry - Duration::from_mins(1);
         for (changed, expected) in [
             (None, sealed_expiry),

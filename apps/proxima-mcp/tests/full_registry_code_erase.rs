@@ -451,8 +451,8 @@ async fn insert_code_fact(
     .await?;
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
-         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2))",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2), $3, NULL)",
     )
     .bind(handle)
     .bind(fact_id)

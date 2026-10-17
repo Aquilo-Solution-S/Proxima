@@ -22,6 +22,13 @@ projection for the current version, not a replacement for version identity.
 Facts remain immutable. Abstractions, Perspectives, and Goals append a later
 version on the same handle rather than mutating an old row.
 
+Every memory and Goal version also records `by`, the principal who wrote it,
+and `via`, its caller session UUID or `null` for a direct principal call.
+The sealed request context supplies this pair. It grants no authority and is
+independent of ownership, payload authorship and grounding sources. Reads
+return the stored pair; an exact replay retains it, a new version captures its
+own writer, and transfer or cold-storage hydration preserves it.
+
 Typed payload is owner-scoped `Content`. Content may be shared by admissions
 within its owner and schema, but shared content never collapses two `t` values.
 Use the [core rustdoc source](https://github.com/Aquilo-Solution-S/Proxima/tree/main/crates/core/src)

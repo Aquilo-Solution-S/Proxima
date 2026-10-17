@@ -39,6 +39,7 @@ pub(super) struct EvidenceTarget {
 pub(super) struct RowColumns<'a> {
     /// The configured number encoded into this row's minted identity.
     pub(super) store_number: u16,
+    pub(super) writer: proxima_core::WriterAttribution,
     pub(super) text: Option<&'a str>,
     pub(super) write_act_t: Option<uuid::Uuid>,
 }

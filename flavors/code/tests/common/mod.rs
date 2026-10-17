@@ -331,8 +331,8 @@ pub async fn seed_memory_with_sidecars_in_tx(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END)",
+            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END, $4, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -378,8 +378,8 @@ pub async fn seed_goal(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, assignment_t)
-         VALUES ($1, $2, $3, $4, 'Active', $5, $6)",
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
+         VALUES ($1, $2, $3, $4, 'Active', $5, $6, $3, NULL)",
     )
     .bind(handle)
     .bind(t)

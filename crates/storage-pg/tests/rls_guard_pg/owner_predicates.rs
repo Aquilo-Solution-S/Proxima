@@ -79,7 +79,7 @@ async fn seed_memory(admin: &PgPool, owner: Uuid, kind: &str, anchor: Option<Uui
     };
     sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,kind,owner_id,schema_id) VALUES ($1,$1,$2::text::proxima_core.memory_kind,$3,'predicate/memory')")
         .bind(id).bind(kind).bind(owner).execute(admin).await.unwrap();
-    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs,occurred_at) VALUES ($1,$1,$2::text::proxima_core.memory_kind,$3,'predicate/memory',$4,$5,CASE WHEN $2::text='fact' THEN uuid_extract_timestamp($1) END)")
+    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs,occurred_at, \"by\", via) VALUES ($1,$1,$2::text::proxima_core.memory_kind,$3,'predicate/memory',$4,$5,CASE WHEN $2::text='fact' THEN uuid_extract_timestamp($1) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(id).bind(kind).bind(owner).bind(content).bind(anchor.into_iter().collect::<Vec<_>>())
         .execute(admin).await.unwrap();
     id
@@ -89,7 +89,7 @@ async fn seed_goal(admin: &PgPool, owner: Uuid) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query("INSERT INTO proxima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$1,$2,'core/task-goal-v1')")
         .bind(id).bind(owner).execute(admin).await.unwrap();
-    sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id) VALUES ($1,$1,$2,'predicate goal','Active',$3)")
+    sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$1,$2,'predicate goal','Active',$3, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(id).bind(owner).bind(id.to_string()).execute(admin).await.unwrap();
     id
 }

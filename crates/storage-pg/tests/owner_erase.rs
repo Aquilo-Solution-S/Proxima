@@ -1511,6 +1511,7 @@ async fn erase_group_owner_completes_when_abandoned() {
         let goal = write_goal(
             &mut gtx,
             &owner,
+            proxima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
@@ -2428,8 +2429,14 @@ async fn owner_erase_includes_a_goal_that_committed_before_its_fence() {
         let goal_owner = owner;
         let goal = tokio::spawn(async move {
             let mut tx = goal_pool.begin().await?;
-            let outcome =
-                write_goal(&mut tx, &goal_owner, &goal_draft("late-goal-request"), 1).await?;
+            let outcome = write_goal(
+                &mut tx,
+                &goal_owner,
+                proxima_storage_pg::test_fixtures::writer(),
+                &goal_draft("late-goal-request"),
+                1,
+            )
+            .await?;
             tx.commit().await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(outcome)
         });

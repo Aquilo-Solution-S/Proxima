@@ -14,8 +14,8 @@ async fn insert_version(
     request_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id, close_fact_t)
-         VALUES ($1, uuidv7(), $2, 'join', 'text', 'Active', $3, NULL)",
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id, close_fact_t, \"by\", via)
+         VALUES ($1, uuidv7(), $2, 'join', 'text', 'Active', $3, NULL, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(owner)

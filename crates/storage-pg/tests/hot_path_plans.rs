@@ -95,9 +95,9 @@ async fn seed_note(
     let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))",
+                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -149,8 +149,8 @@ async fn seed_derived(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, content_id)
-         VALUES ($1, $2, 'abstraction', $3, 'core/agent-note-v1', ARRAY[$4]::uuid[], $5)",
+            (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
+         VALUES ($1, $2, 'abstraction', $3, 'core/agent-note-v1', ARRAY[$4]::uuid[], $5, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -198,9 +198,9 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerId) -> Result<(
     let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          SELECT h.handle, h.t, 'fact', $1, 'core/agent-note-v1',
-                ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t)
+                ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t), '00000000-0000-0000-0000-000000000509'::uuid, NULL
            FROM proxima_core.memory_head h
           WHERE h.owner_id = $1
             AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",

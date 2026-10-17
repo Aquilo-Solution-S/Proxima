@@ -102,15 +102,30 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
         write_act_t: None,
     };
     let mut tx = pg.pool_for_tests().begin().await?;
-    let first = write_goal(&mut tx, &owner, &goal(None, GoalState::Active, "first"), 1).await?;
+    let first = write_goal(
+        &mut tx,
+        &owner,
+        proxima_storage_pg::test_fixtures::writer(),
+        &goal(None, GoalState::Active, "first"),
+        1,
+    )
+    .await?;
     write_goal(
         &mut tx,
         &owner,
+        proxima_storage_pg::test_fixtures::writer(),
         &goal(Some(first.handle), GoalState::Achieved, "first-achieved"),
         1,
     )
     .await?;
-    write_goal(&mut tx, &owner, &goal(None, GoalState::Paused, "second"), 1).await?;
+    write_goal(
+        &mut tx,
+        &owner,
+        proxima_storage_pg::test_fixtures::writer(),
+        &goal(None, GoalState::Paused, "second"),
+        1,
+    )
+    .await?;
     tx.commit().await?;
 
     Ok(Seeded {

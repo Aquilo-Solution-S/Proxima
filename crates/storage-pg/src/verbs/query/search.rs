@@ -144,6 +144,8 @@ struct SubstringRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct AdmitRow {
+    by: uuid::Uuid,
+    via: Option<uuid::Uuid>,
     t: uuid::Uuid,
     kind: String,
     schema_id: String,
@@ -951,7 +953,7 @@ fn search_admit_sql(heads_only: bool) -> String {
                 m.kind::text,
                 m.schema_id,
                 proxima_core.memory_created_at(m.t) AS created_at,
-                m.occurred_at
+                m.occurred_at, m.\"by\", m.via
            {from}
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])
@@ -1212,6 +1214,10 @@ async fn admit_hits_on_connection(
             };
             Some(MemorySearchResult {
                 memory_id: MemoryId::new(row.t),
+                writer: proxima_core::WriterAttribution {
+                    by: row.by,
+                    via: row.via,
+                },
                 kind,
                 schema_id: SchemaId::new(row.schema_id),
                 created_at: row.created_at,

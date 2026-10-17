@@ -12,8 +12,8 @@
 //! it: [`OidcAuthenticator::new`] maps the validated `(iss, sub)` through an
 //! issuer-aware [`OidcSubjectMap`] to a [`UserId`] and resolves ordinary
 //! [`proxima_core::OwnerRoles`] through an `OwnerAccessPort`. A configured
-//! forwarder instead carries its verified owner claim without a role until
-//! request owner agreement is checked at the edge.
+//! forwarder instead carries its verified owner and writer claims without a
+//! role until request owner agreement is checked at the edge.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -22,7 +22,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, AlgorithmFamily, Validation, decode, decode_header};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId, UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId,
+    UserId, WriterAttribution,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -378,6 +379,14 @@ pub(crate) fn bind_trusted_model_id(
     })
 }
 
+fn signed_uuid_claim(value: &serde_json::Value) -> Result<uuid::Uuid, AuthError> {
+    value
+        .as_str()
+        .and_then(|raw| raw.parse::<OwnerId>().ok())
+        .map(OwnerId::into_inner)
+        .ok_or(AuthError::InvalidCredentials)
+}
+
 /// Resolve ordinary memberships, or carry a forwarder's verified owner to
 /// the edge without resolving that owner before header agreement.
 pub(crate) async fn context_for_verified_token(
@@ -390,13 +399,27 @@ pub(crate) async fn context_for_verified_token(
         AuthError::InvalidCredentials
     })?;
     let context = if is_forwarder {
-        let owner = token
+        let owner = OwnerId::new(signed_uuid_claim(
+            token
+                .custom
+                .get("owner")
+                .ok_or(AuthError::InvalidCredentials)?,
+        )?);
+        let by = signed_uuid_claim(
+            token
+                .custom
+                .get("by")
+                .ok_or(AuthError::InvalidCredentials)?,
+        )?;
+        let via = match token
             .custom
-            .get("owner")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|owner| owner.parse::<OwnerId>().ok())
-            .ok_or(AuthError::InvalidCredentials)?;
-        AuthzContext::from_verified_forwarded_owner(subject, owner)
+            .get("via")
+            .ok_or(AuthError::InvalidCredentials)?
+        {
+            serde_json::Value::Null => None,
+            value => Some(signed_uuid_claim(value)?),
+        };
+        AuthzContext::from_verified_forwarded_owner(subject, owner, WriterAttribution { by, via })
     } else {
         let roles = owner_access
             .resolve_roles_for_subject(subject)

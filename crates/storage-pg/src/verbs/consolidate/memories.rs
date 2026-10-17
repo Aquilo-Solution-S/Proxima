@@ -32,7 +32,7 @@ pub async fn load_memory_by_id_on_connection(
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
     let Some(row) = raw.and_then(StoredMemoryRow::into_hydration) else {
         return Ok(None);
@@ -84,7 +84,7 @@ pub async fn load_memories_by_ids_on_connection(
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
@@ -219,6 +219,8 @@ struct StoredMemoryRow {
     kind: String,
     schema_id: String,
     owner_id: uuid::Uuid,
+    by: uuid::Uuid,
+    via: Option<uuid::Uuid>,
     sidecar_tables: Vec<String>,
     occurred_at: Option<time::OffsetDateTime>,
 }
@@ -232,6 +234,10 @@ impl StoredMemoryRow {
             kind: parse_memory_kind(&self.kind)?,
             schema_id: self.schema_id,
             owner: OwnerId::new(self.owner_id),
+            writer: proxima_core::WriterAttribution {
+                by: self.by,
+                via: self.via,
+            },
             sidecar_tables: self.sidecar_tables,
             occurred_at: self.occurred_at,
         })
@@ -244,6 +250,7 @@ struct MemoryHydrationRow {
     kind: EntityKind,
     schema_id: String,
     owner: OwnerId,
+    writer: proxima_core::WriterAttribution,
     sidecar_tables: Vec<String>,
     occurred_at: Option<time::OffsetDateTime>,
 }
@@ -276,6 +283,7 @@ async fn snapshots_from_rows_on_connection(
             schema_id: spec.schema_id.clone(),
             schema_version: spec.schema_version,
             owner: row.owner,
+            writer: row.writer,
             occurred_at: row.occurred_at,
             text: payload.as_ref().and_then(SidecarPayload::graph_body),
             payload,
@@ -365,6 +373,7 @@ mod tests {
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let rows = [
             MemoryHydrationRow {
+                writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
                 kind: EntityKind::Fact,
                 schema_id: UploadV1::SCHEMA_ID.to_owned(),
@@ -373,6 +382,7 @@ mod tests {
                 occurred_at: None,
             },
             MemoryHydrationRow {
+                writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
                 kind: EntityKind::Fact,
                 schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),

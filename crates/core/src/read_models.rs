@@ -2,6 +2,7 @@
 
 use crate::{
     EntityKind, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    WriterAttribution,
 };
 
 /// Persisted recall/think one-liner. Plumbing; not a kernel sort.
@@ -50,6 +51,7 @@ pub struct MemorySnapshot {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: OwnerId,
+    pub writer: WriterAttribution,
     /// When the observation occurred (`memory.occurred_at`): `Some` for
     /// every Fact, `None` for an Abstraction or Perspective.
     pub occurred_at: Option<time::OffsetDateTime>,
@@ -188,6 +190,7 @@ mod tests {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveGoalSummary {
     pub goal_id: GoalId,
+    pub writer: WriterAttribution,
     pub goal_activated_memory_id: Option<MemoryId>,
     pub title: String,
 }

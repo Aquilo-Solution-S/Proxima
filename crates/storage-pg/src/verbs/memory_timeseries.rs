@@ -26,6 +26,8 @@ pub struct MemoryRow {
     pub t: Uuid,
     pub kind: String,
     pub owner_id: Uuid,
+    pub by: Uuid,
+    pub via: Option<Uuid>,
     pub source_id: Option<String>,
     pub ingest_key: Option<String>,
     pub origins: Vec<Uuid>,
@@ -34,17 +36,16 @@ pub struct MemoryRow {
     pub occurred_at: Option<time::OffsetDateTime>,
 }
 
-/// The admission a write asks the timeseries to prepare: whose row it is,
-/// what it says, what it pins, which sidecar tables it declares, and which
-/// flavor-owned lifecycle scopes it belongs to. These six travel together
-/// from the verb that assembles them all the way down to
-/// [`prepare_memory_admission_at`], so they are one value and not six
-/// parameters a call site could permute.
+/// The admission a write asks the timeseries to prepare: its owner and
+/// authenticated writer, what it says and pins, its declared sidecars, and
+/// its flavor-owned lifecycle scopes. These inputs travel together from the
+/// authorizing verb to [`prepare_memory_admission_at`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryAdmissionDraft<'a> {
     pub(crate) store_number: u16,
     pub(crate) natural_key: Option<&'a MemoryNaturalKey>,
     pub(crate) owner: &'a OwnerId,
+    pub(crate) writer: proxima_core::WriterAttribution,
     pub(crate) draft: &'a FactWriteCommand,
     pub(crate) origins: &'a [EdgeEndpoint],
     pub(crate) references: &'a [EdgeEndpoint],
@@ -89,6 +90,7 @@ pub(crate) enum PreparedMemoryAdmission {
 pub(crate) struct PreparedMemoryAdmissionNew {
     owner: OwnerId,
     owner_id: Uuid,
+    writer: proxima_core::WriterAttribution,
     draft: FactWriteCommand,
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
@@ -119,19 +121,19 @@ impl PreparedMemoryAdmission {
 
 /// One txn: owners upsert + ingest_keys + memory_head + memory.
 ///
-/// `sidecar_tables` is the declared set forget will dump/delete — tables
-/// actually inserted for this `t`, never the global registry.
+/// `admission.sidecar_tables` is the declared set forget will dump/delete —
+/// tables actually inserted for this `t`, never the global registry.
 /// `content_id` is the owner-scoped payload (required for A/P).
 pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    let draft = admission.draft;
+    let blob_id = admission.draft.blob_id;
     let prepared = prepare_memory_admission(tx, admission).await?;
     lock_prepared_memory_admission(tx, &prepared).await?;
     let prepared = claim_prepared_memory_admission(tx, prepared).await?;
-    materialize_prepared_memory_admission(tx, prepared, draft.blob_id, content_id).await
+    materialize_prepared_memory_admission(tx, prepared, blob_id, content_id).await
 }
 
 /// Prepare ordinary Memory admission without touching content, blob, head, or
@@ -185,6 +187,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
+    writer: proxima_core::WriterAttribution,
     draft: &FactWriteCommand,
     identity: (Uuid, Uuid),
     sidecar_tables: &[String],
@@ -195,6 +198,7 @@ pub(crate) async fn ingest_unpinned_fact_at(
             store_number: proxima_core::memory_store_number(identity.1),
             natural_key: None,
             owner,
+            writer,
             draft,
             origins: &[],
             references: &[],
@@ -365,6 +369,7 @@ async fn prepare_memory_admission_at(
         PreparedMemoryAdmissionNew {
             owner: *owner,
             owner_id,
+            writer: admission.writer,
             draft,
             origins: persisted_origins,
             refs,
@@ -950,9 +955,9 @@ async fn insert_memory_revision(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at)
+             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14)",
+                 $13, $14, $15, $16)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -968,6 +973,8 @@ async fn insert_memory_revision(
     .bind(&prepared.goal_refs)
     .bind(&prepared.sidecar_tables)
     .bind(prepared.occurred_at)
+    .bind(prepared.writer.by)
+    .bind(prepared.writer.via)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -1047,7 +1054,7 @@ pub(crate) async fn read_memory_by_t(
     t: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
-        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, origins, refs, goal_refs,
+        "SELECT handle, t, kind::text, owner_id, \"by\", via, source_id, ingest_key, origins, refs, goal_refs,
                 occurred_at
            FROM proxima_core.memory
           WHERE t = $1",
@@ -1066,7 +1073,7 @@ pub(crate) async fn read_memory_head(
     handle: Uuid,
 ) -> Result<Option<MemoryRow>, StorageError> {
     sqlx::query_as::<_, MemoryRow>(
-        "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.source_id, m.ingest_key,
+        "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.\"by\", m.via, m.source_id, m.ingest_key,
                 m.origins, m.refs, m.goal_refs, m.occurred_at
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t

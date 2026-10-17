@@ -32,8 +32,10 @@ pub fn decode_hex(value: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Apply the reset baseline and its definitions before the store-number cutover.
-/// The pool must connect as the migration role to an empty database.
+/// Build the pre-identity physical schema and owner policies for migration tests.
+/// The pool must connect as the migration role to an empty database. Current
+/// triggers require later attribution columns, so this fixture installs no
+/// triggers; current guard behavior is tested against the complete schema.
 ///
 /// # Errors
 ///
@@ -45,11 +47,34 @@ pub fn decode_hex(value: &str) -> Vec<u8> {
 pub async fn apply_pre_identity_schema(
     platform: &PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    apply_historical_schema(
+        platform,
+        &[33],
+        pre_identity_definitions(definitions::POLICIES),
+    )
+    .await
+}
+
+/// Apply exactly the named historical migrations and their embedded owner policies.
+/// Current functions are inert during setup, and future-column triggers are absent.
+///
+/// # Errors
+///
+/// Returns connection, migration, or policy installation failures.
+///
+/// # Panics
+///
+/// Panics when the requested migration history is absent from the embedded sources.
+pub async fn apply_historical_schema(
+    platform: &PgPool,
+    versions: &[i64],
+    policies: &'static str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut staged = core_migrator();
     staged.migrations = Cow::Owned(
         staged
             .iter()
-            .filter(|migration| migration.version <= 33)
+            .filter(|migration| versions.contains(&migration.version))
             .cloned()
             .collect(),
     );
@@ -58,8 +83,8 @@ pub async fn apply_pre_identity_schema(
             .iter()
             .map(|migration| migration.version)
             .collect::<Vec<_>>(),
-        [33],
-        "the fixture applies the reset baseline before store identities"
+        versions,
+        "the fixture applies exactly its historical physical schema"
     );
     let mut connection = platform.acquire().await?;
     let mut transaction = begin_migration_transaction(&mut connection).await?;
@@ -67,11 +92,7 @@ pub async fn apply_pre_identity_schema(
     sqlx::query("SET LOCAL check_function_bodies = off")
         .execute(transaction.as_mut())
         .await?;
-    for sql in [
-        definitions::FUNCTIONS,
-        pre_identity_definitions(definitions::TRIGGERS),
-        pre_identity_definitions(definitions::POLICIES),
-    ] {
+    for sql in [definitions::FUNCTIONS, policies] {
         // SQL-POLICY: fixed-fragment — embedded definitions, with an asserted final section boundary.
         sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(transaction.as_mut())

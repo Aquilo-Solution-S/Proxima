@@ -97,8 +97,8 @@ async fn insert_memory(
     .execute(&mut *connection)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at)
-         VALUES ($1, $2, $3::text::proxima_core.memory_kind, $4, 'core/test', $5, $6, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
+        "INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::text::proxima_core.memory_kind, $4, 'core/test', $5, $6, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -115,9 +115,9 @@ async fn cool(connection: &mut PgConnection, t: Uuid) -> Result<PgQueryResult, s
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, source_id, ingest_key, blob_id,
-              content_id, origins, refs, goal_refs, cooled_at)
+              content_id, origins, refs, goal_refs, cooled_at, \"by\", via)
          SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.source_id,
-                m.ingest_key, m.blob_id, m.content_id, m.origins, m.refs, m.goal_refs, now()
+                m.ingest_key, m.blob_id, m.content_id, m.origins, m.refs, m.goal_refs, now(), m.\"by\", m.via
            FROM proxima_core.memory m WHERE m.t = $1",
     )
     .bind(t)
@@ -141,8 +141,8 @@ async fn insert_goal(
     .execute(&mut *connection)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal(handle, t, owner_id, title, state, request_id)
-         VALUES ($1, $2, $3, 'scope bridge', 'Active', $4)",
+        "INSERT INTO proxima_core.goal(handle, t, owner_id, title, state, request_id, \"by\", via)
+         VALUES ($1, $2, $3, 'scope bridge', 'Active', $4, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -302,8 +302,8 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     savepoint(&mut tx).await;
     let outcome = sqlx::query(
         "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, cooled_at)
-         VALUES ($1, $1, $2, 'fact', 'cold/unsealed', '{}', '{}', '{}', now())",
+             (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, cooled_at, \"by\", via)
+         VALUES ($1, $1, $2, 'fact', 'cold/unsealed', '{}', '{}', '{}', now(), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(Uuid::now_v7())
     .bind(owner)

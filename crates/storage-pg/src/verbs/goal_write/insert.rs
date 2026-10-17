@@ -144,6 +144,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     let preparation = prepare_goal_write(
         tx,
         &owner,
+        columns.writer,
         &command,
         expected_prior.map(GoalId::into_inner),
         store_number,

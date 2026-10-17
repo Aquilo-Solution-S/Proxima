@@ -157,9 +157,9 @@ async fn seed_note_lang(
     let mut stamped = pool.begin().await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))",
+                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -290,8 +290,8 @@ async fn seed_docs_note(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, content_id)
-         VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5)",
+            (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
+         VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -594,6 +594,7 @@ async fn tagged_search_scans_flavor_sidecars() {
             &["proxima-docs", "shared"],
         )
         .await?;
+
         let projection = docs_projection();
         let projections = std::slice::from_ref(&projection);
         let scope = owner_scope_for_tests(&[owner]);
@@ -1900,9 +1901,9 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 let mut stamped = pool.begin().await?;
                 sqlx::query(
                     "INSERT INTO proxima_core.memory
-                         (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
+                         (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
                      VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                             ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2))",
+                             ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
                 )
                 .bind(handle)
                 .bind(t)

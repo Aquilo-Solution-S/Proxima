@@ -45,6 +45,13 @@ opaque ContentHash : Type := String
 /-- Kernel face of a retrieval situation: admitted `t`s in scope. -/
 abbrev Cue : Type := Set MemoryId
 
+/-- The writer attested by the authenticator, independent of the owner and
+    the payload. `via` names the caller or session; `none` means the
+    principal called directly. Attribution grants no authority. -/
+structure WriterAttribution where
+  «by» : User
+  via  : Option Id
+
 /-- Stable persisted owner-table reference: the owner id, one `Id`. This is
     not the resolved membership map (`Owner := User → Option Role`). Entity
     rows store this id; the host resolves it through `OwnerState` before

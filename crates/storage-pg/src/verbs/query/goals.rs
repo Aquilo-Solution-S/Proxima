@@ -86,7 +86,7 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
                 {created_at} AS created_at, \
                 {set_at} AS set_at, \
                 h.schema_id, \
-                g.owner_id, g.title, g.text, g.state, \
+                g.owner_id, g.\"by\", g.via, g.title, g.text, g.state, \
                 g.dependency_t AS dependency_goal_ids, \
                 g.assignment_t AS assignment, \
                 g.evidence_t AS evidence \

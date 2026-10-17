@@ -836,6 +836,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         export: ExportRule::Allowlist(&[
             "subject_user_id",
             "owner_id",
+            "by",
+            "via",
             "tool_name",
             "action_name",
             "read_ceiling",

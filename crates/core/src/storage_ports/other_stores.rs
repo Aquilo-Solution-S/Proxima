@@ -13,7 +13,7 @@ use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
 use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
-use crate::{AuthzContext, OwnerId};
+use crate::{AuthzContext, OwnerId, WriterAttribution};
 
 /// How long a search waits for one other store before reporting it as
 /// unanswered.
@@ -142,6 +142,7 @@ pub struct RemoteSearchResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteHit {
     pub handle: Uuid,
+    pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: String,
     pub snippet: String,
@@ -153,6 +154,7 @@ pub struct RemoteHit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteMemory {
     pub handle: Uuid,
+    pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: String,
     pub title: Option<String>,
@@ -212,7 +214,7 @@ pub enum RemoteRead {
 /// A bounded read result that carries the authenticated origin witness.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteOriginRead {
-    Found(ReadOrigin, RemoteMemory),
+    Found(ReadOrigin, Box<RemoteMemory>),
     NotFound,
     Erased,
 }
@@ -388,7 +390,7 @@ impl OtherStoresService {
                             handle: *handle,
                             kind: memory.kind,
                         },
-                        memory,
+                        Box::new(memory),
                     ),
                     RemoteRead::NotFound => RemoteOriginRead::NotFound,
                     RemoteRead::Erased => RemoteOriginRead::Erased,
@@ -679,6 +681,10 @@ mod tests {
             Box::pin(async {
                 Ok(RemoteRead::Found(RemoteMemory {
                     handle: Uuid::from_u128(2),
+                    writer: crate::WriterAttribution {
+                        by: Uuid::from_u128(3),
+                        via: None,
+                    },
                     kind: EntityKind::Fact,
                     schema_id: "remote/note".into(),
                     title: None,

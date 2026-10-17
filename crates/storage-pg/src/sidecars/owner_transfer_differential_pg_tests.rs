@@ -203,6 +203,7 @@ async fn write_note(
             store_number: 1,
             natural_key: None,
             owner: &owner,
+            writer: crate::test_fixtures::writer(),
             draft: &write,
             origins: &[],
             references: &[],
@@ -326,10 +327,10 @@ async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error
     sqlx::query(
         "INSERT INTO proxima_core.cooled
              (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs, cooled_at)
+              ingest_key, origins, refs, goal_refs, cooled_at, \"by\", via)
          SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.blob_id,
                 m.content_id, m.source_id, m.ingest_key, m.origins, m.refs, m.goal_refs,
-                $2::timestamptz
+                $2::timestamptz, m.\"by\", m.via
            FROM proxima_core.memory m WHERE m.t = $1",
     )
     .bind(t)
@@ -547,10 +548,10 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     sqlx::query(
         "INSERT INTO proxima_core.delegated_authority_grants
              (delegation_id, subject_user_id, owner_id, tool_name,
-              read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at)
+              read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
          VALUES ($1, $2, $3, 'core_remember',
                  'fact', 'fact', TIMESTAMPTZ '2030-01-01 00:00:00Z', 1,
-                 TIMESTAMPTZ '2026-01-01 00:00:00Z')",
+                 TIMESTAMPTZ '2026-01-01 00:00:00Z', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(Uuid::now_v7())
     .bind(source.into_inner())
@@ -578,8 +579,8 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .await?;
     let goal_t: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.goal
-             (handle, t, owner_id, title, state, request_id)
-         VALUES ($1, $1, $2, 'a goal', 'Active', 'req-1') RETURNING t",
+             (handle, t, owner_id, title, state, request_id, \"by\", via)
+         VALUES ($1, $1, $2, 'a goal', 'Active', 'req-1', '00000000-0000-0000-0000-000000000509'::uuid, NULL) RETURNING t",
     )
     .bind(goal_handle)
     .bind(source.into_inner())

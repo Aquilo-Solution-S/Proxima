@@ -146,10 +146,16 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         );
         assert_ne!(first.handle, second.handle);
 
+        let writer = permit.owner_scope().expect("sealed fixture scope").writer();
+        let second_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let second_writer = second_permit.owner_scope().expect("second scope").writer();
+        assert_ne!(writer, second_writer);
         let sourced = draft(Some(("src/webhook", "delivery-1")));
         let a = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         assert!(!a.idempotent_replay);
-        let b = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
+        let b = pg
+            .ingest_fact_atomic(&second_permit, &sourced, None)
+            .await?;
         assert!(b.idempotent_replay);
         assert_eq!(a.memory_id, b.memory_id);
         assert_eq!(a.handle, b.handle);
@@ -166,6 +172,8 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         assert_eq!(by_head.t, a.memory_id.into_inner());
         assert_eq!(by_t.handle, a.handle);
         assert_eq!(by_head.handle, a.handle);
+        assert_eq!((by_t.by, by_t.via), (writer.by, writer.via));
+        assert_eq!((by_head.by, by_head.via), (writer.by, writer.via));
 
         let head_t: Uuid =
             sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
@@ -190,6 +198,24 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
                 .await?;
         assert_eq!(row_schema, "core/test-fact-v1");
         assert_eq!(row_schema, head_schema);
+
+        let mut successor = draft(None);
+        successor.handle = Some(a.handle);
+        let next = pg
+            .ingest_fact_atomic(&second_permit, &successor, None)
+            .await?;
+        assert_eq!(next.handle, a.handle);
+        assert_ne!(next.memory_id, a.memory_id);
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let head = read_memory_head(&mut tx, a.handle)
+            .await?
+            .expect("successor head");
+        let original = read_memory_by_t(&mut tx, a.memory_id.into_inner())
+            .await?
+            .expect("original");
+        tx.commit().await?;
+        assert_eq!((head.by, head.via), (second_writer.by, second_writer.via));
+        assert_eq!((original.by, original.via), (writer.by, writer.via));
 
         Ok(())
     }
@@ -223,8 +249,8 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
         );
         let mut seed = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at)
-             VALUES ($1, $2, 'fact', $3, $4, proxima_core.memory_created_at($2))",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, $4, proxima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(first.handle)
         .bind(future_t)

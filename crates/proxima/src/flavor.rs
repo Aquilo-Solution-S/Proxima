@@ -119,7 +119,7 @@ pub use proxima_core::{
     RequestHeaders, ResourceKey, SchemaId, SchemaVersion, ScopeKey, ScopeKeyError,
     SearchProjectionColumnKind, ServedSurface, SidecarPayload, Tool, ToolCaller, ToolCtx,
     ToolError, ToolId, ToolName, ToolScope, ToolServices, TrustedModelIdError, UserId,
-    is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
+    WriterAttribution, is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
     validate_endpoint_url, validate_endpoint_url_for_hosts,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]

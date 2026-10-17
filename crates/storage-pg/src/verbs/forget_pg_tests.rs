@@ -166,6 +166,7 @@ async fn ingest_stamped(
             store_number: 1,
             natural_key: None,
             owner: permit.owner(),
+            writer: crate::test_fixtures::writer(),
             draft,
             origins: &draft.additional_references,
             references: &references,
@@ -206,6 +207,7 @@ async fn append_in_own_transaction(
             store_number: 1,
             natural_key: None,
             owner: permit.owner(),
+            writer: crate::test_fixtures::writer(),
             draft: &draft,
             origins: &[],
             references: &[],
@@ -445,6 +447,7 @@ async fn insert_unassigned_goal(
     let goal = write_goal(
         &mut tx,
         &owner,
+        crate::test_fixtures::writer(),
         &GoalWriteCommand {
             handle: None,
             schema_id: "core/task-goal-v1".into(),
@@ -498,6 +501,7 @@ async fn forget_hydrate_and_erase() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
+        let writer = permit.owner_scope().expect("sealed fixture scope").writer();
         let mut sourced = draft(Some(("src", "k1")));
         sourced.rendered_text = Some("Actual title\nbody".into());
         let written = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
@@ -551,6 +555,12 @@ async fn forget_hydrate_and_erase() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(stub, 1);
+        let cooled_writer: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_writer, (writer.by, writer.via));
         assert_eq!(
             erased_pin_target_kind(pool, t).await?,
             None,
@@ -589,6 +599,12 @@ async fn forget_hydrate_and_erase() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(hot, 1);
+        let restored_writer: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(restored_writer, cooled_writer);
         let head_t: Uuid =
             sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(written.handle)
@@ -1023,6 +1039,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
                 store_number: 1,
                 natural_key: None,
                 owner: permit.owner(),
+                writer: crate::test_fixtures::writer(),
                 draft: &append_draft,
                 origins: &[],
                 references: &[],
@@ -1260,6 +1277,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
                 store_number: 1,
                 natural_key: None,
                 owner: permit.owner(),
+                writer: crate::test_fixtures::writer(),
                 draft: &append_draft,
                 origins: &[],
                 references: &[],
@@ -1471,6 +1489,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
                 store_number: 1,
                 natural_key: None,
                 owner: permit.owner(),
+                writer: crate::test_fixtures::writer(),
                 draft: &append_draft,
                 origins: &[],
                 references: &[],
@@ -2244,6 +2263,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
         let goal = write_goal(
             &mut tx,
             &owner,
+            crate::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
@@ -3441,6 +3461,38 @@ async fn hydrate_rejects_cold_identity_and_sealed_pin_mismatch() {
         let identity_key = cold_object_key(identity_t);
         cool_one(pool, &owner, &cold, identity_t, &identity_key).await?;
         let mut identity_record = decode_record(&cold.get(&identity_key).await?)?;
+        for (by, via) in [
+            (Uuid::now_v7(), identity_record.row.via),
+            (identity_record.row.by, Some(Uuid::now_v7())),
+        ] {
+            let mut forged = identity_record.clone();
+            forged.row.by = by;
+            forged.row.via = via;
+            replace_cold_record(pool, &cold, identity_t, &identity_key, &forged).await?;
+            let mut tx = pool.begin().await?;
+            let rejected = hydrate_one_in_tx(
+                &mut tx,
+                &core_pg_sidecars(),
+                &surfaces(),
+                &cold,
+                identity_t,
+                owner.into_inner(),
+                hydrate_embeddings(),
+            )
+            .await?
+            .expect_err("cold writer must match its durable locator seal");
+            tx.rollback().await?;
+            assert_eq!(rejected, ColdRejection::InvalidObject);
+            let sealed_writer: (Uuid, Option<Uuid>) =
+                sqlx::query_as("SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1")
+                    .bind(identity_t)
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(
+                sealed_writer,
+                (identity_record.row.by, identity_record.row.via)
+            );
+        }
         identity_record.row.t = Uuid::now_v7();
         let identity_bytes = encode_record(&identity_record)?;
         cold.put(&identity_key, &identity_bytes).await?;
@@ -3597,9 +3649,9 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
-                 blob_id, content_id, origins, refs, sidecar_tables, occurred_at)
+                 blob_id, content_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', NULL, NULL,
-                     NULL, NULL, '{}', '{}', '{}', proxima_core.memory_created_at($2))",
+                     NULL, NULL, '{}', '{}', '{}', proxima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(holder.handle)
         .bind(target_t)
@@ -4105,8 +4157,8 @@ async fn forget_pinless_abstraction_is_refused() {
         .await?;
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory
-                (handle, t, kind, owner_id, schema_id, content_id, origins, refs)
-             VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, '{}', '{}')",
+                (handle, t, kind, owner_id, schema_id, content_id, origins, refs, \"by\", via)
+             VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, '{}', '{}', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -4334,8 +4386,8 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         let admit = tokio::spawn(async move {
             sqlx::query(
                 "INSERT INTO proxima_core.memory
-                    (handle, t, kind, owner_id, schema_id, content_id, origins, refs)
-                 VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, ARRAY[$5]::uuid[], '{}')",
+                    (handle, t, kind, owner_id, schema_id, content_id, origins, refs, \"by\", via)
+                 VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, ARRAY[$5]::uuid[], '{}', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
             .bind(handle)
             .bind(new_t)
@@ -4866,6 +4918,7 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
                 store_number: 1,
                 natural_key: None,
                 owner: destination_permit.owner(),
+                writer: crate::test_fixtures::writer(),
                 draft: &append_draft,
                 origins: &[],
                 references: &[],

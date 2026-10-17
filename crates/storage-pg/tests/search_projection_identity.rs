@@ -350,8 +350,8 @@ async fn admit(
     };
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8], CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END)",
+             (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8], CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -989,8 +989,8 @@ async fn seed_note_revision(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at)
-         VALUES ($1, $2, 'fact', $3, $4, ARRAY[$5], uuid_extract_timestamp($2))",
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         VALUES ($1, $2, 'fact', $3, $4, ARRAY[$5], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)

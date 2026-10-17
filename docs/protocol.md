@@ -35,7 +35,9 @@ oldest binding; a full global binding store refuses a new principal instead
 of evicting another principal's sessions.
 
 A configured forwarder carries its selected owner in the verified token's
-`owner` UUID claim. Missing or invalid claims refuse authentication. The
+`owner` UUID claim and writer claims `by` (principal UUID) and `via`
+(session UUID or explicit `null`). Missing or invalid claims refuse
+authentication. The
 owner header may agree or be absent; it cannot replace the claim. Every
 session request must also agree with the current token's claim. The policy
 role reaches that one registered personal or group owner, while the

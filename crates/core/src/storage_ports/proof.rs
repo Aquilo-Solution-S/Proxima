@@ -223,15 +223,20 @@ impl OwnerWritePermit {
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub fn new_for_tests(owner: OwnerId, access_kind: AccessKind) -> Self {
-        let roles = crate::OwnerRoles::scoped_to(
-            crate::UserId::new(uuid::Uuid::now_v7()),
-            owner,
-            crate::Role::admin(),
-        );
+        let subject = uuid::Uuid::now_v7();
+        let roles =
+            crate::OwnerRoles::scoped_to(crate::UserId::new(subject), owner, crate::Role::admin());
         Self {
             owner,
             access_kind,
-            owner_scope: Some(OwnerScope::from_verified_roles(roles, None)),
+            owner_scope: Some(OwnerScope::from_verified_roles(
+                roles,
+                None,
+                crate::WriterAttribution {
+                    by: subject,
+                    via: None,
+                },
+            )),
             transfer_destination: None,
             delegated: None,
             _private: (),
@@ -247,16 +252,21 @@ impl OwnerWritePermit {
         access_kind: AccessKind,
         destination: OwnerId,
     ) -> Self {
-        let roles = crate::OwnerRoles::scoped_to(
-            crate::UserId::new(uuid::Uuid::now_v7()),
-            owner,
-            crate::Role::admin(),
-        )
-        .with_group_role(destination.as_group(), crate::Role::admin());
+        let subject = uuid::Uuid::now_v7();
+        let roles =
+            crate::OwnerRoles::scoped_to(crate::UserId::new(subject), owner, crate::Role::admin())
+                .with_group_role(destination.as_group(), crate::Role::admin());
         Self {
             owner,
             access_kind,
-            owner_scope: Some(OwnerScope::from_verified_roles(roles, None)),
+            owner_scope: Some(OwnerScope::from_verified_roles(
+                roles,
+                None,
+                crate::WriterAttribution {
+                    by: subject,
+                    via: None,
+                },
+            )),
             transfer_destination: Some(destination),
             delegated: None,
             _private: (),

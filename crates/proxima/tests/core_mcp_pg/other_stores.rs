@@ -54,6 +54,10 @@ fn remote_id(store: u16, key: &str) -> Uuid {
 fn fact(handle: Uuid, body: &str) -> RemoteMemory {
     RemoteMemory {
         handle,
+        writer: proxima_core::WriterAttribution {
+            by: Uuid::now_v7(),
+            via: None,
+        },
         kind: EntityKind::Fact,
         schema_id: "remote/note".into(),
         title: Some(format!("title of {handle}")),
@@ -170,6 +174,7 @@ impl OtherStores for FakeStores {
                         Entry::Readable(memory) if remote_matches(memory, args) => {
                             Some(RemoteHit {
                                 handle: memory.handle,
+                                writer: memory.writer,
                                 kind: memory.kind,
                                 schema_id: memory.schema_id.clone(),
                                 snippet: memory.body.clone(),

@@ -349,6 +349,11 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             Vec::new(),
         )
         .with_sidecar_payloads_for_tests(vec![note_payload("pub", "body")]);
+        let writer = authorized
+            .owner_write_permit()
+            .owner_scope()
+            .expect("sealed scope")
+            .writer();
         let written = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
         let t = written.memory_id.into_inner();
         let witness_before: Option<String> = sqlx::query_scalar(
@@ -386,6 +391,12 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             )
             .await?;
         assert!(first);
+        let moved_writer: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(moved_writer, (writer.by, writer.via));
         let content_owner: Uuid = sqlx::query_scalar(
             "SELECT c.owner_id
                FROM proxima_core.content c
@@ -605,6 +616,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
+        let writer = permit.owner_scope().expect("sealed scope").writer();
         let mut first_draft = draft();
         first_draft.citation =
             Some(CitationSpec::v1("core/test-cited-object-v1", [9_u8; 32]).into());
@@ -658,6 +670,10 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             )
             .await?;
         assert!(transferred);
+        let cooled_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1",
+        ).bind(first.memory_id.into_inner()).fetch_one(pool).await?;
+        assert_eq!(cooled_writer, (writer.by, writer.via));
         let cooled_owner: uuid::Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
                 .bind(first.memory_id.into_inner())
@@ -773,6 +789,11 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             dest.into_inner(),
             "the sketch is read owner-scoped: hydrating it under the giver hands a transferred memory back to the owner that gave it away"
         );
+
+        let restored_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
+        ).bind(first.memory_id.into_inner()).fetch_one(pool).await?;
+        assert_eq!(restored_writer, cooled_writer);
 
         let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
             "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
@@ -2108,9 +2129,9 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         sqlx::query(
             "INSERT INTO proxima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs,
-                 goal_refs, sidecar_tables, occurred_at)
+                 goal_refs, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', '{}', '{}',
-                     '{}', '{}', uuid_extract_timestamp($2))",
+                     '{}', '{}', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(first.handle)
         .bind(drift_t)
@@ -2446,6 +2467,7 @@ async fn transfer_refuses_goal_entities() {
         let out = write_goal(
             &mut tx,
             &owner,
+            proxima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
