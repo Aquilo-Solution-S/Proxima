@@ -1,22 +1,23 @@
 name: Release
 
-# A release is cut by MERGING, not by tagging. A PR that bumps
+# A release is cut by VERIFYING, not by tagging. A commit that bumps
 # `proxima_core::RELEASE_VERSION` to a version no tag holds yet becomes
-# `v${RELEASE_VERSION}` the moment it lands on main; a merge that leaves the
-# constant alone cuts nothing, so ordinary changes accumulate until someone
-# decides the next release is worth naming. `scripts/check-release-version.py`
-# validates the bump on the PR, where it is still free to fix.
+# `v${RELEASE_VERSION}` the moment verify.yml advances `verified` onto it; a
+# commit that leaves the constant alone cuts nothing, so ordinary changes
+# accumulate until someone decides the next release is worth naming.
+# `scripts/check-release-version.py` validates the bump in CI.
 #
 # Tagging and releasing are ONE job on purpose: a tag pushed with GITHUB_TOKEN
 # does not trigger another workflow, so a separate tag-triggered release would
 # never fire for a tag this workflow created.
 #
 # The `v*` trigger is kept for a tag pushed by hand — a backfill, or a re-run
-# after this workflow failed between the tag and the Release.
+# after this workflow failed between the tag and the Release. Every trigger
+# refuses a commit `verified` does not contain.
 
 on:
+  workflow_call:
   push:
-    branches: [main]
     tags:
       - "v*"
   workflow_dispatch:
@@ -52,6 +53,10 @@ jobs:
             exit 1
           fi
           tag="v${version}"
+          if ! git merge-base --is-ancestor HEAD origin/verified; then
+            echo "::error::$(git rev-parse HEAD) is not verified; release only what verify.yml has passed"
+            exit 1
+          fi
           # The server reports RELEASE_VERSION over MCP initialize and REST
           # OpenAPI, so a Release naming a version the tagged tree does not
           # declare is a version no client can trust. Refuse the mismatch.

@@ -36,16 +36,20 @@ concepts and integration; avoid a second invariant or configuration ledger.
 
 ## Branch and release policy
 
-1. `main` is PR-only; GitHub branch protection requires checks, up-to-date
-   branches, and admin enforcement. Never push directly.
-2. Reviewed short branches target `main` or a parent PR in an explicitly
-   requested stack. Fold stacks from child into parent. The final parent goes
-   through the required gate against current `main`.
-3. CI runs PRs targeting `main` on GitHub's merge ref, and re-runs on pushes to
-   `main`. Only `main` saves Rust caches. Run complete local gates for children.
-4. Merging a change to `proxima_core::RELEASE_VERSION` cuts `v${VERSION}` through
-   `release.yml`; an unchanged constant cuts no release. The version checker
-   validates the next published number. Never cut a manual release for a child.
+1. Push to `main` directly. History stays linear: rebase, never merge or
+   force-push. Run the local gates for what you touched before pushing.
+2. `verified` is the last `main` commit that passed CI; only `verify.yml`
+   moves it. Start work from `origin/verified`, not `origin/main`: commits on
+   `main` past `verified` are untested and are not ground truth.
+3. `verify.yml` runs CI on the newest `main` commit and batches pushes that
+   land meanwhile. Green fast-forwards `verified`. Red re-runs CI on commits in
+   the batch, reverts the first red one on `main`, or opens an issue naming the
+   range. Only verify runs save Rust caches. PRs remain for outside
+   contributors.
+4. A commit that changes `proxima_core::RELEASE_VERSION` cuts `v${VERSION}`
+   through `release.yml` once `verified` reaches it; an unchanged constant cuts
+   no release, and no release is cut from an unverified commit. The version
+   checker validates the next published number.
 5. Released migrations are immutable; `scripts/check-migrations.py` pins every
    released file from `RELEASE_EPOCH`. New migration versions must be above all
    released versions in their directory. Definitions are edited in place; see

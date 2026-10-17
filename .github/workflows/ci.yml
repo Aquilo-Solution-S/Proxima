@@ -1,22 +1,32 @@
 name: CI
 
 on:
+  # Outside contributions still arrive as PRs.
   pull_request:
     branches: [main]
-  # Main runs the same validation after a merge and is the only ref that saves
-  # the Rust caches: a PR can restore its base branch's caches but not another
-  # PR's, so without a main cache every new PR compiles from scratch.
-  push:
-    branches: [main]
+  # verify.yml calls this for each `main` commit it tests. Those runs are the
+  # only ones that save Rust caches (`github.ref` is main there): a PR can
+  # restore its base branch's caches but not another PR's.
+  workflow_call:
+    inputs:
+      base:
+        description: Last verified commit; path filters diff the commit against it.
+        type: string
+        required: true
+      ref:
+        description: Commit to validate.
+        type: string
+        required: true
 
 # Least-privilege default: every job's GITHUB_TOKEN is read-only (no job
 # writes contents, packages, or PRs).
 permissions:
   contents: read
 
-# A new PR revision supersedes its previous validation run.
+# A new PR revision supersedes its previous validation run. Verify's probes
+# validate several commits at once, so the commit is part of the group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
   cancel-in-progress: true
 
 env:
@@ -41,10 +51,15 @@ jobs:
       all: ${{ steps.paths.outputs.all }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
       # dorny/paths-filter@v4; resolve the PR diff through the GitHub API.
+      # Under verify, diff the commit against the last verified one.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
         id: paths
         with:
+          base: ${{ inputs.base }}
+          ref: ${{ inputs.ref }}
           predicate-quantifier: some-with-excludes
           filters: .github/ci-paths.yml
 
@@ -59,6 +74,8 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
@@ -88,6 +105,7 @@ jobs:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           # The release-version check answers "is this version already cut?"
           # from the tags. A clone without them reads as "first release ever"
           # and would accept any number at all. The released-migration lock in
@@ -121,12 +139,13 @@ jobs:
           shellcheck scripts/changelog.sh
           python3 scripts/check-upgrade-notes.py --self-test
           git cliff --offline --unreleased --output "${RUNNER_TEMP}/release-notes.md"
-      # Merging a bump to `proxima_core::RELEASE_VERSION` cuts that tag and
-      # publishes its notes (.github/workflows/release.yml). The PR is the
-      # last moment the number is still free to change.
+      # A bump to `proxima_core::RELEASE_VERSION` cuts that tag and publishes
+      # its notes once `verified` reaches it (.github/workflows/release.yml).
+      # This check is the last moment the number is still free to change.
       - name: release version
         run: |
           python3 scripts/check-release-version.py --self-test
+          python3 scripts/verify-culprit.py --self-test
           python3 scripts/check-release-version.py
       - name: architecture guardrails
         run: |
@@ -163,6 +182,8 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
       # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
       # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
       # this current via reviewable PRs.
@@ -178,6 +199,8 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
       # Build only, never push. Dependabot bumps the pinned base-image digests
       # weekly (see .github/dependabot.yml); without this job those bumps land
       # with zero validation and the first person to discover a broken image is
@@ -186,7 +209,7 @@ jobs:
         run: |
           docker build \
             --build-arg VERSION="$(sed -n 's/^pub const RELEASE_VERSION: &str = "\(.*\)";$/\1/p' crates/core/src/lib.rs)" \
-            --build-arg REVISION="${GITHUB_SHA}" \
+            --build-arg REVISION="$(git rev-parse HEAD)" \
             -t proxima-mcp:ci .
       - name: image reports its release
         run: |
@@ -245,6 +268,8 @@ jobs:
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:

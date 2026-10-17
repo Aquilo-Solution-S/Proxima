@@ -96,13 +96,13 @@ actions. `cliff.toml` renders these in the release notes;
 `scripts/check-upgrade-notes.py --self-test` tests the actual parser/template.
 Per-release changes live only in those notes.
 
-Main is PR-only. A release is cut by merging a PR that bumps
-`proxima_core::RELEASE_VERSION`; the merged value becomes the `v${VERSION}`
-tag and git-cliff generates notes. A merge that leaves the constant unchanged
-cuts no release. Stack children target their parent; fold from the top down,
-with the final parent owning the single version bump. CI runs against `main`;
-run full local gates before publishing children. Run `scripts/check-release-version.py` on a release PR. The
-release workflow creates the tag after the reviewed merge; do not tag by hand.
+Changes are pushed to `main` directly; `verified` names the last `main`
+commit that passed CI, and new work starts from it. A release is cut by a
+commit that bumps `proxima_core::RELEASE_VERSION`: once `verify.yml` advances
+`verified` onto it, the value becomes the `v${VERSION}` tag and git-cliff
+generates notes. A commit that leaves the constant unchanged cuts no release.
+Run full local gates before pushing, and `scripts/check-release-version.py`
+for a version bump. Do not tag by hand.
 
 For a flavor change, also verify the served catalog and the host e2e path. For
 an outbox or host-state change, exercise the transaction and retry or rollback

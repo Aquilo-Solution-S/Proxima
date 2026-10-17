@@ -1,0 +1,202 @@
+name: Verify
+
+# `main` takes direct pushes; `verified` names the last commit that passed CI.
+# Work starts from `verified`, releases are cut only from it, and this workflow
+# is the only writer of it.
+#
+#   green  CI passes on the newest `main` commit -> `verified` fast-forwards to
+#          it and release.yml cuts a tag if RELEASE_VERSION was bumped.
+#   red    CI is re-run on up to eight commits between `verified` and that tip
+#          (scripts/verify-culprit.py). If the first red one sits directly on
+#          a green one, it is reverted on `main` and verify runs again;
+#          otherwise an issue names the range.
+#
+# One run at a time. GitHub keeps one pending run per group and lets a newer
+# push replace it, so pushes that land during a run are verified together.
+
+on:
+  push:
+    branches: [main]
+  # The culprit job re-runs verify after its revert: a push made with
+  # GITHUB_TOKEN starts no workflow, a dispatch does.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+jobs:
+  target:
+    name: range
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.range.outputs.base }}
+      tip: ${{ steps.range.outputs.tip }}
+      pending: ${{ steps.range.outputs.pending }}
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - id: range
+        run: |
+          base="$(git rev-parse origin/verified)"
+          tip="${GITHUB_SHA}"
+          echo "base=${base}" >> "${GITHUB_OUTPUT}"
+          echo "tip=${tip}" >> "${GITHUB_OUTPUT}"
+          if git merge-base --is-ancestor "${tip}" "${base}"; then
+            echo "::notice::${tip} is already verified"
+            echo "pending=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "${base}" "${tip}"; then
+            echo "::error::verified (${base}) is not an ancestor of ${tip}; main was rewritten"
+            exit 1
+          fi
+          echo "pending=true" >> "${GITHUB_OUTPUT}"
+
+  ci:
+    needs: target
+    if: ${{ needs.target.outputs.pending == 'true' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      base: ${{ needs.target.outputs.base }}
+      ref: ${{ needs.target.outputs.tip }}
+
+  advance:
+    name: advance verified
+    needs: [target, ci]
+    if: ${{ needs.ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.tip }}
+      # A plain push: the server refuses anything but a fast-forward, and
+      # branch protection forbids force pushes to `verified`.
+      - run: git push origin "${TIP}:refs/heads/verified"
+        env:
+          TIP: ${{ needs.target.outputs.tip }}
+
+  release:
+    needs: advance
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: ./.github/workflows/release.yml
+
+  sample:
+    name: pick probes
+    needs: [target, ci]
+    if: ${{ needs.ci.result == 'failure' }}
+    runs-on: ubuntu-latest
+    outputs:
+      probes: ${{ steps.pick.outputs.probes }}
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - id: pick
+        env:
+          BASE: ${{ needs.target.outputs.base }}
+          TIP: ${{ needs.target.outputs.tip }}
+        run: |
+          probes="$(python3 scripts/verify-culprit.py sample --base "${BASE}" --tip "${TIP}")"
+          echo "probes=${probes}" >> "${GITHUB_OUTPUT}"
+
+  probe:
+    # verify-culprit.py reads each probe's jobs by this name.
+    name: probe ${{ matrix.sha }}
+    needs: [target, sample]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        sha: ${{ fromJSON(needs.sample.outputs.probes) }}
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      base: ${{ needs.target.outputs.base }}
+      ref: ${{ matrix.sha }}
+
+  culprit:
+    name: revert culprit
+    needs: [target, sample, probe]
+    if: ${{ !cancelled() && needs.sample.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE: ${{ needs.target.outputs.base }}
+      TIP: ${{ needs.target.outputs.tip }}
+      PROBES: ${{ needs.sample.outputs.probes }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - id: judge
+        run: |
+          gh run view "${GITHUB_RUN_ID}" --json jobs > "${RUNNER_TEMP}/jobs.json"
+          python3 scripts/verify-culprit.py judge \
+            --base "${BASE}" --probes "${PROBES}" --jobs "${RUNNER_TEMP}/jobs.json" \
+            | tee -a "${GITHUB_OUTPUT}"
+      - name: revert on main
+        if: ${{ steps.judge.outputs.verdict == 'revert' }}
+        env:
+          CULPRIT: ${{ steps.judge.outputs.culprit }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          subject="$(git log -1 --format=%s "${CULPRIT}")"
+          # Another push can land between fetch and push; retry on a fresh main.
+          for _ in 1 2 3; do
+            git fetch origin main
+            git checkout --detach origin/main
+            if ! git revert --no-commit "${CULPRIT}"; then
+              git revert --abort
+              gh issue create \
+                --title "verify: ${CULPRIT::12} broke main and does not revert cleanly" \
+                --body "First red commit: ${CULPRIT} (${subject}). Run: ${RUN_URL}"
+              exit 1
+            fi
+            git commit -m "revert: ${subject}" -m "This reverts commit ${CULPRIT}, the first commit that fails CI (${RUN_URL})."
+            if git push origin HEAD:refs/heads/main; then
+              gh workflow run verify.yml --ref main
+              exit 0
+            fi
+          done
+          echo "::error::could not push the revert after three attempts"
+          exit 1
+      - name: report range
+        if: ${{ steps.judge.outputs.verdict == 'range' }}
+        env:
+          AFTER: ${{ steps.judge.outputs.after }}
+          UPTO: ${{ steps.judge.outputs.upto }}
+        run: |
+          gh issue create \
+            --title "verify: main broke in ${AFTER::12}..${UPTO::12}" \
+            --body "$(printf 'CI fails at %s and passes at %s; the probes did not isolate one commit.\n\n%s\n\nRun: %s' \
+              "${UPTO}" "${AFTER}" "$(git log --oneline "${AFTER}..${UPTO}")" "${RUN_URL}")"
+      - name: report healed
+        if: ${{ steps.judge.outputs.verdict == 'healed' }}
+        run: |
+          gh issue create \
+            --title "verify: ${TIP::12} failed once and passed on re-run" \
+            --body "CI failed on ${TIP}, but the probe of the same commit did not. Likely a flaky test. Run: ${RUN_URL}"
