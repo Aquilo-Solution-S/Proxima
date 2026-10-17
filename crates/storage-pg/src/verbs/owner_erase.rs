@@ -1318,6 +1318,24 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
+    // A series' publication position goes once nothing of the series is
+    // left: no hot row and no cooled stub. Forget never deletes it; this is
+    // its only delete.
+    sqlx::query(
+        "DELETE FROM proxima_core.publication_counter c
+          WHERE c.owner_id = $1
+            AND c.handle IN (SELECT handle FROM selected_memory_handles)
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.memory m WHERE m.handle = c.handle
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.cooled k WHERE k.handle = c.handle
+            )",
+    )
+    .bind(owner_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     sqlx::query(
         "UPDATE proxima_core.goal_head h
             SET t = r.t

@@ -2102,6 +2102,23 @@ RETURNS timestamptz LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
     ) AS millis) AS timestamp_bits
 $$;
 
+-- The handle is frozen and the position never goes back.
+CREATE OR REPLACE FUNCTION proxima_core.publication_counter_forward_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.handle IS DISTINCT FROM OLD.handle THEN
+        RAISE EXCEPTION 'publication_counter.handle is frozen'
+            USING ERRCODE = '25006';
+    END IF;
+    IF NEW.sequence < OLD.sequence THEN
+        RAISE EXCEPTION 'publication_counter.sequence never decreases'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 -- Aggregates
 
 CREATE OR REPLACE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (

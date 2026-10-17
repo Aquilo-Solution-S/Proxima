@@ -661,10 +661,15 @@ pub async fn dump_database(
         // transfer moves the record they hang off, which the outbox section
         // compares, and `publication_outbox_pg_tests` pins the lanes. 0029's
         // other-store origins are keyed on a memory `t` with no owner
-        // column, so they follow the memory a transfer moves.
+        // column, so they follow the memory a transfer moves. 0032's
+        // publication counter moves with the series head;
+        // `publication_outbox_pg_tests` pins it.
         if matches!(
             table.as_str(),
-            "publication_consumer" | "publication_delivery" | "memory_external_origin"
+            "publication_consumer"
+                | "publication_delivery"
+                | "memory_external_origin"
+                | "publication_counter"
         ) {
             continue;
         }

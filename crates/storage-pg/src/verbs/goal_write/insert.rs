@@ -65,6 +65,27 @@ pub(super) async fn insert_or_replay_goal(
     }
 }
 
+/// Serialize goal writes that carry the same owner and request id for the
+/// rest of the transaction. The `proxima-goal-request:` prefix keeps the key
+/// apart from the owner fence, series handles and lifecycle keys; the key is
+/// hashed in the server and neither id is logged.
+async fn lock_goal_request(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &proxima_core::OwnerId,
+    request_id: &str,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+                    hashtextextended('proxima-goal-request:' || $1::text || ':' || $2, 0))",
+    )
+    .bind(owner.into_inner())
+    .bind(request_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(crate::error::map_err)?;
+    Ok(())
+}
+
 pub(super) async fn prepare_goal_insert<'a>(
     tx: &mut Transaction<'_, Postgres>,
     draft: &GoalDraft,
@@ -76,6 +97,10 @@ pub(super) async fn prepare_goal_insert<'a>(
     let store_number = columns.store_number;
     let owner = draft.owner();
 
+    // Two identical commands serialize on their request before replay
+    // detection, so the second one sees the first one's goal and replays
+    // instead of racing it into the `(owner_id, request_id)` unique index.
+    lock_goal_request(tx, &owner, &draft.request_id).await?;
     // Replay detection precedes prior-head lookups: a replay must
     // not become dependent on a target that a later erase removed.
     if let Some(existing) = load_goal_by_request_id(tx, &owner, &draft.request_id).await? {

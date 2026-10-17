@@ -44,6 +44,8 @@ pub mod definitions;
 mod delegated_authority;
 mod error;
 mod owner_scope;
+#[cfg(test)]
+mod pause_point;
 #[doc(hidden)]
 pub use error::map_err;
 pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};

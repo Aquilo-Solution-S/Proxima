@@ -6130,3 +6130,117 @@ async fn cool_then_hydrate(
     .fetch_all(pool)
     .await?)
 }
+
+/// Wait until some backend of `pool`'s database is blocked on a row lock
+/// while running a statement that starts with `prefix`. A pause point that
+/// observes the server's own lock graph, so no timing is involved.
+async fn await_backend_blocked_on(pool: &sqlx::PgPool, prefix: &str) -> Result<(), sqlx::Error> {
+    loop {
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                 WHERE datname = current_database()
+                   AND wait_event_type = 'Lock'
+                   AND starts_with(ltrim(query), $1))",
+        )
+        .bind(prefix)
+        .fetch_one(pool)
+        .await?;
+        if blocked {
+            return Ok(());
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A drainer that holds an `embedding_jobs` claim while forget runs must not
+/// leave an `embedding_heads` row behind. Forget has to take the job row
+/// before it deletes heads, the same order owner erase uses; otherwise the
+/// drainer writes a head after forget's head delete and before its job
+/// delete, and that head outlives the forgotten `t`.
+#[tokio::test]
+async fn forget_overlapping_drain_leaves_no_orphan_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone())
+            .await?
+            .with_cold(Arc::new(MemoryColdStore::default()));
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
+            .bind(t)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+             VALUES ($1, 'test-embed', 1024, $2)",
+        )
+        .bind(t)
+        .bind(owner.into_inner())
+        .execute(&pool)
+        .await?;
+
+        // The drainer claims the job and holds it.
+        let mut drain = pool.begin().await?;
+        sqlx::query(
+            "SELECT job_id FROM proxima_core.embedding_jobs WHERE entity_id = $1 FOR UPDATE",
+        )
+        .bind(t)
+        .fetch_one(drain.as_mut())
+        .await?;
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let forget = {
+            let pg = pg.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await
+            })
+        };
+        barrier.wait().await;
+        // Forget is now parked behind the drainer's job lock.
+        await_backend_blocked_on(&pool, "DELETE FROM proxima_core.embedding_jobs").await?;
+
+        // The drainer finishes its write: one chunk and the head.
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, 0, $3, $2)",
+        )
+        .bind(t)
+        .bind(owner.into_inner())
+        .bind(unit_vector())
+        .execute(drain.as_mut())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
+        )
+        .bind(t)
+        .bind(owner.into_inner())
+        .execute(drain.as_mut())
+        .await?;
+        drain.commit().await?;
+        forget.await??;
+
+        let heads: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.embedding_heads WHERE entity_id = $1",
+        )
+        .bind(t)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(heads, 0, "no embedding head outlives the forgotten t");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forget overlapping drain failed");
+}

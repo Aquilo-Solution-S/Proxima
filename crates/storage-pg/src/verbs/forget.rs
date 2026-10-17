@@ -3802,7 +3802,8 @@ mod tests {
     }
 
     /// The declared walk reaches exactly the four derived-row tables and
-    /// nothing else.
+    /// nothing else, with the embedding queue first (see
+    /// `generated_forget_legs`).
     ///
     /// The key column is pinned too: three of the four are keyed on
     /// `entity_id`, not `t`. A walk that assumed `t` because the sidecar
@@ -3814,8 +3815,8 @@ mod tests {
         assert_eq!(
             shipped().generated_forget_legs(),
             vec![
-                ("proxima_core.embedding_heads", "entity_id"),
                 ("proxima_core.embedding_jobs", "entity_id"),
+                ("proxima_core.embedding_heads", "entity_id"),
                 ("proxima_core.embeddings", "entity_id"),
                 ("proxima_core.sketch", "t"),
             ]

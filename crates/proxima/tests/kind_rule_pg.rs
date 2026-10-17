@@ -1041,6 +1041,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("owners", Rows::NoKind),
     ("projection", Rows::Memory("memory_id")),
     ("publication_consumer", Rows::NoKind),
+    ("publication_counter", Rows::NoKind),
     ("publication_delivery", Rows::NoKind),
     ("publication_origin", Rows::NoKind),
     ("publication_outbox", Rows::NoKind),

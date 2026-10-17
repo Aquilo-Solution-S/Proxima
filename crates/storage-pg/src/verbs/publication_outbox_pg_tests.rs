@@ -2424,15 +2424,175 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
         vec![1, 2]
     );
 
-    // The position never goes back.
-    let refused = sqlx::query(
-        "UPDATE proxima_core.memory_head SET publication_sequence = 0 WHERE handle = $1",
-    )
-    .bind(series)
-    .execute(&pool)
-    .await
-    .expect_err("the trigger refuses a decrease");
+    // The position never goes back. It lives in `publication_counter`
+    // since 0032, so that a forget that deletes the head cannot reset it.
+    let refused =
+        sqlx::query("UPDATE proxima_core.publication_counter SET sequence = 0 WHERE handle = $1")
+            .bind(series)
+            .execute(&pool)
+            .await
+            .expect_err("the trigger refuses a decrease");
     assert!(refused.to_string().contains("never decreases"), "{refused}");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// Forgetting every hot row of a series deletes its head; hydrate recreates
+/// it. The next event must still take a position above every position the
+/// series already published, or a consumer that dedupes by position drops it.
+#[tokio::test]
+async fn forget_hydrate_write_publishes_above_prior_sequences() {
+    let (pg, db) = fresh_pg("pub_forget_counter").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+
+    let write_to = |series: Option<Uuid>, note: &'static str| {
+        let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
+        command.handle = series;
+        witness(&owner, command).with_publication_for_tests(plan_for(
+            owner,
+            &probe(note),
+            PublicationLimits::default(),
+        ))
+    };
+    let first = pg
+        .ingest_fact_with_typed_sidecar(&write_to(None, "v1"), &[])
+        .await
+        .expect("first write");
+    let series = first.handle;
+    let second = pg
+        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v2"), &[])
+        .await
+        .expect("second write");
+
+    for outcome in [&second, &first] {
+        MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
+            .await
+            .expect("forget");
+    }
+    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[second.memory_id], &[])
+        .await
+        .expect("hydrate");
+    assert_eq!(
+        hydrated.outcomes[0].status,
+        proxima_core::MemoryHydrationStatus::Hydrated
+    );
+    let third = pg
+        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v3"), &[])
+        .await
+        .expect("write after hydrate");
+    assert_eq!(third.handle, series);
+
+    let sequence = |envelope: serde_json::Value| -> u64 {
+        envelope["sequence"]
+            .as_str()
+            .expect("sequence is a string")
+            .parse()
+            .expect("sequence is numeric")
+    };
+    let prior = sequence(envelope_of(&pool, first.memory_id.into_inner()).await).max(sequence(
+        envelope_of(&pool, second.memory_id.into_inner()).await,
+    ));
+    let next = sequence(envelope_of(&pool, third.memory_id.into_inner()).await);
+    assert!(
+        next > prior,
+        "the write after forget and hydrate publishes above every earlier position \
+         ({next} <= {prior})"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// Two writes to one series overlap: A mints its `t`, then B runs to commit,
+/// then A finishes. Whatever order they serialize in, the series head must
+/// be the write that took the highest publication position, so a reader of
+/// the head and a consumer ordering by position agree on the latest write.
+#[tokio::test]
+async fn overlapping_series_writes_head_has_highest_sequence() {
+    let (pg, db) = fresh_pg("pub_overlap_head").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+
+    let write_to = move |series: Option<Uuid>, note: &'static str| {
+        let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
+        command.handle = series;
+        witness(&owner, command).with_publication_for_tests(plan_for(
+            owner,
+            &probe(note),
+            PublicationLimits::default(),
+        ))
+    };
+    let series = pg
+        .ingest_fact_with_typed_sidecar(&write_to(None, "v0"), &[])
+        .await
+        .expect("series exists")
+        .handle;
+
+    let gate = crate::pause_point::arm(crate::pause_point::AFTER_SERIES_MINT, series);
+    let a = {
+        let pg = pg.clone();
+        tokio::spawn(async move {
+            pg.ingest_fact_with_typed_sidecar(&write_to(Some(series), "a"), &[])
+                .await
+        })
+    };
+    gate.reached().await;
+    let b = {
+        let pg = pg.clone();
+        tokio::spawn(async move {
+            pg.ingest_fact_with_typed_sidecar(&write_to(Some(series), "b"), &[])
+                .await
+        })
+    };
+    // B either commits while A is parked, or queues behind a lock A holds.
+    loop {
+        if b.is_finished() {
+            break;
+        }
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                             WHERE datname = current_database() AND wait_event_type = 'Lock')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("lock graph");
+        if blocked {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    gate.resume().await;
+    let a = a.await.expect("join").expect("write a");
+    let b = b.await.expect("join").expect("write b");
+
+    let sequence = |envelope: serde_json::Value| -> u64 {
+        envelope["sequence"]
+            .as_str()
+            .expect("sequence is a string")
+            .parse()
+            .expect("sequence is numeric")
+    };
+    let seq_a = sequence(envelope_of(&pool, a.memory_id.into_inner()).await);
+    let seq_b = sequence(envelope_of(&pool, b.memory_id.into_inner()).await);
+    let latest = if seq_a > seq_b {
+        a.memory_id
+    } else {
+        b.memory_id
+    };
+    let head: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+        .bind(series)
+        .fetch_one(&pool)
+        .await
+        .expect("head");
+    assert!(
+        head == latest.into_inner(),
+        "the head is the write with the highest publication position"
+    );
 
     drop(pg);
     let _ = drop_db(&db).await;

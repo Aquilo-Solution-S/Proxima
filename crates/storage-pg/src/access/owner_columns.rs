@@ -1962,6 +1962,19 @@ async fn transfer_memory_handle(
     {
         return Ok(false);
     }
+    // The series' publication position follows it, so the destination's
+    // next capture continues above every position already handed out.
+    sqlx::query(
+        "UPDATE proxima_core.publication_counter
+            SET owner_id = $3
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .bind(to_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     // The vectors moved with the series, but they are the destination's
     // only in spaces its route names: the rest go, and the head is queued
     // for each route space it has no vector in.
@@ -2768,8 +2781,12 @@ mod tests {
                     surface.table
                 ),
                 TransferLeg::Bespoke => assert!(
-                    ["proxima_core.memory_head", "proxima_core.blob_uploads"]
-                        .contains(&surface.table),
+                    [
+                        "proxima_core.memory_head",
+                        "proxima_core.blob_uploads",
+                        "proxima_core.publication_counter",
+                    ]
+                    .contains(&surface.table),
                     "{} claims a bespoke transfer leg this file does not write",
                     surface.table
                 ),

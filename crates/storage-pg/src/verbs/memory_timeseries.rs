@@ -325,6 +325,14 @@ async fn prepare_memory_admission_at(
     // revalidation before deleting anything.
 
     let (handle, fresh_handle) = admission_handle(tx, admission, options.identity).await?;
+    // Read the head BEFORE minting `t`. Minted first, a write could take its
+    // `t`, lose the series to a later writer that commits, and then read
+    // that writer's head as its own expected head: the head check under the
+    // lock would pass, `GREATEST` would keep the other writer's later `t`,
+    // and this write would still take the higher publication position.
+    // Read first, any writer that commits after this read moves the head
+    // away from `expected_head_t`, and `validate_prepared_memory_head`
+    // sends this write back to retry with a fresh `t`.
     let expected_head_t: Option<Uuid> =
         sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
             .bind(handle)
@@ -340,6 +348,8 @@ async fn prepare_memory_admission_at(
     } else {
         proxima_core::new_memory_uuid(admission.store_number)
     };
+    #[cfg(test)]
+    crate::pause_point::reach(crate::pause_point::AFTER_SERIES_MINT, handle).await;
     let occurred_at = (kind == "fact").then(|| {
         draft
             .occurred_at

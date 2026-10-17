@@ -390,15 +390,25 @@ impl OwnerSurfaces {
     /// What is left is the derived rows nothing stamps — the embedding
     /// triple and the sketch — which were four hand-written statements over
     /// four `proxima_core.*` literals.
+    ///
+    /// One exception to table order: `embedding_jobs` comes first, the same
+    /// order owner erase deletes in. A drainer writes an embedding head only
+    /// while it holds its job row, so taking the job row before deleting
+    /// heads makes the forget wait for that drainer instead of deleting the
+    /// heads underneath it and leaving the head it then writes behind.
     #[must_use]
     pub fn generated_forget_legs(&self) -> Vec<(&'static str, &'static str)> {
-        self.surfaces
+        let mut legs: Vec<(&'static str, &'static str)> = self
+            .surfaces
             .iter()
             .filter_map(|surface| match self.forget_leg(surface.table) {
                 ForgetLeg::Deleted { key_column } => Some((surface.table, key_column)),
                 _ => None,
             })
-            .collect()
+            .collect();
+        // Stable: every other leg keeps its table order.
+        legs.sort_by_key(|(table, _)| *table != EMBEDDING_JOBS_TABLE);
+        legs
     }
 
     /// Every surface a transfer moves with a GENERATED statement, in table
@@ -438,6 +448,10 @@ impl OwnerSurfaces {
         counters
     }
 }
+
+/// The embedding queue, which [`OwnerSurfaces::generated_forget_legs`] orders
+/// before the rows a queue claim authorizes.
+const EMBEDDING_JOBS_TABLE: &str = "proxima_core.embedding_jobs";
 
 /// The entity an owner erase names.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -899,5 +913,27 @@ impl ExportAuthorization {
             AuthPath::HostBearer,
             time::OffsetDateTime::now_utc(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod generated_forget_order_tests {
+    use super::OwnerSurfaces;
+
+    /// The forget takes the embedding job row before it deletes any head
+    /// or chunk, so a drainer holding the job finishes first.
+    #[test]
+    fn generated_forget_legs_deletes_jobs_before_heads() {
+        let surfaces =
+            OwnerSurfaces::for_registry(&crate::FlavorRegistry::new().freeze_or_panic_for_tests());
+        let legs = surfaces.generated_forget_legs();
+        let index = |table: &str| {
+            legs.iter()
+                .position(|(name, _)| *name == table)
+                .unwrap_or_else(|| panic!("{table} is a generated forget leg"))
+        };
+        let jobs = index("proxima_core.embedding_jobs");
+        assert!(jobs < index("proxima_core.embedding_heads"));
+        assert!(jobs < index("proxima_core.embeddings"));
     }
 }

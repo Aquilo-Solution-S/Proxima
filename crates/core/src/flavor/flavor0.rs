@@ -549,6 +549,29 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.publication_counter",
+        key: KeyShape::Custom(&["handle"]),
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::Follow,
+        // Keyed on the series handle with no FK to the head: forget deletes
+        // the head when a series cools completely, and the position must
+        // survive that. Owner erase deletes it with the series it counts,
+        // through its bespoke leg.
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "a delivery position, not owner data; the exported events carry it",
+        },
+        forget: ForgetRule::Keep {
+            why: "the position must outlive a forget so a hydrated series never reuses \
+                  one; only owner erase removes it",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "a delivery position kept beside the series, not a memory",
+        },
+        completeness: None,
+    },
+    Surface {
         table: "proxima_core.cooled",
         key: KeyShape::MemoryT { column: "t" },
         owner_column: Some("owner_id"),
@@ -1211,12 +1234,14 @@ const RESOURCES: &[ResourceContract] = &[
 /// fact about `proxima-storage-pg`, and the place to read it is
 /// `proxima-storage-pg`.
 ///
-/// Seventeen entries, and every one of them earns the exemption by needing
+/// Sixteen entries, and every one of them earns the exemption by needing
 /// something a generated `DELETE ... USING <selection set>` cannot express:
 /// a refcount anti-join before a shared object may go (`blob`,
 /// `blob_uploads`, `content`), a cold-purge row enqueued in the same
 /// transaction as the delete (`cooled`), a head table
-/// resynchronised rather than emptied (`memory_head`, `goal_head`), an
+/// resynchronised rather than emptied (`memory_head`, `goal_head`), a
+/// series position deleted only once its series is gone
+/// (`publication_counter`), an
 /// ordering the embedding tables have to be taken in, an immutable
 /// publication-origin inverse selected by physical Fact ids OR original
 /// owner/source, or the spine itself (`memory`, `goal`) which the selection
@@ -1242,6 +1267,7 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
     "proxima_core.goal_head",
     "proxima_core.memory",
     "proxima_core.memory_head",
+    "proxima_core.publication_counter",
     "proxima_core.publication_origin",
     "proxima_core.sketch",
     "proxima_core.source_cursors",
@@ -1250,7 +1276,7 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
 /// The kernel surfaces a transfer moves with a hand-written statement
 /// instead of a generated one.
 ///
-/// Four entries, each earning the exemption for a reason a generated
+/// Five entries, each earning the exemption for a reason a generated
 /// `UPDATE <table> SET owner_id = $2 WHERE <key> = ANY($1)` cannot express:
 ///
 /// - `memory_head` is a compare-and-set, not a move. Its statement carries
@@ -1265,6 +1291,8 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
 ///   destination-owned row, `remaps` repoints the referring columns); what
 ///   sits between those halves — a refcount probe, an OCI-style object
 ///   mount, an orphan GC — does not.
+/// - `publication_counter` moves with the head, in the same statement
+///   sequence that decides the transfer, because it is keyed on `handle`.
 ///
 /// `memory_head` and `blob_uploads` are the two that would otherwise be
 /// SILENTLY wrong rather than absent: both are keyed on a single column
@@ -1277,6 +1305,7 @@ const BESPOKE_TRANSFER_LEGS: &[&str] = &[
     "proxima_core.blob_uploads",
     "proxima_core.content",
     "proxima_core.memory_head",
+    "proxima_core.publication_counter",
 ];
 
 /// Core's contract. Thirteen schema registrations over twelve distinct schema

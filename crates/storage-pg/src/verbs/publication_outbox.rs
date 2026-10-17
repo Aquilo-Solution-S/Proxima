@@ -38,24 +38,31 @@ use uuid::Uuid;
 use crate::PgStorage;
 use crate::error::{internal, map_err};
 
-/// The next position in the series `handle`: its publication sequence,
+/// The next position in the series `handle`: its publication counter,
 /// incremented. The caller holds the series lock (every Fact admission takes
 /// it before materializing), so two writes to one series never read the same
-/// value, and the column's trigger refuses to let it go back.
+/// value, and the table's trigger refuses to let it go back.
+///
+/// The counter is its own row rather than a column of `memory_head`, because
+/// forget deletes the head when a series has no hot row left and hydrate
+/// recreates it from scratch. A position kept on the head restarted at 1
+/// after that and reused positions consumers had already seen (#476).
 ///
 /// # Errors
 ///
-/// Storage errors from the update; a missing head is a constraint violation,
+/// Storage errors from the upsert; a missing head is a constraint violation,
 /// since the admission that calls this just wrote it.
 pub(crate) async fn next_series_position(
     tx: &mut Transaction<'_, Postgres>,
     handle: Uuid,
 ) -> Result<SubjectPosition, StorageError> {
     let sequence: i64 = sqlx::query_scalar(
-        "UPDATE proxima_core.memory_head
-            SET publication_sequence = publication_sequence + 1
-          WHERE handle = $1
-      RETURNING publication_sequence",
+        "INSERT INTO proxima_core.publication_counter AS c (handle, owner_id, sequence)
+         SELECT h.handle, h.owner_id, 1
+           FROM proxima_core.memory_head h
+          WHERE h.handle = $1
+         ON CONFLICT (handle) DO UPDATE SET sequence = c.sequence + 1
+      RETURNING c.sequence",
     )
     .bind(handle)
     .fetch_optional(tx.as_mut())
@@ -69,7 +76,9 @@ pub(crate) async fn next_series_position(
     let sequence = u64::try_from(sequence)
         .ok()
         .and_then(std::num::NonZeroU64::new)
-        .ok_or_else(|| internal("publication_sequence is not positive after an increment"))?;
+        .ok_or_else(|| {
+            internal("publication_counter.sequence is not positive after an increment")
+        })?;
     Ok(SubjectPosition::new(handle, sequence))
 }
 

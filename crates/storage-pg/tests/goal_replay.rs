@@ -1069,3 +1069,83 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
     let _ = drop_db(&db_name).await;
     result.expect("missing Goal replay declaration must fail closed");
 }
+
+/// Wait until `n` backends of this database are parked on a lock. The pause
+/// point reads the server's lock graph, so the test involves no timing.
+async fn await_blocked_backends(pool: &sqlx::PgPool, n: i64) -> Result<(), sqlx::Error> {
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if blocked >= n {
+            return Ok(());
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Two identical create commands racing past replay detection must both
+/// answer with the same goal; the second is a replay, not a
+/// `ConstraintViolation` from the `(owner_id, request_id)` unique index.
+///
+/// The race is pinned by holding the owner's admission fence exclusively,
+/// which every goal write takes right after its replay check. Both writers
+/// are then parked behind it before either can insert.
+#[tokio::test]
+async fn concurrent_identical_goal_writes_replay() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let assignment = ingest_grounded_perspective(&pg, &permit).await?.memory_id;
+        let pool = pg.pool_for_tests().clone();
+
+        let mut fence = pool.begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('proxima-owner-fence:' || $1::text, 0))",
+        )
+        .bind(owner.into_inner())
+        .execute(fence.as_mut())
+        .await?;
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let writer = |pg: PgStorage, barrier: Arc<tokio::sync::Barrier>| {
+            tokio::spawn(async move {
+                let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+                let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+                let req = CreateGoalAtomicRequest {
+                    draft: active_draft(owner, assignment, "race-create", "race", Vec::new())
+                        .expect("draft"),
+                    context: context(&registry),
+                    write_act_t: None,
+                };
+                barrier.wait().await;
+                pg.create_goal_atomic(&req, &permit).await
+            })
+        };
+        let a = writer(pg.clone(), barrier.clone());
+        let b = writer(pg.clone(), barrier.clone());
+        barrier.wait().await;
+        await_blocked_backends(&pool, 2).await?;
+        fence.commit().await?;
+
+        let a = a.await?;
+        let b = b.await?;
+        let (a, b) = match (a, b) {
+            (Ok(a), Ok(b)) => (a, b),
+            (a, b) => panic!("both identical writes must succeed: {a:?} / {b:?}"),
+        };
+        assert_eq!(a.goal_id, b.goal_id, "both writers answer with one goal");
+        assert!(
+            a.idempotent_replay ^ b.idempotent_replay,
+            "exactly one writer is flagged replay"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent identical goal writes scenario failed");
+}

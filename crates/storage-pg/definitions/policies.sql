@@ -274,6 +274,9 @@ SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'pr
 
 ALTER POLICY proxima_owner_read ON proxima_core.publication_consumer USING (((current_setting('app.proxima_scope'::text, true) = 'owner'::text) AND (cardinality(COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[])) > 0)));
 
+-- publication_counter
+SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxima_core', 'publication_counter', 'owner_id', 'owner_id');
+
 -- publication_delivery
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxima_core', 'publication_delivery', 'fk_parent', NULL);
 

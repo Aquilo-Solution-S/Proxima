@@ -669,6 +669,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     // memory, keyed on its `t` and deleted with it by a named erase leg.
     // `other_stores` tests in core_mcp_pg pin the rows.
     "memory_external_origin",
+    // Added after the baseline by 0032: a series' publication position,
+    // deleted by owner erase once nothing of its series is left.
+    // `publication_outbox_pg_tests` pins it.
+    "publication_counter",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;
