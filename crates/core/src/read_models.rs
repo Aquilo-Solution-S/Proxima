@@ -55,7 +55,12 @@ pub struct MemorySnapshot {
     /// When the observation occurred (`memory.occurred_at`): `Some` for
     /// every Fact, `None` for an Abstraction or Perspective.
     pub occurred_at: Option<time::OffsetDateTime>,
+    /// The display body, derived by [`MemorySchemaSpec::display_body`]: the
+    /// same value a search hit reports as `body`.
     pub text: Option<String>,
+    /// The display tags, derived by [`MemorySchemaSpec::display_tags`]: the
+    /// same value a search hit reports as `tags`.
+    pub tags: Vec<String>,
     pub payload: Option<SidecarPayload>,
 }
 
@@ -210,6 +215,75 @@ mod tests {
                 assert_eq!(value, expected, "{key} after counting a {kind:?}");
             }
         }
+    }
+
+    /// A payload whose filterable tags live in `labels`, next to an
+    /// unrelated `tags` field, and whose body field is `claim`.
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct LabelledFact {
+        claim: String,
+        body: String,
+        labels: Vec<String>,
+        tags: Vec<String>,
+    }
+
+    impl crate::FactPayload for LabelledFact {
+        const SCHEMA_ID: &'static str = "test/labelled-fact";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            let mut key = crate::PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+            key.field_str("claim", &self.claim);
+            key.finish()
+        }
+
+        fn render(&self) -> String {
+            self.claim.clone()
+        }
+    }
+
+    fn labelled() -> crate::SidecarPayload {
+        crate::SidecarPayload::fact(LabelledFact {
+            claim: "the claim".into(),
+            body: "legacy body".into(),
+            labels: vec!["x".into()],
+            tags: vec!["not-filterable".into()],
+        })
+    }
+
+    #[test]
+    fn display_reads_the_declared_body_and_tag_fields() {
+        let declared = spec(EntityKind::Fact, "test/labelled-fact", 1)
+            .with_display_fields(Some("claim".into()), Some("labels".into()));
+        let payload = labelled();
+
+        assert_eq!(declared.display_tags(Some(&payload)), vec!["x".to_owned()]);
+        assert_eq!(
+            declared.display_body(Some(&payload), Some("sketch")),
+            Some("the claim".to_owned())
+        );
+    }
+
+    #[test]
+    fn display_without_declared_fields_keeps_the_legacy_keys() {
+        let undeclared = spec(EntityKind::Fact, "test/labelled-fact", 1);
+        let payload = labelled();
+
+        assert_eq!(
+            undeclared.display_tags(Some(&payload)),
+            vec!["not-filterable".to_owned()],
+            "no tag_column: the payload `tags` key is kept, not dropped"
+        );
+        assert_eq!(
+            undeclared.display_body(Some(&payload), Some("sketch")),
+            Some("legacy body".to_owned())
+        );
+        assert_eq!(
+            undeclared.display_body(None, Some("sketch")),
+            Some("sketch".to_owned()),
+            "no payload text: the read path's own text"
+        );
+        assert!(undeclared.display_tags(None).is_empty());
     }
 
     fn spec(kind: EntityKind, id: &str, version: u32) -> MemorySchemaSpec {

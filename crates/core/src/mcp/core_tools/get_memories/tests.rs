@@ -145,6 +145,7 @@ fn fixture() -> Fixture {
             },
             occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
             text: Some("local body".into()),
+            tags: Vec::new(),
             payload: None,
         },
         requested: Mutex::new(Vec::new()),

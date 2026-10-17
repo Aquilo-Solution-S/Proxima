@@ -353,33 +353,6 @@ impl SidecarPayload {
     pub fn to_protocol_json(&self) -> Result<serde_json::Value, String> {
         (self.protocol_json)(self.value.as_ref())
     }
-
-    /// Tags declared on the typed payload, if it has a `tags` array.
-    #[must_use]
-    pub fn graph_tags(&self) -> Vec<String> {
-        self.to_protocol_json()
-            .ok()
-            .and_then(|value| {
-                value.get("tags")?.as_array().map(|tags| {
-                    tags.iter()
-                        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
-    }
-
-    /// Body/text declared on the typed payload (`body`, else `text`).
-    #[must_use]
-    pub fn graph_body(&self) -> Option<String> {
-        self.to_protocol_json().ok().and_then(|value| {
-            value
-                .get("body")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| value.get("text").and_then(serde_json::Value::as_str))
-                .map(ToOwned::to_owned)
-        })
-    }
 }
 
 fn encode_protocol_json<T>(value: &dyn Any) -> Result<serde_json::Value, String>

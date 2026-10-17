@@ -152,15 +152,10 @@ pub(super) fn project_memory_snapshot(
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
     let title =
         payload_string(&payload, "title").or_else(|| payload_string(&payload, "conversation_id"));
-    let body = snapshot
-        .payload
-        .as_ref()
-        .and_then(crate::SidecarPayload::graph_body)
-        .or_else(|| snapshot.text.clone());
-    let tags = snapshot
-        .payload
-        .as_ref()
-        .map_or_else(Vec::new, crate::SidecarPayload::graph_tags);
+    // Storage derived both through the schema's display rule, the one a
+    // search hit reports through.
+    let body = snapshot.text.clone();
+    let tags = snapshot.tags;
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
@@ -231,6 +226,7 @@ mod tests {
                     writer,
                     occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
                     text: Some("stored note".into()),
+                    tags: Vec::new(),
                     payload: None,
                 },
                 None,

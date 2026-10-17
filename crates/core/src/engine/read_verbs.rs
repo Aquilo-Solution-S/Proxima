@@ -621,6 +621,28 @@ mod tests {
         Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
+    /// #479 item 3: every core memory schema displays the field its search
+    /// declaration indexes as its body, and its declared `tag_column` as its
+    /// tags.
+    #[test]
+    fn core_schemas_display_their_declared_search_fields() {
+        let specs = engine().memory_schema_specs();
+        let fields = |id: &str| {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.schema_id.as_str() == id)
+                .unwrap_or_else(|| panic!("{id} is a registered memory schema"));
+            (spec.body_field.as_deref(), spec.tag_field.as_deref())
+        };
+        assert_eq!(fields("core/agent-note-v1"), (Some("body"), Some("tags")));
+        assert_eq!(fields("core/utterance-v1"), (Some("text"), None));
+        assert_eq!(fields("core/interpretation-v1"), (Some("claim"), None));
+        assert_eq!(
+            fields("core/agent-derivation-v1"),
+            (Some("body"), Some("tags"))
+        );
+    }
+
     fn owner() -> OwnerId {
         OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
     }

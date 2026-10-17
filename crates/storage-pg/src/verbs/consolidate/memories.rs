@@ -178,19 +178,22 @@ pub async fn load_memory_graph_payloads_on_connection(
             )));
         }
     }
-    Ok(identities
+    // Body and tags follow the schema's display rule, the same one by-id
+    // reads use, so a search hit and a read of the same memory agree.
+    identities
         .iter()
         .map(|identity| {
+            let spec = resolve_memory_schema(schemas, identity.kind, &identity.schema_id)?;
             let payload = payloads.get(&identity.memory_id);
-            MemoryGraphPayloadRow {
+            Ok(MemoryGraphPayloadRow {
                 memory_id: identity.memory_id,
-                tags: payload.map(SidecarPayload::graph_tags),
+                tags: payload.map(|payload| spec.display_tags(Some(payload))),
                 body: include_body
-                    .then(|| payload.and_then(SidecarPayload::graph_body))
+                    .then(|| spec.display_body(payload, None))
                     .flatten(),
-            }
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
@@ -285,7 +288,8 @@ async fn snapshots_from_rows_on_connection(
             owner: row.owner,
             writer: row.writer,
             occurred_at: row.occurred_at,
-            text: payload.as_ref().and_then(SidecarPayload::graph_body),
+            text: spec.display_body(payload.as_ref(), None),
+            tags: spec.display_tags(payload.as_ref()),
             payload,
         });
     }
