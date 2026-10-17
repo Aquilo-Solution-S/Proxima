@@ -235,6 +235,22 @@ impl IdempotencyKey {
         }
     }
 
+    /// [`Self::new`] under a tighter bound `max` (at most
+    /// [`Self::MAX_CHARS`]), for a key that later keys are derived from.
+    /// The reason has the same wording as [`Self::new`]'s, plus `hint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejection reason when the trimmed key is empty or longer
+    /// than `max`.
+    pub fn new_bounded(raw: impl Into<String>, max: usize, hint: &str) -> Result<Self, String> {
+        let raw = raw.into();
+        match check_trimmed_len(&raw, max.min(Self::MAX_CHARS)) {
+            Ok(trimmed) => Ok(Self(trimmed.to_string())),
+            Err(violation) => Err(format!("{} {hint}", violation.reason("idempotency_key"))),
+        }
+    }
+
     #[must_use]
     pub fn generated(prefix: &str) -> Self {
         Self(format!("{prefix}:{}", uuid::Uuid::now_v7()))

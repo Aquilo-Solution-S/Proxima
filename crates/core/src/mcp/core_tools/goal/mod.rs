@@ -22,6 +22,23 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const MAX_CHILD_GOALS: usize = 50;
+/// Prefix of every decompose child key, `"goal_decompose:{root}:{index}"`.
+const DECOMPOSE_CHILD_PREFIX: &str = "goal_decompose";
+/// The longest decompose root key whose every child key still fits
+/// [`IdempotencyKey::MAX_CHARS`]: the prefix, two separators and the widest
+/// child index come off the common bound (180 - (14 + 2 + 2) = 162).
+const DECOMPOSE_ROOT_KEY_MAX: usize = IdempotencyKey::MAX_CHARS
+    - (DECOMPOSE_CHILD_PREFIX.len() + 2 + decimal_digits(MAX_CHILD_GOALS - 1));
+
+/// How many decimal digits `n` prints with.
+const fn decimal_digits(mut n: usize) -> usize {
+    let mut digits = 1;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
 const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x3f, 0x61, 0xde, 0x85, 0x4e, 0x09, 0x45, 0x62, 0x97, 0xc4, 0x8a, 0x74, 0xaa, 0xf9, 0x4a, 0x2c,
 ]);
@@ -499,6 +516,15 @@ async fn goal_decompose(
     ctx: McpToolCtx,
     args: GoalDecomposeArgs,
 ) -> Result<GoalDecomposeOutput, McpToolError> {
+    // The root key is checked first, against the bound its child keys need,
+    // so an over-long key is a root-key error before anything is resolved
+    // or any child is built.
+    let root_key = IdempotencyKey::new_bounded(
+        args.idempotency_key,
+        DECOMPOSE_ROOT_KEY_MAX,
+        "(child keys append \":<index>\")",
+    )
+    .map_err(McpToolError::InvalidInput)?;
     if args.children.is_empty() {
         return Err(McpToolError::InvalidInput(
             "children must contain at least one child goal".into(),
@@ -513,15 +539,17 @@ async fn goal_decompose(
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
     let topology = GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
         .map_err(McpToolError::Protocol)?;
-    let root_key = IdempotencyKey::new(args.idempotency_key).map_err(McpToolError::InvalidInput)?;
     let mut children = Vec::with_capacity(args.children.len());
     for (index, child) in args.children.into_iter().enumerate() {
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
             evidence: resolve_operator_goal_evidence(&ctx, &child.evidence)?,
+            // Cannot fail: the root bound leaves room for every child key.
             request_id: root_key
-                .child("goal_decompose", index)
-                .map_err(McpToolError::InvalidInput)?,
+                .child(DECOMPOSE_CHILD_PREFIX, index)
+                .map_err(|reason| {
+                    McpToolError::Other(format!("decompose child key invariant: {reason}"))
+                })?,
         });
     }
     let engine = ctx.require_engine()?;
@@ -847,6 +875,102 @@ mod tests {
             prompts,
             vec!["goal_set", "goal_modify", "goal_decompose"],
             "direct MCP Goal actions must retain their operator provenance"
+        );
+    }
+
+    /// `children` valid children under a fresh parent, keyed by `root`;
+    /// child 0 gets an unresolvable evidence handle when `bad_first`.
+    fn decompose_args(
+        root: String,
+        children: usize,
+        bad_first: bool,
+        target: MemoryId,
+    ) -> GoalDecomposeArgs {
+        GoalDecomposeArgs {
+            parent_goal: uuid::Uuid::now_v7().to_string(),
+            children: (0..children)
+                .map(|index| ChildGoalInput {
+                    payload: valid_goal_payload_args(),
+                    evidence: vec![if bad_first && index == 0 {
+                        format!("F:{}", uuid::Uuid::now_v7())
+                    } else {
+                        uuid::Uuid::now_v7().to_string()
+                    }],
+                })
+                .collect(),
+            target_perspective: Some(target.into_inner().to_string()),
+            idempotency_key: root,
+        }
+    }
+
+    /// #479 item 5: a root key one char over the documented bound is refused
+    /// up front with a root-key error, before any child is built: not on a
+    /// child's evidence, not on a child key at index 10, and not silently
+    /// accepted when few children keep every child key short enough.
+    #[tokio::test]
+    async fn decompose_root_key_one_over_bound_is_refused_before_children() {
+        let (ctx, observed, target) = operator_recording_ctx();
+        for (children, bad_first) in [(50, true), (50, false), (1, true), (1, false)] {
+            let err = goal_decompose(
+                ctx.clone(),
+                decompose_args("k".repeat(163), children, bad_first, target),
+            )
+            .await
+            .expect_err("an over-long root key is refused");
+            assert!(
+                matches!(err, McpToolError::InvalidInput(ref message)
+                    if message.starts_with("idempotency_key must be at most 162 chars")),
+                "{children} children, bad first evidence {bad_first}: {err:?}"
+            );
+        }
+        assert!(
+            observed
+                .lock()
+                .expect("goal authorship recorder lock")
+                .is_empty(),
+            "no decompose reached the engine"
+        );
+    }
+
+    #[test]
+    fn decompose_root_bound_is_derived() {
+        assert_eq!(DECOMPOSE_ROOT_KEY_MAX, 162);
+        assert_eq!(decimal_digits(0), 1);
+        assert_eq!(decimal_digits(49), 2);
+        assert_eq!(decimal_digits(100), 3);
+        let schema = serde_json::to_value(schemars::schema_for!(GoalDecomposeArgs))
+            .expect("schema serializes");
+        let description = schema["properties"]["idempotency_key"]["description"]
+            .as_str()
+            .expect("the root key is described");
+        assert!(
+            description.contains(&format!("at most {DECOMPOSE_ROOT_KEY_MAX} chars")),
+            "the advertised bound is the enforced one: {description}"
+        );
+    }
+
+    /// The bound is exact: a 162-char root with the maximum number of
+    /// children builds every child key and reaches the engine.
+    #[tokio::test]
+    async fn decompose_root_key_at_bound_with_max_children_is_accepted() {
+        let (ctx, observed, target) = operator_recording_ctx();
+        let err = goal_decompose(
+            ctx,
+            decompose_args("k".repeat(162), MAX_CHILD_GOALS, false, target),
+        )
+        .await
+        .expect_err("recording storage rejects the test write after capture");
+        assert!(
+            matches!(err, McpToolError::Protocol(ref error) if error.code == crate::error::ErrorCode::Internal),
+            "{err:?}"
+        );
+        assert_eq!(
+            observed
+                .lock()
+                .expect("goal authorship recorder lock")
+                .len(),
+            1,
+            "all 50 child keys were built and the decompose reached storage"
         );
     }
 
