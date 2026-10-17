@@ -56,18 +56,10 @@ pub fn list_memory_spaces(ctx: &McpToolCtx) -> Vec<MemorySpaceOutput> {
     sorted_accessible_principals(ctx)
         .into_iter()
         .map(|owner| {
-            let current = owner == ctx.owner;
+            let ResolvedMemorySpace { key, label, .. } = space_for(ctx, owner);
             MemorySpaceOutput {
-                key: if current {
-                    MemorySpaceKey::Current.to_wire()
-                } else {
-                    MemorySpaceKey::owner(owner).to_wire()
-                },
-                label: if current {
-                    "Current owner".into()
-                } else {
-                    space_label(&owner)
-                },
+                key,
+                label,
                 access: MemorySpaceAccessOutput {
                     writable: ctx.authz.may_write(&owner, AccessKind::Fact),
                 },
@@ -143,29 +135,54 @@ pub fn resolve_space_owner(
             .can_access_owner(&default_owner)
             .then_some(default_owner),
     };
-    owner
-        .map(|owner| {
-            let current = owner == ctx.owner;
-            ResolvedMemorySpace {
-                key: if current {
-                    MemorySpaceKey::Current.to_wire()
-                } else {
-                    MemorySpaceKey::owner(owner).to_wire()
-                },
-                label: if current {
-                    "Current owner".into()
-                } else {
-                    space_label(&owner)
-                },
-                owner,
-            }
-        })
-        .ok_or_else(|| {
-            McpToolError::InvalidInput(raw.map_or_else(
-                || "current memory space is not accessible".to_string(),
-                |key| format!("unknown memory space: {key}"),
-            ))
-        })
+    owner.map(|owner| space_for(ctx, owner)).ok_or_else(|| {
+        McpToolError::InvalidInput(raw.map_or_else(
+            || "current memory space is not accessible".to_string(),
+            |key| format!("unknown memory space: {key}"),
+        ))
+    })
+}
+
+/// The one key builder: `current` for the session's own owner, otherwise
+/// the owner's bare id. `core_memory_spaces`, space resolution and the
+/// memory reads all report keys through here, so they cannot disagree.
+fn space_for(ctx: &McpToolCtx, owner: OwnerId) -> ResolvedMemorySpace {
+    let current = owner == ctx.owner;
+    ResolvedMemorySpace {
+        key: if current {
+            MemorySpaceKey::Current.to_wire()
+        } else {
+            MemorySpaceKey::owner(owner).to_wire()
+        },
+        label: if current {
+            "Current owner".into()
+        } else {
+            space_label(&owner)
+        },
+        owner,
+    }
+}
+
+/// The space key a memory read reports for a memory whose home owner is
+/// `owner`: `current` iff it is the session's owner, otherwise the same key
+/// `core_memory_spaces` advertises for that owner.
+///
+/// A memory has exactly one home owner at read time (storage fails closed
+/// on a second candidate), so the label is total and deterministic.
+///
+/// # Errors
+///
+/// Returns an internal error when `owner` is not one of the caller's
+/// accessible owners: an engine read can only return readable memories, so
+/// this is an invariant failure, never a reason to report `current`.
+pub fn space_key_for_owner(ctx: &McpToolCtx, owner: OwnerId) -> Result<String, McpToolError> {
+    if ctx.authz.can_access_owner(&owner) {
+        Ok(space_for(ctx, owner).key)
+    } else {
+        Err(McpToolError::Other(
+            "memory read returned an owner outside the caller's spaces".into(),
+        ))
+    }
 }
 
 fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<OwnerId> {
@@ -300,6 +317,29 @@ mod tests {
         // caller's own space still is.
         assert!(writable_for(&out.spaces, "current"));
         assert!(!writable_for(&out.spaces, &shared_key));
+    }
+
+    #[tokio::test]
+    async fn space_key_for_owner_matches_the_advertised_keys() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let shared = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let stranger = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
+
+        let advertised = list_memory_spaces(&ctx)
+            .into_iter()
+            .map(|space| space.key)
+            .collect::<Vec<_>>();
+        let personal = space_key_for_owner(&ctx, OwnerId::from(subject)).unwrap();
+        let group = space_key_for_owner(&ctx, shared).unwrap();
+
+        assert_eq!(personal, "current");
+        assert_eq!(group, shared.to_string());
+        assert_eq!(advertised, vec![personal, group]);
+        assert!(
+            space_key_for_owner(&ctx, stranger).is_err(),
+            "an owner outside the caller's spaces fails closed, never `current`"
+        );
     }
 
     #[test]

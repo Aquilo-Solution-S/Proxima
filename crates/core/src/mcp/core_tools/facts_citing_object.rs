@@ -99,7 +99,7 @@ pub(super) async fn facts_citing_object(
     let facts = page
         .facts
         .into_iter()
-        .map(|snapshot| project_memory_snapshot(&ctx, snapshot, "current".into(), None))
+        .map(|snapshot| project_memory_snapshot(&ctx, snapshot, None))
         .collect::<Result<Vec<_>, McpToolError>>()?;
     Ok(FactsCitingObjectOutput {
         cited_object_id: cited_object_id.to_string(),

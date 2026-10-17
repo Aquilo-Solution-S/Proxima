@@ -89,16 +89,6 @@ pub async fn get_memories(
         .collect();
     let mut remote = read_remote_memories(&ctx, &requested, engine.store_number()).await;
 
-    // One resolution for the whole batch: same caller, same owner, so the
-    // reported key cannot differ per row. See `get_memory` for why this is
-    // not the literal "entry".
-    let output_space = super::memory_spaces::resolve_space_owner(
-        &ctx,
-        None,
-        super::memory_spaces::SpaceDefault::Current,
-    )?
-    .key;
-
     let mut memories = Vec::with_capacity(requested.len());
     let mut missing = Vec::new();
     for (id, raw) in requested {
@@ -111,12 +101,8 @@ pub async fn get_memories(
         }
         match by_id.remove(&id) {
             Some(snapshot) => {
-                memories.push(project_memory_snapshot(
-                    &ctx,
-                    snapshot,
-                    output_space.clone(),
-                    None,
-                )?);
+                // Each row reports its own memory's space.
+                memories.push(project_memory_snapshot(&ctx, snapshot, None)?);
             }
             None => missing.push(raw.to_string()),
         }

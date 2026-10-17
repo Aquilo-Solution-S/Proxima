@@ -16,8 +16,9 @@ pub struct GetMemoryArgs {
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
     pub expand_neighbors: bool,
-    /// Optional space key from `core_memory_spaces`. Authorization resolves
-    /// the entry owner; this only selects how the space is reported back.
+    /// Optional space key from `core_memory_spaces`, validated (an unknown
+    /// key is invalid input) but ignored for labeling: the output always
+    /// reports the memory's own space.
     #[serde(default)]
     pub space: Option<String>,
 }
@@ -62,13 +63,12 @@ pub async fn get_memory(
     if crate::memory_store_number(memory_id.into_inner()) != engine.store_number() {
         return remote_memory_output(&ctx, memory_id.into_inner()).await;
     }
-    // Space key `core_memory_spaces` advertises (`SpaceDefault::Current`).
-    let output_space = super::memory_spaces::resolve_space_owner(
+    // Validated for compatibility; the label comes from the memory's owner.
+    super::memory_spaces::resolve_space_owner(
         &ctx,
         args.space.as_deref(),
         super::memory_spaces::SpaceDefault::Current,
-    )?
-    .key;
+    )?;
     let response = engine
         .get_memory(
             &ctx.authz,
@@ -96,7 +96,7 @@ pub async fn get_memory(
     } else {
         None
     };
-    project_memory_snapshot(&ctx, snapshot, output_space, neighbor_edges)
+    project_memory_snapshot(&ctx, snapshot, neighbor_edges)
 }
 
 /// A remote UUID read through the other-stores port, as the caller.
@@ -137,12 +137,17 @@ pub(super) fn project_remote_memory(
 /// Project a storage snapshot into the wire output shape shared by
 /// `get_memory`, the `proxima://memories` batch read, and
 /// `facts_citing_object`.
+///
+/// `space` is the memory's own space: the key of its home owner
+/// (`snapshot.owner`), `current` iff that is the session's owner. It never
+/// depends on which space the caller named, so a follow-up write to the
+/// reported space lands with the memory's owner.
 pub(super) fn project_memory_snapshot(
-    _ctx: &McpToolCtx,
+    ctx: &McpToolCtx,
     snapshot: crate::read_models::MemorySnapshot,
-    space: String,
     neighbor_edges: Option<Vec<NeighborEdge>>,
 ) -> Result<GetMemoryOutput, McpToolError> {
+    let space = super::memory_spaces::space_key_for_owner(ctx, snapshot.owner)?;
     let handle = snapshot.memory_id.into_inner().to_string();
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
     let title =
@@ -228,7 +233,6 @@ mod tests {
                     text: Some("stored note".into()),
                     payload: None,
                 },
-                "current".into(),
                 None,
             )
             .expect("local projection");
