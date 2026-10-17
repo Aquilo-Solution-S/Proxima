@@ -1591,7 +1591,11 @@ pub struct FlavorContract {
     pub projection: ProjectionDecl,
     /// Surfaces of this flavor whose erase is a hand-written statement
     /// rather than a generated one. Empty for a flavor whose every surface
-    /// the generator reaches, which is the ordinary case.
+    /// the generator reaches, which is the ordinary case — and the only
+    /// case for a non-core flavor: hand-written legs are
+    /// `proxima-storage-pg` code, which sees no flavor but core, so freeze
+    /// refuses a non-empty list anywhere else
+    /// (`FlavorRegistryError::BespokeLegsNotPermitted`).
     pub bespoke_erase_legs: &'static [&'static str],
     /// Surfaces of this flavor whose transfer is a hand-written statement
     /// rather than a generated one — the same exemption shape the erase
@@ -1601,7 +1605,8 @@ pub struct FlavorContract {
     ///
     /// Every `FollowOrDedupe` surface belongs here by construction: the
     /// arm's generated halves come off the declaration, but the refcount
-    /// probe and the object mount between them do not.
+    /// probe and the object mount between them do not. Core-only, like the
+    /// erase list (`BespokeLegsNotPermitted`, `DedupeNotPermitted`).
     pub bespoke_transfer_legs: &'static [&'static str],
 }
 

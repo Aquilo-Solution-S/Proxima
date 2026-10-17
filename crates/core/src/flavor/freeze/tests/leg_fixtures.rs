@@ -5,8 +5,12 @@
 //! what they produce is rows that outlive the operation meant to reach
 //! them, which no later assertion is positioned to see.
 
-use super::fixtures::{FIXTURE_FLAVOR, erase_fixture, state_surface, transfer_fixture};
+use super::fixtures::{
+    FIXTURE_FLAVOR, erase_fixture, erase_fixture_at, state_surface, transfer_fixture,
+    transfer_fixture_at,
+};
 use crate::SearchProjectionColumnKind;
+use crate::flavor::contract::CORE_ORDINAL;
 use crate::flavor::contract::{
     CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, LanguagePolicy, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
@@ -30,7 +34,8 @@ pub(super) static UNDELETABLE_SURFACE: FlavorContract = erase_fixture(
 
 /// A bespoke leg claiming a table the flavor does not declare — the
 /// stale name that let the hand-written lists rot.
-pub(super) static BESPOKE_LEG_FOR_NOTHING: FlavorContract = erase_fixture(
+pub(super) static BESPOKE_LEG_FOR_NOTHING: FlavorContract = erase_fixture_at(
+    CORE_ORDINAL,
     &[state_surface(
         "test_flavor.thing_v1",
         KeyShape::MemoryT { column: "t" },
@@ -126,7 +131,8 @@ pub(super) static UNFORGETTABLE_SURFACE: FlavorContract = transfer_fixture(
 );
 
 /// A bespoke transfer leg naming a table the flavor does not declare.
-pub(super) static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fixture(
+pub(super) static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fixture_at(
+    CORE_ORDINAL,
     &[state_surface(
         "test_flavor.thing_v1",
         KeyShape::MemoryT { column: "t" },
@@ -142,7 +148,8 @@ pub(super) static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fi
 
 /// A flavor arguing with itself: `StaysOnKey` says nothing moves, and
 /// the exemption list says a hand-written statement moves it.
-pub(super) static BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE: FlavorContract = transfer_fixture(
+pub(super) static BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE: FlavorContract = transfer_fixture_at(
+    CORE_ORDINAL,
     &[state_surface(
         "test_flavor.thing_v1",
         KeyShape::MemoryT { column: "t" },
@@ -159,7 +166,8 @@ pub(super) static BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE: FlavorContract = transfe
 /// A flavor arguing with itself: the declaration says a constraint
 /// removes the rows, and the exemption list says a hand-written
 /// statement does.
-pub(super) static BESPOKE_LEG_OVER_A_CASCADE: FlavorContract = erase_fixture(
+pub(super) static BESPOKE_LEG_OVER_A_CASCADE: FlavorContract = erase_fixture_at(
+    CORE_ORDINAL,
     &[state_surface(
         "test_flavor.thing_v1",
         KeyShape::MemoryT { column: "t" },
@@ -330,3 +338,72 @@ pub(super) static PER_ROW_ON_THE_WRONG_COLUMN: FlavorContract = FlavorContract {
         },
     }),
 };
+
+/// A non-core flavor naming a hand-written erase leg. Only storage-pg code
+/// runs bespoke legs, and storage-pg depends on no flavor but core, so the
+/// name is a promise nothing keeps: the erase reports `Completed` over rows
+/// no statement touched (#478 item 3).
+pub(super) static NON_CORE_BESPOKE_ERASE_LEG: FlavorContract = erase_fixture(
+    &[state_surface(
+        "test_flavor.thing_v1",
+        KeyShape::Custom(&["thing_id"]),
+        EraseRule::ByOwner,
+        ExportRule::Rows,
+    )],
+    &["test_flavor.thing_v1"],
+);
+
+/// The transfer twin: a `Follow` surface on a `Custom` key that only a
+/// hand-written transfer leg could move.
+pub(super) static NON_CORE_BESPOKE_TRANSFER_LEG: FlavorContract = transfer_fixture(
+    &[Surface {
+        table: "test_flavor.thing_v1",
+        key: KeyShape::Custom(&["thing_id"]),
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::Follow,
+        erase: EraseRule::Never {
+            why: "the transfer rule is what this fixture is about",
+        },
+        export: ExportRule::Excluded {
+            why: "the transfer rule is what this fixture is about",
+        },
+        forget: ForgetRule::Keep {
+            why: "a fixture, not a memory",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "a fixture contributes to no receipt",
+        },
+        completeness: None,
+    }],
+    &["test_flavor.thing_v1"],
+);
+
+/// A non-core `FollowOrDedupe`: the dedupe arm always needs a hand-written
+/// orchestrator, so it is a bespoke transfer leg under another name.
+pub(super) static NON_CORE_DEDUPE: FlavorContract = transfer_fixture(
+    &[Surface {
+        table: "test_flavor.thing_v1",
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::FollowOrDedupe {
+            dedupe_key: &["content_hash"],
+            remaps: &[],
+        },
+        erase: EraseRule::Never {
+            why: "the transfer rule is what this fixture is about",
+        },
+        export: ExportRule::Excluded {
+            why: "the transfer rule is what this fixture is about",
+        },
+        forget: ForgetRule::Keep {
+            why: "a fixture, not a memory",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "a fixture contributes to no receipt",
+        },
+        completeness: None,
+    }],
+    &["test_flavor.thing_v1"],
+);

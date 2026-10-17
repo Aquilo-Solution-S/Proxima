@@ -62,6 +62,10 @@ impl FlavorRegistry {
             // one statement spells is broken whether or not a query would
             // ever have reached that statement.
             Self::validate_projection_is_reachable(contract)?;
+            // Before the reachability and leg checks, so a non-core flavor
+            // leaning on a hand-written leg is told that, not that a surface
+            // is unreachable or a leg mismatched.
+            Self::validate_core_only_legs(contract)?;
             Self::validate_contract_surfaces(contract)?;
             Self::validate_erase_legs(contract)?;
             Self::validate_transfer_legs(contract)?;
@@ -114,6 +118,49 @@ impl FlavorRegistry {
             }
             return Err(FlavorRegistryError::UnclaimedRegistration {
                 flavor_id: flavor.flavor_id.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Only the core contract may name hand-written legs or declare a
+    /// dedupe transfer (#478).
+    ///
+    /// A bespoke leg is code in `proxima-storage-pg`, and that crate depends
+    /// on no flavor but core. A non-core flavor naming one names a statement
+    /// nobody wrote: the erase or transfer would classify the surface as
+    /// covered and report success over rows nothing touched.
+    /// `FollowOrDedupe` is the same promise under another name, because its
+    /// orchestrator is hand-written too.
+    fn validate_core_only_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::TransferRule;
+
+        if contract.is_core() {
+            return Ok(());
+        }
+        // The dedupe first: it is the more specific answer for a surface
+        // that also sits in the bespoke transfer list.
+        if let Some(surface) = contract
+            .all_surfaces()
+            .find(|surface| matches!(surface.transfer, TransferRule::FollowOrDedupe { .. }))
+        {
+            return Err(FlavorRegistryError::DedupeNotPermitted {
+                flavor_id: contract.flavor_id,
+                table: surface.table,
+            });
+        }
+        if !contract.bespoke_erase_legs.is_empty() {
+            return Err(FlavorRegistryError::BespokeLegsNotPermitted {
+                flavor_id: contract.flavor_id,
+                verb: "erase",
+            });
+        }
+        if !contract.bespoke_transfer_legs.is_empty() {
+            return Err(FlavorRegistryError::BespokeLegsNotPermitted {
+                flavor_id: contract.flavor_id,
+                verb: "transfer",
             });
         }
         Ok(())

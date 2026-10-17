@@ -164,9 +164,20 @@ pub(super) const fn transfer_fixture(
     surfaces: &'static [Surface],
     bespoke: &'static [&'static str],
 ) -> FlavorContract {
+    transfer_fixture_at(7, surfaces, bespoke)
+}
+
+/// [`transfer_fixture`] at a chosen ordinal. A bespoke-leg mismatch is a
+/// core-only question (only core may name legs), so those fixtures sit at
+/// [`crate::flavor::contract::CORE_ORDINAL`].
+pub(super) const fn transfer_fixture_at(
+    ordinal: u16,
+    surfaces: &'static [Surface],
+    bespoke: &'static [&'static str],
+) -> FlavorContract {
     FlavorContract {
         flavor_id: FIXTURE_FLAVOR,
-        ordinal: 7,
+        ordinal,
         schemas: &[],
         state_surfaces: surfaces,
         scopes: &[],
@@ -185,9 +196,18 @@ pub(super) const fn erase_fixture(
     surfaces: &'static [Surface],
     bespoke: &'static [&'static str],
 ) -> FlavorContract {
+    erase_fixture_at(7, surfaces, bespoke)
+}
+
+/// [`erase_fixture`] at a chosen ordinal; see [`transfer_fixture_at`].
+pub(super) const fn erase_fixture_at(
+    ordinal: u16,
+    surfaces: &'static [Surface],
+    bespoke: &'static [&'static str],
+) -> FlavorContract {
     FlavorContract {
         flavor_id: FIXTURE_FLAVOR,
-        ordinal: 7,
+        ordinal,
         schemas: &[],
         state_surfaces: surfaces,
         scopes: &[],

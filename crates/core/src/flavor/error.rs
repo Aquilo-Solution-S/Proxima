@@ -181,6 +181,33 @@ pub enum FlavorRegistryError {
          pagination contract"
     )]
     ResourcesNotPermitted { flavor_id: &'static str },
+    /// A flavor other than #0 named a hand-written erase or transfer leg.
+    /// Only `proxima-storage-pg` code runs bespoke legs, and that crate
+    /// sees no flavor but core, so a non-core name is a promise nothing
+    /// keeps: the verb would report success over rows no statement touched.
+    #[error(
+        "flavor {flavor_id} names a bespoke {verb} leg, which only flavor #0 may do: \
+         hand-written legs run in proxima-storage-pg, which sees no other flavor, so \
+         every non-core surface must be reached by a generated leg"
+    )]
+    BespokeLegsNotPermitted {
+        flavor_id: &'static str,
+        verb: &'static str,
+    },
+    /// A flavor other than #0 declared `TransferRule::FollowOrDedupe`. The
+    /// dedupe arm always needs a hand-written orchestrator (the refcount
+    /// probe and object mount between its generated halves), which only
+    /// core has.
+    #[error(
+        "flavor {flavor_id} declares TransferRule::FollowOrDedupe on {table}, which only \
+         flavor #0 may do: the dedupe arm needs a hand-written orchestrator that only \
+         proxima-storage-pg runs; declare Follow, StaysOnKey, RetainAtSource or \
+         NotTransferable instead"
+    )]
+    DedupeNotPermitted {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
     /// Contracts were registered but none of them is flavor #0. Core is
     /// non-removable — the two registry-reflection resources
     /// (`proxima://schemas`, `proxima://tools`) live in its contract.
@@ -218,13 +245,14 @@ pub enum FlavorRegistryError {
     )]
     ListenableWithoutSchema { schema_id: SchemaId },
     /// A surface declares an erase no leg can perform: keyed on something
-    /// the erase builds no selection set for, and claimed by no bespoke
-    /// leg. The erase would skip it in silence and report `Completed` over
+    /// the erase builds no selection set for (and, for core only, claimed
+    /// by no bespoke leg). The erase would skip it in silence and report `Completed` over
     /// rows that survived the owner they belong to.
     #[error(
-        "flavor {flavor_id} declares an erase for {table} that no leg can perform: it is \
-         keyed on neither a memory, a goal nor a blob, and no bespoke erase leg claims \
-         it, so an owner erase would skip it and still report success"
+        "flavor {flavor_id} declares an erase for {table} that no leg can perform, so an \
+         owner erase would skip it and still report success: key it on a memory, goal or \
+         blob, give it an owner column with EraseRule::ByOwner, or declare \
+         EraseRule::Cascade or EraseRule::Never"
     )]
     UndeletableSurface {
         flavor_id: &'static str,
@@ -233,6 +261,8 @@ pub enum FlavorRegistryError {
     /// A declared bespoke erase leg that names nothing it could own — a
     /// table the flavor does not declare, or one whose declaration says no
     /// statement runs at all.
+    /// Core only: any other flavor naming a leg is
+    /// [`Self::BespokeLegsNotPermitted`] first.
     #[error("flavor {flavor_id} declares a bespoke erase leg for {table}, which {why}")]
     BespokeEraseLegMismatch {
         flavor_id: &'static str,
@@ -240,15 +270,15 @@ pub enum FlavorRegistryError {
         why: &'static str,
     },
     /// A surface declares a transfer no leg can perform: keyed on
-    /// something the transfer builds no statement for, and claimed by no
-    /// bespoke leg. The transfer would skip it in silence and report
+    /// something the transfer builds no statement for (and, for core only,
+    /// claimed by no bespoke leg). The transfer would skip it in silence and report
     /// success, leaving rows the SOURCE owner can still read after the
     /// memory they belong to became someone else's.
     #[error(
-        "flavor {flavor_id} declares a transfer for {table} that no leg can perform: it \
-         is keyed on neither a memory nor an entity t, and no bespoke transfer leg \
-         claims it, so a transfer would skip it and still report success — leaving rows \
-         the source owner can read after the memory became someone else's"
+        "flavor {flavor_id} declares a transfer for {table} that no leg can perform, so a \
+         transfer would skip it and still report success — leaving rows the source owner \
+         can read after the memory became someone else's: key a Follow or Drop surface on \
+         a memory or entity t, or declare StaysOnKey, RetainAtSource or NotTransferable"
     )]
     UnmovableSurface {
         flavor_id: &'static str,
@@ -257,6 +287,8 @@ pub enum FlavorRegistryError {
     /// A declared bespoke transfer leg that names nothing it could own — a
     /// table the flavor does not declare, or one whose declaration says no
     /// statement runs at all.
+    /// Core only: any other flavor naming a leg is
+    /// [`Self::BespokeLegsNotPermitted`] first.
     #[error("flavor {flavor_id} declares a bespoke transfer leg for {table}, which {why}")]
     BespokeTransferLegMismatch {
         flavor_id: &'static str,

@@ -16,9 +16,9 @@ use super::fixtures::{
 use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
     BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE, FOLLOW_WITH_NOTHING_TO_SET,
-    HOST_MANAGED_OWNERLESS_EXPORTS, PER_ROW_ON_THE_WRONG_COLUMN, UNDELETABLE_SURFACE,
-    UNFORGETTABLE_SURFACE, UNMOVABLE_SURFACE, UNREACHABLE_ALLOWLIST_EXPORT_SURFACE,
-    UNREACHABLE_EXPORT_SURFACE,
+    HOST_MANAGED_OWNERLESS_EXPORTS, NON_CORE_BESPOKE_ERASE_LEG, NON_CORE_BESPOKE_TRANSFER_LEG,
+    NON_CORE_DEDUPE, PER_ROW_ON_THE_WRONG_COLUMN, UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE,
+    UNMOVABLE_SURFACE, UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
 };
 use super::projection_fixtures::{
     BANDS_NOT_UNIFORM, EMBEDDED_SIDECAR_RIGHT_KEY, EMBEDDED_SIDECAR_WRONG_KEY,
@@ -264,68 +264,12 @@ fn each_contract_cross_check_rejects_its_own_shape() {
             },
         ),
         (
-            "a bespoke transfer leg names a table the flavor does not declare",
-            |registry| registry.contracts.push(&BESPOKE_TRANSFER_LEG_FOR_NOTHING),
-            |err| {
-                matches!(
-                    err,
-                    FlavorRegistryError::BespokeTransferLegMismatch {
-                        table: "test_flavor.gone_v1",
-                        ..
-                    }
-                )
-            },
-        ),
-        (
-            "a bespoke transfer leg claims a surface nothing moves",
-            |registry| {
-                registry
-                    .contracts
-                    .push(&BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE);
-            },
-            |err| {
-                matches!(
-                    err,
-                    FlavorRegistryError::BespokeTransferLegMismatch {
-                        table: "test_flavor.thing_v1",
-                        ..
-                    }
-                )
-            },
-        ),
-        (
             "a surface declares a forget that reaches none of its rows",
             |registry| registry.contracts.push(&UNFORGETTABLE_SURFACE),
             |err| {
                 matches!(
                     err,
                     FlavorRegistryError::UnforgettableSurface {
-                        table: "test_flavor.thing_v1",
-                        ..
-                    }
-                )
-            },
-        ),
-        (
-            "a bespoke erase leg names a table the flavor does not declare",
-            |registry| registry.contracts.push(&BESPOKE_LEG_FOR_NOTHING),
-            |err| {
-                matches!(
-                    err,
-                    FlavorRegistryError::BespokeEraseLegMismatch {
-                        table: "test_flavor.gone_v1",
-                        ..
-                    }
-                )
-            },
-        ),
-        (
-            "a bespoke erase leg claims a surface a constraint removes",
-            |registry| registry.contracts.push(&BESPOKE_LEG_OVER_A_CASCADE),
-            |err| {
-                matches!(
-                    err,
-                    FlavorRegistryError::BespokeEraseLegMismatch {
                         table: "test_flavor.thing_v1",
                         ..
                     }
@@ -663,5 +607,137 @@ fn a_flat_tool_declaring_one_effect_freezes() {
     registry.contracts.push(&TOOL_AGREES);
     if let Err(err) = registry.try_freeze() {
         panic!("freeze refused a tool declaration that agrees with its registration: {err}");
+    }
+}
+
+/// #478 item 3: only the core contract may name hand-written legs or a
+/// dedupe transfer, because only storage-pg code runs them and storage-pg
+/// sees no flavor but core. Each of these froze cleanly before.
+#[test]
+fn a_non_core_flavor_may_not_name_hand_written_legs() {
+    let mut accepted = Vec::new();
+    for (shape, contract) in [
+        ("a bespoke erase leg", &NON_CORE_BESPOKE_ERASE_LEG),
+        ("a bespoke transfer leg", &NON_CORE_BESPOKE_TRANSFER_LEG),
+        ("a FollowOrDedupe surface", &NON_CORE_DEDUPE),
+    ] {
+        let mut registry = FlavorRegistry::new();
+        registry.contracts.push(contract);
+        match registry.try_freeze() {
+            Ok(_) => accepted.push(shape),
+            Err(err) => assert!(
+                matches!(
+                    (shape, &err),
+                    (
+                        "a bespoke erase leg",
+                        FlavorRegistryError::BespokeLegsNotPermitted { verb: "erase", .. }
+                    ) | (
+                        "a bespoke transfer leg",
+                        FlavorRegistryError::BespokeLegsNotPermitted {
+                            verb: "transfer",
+                            ..
+                        }
+                    ) | (
+                        "a FollowOrDedupe surface",
+                        FlavorRegistryError::DedupeNotPermitted {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                ),
+                "{shape}: freeze reported {err} instead of refusing the leg"
+            ),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "freeze accepted a non-core flavor declaring {accepted:?}"
+    );
+}
+
+/// The bespoke-leg mismatch checks are core-only now (only core may name a
+/// leg), and a registry already holds core at ordinal 0, so these call the
+/// leg validators on core-ordinal fixtures directly rather than through a
+/// second core contract.
+#[test]
+fn a_core_bespoke_leg_list_that_names_nothing_it_could_own_is_refused() {
+    let erase = |contract| FlavorRegistry::validate_erase_legs(contract);
+    let transfer = |contract| FlavorRegistry::validate_transfer_legs(contract);
+    assert!(matches!(
+        erase(&BESPOKE_LEG_FOR_NOTHING),
+        Err(FlavorRegistryError::BespokeEraseLegMismatch {
+            table: "test_flavor.gone_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        erase(&BESPOKE_LEG_OVER_A_CASCADE),
+        Err(FlavorRegistryError::BespokeEraseLegMismatch {
+            table: "test_flavor.thing_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer(&BESPOKE_TRANSFER_LEG_FOR_NOTHING),
+        Err(FlavorRegistryError::BespokeTransferLegMismatch {
+            table: "test_flavor.gone_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer(&BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE),
+        Err(FlavorRegistryError::BespokeTransferLegMismatch {
+            table: "test_flavor.thing_v1",
+            ..
+        })
+    ));
+}
+
+/// The two "no leg can perform" refusals name what a flavor MAY declare,
+/// not a hand-written leg it may not.
+#[test]
+fn uncovered_surface_messages_do_not_suggest_a_bespoke_leg() {
+    for err in [
+        FlavorRegistryError::UndeletableSurface {
+            flavor_id: FIXTURE_FLAVOR_STATIC,
+            table: "test_flavor.thing_v1",
+        },
+        FlavorRegistryError::UnmovableSurface {
+            flavor_id: FIXTURE_FLAVOR_STATIC,
+            table: "test_flavor.thing_v1",
+        },
+    ] {
+        let message = err.to_string();
+        assert!(!message.contains("bespoke"), "{message}");
+    }
+}
+
+const FIXTURE_FLAVOR_STATIC: &str = "test-flavor";
+
+/// Core is the only contract with hand-written legs, and every table such
+/// a leg runs on is core's own. A non-core flavor (the code flavor, any
+/// out-of-tree one) cannot reach this loop with a leg: freeze refuses it.
+#[test]
+fn every_hand_written_leg_runs_on_a_core_table() {
+    use crate::flavor::contract::{EraseLeg, TransferLeg};
+
+    let frozen = FlavorRegistry::new().freeze_or_panic_for_tests();
+    for contract in frozen.contracts() {
+        for surface in contract.all_surfaces() {
+            let erase_bespoke = matches!(contract.erase_leg(&surface), EraseLeg::Bespoke);
+            let transfer_bespoke = matches!(
+                contract.transfer_leg(&surface),
+                TransferLeg::Bespoke | TransferLeg::Deduped { .. }
+            );
+            if erase_bespoke || transfer_bespoke {
+                assert!(contract.is_core(), "{} is not core", contract.flavor_id);
+                assert!(
+                    surface.table.starts_with("proxima_core."),
+                    "{} names a hand-written leg on {}",
+                    contract.flavor_id,
+                    surface.table
+                );
+            }
+        }
     }
 }

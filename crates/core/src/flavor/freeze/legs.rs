@@ -31,6 +31,12 @@ impl FlavorRegistry {
     /// must not have, so the check sits where every flavor passes through,
     /// in-tree or not.
     ///
+    /// Only the core contract may name a hand-written leg: those legs are
+    /// code in `proxima-storage-pg`, which sees no flavor but core, so a
+    /// non-core flavor's answer is always one of the generated or
+    /// declarative four. `validate_core_only_legs` refuses the fifth for
+    /// it before this runs.
+    ///
     /// [`FlavorContract::erase_leg`] is the classifier both this and the
     /// erase itself call, so this is a check on the code that runs rather
     /// than on a second description of it.
@@ -98,6 +104,11 @@ impl FlavorRegistry {
     /// owner after the memory became the destination's — a cross-tenant
     /// read under the multi-owner design centre, produced by nobody
     /// deciding anything.
+    ///
+    /// The generated dedupe and the named hand-written leg are core's
+    /// alone: both need an orchestrator in `proxima-storage-pg`, which sees
+    /// no flavor but core, and `validate_core_only_legs` refuses them for
+    /// any other contract before this runs.
     ///
     /// [`FlavorContract::transfer_leg`] is the classifier both this and the
     /// transfer itself call, so this is a check on the code that runs
