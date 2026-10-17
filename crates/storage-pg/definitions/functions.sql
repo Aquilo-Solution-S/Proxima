@@ -1515,6 +1515,8 @@ BEGIN
            AND c.handle = NEW.handle
            AND c.owner_id = NEW.owner_id
            AND c.kind = NEW.kind
+           AND c."by" = NEW."by"
+           AND c.via IS NOT DISTINCT FROM NEW.via
            AND c.source_id IS NOT DISTINCT FROM NEW.source_id
            AND c.ingest_key IS NOT DISTINCT FROM NEW.ingest_key
            AND c.blob_id IS NOT DISTINCT FROM NEW.blob_id
@@ -1538,6 +1540,8 @@ BEGIN
                c.handle = NEW.handle
                AND c.owner_id = NEW.owner_id
                AND c.kind = NEW.kind
+               AND c."by" = NEW."by"
+               AND c.via IS NOT DISTINCT FROM NEW.via
                AND c.source_id IS NOT DISTINCT FROM NEW.source_id
                AND c.ingest_key IS NOT DISTINCT FROM NEW.ingest_key
                AND c.blob_id IS NOT DISTINCT FROM NEW.blob_id

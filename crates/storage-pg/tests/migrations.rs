@@ -1167,6 +1167,169 @@ async fn assert_cooled_writer_seal(pool: &sqlx::PgPool, t: Uuid) -> Result<(), s
     Ok(())
 }
 
+async fn cool_restoration_fixture(
+    pool: &sqlx::PgPool,
+    via: Option<Uuid>,
+) -> Result<Uuid, sqlx::Error> {
+    let owner = Uuid::now_v7();
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(owner)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, occurred_at, \"by\", via)
+         VALUES ($1, $2, 'fact', $3, 'core/test-v1', 'restoration-source', $2::text,
+                 uuid_extract_timestamp($2), $4, $5)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner)
+    .bind(Uuid::now_v7())
+    .bind(via)
+    .execute(pool)
+    .await?;
+
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.cooled
+             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
+              ingest_key, origins, refs, goal_refs, \"by\", via)
+         SELECT t, handle, owner_id, kind, 'cold/restoration', blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, \"by\", via
+           FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(t)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let reversible: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM proxima_core.cooled WHERE t = $1)
+            AND NOT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)
+            AND NOT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
+    )
+    .bind(t)
+    .fetch_one(pool)
+    .await?;
+    assert!(reversible, "cooling retains only the restorable sealed row");
+    Ok(t)
+}
+
+async fn restore_cooled_with_writer(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    writer: (Uuid, Option<Uuid>),
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, blob_id, content_id, source_id,
+              ingest_key, origins, refs, goal_refs, occurred_at, \"by\", via)
+         SELECT handle, t, kind, owner_id, 'core/test-v1', blob_id, content_id,
+                source_id, ingest_key, origins, refs, goal_refs, uuid_extract_timestamp(t), $2, $3
+           FROM proxima_core.cooled WHERE t = $1",
+    )
+    .bind(t)
+    .bind(writer.0)
+    .bind(writer.1)
+    .execute(pool)
+    .await
+}
+
+async fn assert_cooled_restoration_writer(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
+    let (by, via, cooled): (Uuid, Option<Uuid>, serde_json::Value) =
+        sqlx::query_as("SELECT \"by\", via, to_jsonb(c) FROM proxima_core.cooled c WHERE t = $1")
+            .bind(t)
+            .fetch_one(pool)
+            .await?;
+    let mut changed = vec![(Uuid::now_v7(), via), (by, Some(Uuid::now_v7()))];
+    if via.is_some() {
+        changed.push((by, None));
+    }
+    for writer in changed {
+        let error = restore_cooled_with_writer(pool, t, writer)
+            .await
+            .expect_err("restoration must retain the original writer pair");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code),
+            Some("23514".into()),
+            "writer {writer:?}: {error}"
+        );
+        let (hot_rows, after): (i64, serde_json::Value) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1), to_jsonb(c)
+               FROM proxima_core.cooled c WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(hot_rows, 0, "a refused restoration leaves no hot row");
+        assert_eq!(
+            after, cooled,
+            "a refused restoration preserves the cooled row"
+        );
+    }
+
+    let restored = restore_cooled_with_writer(pool, t, (by, via)).await?;
+    assert_eq!(restored.rows_affected(), 1);
+    let writer: (Uuid, Option<Uuid>) =
+        sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(
+        writer,
+        (by, via),
+        "matching attribution restores the hot row"
+    );
+    let after: serde_json::Value =
+        sqlx::query_scalar("SELECT to_jsonb(c) FROM proxima_core.cooled c WHERE t = $1")
+            .bind(t)
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(
+        after, cooled,
+        "restoration preserves the original cooled seal"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cooled_restoration_preserves_writer_attribution() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        apply_current_migrations(&pg).await?;
+        for via in [None, Some(Uuid::now_v7())] {
+            let t = cool_restoration_fixture(pg.pool_for_tests(), via).await?;
+            assert_cooled_restoration_writer(pg.pool_for_tests(), t).await?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cooled restoration writer attribution test failed");
+}
+
 #[tokio::test]
 async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

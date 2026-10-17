@@ -387,6 +387,59 @@ async fn retained_writer_rows_refuse_attribution_migration_without_changes() -> 
     Ok(())
 }
 
+async fn memory_pin_checks_catalog(
+    connection: &mut sqlx::PgConnection,
+) -> Result<serde_json::Value, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object(
+             'oid', p.oid, 'owner', p.proowner,
+             'definition', pg_get_functiondef(p.oid),
+             'definer', p.prosecdef, 'settings', p.proconfig, 'acl', p.proacl,
+             'public_execute', EXISTS (
+                 SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+                  WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'))
+           FROM pg_proc p WHERE p.oid = 'proxima_core.memory_pin_checks()'::regprocedure",
+    )
+    .fetch_one(connection)
+    .await
+}
+
+#[tokio::test]
+async fn attribution_migration_installs_the_restoration_seal_before_definitions() -> TestResult {
+    let (_guard, platform, _admin) = empty_store().await?;
+    apply_historical_schema(&platform, &[33, 34], definitions::POLICIES).await?;
+    let mut connection = platform.acquire().await?;
+    let mut transaction = begin_migration_transaction(&mut connection).await?;
+    // The historical fixture installs functions without their later-column triggers.
+    sqlx::query("DROP FUNCTION proxima_core.memory_pin_checks()")
+        .execute(transaction.as_mut())
+        .await?;
+    core_migrator().run(transaction.as_mut()).await?;
+    let installed = memory_pin_checks_catalog(transaction.as_mut()).await?;
+    assert_eq!(installed["definer"], true);
+    assert_eq!(
+        installed["settings"],
+        serde_json::json!(["search_path=pg_catalog, proxima_core, pg_temp"])
+    );
+    assert_eq!(installed["public_execute"], false);
+    let ledger: Vec<(i64, bool)> =
+        sqlx::query_as("SELECT version, success FROM public._sqlx_migrations ORDER BY version")
+            .fetch_all(transaction.as_mut())
+            .await?;
+    assert_eq!(ledger, [(33, true), (34, true), (35, true)]);
+    assert!(!definitions::current_matches(transaction.as_mut()).await?);
+
+    run_core_schema(&mut transaction, MissingMigrationPolicy::Reject).await?;
+    assert!(definitions::current_matches(transaction.as_mut()).await?);
+    assert_eq!(
+        memory_pin_checks_catalog(transaction.as_mut()).await?,
+        installed,
+        "the migration must install the same sealed function as the definitions refresh"
+    );
+    transaction.commit().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn empty_store_accepts_identity_schema_and_current_definitions() -> TestResult {
     let (_guard, platform, admin) = empty_store().await?;
