@@ -4,6 +4,8 @@
 
 use super::*;
 
+const RETRY_RECOVERY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Holds the facade's embedding worker for a whole test, so the test's own
 /// drains are the only ones and each drain's count is exact.
 ///
@@ -368,6 +370,13 @@ struct TwoOwnerFixture {
 
 impl TwoOwnerFixture {
     async fn boot(db_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::boot_with_policy(db_name, proxima_core::EmbeddingRuntimePolicy::default()).await
+    }
+
+    async fn boot_with_policy(
+        db_name: &str,
+        policy: proxima_core::EmbeddingRuntimePolicy,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (runtime_url, platform_url) = split_role_urls(db_name).await?;
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
@@ -378,6 +387,7 @@ impl TwoOwnerFixture {
                 .platform_database_url(platform_url)
                 .owner(personal)
                 .embedding_router(router)
+                .embedding_runtime_policy(policy)
                 .tool_scope(ToolScope::All)
                 .build()
         })
@@ -467,7 +477,7 @@ impl TwoOwnerFixture {
         Err("search did not finish paging".into())
     }
 
-    /// `(model_id, dim)` of the stored vector for `handle`, if any.
+    /// `(model_id, dim)` of stored chunks or a published head for `handle`.
     async fn stored_space(
         &self,
         handle: &str,
@@ -476,23 +486,35 @@ impl TwoOwnerFixture {
             .strip_prefix("F:")
             .ok_or("fact handle")?
             .parse::<Uuid>()?;
-        Ok(
-            sqlx::query_as(
-                "SELECT model_id, dim FROM proxima_core.embeddings WHERE entity_id = $1",
-            )
-            .bind(memory_id)
-            .fetch_optional(&self.admin_pool)
-            .await?,
+        Ok(sqlx::query_as(
+            "SELECT model_id, dim FROM proxima_core.embeddings WHERE entity_id = $1
+                 UNION
+                 SELECT model_id, dim FROM proxima_core.embedding_heads WHERE entity_id = $1",
         )
+        .bind(memory_id)
+        .fetch_optional(&self.admin_pool)
+        .await?)
     }
 
     async fn job_statuses(&self, handle: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        Ok(self
+            .jobs(handle)
+            .await?
+            .into_iter()
+            .map(|(status, _)| status)
+            .collect())
+    }
+
+    async fn jobs(
+        &self,
+        handle: &str,
+    ) -> Result<Vec<(String, Option<String>)>, Box<dyn std::error::Error>> {
         let memory_id = handle
             .strip_prefix("F:")
             .ok_or("fact handle")?
             .parse::<Uuid>()?;
-        Ok(sqlx::query_scalar(
-            "SELECT status::text FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        Ok(sqlx::query_as(
+            "SELECT status::text, last_error FROM proxima_core.embedding_jobs WHERE entity_id = $1",
         )
         .bind(memory_id)
         .fetch_all(&self.admin_pool)
@@ -821,8 +843,7 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
         let drained = engine.drain_embedding_jobs(10).await?;
         assert_eq!((drained.processed, drained.failed), (1, 0));
 
-        // Moving: a new Fact is queued for both spaces, a derived memory is
-        // embedded inline in the old one and queued for the new one.
+        // Moving: new Facts and derived memories are queued for both spaces.
         fixture.router.set_route(
             owner,
             EmbeddingRoute::moving(Some(old.bound()), new.bound())?,
@@ -854,8 +875,8 @@ async fn an_owner_moves_to_a_new_model_without_a_search_gap() {
         let derived = derived["handle"].as_str().expect("handle").to_owned();
         assert_eq!(
             fixture.embedding_rows(&derived).await?,
-            (vec![old_space.clone()], vec![new_space.clone()]),
-            "a derived memory embeds inline through current and queues next"
+            (vec![], vec![new_space.clone(), old_space.clone()]),
+            "a derived memory queues current and next without a provider call"
         );
 
         engine
@@ -1083,4 +1104,795 @@ async fn an_unroutable_owner_is_never_purged() {
     }
     .await;
     result.expect("purge refusal test failed");
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RoutedRefusal {
+    Configuration(proxima_core::llm::EmbeddingConfigurationFault),
+    Input {
+        first: proxima_core::llm::EmbeddingInputRefusal,
+        later: proxima_core::llm::EmbeddingInputRefusal,
+    },
+}
+
+#[derive(Debug)]
+struct RefusingRouteEmbedding {
+    refusal: RoutedRefusal,
+    lengths: std::sync::Mutex<Vec<usize>>,
+}
+
+impl RefusingRouteEmbedding {
+    fn new(refusal: RoutedRefusal) -> Arc<Self> {
+        Arc::new(Self {
+            refusal,
+            lengths: std::sync::Mutex::default(),
+        })
+    }
+
+    fn lengths(&self) -> Vec<usize> {
+        self.lengths.lock().expect("refusal recorder lock").clone()
+    }
+
+    fn bound(self: &Arc<Self>) -> proxima_core::llm::BoundEmbeddingClient {
+        proxima_core::llm::BoundEmbeddingClient::bind(self.clone()).expect("lane width")
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RefusingRouteEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        use proxima_core::llm::LlmError;
+        let mut lengths = self.lengths.lock().expect("refusal recorder lock");
+        let first_call = lengths.is_empty();
+        lengths.push(text.len());
+        Err(match self.refusal {
+            RoutedRefusal::Configuration(fault) => LlmError::Configuration(fault),
+            RoutedRefusal::Input { first, later } => {
+                LlmError::InputRefused(if first_call { first } else { later })
+            }
+        })
+    }
+
+    fn model_id(&self) -> &'static str {
+        "route-failure"
+    }
+
+    fn dim(&self) -> usize {
+        proxima_core::llm::EmbeddingDim::D1024.width()
+    }
+}
+
+async fn shared_configuration_fault_case(
+    fixture: &TwoOwnerFixture,
+    fault: proxima_core::llm::EmbeddingConfigurationFault,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use proxima_core::llm::EmbeddingDim;
+    let engine = fixture.built.host().engine();
+    let refused = RefusingRouteEmbedding::new(RoutedRefusal::Configuration(fault));
+    for owner in [fixture.personal, fixture.shared] {
+        fixture.router.set_owner(owner, Some(refused.bound()));
+    }
+    let personal = fixture
+        .remember("current", "needle configuration one")
+        .await?;
+    let another = fixture
+        .remember("current", "needle configuration two")
+        .await?;
+    let shared = fixture
+        .remember(&fixture.shared_space, "needle configuration shared")
+        .await?;
+    assert!(
+        refused.lengths().is_empty(),
+        "admission must not call the client"
+    );
+    let first = engine.drain_embedding_jobs(10).await?;
+    assert_eq!(first.failed, 0, "configuration faults keep jobs retryable");
+    assert_eq!(first.configuration_faults, vec![fault]);
+    assert_eq!(engine.embedding_configuration_faults(), vec![fault]);
+    assert_eq!(
+        refused.lengths().len(),
+        1,
+        "already-claimed owners share one pause"
+    );
+    for handle in [&personal, &another, &shared] {
+        assert_eq!(fixture.job_statuses(handle).await?, ["pending"]);
+        assert_eq!(fixture.stored_space(handle).await?, None);
+    }
+    let (left, right) = tokio::join!(
+        engine.drain_embedding_jobs(10),
+        engine.drain_embedding_jobs(10)
+    );
+    for paused in [left?, right?] {
+        assert_eq!(paused.processed, 0);
+        assert_eq!(paused.configuration_faults, vec![fault]);
+    }
+    assert_eq!(refused.lengths().len(), 1, "paused drains must not probe");
+
+    // Rebinding one Owner resumes that identical space without clearing the
+    // fault still used by the other Owner.
+    let healthy = RecordingRouteEmbedding::new("route-failure", EmbeddingDim::D1024);
+    fixture
+        .router
+        .set_owner(fixture.personal, Some(healthy.bound()));
+    let resumed = engine.drain_embedding_jobs(10).await?;
+    assert_eq!((resumed.processed, resumed.failed), (2, 0));
+    assert_eq!(resumed.configuration_faults, vec![fault]);
+    assert_eq!(healthy.texts().len(), 2);
+    assert_eq!(fixture.job_statuses(&shared).await?, ["pending"]);
+    assert_eq!(engine.embedding_configuration_faults(), vec![fault]);
+    fixture
+        .router
+        .set_owner(fixture.shared, Some(healthy.bound()));
+    let resumed = engine.drain_embedding_jobs(10).await?;
+    assert_eq!((resumed.processed, resumed.failed), (1, 0));
+    assert!(resumed.configuration_faults.is_empty());
+    assert!(engine.embedding_configuration_faults().is_empty());
+    for handle in [&personal, &another, &shared] {
+        assert!(fixture.job_statuses(handle).await?.is_empty());
+        assert_eq!(
+            fixture.stored_space(handle).await?,
+            Some(("route-failure".to_owned(), 1024))
+        );
+    }
+
+    // A still-live original Arc carries its pause if the host selects it again.
+    fixture
+        .router
+        .set_owner(fixture.personal, Some(refused.bound()));
+    let returned = fixture
+        .remember("current", "needle old client returned")
+        .await?;
+    let paused = engine.drain_embedding_jobs(1).await?;
+    assert_eq!(paused.processed, 0);
+    assert_eq!(paused.configuration_faults, vec![fault]);
+    assert_eq!(refused.lengths().len(), 1);
+    assert_eq!(fixture.job_statuses(&returned).await?, ["pending"]);
+    fixture
+        .router
+        .set_owner(fixture.personal, Some(healthy.bound()));
+    let resumed = engine.drain_embedding_jobs(1).await?;
+    assert_eq!((resumed.processed, resumed.failed), (1, 0));
+    assert!(engine.embedding_configuration_faults().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn configuration_faults_pause_shared_clients_until_their_bindings_change() {
+    use proxima_core::llm::EmbeddingConfigurationFault;
+    let split_db = clone_split_core_db("proxima_core_route_configuration")
+        .await
+        .expect("PG required for tests");
+    let fixture = TwoOwnerFixture::boot(split_db.name())
+        .await
+        .expect("routing fixture");
+    for fault in [
+        EmbeddingConfigurationFault::BadRequest,
+        EmbeddingConfigurationFault::Unauthorized,
+        EmbeddingConfigurationFault::Forbidden,
+        EmbeddingConfigurationFault::NotFound,
+    ] {
+        shared_configuration_fault_case(&fixture, fault)
+            .await
+            .expect("shared client configuration case");
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn paused_jobs_allow_limit_one_progress_in_other_owner_and_next_spaces() {
+    use proxima_core::llm::{EmbeddingConfigurationFault, EmbeddingDim, EmbeddingRoute};
+    let split_db = clone_split_core_db("proxima_core_route_paused_progress")
+        .await
+        .expect("PG required for tests");
+    let fixture = TwoOwnerFixture::boot(split_db.name())
+        .await
+        .expect("routing fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let engine = fixture.built.host().engine();
+        let fault = EmbeddingConfigurationFault::Forbidden;
+        let refused = RefusingRouteEmbedding::new(RoutedRefusal::Configuration(fault));
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(refused.bound()));
+        let oldest = fixture
+            .remember("current", "needle oldest paused job")
+            .await?;
+        let paused = engine.drain_embedding_jobs(1).await?;
+        assert_eq!(paused.configuration_faults, vec![fault]);
+        assert_eq!(fixture.job_statuses(&oldest).await?, ["pending"]);
+
+        let healthy = RecordingRouteEmbedding::new("route-next", EmbeddingDim::D768);
+        fixture.router.set_route(
+            fixture.personal,
+            EmbeddingRoute::moving(Some(refused.bound()), healthy.bound())?,
+        );
+        fixture
+            .router
+            .set_owner(fixture.shared, Some(healthy.bound()));
+        let moving = fixture
+            .remember("current", "needle healthy next space")
+            .await?;
+        let shared = fixture
+            .remember(&fixture.shared_space, "needle later healthy owner")
+            .await?;
+        for _ in 0..2 {
+            let drained = engine.drain_embedding_jobs(1).await?;
+            assert_eq!((drained.processed, drained.failed), (1, 0));
+            assert_eq!(drained.configuration_faults, vec![fault]);
+        }
+        assert_eq!(healthy.texts().len(), 2);
+        assert_eq!(refused.lengths().len(), 1);
+        assert_eq!(
+            fixture.embedding_rows(&moving).await?,
+            (
+                vec![("route-next".to_owned(), 768)],
+                vec![("route-failure".to_owned(), 1024)]
+            )
+        );
+        assert_eq!(
+            fixture.stored_space(&shared).await?,
+            Some(("route-next".to_owned(), 768))
+        );
+        for handle in [&oldest, &moving] {
+            assert_eq!(fixture.job_statuses(handle).await?, ["pending"]);
+        }
+        assert_eq!(engine.embedding_configuration_faults(), vec![fault]);
+        let replacement = RecordingRouteEmbedding::new("route-failure", EmbeddingDim::D1024);
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(replacement.bound()));
+        let resumed = engine.drain_embedding_jobs(10).await?;
+        assert_eq!((resumed.processed, resumed.failed), (2, 0));
+        assert!(resumed.configuration_faults.is_empty());
+        assert!(engine.embedding_configuration_faults().is_empty());
+        Ok(())
+    }
+    .await;
+    fixture.shutdown().await;
+    result.expect("paused queue progress");
+}
+
+async fn terminal_input_refusal_case(
+    fixture: &TwoOwnerFixture,
+    later: proxima_core::llm::EmbeddingInputRefusal,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use proxima_core::llm::{EmbeddingInputRefusal, MIN_EMBED_INPUT_CAP_CHARS};
+    let refused = RefusingRouteEmbedding::new(RoutedRefusal::Input {
+        first: EmbeddingInputRefusal::PayloadTooLarge,
+        later,
+    });
+    fixture
+        .router
+        .set_owner(fixture.personal, Some(refused.bound()));
+    let handle = fixture
+        .remember("current", &"x".repeat(2 * MIN_EMBED_INPUT_CAP_CHARS))
+        .await?;
+    let engine = fixture.built.host().engine();
+    let drained = engine.drain_embedding_jobs(1).await?;
+    assert_eq!(drained.failed, 1);
+    assert!(drained.configuration_faults.is_empty());
+    let jobs = fixture.jobs(&handle).await?;
+    assert_eq!(jobs.len(), 1);
+    let (status, last_error) = &jobs[0];
+    assert_eq!(status, "failed_permanent");
+    assert!(
+        last_error.as_deref().is_some_and(
+            |error| error.contains(&format!("HTTP {}", later.status().expect("HTTP refusal")))
+        ),
+        "terminal job must record its final refusal: {last_error:?}"
+    );
+    let lengths = refused.lengths();
+    assert!(
+        lengths.len() > 2,
+        "long input must pass through chunk isolation: {lengths:?}"
+    );
+    assert!(
+        lengths.last() < lengths.first(),
+        "the final refusal belongs to a smaller segment: {lengths:?}"
+    );
+    assert_eq!(fixture.stored_space(&handle).await?, None);
+    engine
+        .reconcile_embeddings(
+            proxima_core::EmbeddingReconcileScope::MissingOnly,
+            Some(100),
+        )
+        .await?;
+    assert_eq!(fixture.job_statuses(&handle).await?, ["failed_permanent"]);
+    let calls = refused.lengths().len();
+    let drained = engine.drain_embedding_jobs(1).await?;
+    assert_eq!(drained.processed, 0);
+    assert_eq!(
+        refused.lengths().len(),
+        calls,
+        "terminal input must not be retried"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_jobs_record_the_final_typed_input_refusal() {
+    use proxima_core::llm::EmbeddingInputRefusal;
+    let split_db = clone_split_core_db("proxima_core_route_input_status")
+        .await
+        .expect("PG required for tests");
+    let fixture = TwoOwnerFixture::boot(split_db.name())
+        .await
+        .expect("routing fixture");
+    for later in [
+        EmbeddingInputRefusal::PayloadTooLarge,
+        EmbeddingInputRefusal::UnprocessableContent,
+    ] {
+        terminal_input_refusal_case(&fixture, later)
+            .await
+            .expect("terminal input status");
+    }
+    fixture.shutdown().await;
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RetryFailure {
+    Http(u16),
+    Network,
+    Timeout,
+}
+
+impl RetryFailure {
+    fn error(self) -> proxima_core::llm::LlmError {
+        use proxima_core::llm::LlmError;
+        match self {
+            Self::Http(status) => LlmError::Retryable {
+                status: Some(status),
+                retry_after: None,
+                message: format!("HTTP {status} temporary failure"),
+            },
+            Self::Network => LlmError::retryable("network unavailable"),
+            Self::Timeout => LlmError::retryable("request timed out"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RetryStage {
+    Batch,
+    IsolatedItem,
+    LaterChunk,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RetryCalls {
+    batches: Vec<Vec<usize>>,
+    singles: Vec<usize>,
+    accepted_singles: usize,
+}
+
+#[derive(Debug)]
+struct RetryRouteEmbedding {
+    stage: RetryStage,
+    failure: RetryFailure,
+    calls: std::sync::Mutex<RetryCalls>,
+}
+
+impl RetryRouteEmbedding {
+    fn new(stage: RetryStage, failure: RetryFailure) -> Arc<Self> {
+        Arc::new(Self {
+            stage,
+            failure,
+            calls: std::sync::Mutex::default(),
+        })
+    }
+
+    fn calls(&self) -> RetryCalls {
+        self.calls.lock().expect("retry recorder lock").clone()
+    }
+
+    fn bound(self: &Arc<Self>) -> proxima_core::llm::BoundEmbeddingClient {
+        proxima_core::llm::BoundEmbeddingClient::bind(self.clone()).expect("lane width")
+    }
+
+    fn assert_failed_attempt(&self) {
+        use proxima_core::llm::CHUNKED_EMBED_MIN_BYTES;
+        let calls = self.calls();
+        assert_eq!(
+            calls.batches.len(),
+            1,
+            "one actual batch, including shared owners: {calls:?}"
+        );
+        match self.stage {
+            RetryStage::Batch => {
+                assert_eq!(calls.batches[0].len(), 2);
+                assert!(
+                    calls.singles.is_empty(),
+                    "a transient batch must never probe or isolate: {calls:?}"
+                );
+                assert_eq!(calls.accepted_singles, 0);
+            }
+            RetryStage::IsolatedItem => {
+                assert_eq!(calls.batches[0].len(), 2);
+                assert_eq!(
+                    calls.singles,
+                    [calls.batches[0][0]],
+                    "only the first full item is tried; no probe/split: {calls:?}"
+                );
+                assert_eq!(calls.accepted_singles, 0);
+            }
+            RetryStage::LaterChunk => {
+                assert_eq!(calls.batches[0].len(), 1);
+                assert_eq!(
+                    calls.singles.len(),
+                    2,
+                    "no full-text replay or probe: {calls:?}"
+                );
+                let full = calls.batches[0][0];
+                assert_eq!(
+                    calls.singles.iter().sum::<usize>(),
+                    full,
+                    "two halves cover the entire input"
+                );
+                assert!(
+                    calls
+                        .singles
+                        .iter()
+                        .all(|length| *length >= CHUNKED_EMBED_MIN_BYTES && *length < full)
+                );
+                assert_eq!(
+                    calls.accepted_singles, 1,
+                    "a chunk succeeded before the transient failure"
+                );
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RetryRouteEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        let mut calls = self.calls.lock().expect("retry recorder lock");
+        calls.singles.push(text.len());
+        let accepted = text == "ok"
+            || matches!(self.stage, RetryStage::LaterChunk) && calls.singles.len() == 1;
+        if accepted {
+            calls.accepted_singles += 1;
+            let mut vector = vec![0.0; proxima_core::llm::EmbeddingDim::D1024.width()];
+            vector[0] = 1.0;
+            return Ok(vector);
+        }
+        Err(self.failure.error())
+    }
+
+    async fn embed_many(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, proxima_core::llm::LlmError> {
+        use proxima_core::llm::{EmbeddingInputRefusal, LlmError};
+        self.calls
+            .lock()
+            .expect("retry recorder lock")
+            .batches
+            .push(texts.iter().map(String::len).collect());
+        Err(match self.stage {
+            RetryStage::Batch => self.failure.error(),
+            RetryStage::IsolatedItem | RetryStage::LaterChunk => {
+                LlmError::InputRefused(EmbeddingInputRefusal::PayloadTooLarge)
+            }
+        })
+    }
+
+    fn model_id(&self) -> &'static str {
+        "route-retry"
+    }
+    fn dim(&self) -> usize {
+        proxima_core::llm::EmbeddingDim::D1024.width()
+    }
+}
+
+async fn remember_retry_case(
+    fixture: &TwoOwnerFixture,
+    stage: RetryStage,
+    failure: RetryFailure,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let marker = format!("needle retry {stage:?} {failure:?}");
+    match stage {
+        RetryStage::Batch | RetryStage::IsolatedItem => Ok(vec![
+            fixture
+                .remember("current", &format!("{marker} first"))
+                .await?,
+            fixture
+                .remember("current", &format!("{marker} second"))
+                .await?,
+            fixture
+                .remember(&fixture.shared_space, &format!("{marker} shared"))
+                .await?,
+        ]),
+        RetryStage::LaterChunk => {
+            let mut body = "x".repeat(2 * proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS);
+            body.replace_range(..marker.len(), &marker);
+            Ok(vec![fixture.remember("current", &body).await?])
+        }
+    }
+}
+
+async fn assert_retry_jobs_pending(
+    fixture: &TwoOwnerFixture,
+    handles: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for handle in handles {
+        let jobs = fixture.jobs(handle).await?;
+        assert_eq!(jobs.len(), 1, "one retained job for {handle}");
+        assert_eq!(
+            jobs[0].0, "pending",
+            "transient failure keeps {handle} pending"
+        );
+        assert_eq!(
+            fixture.stored_space(handle).await?,
+            None,
+            "no partial chunk or embedding head for {handle}"
+        );
+    }
+    Ok(())
+}
+
+async fn retryable_job_case(
+    fixture: &TwoOwnerFixture,
+    stage: RetryStage,
+    failure: RetryFailure,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use proxima_core::llm::EmbeddingDim;
+    let client = RetryRouteEmbedding::new(stage, failure);
+    for owner in [fixture.personal, fixture.shared] {
+        fixture.router.set_owner(owner, Some(client.bound()));
+    }
+    let handles = remember_retry_case(fixture, stage, failure).await?;
+    assert_eq!(
+        client.calls(),
+        RetryCalls::default(),
+        "admission never calls the provider"
+    );
+    let engine = fixture.built.host().engine();
+    let first = engine.drain_embedding_jobs(10).await?;
+    assert_eq!((first.processed, first.failed), (0, 0));
+    assert!(first.configuration_faults.is_empty());
+    client.assert_failed_attempt();
+    assert_retry_jobs_pending(fixture, &handles).await?;
+
+    let before = client.calls();
+    let blocked = engine.drain_embedding_jobs(10).await?;
+    assert_eq!((blocked.processed, blocked.failed), (0, 0));
+    assert!(blocked.configuration_faults.is_empty());
+    assert_eq!(
+        client.calls(),
+        before,
+        "shared backoff makes no provider calls or probes"
+    );
+    assert_retry_jobs_pending(fixture, &handles).await?;
+
+    let healthy = RecordingRouteEmbedding::new("route-retry", EmbeddingDim::D1024);
+    for owner in [fixture.personal, fixture.shared] {
+        fixture.router.set_owner(owner, Some(healthy.bound()));
+    }
+    let recovered = engine.drain_embedding_jobs(10).await?;
+    assert_eq!((recovered.processed, recovered.failed), (handles.len(), 0));
+    assert!(recovered.configuration_faults.is_empty());
+    assert_eq!(healthy.texts().len(), handles.len());
+    assert_eq!(
+        client.calls(),
+        before,
+        "recovery uses a new original client"
+    );
+    for handle in handles {
+        assert!(
+            fixture.jobs(&handle).await?.is_empty(),
+            "all retained work is drained before the next case"
+        );
+        assert_eq!(
+            fixture.stored_space(&handle).await?,
+            Some(("route-retry".to_owned(), 1024))
+        );
+    }
+    Ok(())
+}
+
+/// Retry timing is covered with injected time in core. This test keeps its
+/// own retry interval long while real PG proves durable retention and rebind.
+/// One fixture covers all 24 cases and drains each before admitting the next.
+#[tokio::test]
+async fn retryable_failures_retain_jobs_without_partial_embeddings() {
+    use proxima_core::llm::EmbeddingRuntimePolicy;
+    let split_db = clone_split_core_db("proxima_core_route_retry_retention")
+        .await
+        .expect("PG required for tests");
+    let default = EmbeddingRuntimePolicy::default();
+    let policy = EmbeddingRuntimePolicy::new(
+        default.request_timeout(),
+        default.batch_size(),
+        std::time::Duration::from_hours(1),
+        default.stale_claim_timeout(),
+    )
+    .expect("valid isolated retry policy");
+    let fixture = TwoOwnerFixture::boot_with_policy(split_db.name(), policy)
+        .await
+        .expect("routing fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        for stage in [
+            RetryStage::Batch,
+            RetryStage::IsolatedItem,
+            RetryStage::LaterChunk,
+        ] {
+            for failure in [
+                RetryFailure::Http(408),
+                RetryFailure::Http(429),
+                RetryFailure::Http(500),
+                RetryFailure::Http(502),
+                RetryFailure::Http(503),
+                RetryFailure::Http(504),
+                RetryFailure::Network,
+                RetryFailure::Timeout,
+            ] {
+                retryable_job_case(&fixture, stage, failure)
+                    .await
+                    .map_err(|error| format!("{stage:?}/{failure:?}: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+    .await;
+    fixture.shutdown().await;
+    result.expect("retryable durable retention table");
+}
+
+#[derive(Debug, Default)]
+struct RecoveringRetryEmbedding {
+    first_batch: std::sync::OnceLock<tokio::time::Instant>,
+    batches: std::sync::atomic::AtomicUsize,
+    singles: std::sync::atomic::AtomicUsize,
+}
+
+impl RecoveringRetryEmbedding {
+    fn bound(self: &Arc<Self>) -> proxima_core::llm::BoundEmbeddingClient {
+        proxima_core::llm::BoundEmbeddingClient::bind(self.clone()).expect("lane width")
+    }
+
+    fn calls(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering;
+        (
+            self.batches.load(Ordering::SeqCst),
+            self.singles.load(Ordering::SeqCst),
+        )
+    }
+
+    fn in_failure_window(&self, now: tokio::time::Instant) -> bool {
+        self.first_batch.get().is_none_or(|start| {
+            now.saturating_duration_since(*start) < std::time::Duration::from_secs(1)
+        })
+    }
+
+    fn vector() -> Vec<f32> {
+        vec![1.0; proxima_core::llm::EmbeddingDim::D1024.width()]
+    }
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RecoveringRetryEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        self.singles
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if text == "ok" || !self.in_failure_window(tokio::time::Instant::now()) {
+            return Ok(Self::vector());
+        }
+        Err(RetryFailure::Http(429).error())
+    }
+
+    async fn embed_many(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, proxima_core::llm::LlmError> {
+        self.batches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let now = tokio::time::Instant::now();
+        self.first_batch.get_or_init(|| now);
+        if self.in_failure_window(now) {
+            return Err(RetryFailure::Http(429).error());
+        }
+        Ok(texts.iter().map(|_| Self::vector()).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "route-retry"
+    }
+    fn dim(&self) -> usize {
+        proxima_core::llm::EmbeddingDim::D1024.width()
+    }
+}
+
+/// One second of real time is intentional: durable jobs complete after the
+/// original client's busy window without rebinding or an acceptance-time call.
+#[tokio::test]
+async fn retryable_jobs_complete_after_the_same_clients_window_passes() {
+    use proxima_core::llm::EmbeddingRuntimePolicy;
+    let split_db = clone_split_core_db("proxima_core_route_retry_expiry")
+        .await
+        .expect("PG required for tests");
+    let default = EmbeddingRuntimePolicy::default();
+    let policy = EmbeddingRuntimePolicy::new(
+        default.request_timeout(),
+        default.batch_size(),
+        std::time::Duration::from_secs(1),
+        default.stale_claim_timeout(),
+    )
+    .expect("valid minimum retry interval");
+    let fixture = TwoOwnerFixture::boot_with_policy(split_db.name(), policy)
+        .await
+        .expect("routing fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let client = Arc::new(RecoveringRetryEmbedding::default());
+        let original = client.bound();
+        fixture
+            .router
+            .set_owner(fixture.personal, Some(original.clone()));
+        let handles = [
+            fixture
+                .remember("current", "needle retry expiry first")
+                .await?,
+            fixture
+                .remember("current", "needle retry expiry second")
+                .await?,
+        ];
+        assert_eq!(client.calls(), (0, 0), "admission never calls the provider");
+        assert!(
+            client.first_batch.get().is_none(),
+            "seeding does not start the failure window"
+        );
+        let engine = fixture.built.host().engine();
+        let first = engine.drain_embedding_jobs(handles.len()).await?;
+        assert_eq!((first.processed, first.failed), (0, 0));
+        assert!(first.configuration_faults.is_empty());
+        assert_eq!(client.calls(), (1, 0), "one batch, no probe or isolation");
+        assert_retry_jobs_pending(&fixture, &handles).await?;
+
+        tokio::time::timeout(RETRY_RECOVERY_PATIENCE, async {
+            loop {
+                let drained = engine.drain_embedding_jobs(handles.len()).await?;
+                assert_eq!(drained.failed, 0);
+                assert!(drained.configuration_faults.is_empty());
+                if drained.processed > 0 {
+                    assert_eq!(
+                        drained.processed,
+                        handles.len(),
+                        "every retained job completes"
+                    );
+                    break;
+                }
+                assert_eq!(
+                    client.calls(),
+                    (1, 0),
+                    "backed-off drains make no provider requests or probes"
+                );
+                tokio::task::yield_now().await;
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await??;
+        assert_eq!(
+            client.calls(),
+            (2, 0),
+            "the same client succeeds on its second batch"
+        );
+        let route = engine.embedding_route(&fixture.personal).await?;
+        assert!(
+            route
+                .current_client()
+                .expect("current client")
+                .same_client(&original)
+        );
+        for handle in handles {
+            assert!(fixture.jobs(&handle).await?.is_empty());
+            assert_eq!(
+                fixture.stored_space(&handle).await?,
+                Some(("route-retry".to_owned(), 1024))
+            );
+        }
+        Ok(())
+    }
+    .await;
+    fixture.shutdown().await;
+    result.expect("same-original retry expiry completion");
 }

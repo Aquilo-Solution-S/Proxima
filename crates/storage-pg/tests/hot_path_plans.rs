@@ -650,6 +650,9 @@ async fn hot_path_plans_use_expected_indexes() {
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(claim_explain))
             .bind(32_i64)
             .bind(&owner_ids)
+            .bind(Vec::<Uuid>::new())
+            .bind(Vec::<String>::new())
+            .bind(Vec::<i16>::new())
             .fetch_one(&mut *tx)
             .await?;
         assert_plan_names(&plan, "embedding_jobs_pending_claim_idx");

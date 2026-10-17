@@ -309,6 +309,7 @@ impl EmbeddingJobPort for RejectingStorage {
         &self,
         _limit: i64,
         _skip_owners: &[crate::OwnerId],
+        _skip_owner_spaces: &[(crate::OwnerId, crate::EmbeddingSpace)],
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

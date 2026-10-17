@@ -4,7 +4,7 @@ use crate::authz::EngineAuthority;
 use crate::edge::{EdgeEndpoint, validate_edge_layering};
 use crate::error::ProtocolError;
 use crate::storage::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding, MemoryHydrationBatchOutcome,
+    AuthorDerivedOutcome, AuthorDerivedRequest, MemoryHydrationBatchOutcome,
     MemoryHydrationOutcome, StorageError,
 };
 #[cfg(test)]
@@ -27,7 +27,6 @@ pub(super) struct PreparedDerived {
     pub(super) sidecar_payload: SidecarPayload,
     pub(super) supersedes: Option<MemoryId>,
     pub(super) lexical_language: Option<String>,
-    pub(super) embedding: DerivedEmbedding,
     pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
@@ -99,7 +98,6 @@ impl RawDerivedTestRequest<'_> {
             origins,
             extra_refs: self.extra_refs.to_vec(),
             lexical_language: self.lexical_language.map(str::to_owned),
-            embedding_mode: EmbeddingMode::Inline,
             external_origins: Vec::new(),
         })
     }
@@ -118,7 +116,6 @@ impl PreparedDerived {
             sidecar_payload: self.sidecar_payload.clone(),
             supersedes: self.supersedes,
             lexical_language: self.lexical_language.as_deref(),
-            embedding: self.embedding.clone(),
             queued_spaces: &self.queued_spaces,
             origins: &self.origins,
             references: &self.references,
@@ -236,10 +233,9 @@ pub struct DerivedMemoryOutcome {
     /// list of handles: a pin has no id to hand back, and re-running the
     /// write re-asserts the same column values.
     pub edge_count: usize,
-    /// The memory landed with no vector and a pending embedding job; it is
-    /// lexically findable and semantically invisible until a drain runs.
-    /// Callers that need it searchable immediately can see that here rather
-    /// than by reading logs.
+    /// This admission queued embedding work in its memory transaction.
+    /// The vector becomes available after a drain. Nonembeddable schemas,
+    /// routes with no clients, and idempotent replays report false.
     pub embedding_deferred: bool,
 }
 
@@ -286,21 +282,6 @@ impl DerivationIdentity {
     }
 }
 
-/// When a derived write's vector is embedded.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum EmbeddingMode {
-    /// Before the write: the vector lands with the row, one text per
-    /// provider request. A provider outage fails the write.
-    #[default]
-    Inline,
-    /// With the write: the row lands with a pending embedding job — the
-    /// lane every Fact takes — and [`Engine::drain_embedding_jobs`] sends
-    /// queued texts up to [`crate::EmbeddingRuntimePolicy::batch_size`] per
-    /// provider request. Searchable semantically once drained; a provider
-    /// outage leaves the job pending. For bulk writers.
-    Deferred,
-}
-
 #[derive(Debug, Clone)]
 /// A typed conclusion or interpretation; the engine resolves source kinds and authority.
 /// Payload kind, schema, and provenance cannot be overwritten by consumers.
@@ -320,7 +301,6 @@ pub struct DerivedMemory {
     pub(crate) identity: Option<DerivationIdentity>,
     pub(crate) extra_refs: Vec<MemoryId>,
     pub(crate) lexical_language: Option<String>,
-    pub(crate) embedding_mode: EmbeddingMode,
     pub(crate) external_origins: Vec<crate::storage_ports::other_stores::ReadOrigin>,
 }
 
@@ -375,7 +355,6 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            embedding_mode: EmbeddingMode::Inline,
             external_origins: Vec::new(),
         })
     }
@@ -402,7 +381,6 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            embedding_mode: EmbeddingMode::Inline,
             external_origins: Vec::new(),
         })
     }
@@ -425,7 +403,6 @@ impl DerivedMemory {
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
-            embedding_mode: EmbeddingMode::Inline,
             external_origins: Vec::new(),
         }
     }
@@ -456,13 +433,6 @@ impl DerivedMemory {
     #[must_use]
     pub fn lexical_language(mut self, language: impl Into<String>) -> Self {
         self.lexical_language = Some(language.into());
-        self
-    }
-    /// When this memory's vector is embedded; [`EmbeddingMode::Inline`] by
-    /// default. An already-open unit of work defers regardless.
-    #[must_use]
-    pub const fn embedding_mode(mut self, mode: EmbeddingMode) -> Self {
-        self.embedding_mode = mode;
         self
     }
 }
@@ -668,9 +638,7 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let item = self
-            .prepare_derived_memory(authority, memory, &[], false)
-            .await?;
+        let item = self.prepare_derived_memory(authority, memory, &[]).await?;
         let req = item.storage_request();
         let outcome = self
             .storage()
@@ -692,7 +660,6 @@ impl Engine {
         authority: &A,
         memory: DerivedMemory,
         session_kinds: &[(MemoryId, EntityKind)],
-        in_open_transaction: bool,
     ) -> Result<PreparedDerived, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -734,19 +701,10 @@ impl Engine {
             .await?;
         validate_typed_invocation(&memory, memory_id, kind, operator_kind, &origins)
             .map_err(map_derived_storage_error)?;
-        // An open transaction never waits on a provider round trip.
-        let embedding_mode = if in_open_transaction {
-            EmbeddingMode::Deferred
-        } else {
-            memory.embedding_mode
-        };
-        let (embedding, queued_spaces) = self
-            .prepare_memory_embedding(
+        let queued_spaces = self
+            .embedding_spaces_for_write(
                 write_permit.owner(),
-                memory_id,
                 memory.sidecar_payload.schema_id.as_str(),
-                &memory.text,
-                embedding_mode,
             )
             .await?;
         Ok(PreparedDerived {
@@ -761,7 +719,6 @@ impl Engine {
             sidecar_payload: memory.sidecar_payload,
             supersedes,
             lexical_language: memory.lexical_language,
-            embedding,
             queued_spaces,
             origins,
             references,
@@ -872,68 +829,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Embeds through `owner`'s route. A route error fails the write, the
-    /// same as for a Fact: the memory would otherwise land unsearchable.
-    ///
-    /// Returns the `current` space's embedding and the spaces queued beside
-    /// it: a moving route's `next` space is never embedded inline.
-    async fn prepare_memory_embedding(
-        &self,
-        owner: &OwnerId,
-        memory_id: MemoryId,
-        schema_id: &str,
-        text: &str,
-        mode: EmbeddingMode,
-    ) -> Result<(DerivedEmbedding, Vec<crate::EmbeddingSpace>), ProtocolError> {
-        if !self.registry().schema_is_embeddable(schema_id) {
-            return Ok((DerivedEmbedding::None, Vec::new()));
-        }
-        let route = self.write_route(owner).await?;
-        let queued = route.queued_spaces();
-        let Some(client) = route.current_client() else {
-            return Ok((DerivedEmbedding::None, queued));
-        };
-        if mode == EmbeddingMode::Deferred {
-            let space = client.space().clone();
-            return Ok((DerivedEmbedding::Deferred { space }, queued));
-        }
-        let embedding = resolve_derived_embedding(client, memory_id, text)
-            .await
-            .map_err(map_derived_storage_error)?;
-        Ok((embedding, queued))
-    }
-
-    /// Author one derived Memory and its already-resolved edges. When an
-    /// embedding client is configured AND the schema's recipe resolves to a
-    /// unit, the Engine embeds before storage; otherwise storage receives
-    /// [`DerivedEmbedding::None`] and persists no embedding row.
-    ///
-    /// An input this client cannot embed does not fail the write. A text
-    /// refused whole is rescued by the drain's bisection and lands as
-    /// [`DerivedEmbedding::Ready`] in the same transaction as the row —
-    /// so a long unit costs no job and no second round trip. Every piece
-    /// is stored in the same embedding version. A text
-    /// rejected at every length lands with no vector and a pending
-    /// embedding job enqueued in the same transaction
-    /// ([`DerivedEmbedding::Deferred`]), so [`Engine::drain_embedding_jobs`]
-    /// — which owns terminal failures and retries — picks it up. The
-    /// alternative is what production hit: a derive phase that dies
-    /// deterministically, forever, on one over-long section, discarding
-    /// every model call already paid for upstream of it.
-    ///
-    /// A provider that is merely *down* is a different thing and still
-    /// fails the write, so an outage cannot quietly mint a corpus of
-    /// unembedded memories. [`crate::llm::embed_failure_blames_the_input`]
-    /// is what separates the two.
+    /// Test-only adapter for recording the raw storage/proof boundary.
+    /// Like typed admission, it queues work without requesting a vector.
     ///
     /// # Errors
-    ///
-    /// Returns `Internal` when the embedding client fails *and* the
-    /// provider does not answer a liveness probe,
-    /// `ConstraintViolation` on embedding dimension mismatch, and storage
-    /// errors from the atomic write.
-    ///
-    /// Test-only adapter for recording the raw storage/proof boundary.
+    /// Returns validation, routing-policy, or atomic storage errors.
     #[cfg(test)]
     async fn author_derived(
         &self,
@@ -942,19 +842,10 @@ impl Engine {
         references: &[EdgeEndpoint],
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
-        let route = self.embedding_route(&req.owner).await?;
-        let embeddable = self.registry().schema_is_embeddable(req.schema_id.as_str());
-        let embedding = match route.current_client() {
-            Some(client) if embeddable => {
-                resolve_derived_embedding(client, req.memory_id, &req.text).await?
-            }
-            _ => DerivedEmbedding::None,
-        };
-        let queued_spaces = if embeddable {
-            route.queued_spaces()
-        } else {
-            Vec::new()
-        };
+        let queued_spaces = self
+            .embedding_spaces_for_write(&req.owner, req.schema_id.as_str())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
 
         let storage_req = AuthorDerivedRequest {
             memory_id: req.memory_id,
@@ -970,7 +861,6 @@ impl Engine {
             // handle and appends to it inside the same transaction.
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
-            embedding,
             queued_spaces: &queued_spaces,
             origins: req.derived_from,
             references,
@@ -1030,84 +920,6 @@ impl Engine {
                 })
             })
             .collect()
-    }
-}
-
-/// Decide what a derived write should do about its vector, given a
-/// configured embedding client.
-///
-/// A text this client refuses whole is bisected into pieces it accepts
-/// ([`crate::llm::embed_in_chunks_after_failure`], the drain's rescue) —
-/// but only after a liveness probe, because an outage says nothing about
-/// the text. An over-limit text is routine for a corpus of long units, so
-/// it is rescued inline rather than refused now and rescued by a job
-/// later. A successful rescue lands as [`DerivedEmbedding::Ready`] with
-/// every piece in text order. Only a text
-/// rejected at every length, or a rescue that fails midway, downgrades
-/// the write to a job.
-///
-/// # Errors
-///
-/// `ConstraintViolation` when a vector's length disagrees with the
-/// client's declared `dim` (a misconfiguration, never the input's fault,
-/// so it is not deferrable), and `Internal` when the provider fails and
-/// does not answer a liveness probe.
-pub(in crate::engine) async fn resolve_derived_embedding(
-    bound: &crate::llm::BoundEmbeddingClient,
-    memory_id: MemoryId,
-    text: &str,
-) -> Result<DerivedEmbedding, StorageError> {
-    let client = bound.as_ref();
-    let err = match client.embed(text).await {
-        Ok(vector) => {
-            return Ok(DerivedEmbedding::Ready {
-                vectors: vec![space_vector(bound, vector)?],
-            });
-        }
-        Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => err,
-        Err(err) => {
-            return Err(StorageError::Internal(format!(
-                "embed derived memory text: {err}"
-            )));
-        }
-    };
-    let refusal = err.to_string();
-    match crate::llm::embed_in_chunks_after_failure(client, text, err).await {
-        Ok(Some(vectors)) => {
-            let vectors = space_vectors(bound, vectors)?;
-            tracing::info!(
-                memory_id = ?memory_id,
-                text_bytes = text.len(),
-                "over-limit derived memory text embedded inline"
-            );
-            Ok(DerivedEmbedding::Ready { vectors })
-        }
-        Ok(None) => {
-            tracing::warn!(
-                error = %refusal,
-                memory_id = ?memory_id,
-                text_bytes = text.len(),
-                "derived memory text refused by a live embedding provider at every length; \
-                 writing the memory without a vector and enqueueing an embedding job"
-            );
-            Ok(DerivedEmbedding::Deferred {
-                space: bound.space().clone(),
-            })
-        }
-        Err(rescue_err) => {
-            tracing::warn!(
-                error = %refusal,
-                rescue_error = %rescue_err,
-                memory_id = ?memory_id,
-                text_bytes = text.len(),
-                "derived memory text refused by a live embedding provider and the chunked \
-                 rescue failed; writing the memory without a vector and enqueueing an \
-                 embedding job"
-            );
-            Ok(DerivedEmbedding::Deferred {
-                space: bound.space().clone(),
-            })
-        }
     }
 }
 
@@ -1339,6 +1151,34 @@ mod tests {
             .expect_err("denied context must fail before storage");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn write_embedding_spaces_preserve_schema_exclusion_and_route_policy() {
+        let owner = owner();
+        let router = Arc::new(crate::test_fixtures::TestEmbeddingRouter::default());
+        router.refuse(owner, "owner route is not configured");
+        let engine = engine().with_embedding_router(router.clone());
+        assert!(
+            engine
+                .embedding_spaces_for_write(&owner, "core/write-act-v1")
+                .await
+                .expect("a nonembeddable schema does not need a route")
+                .is_empty()
+        );
+        let error = engine
+            .embedding_spaces_for_write(&owner, "core/agent-derivation-v1")
+            .await
+            .expect_err("routing policy still refuses an embeddable write");
+        assert_eq!(error.code, ErrorCode::Internal);
+        router.set_owner(owner, None);
+        assert!(
+            engine
+                .embedding_spaces_for_write(&owner, "core/agent-derivation-v1")
+                .await
+                .expect("a route naming no clients requests no jobs")
+                .is_empty()
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub struct EmbedCaps {
     /// limit (a local runner can die instead of rejecting). Characters, not
     /// tokens (no shared tokenizer) and not bytes (would refuse non-ASCII
     /// shorter text; see [`crate::text_bounds`]). Over-cap is
-    /// [`crate::llm::LlmError::EmbedPermanent`] → [`crate::llm::embed_in_chunks`];
+    /// [`crate::llm::LlmError::InputRefused`] → [`crate::llm::embed_in_chunks`];
     /// floor is [`crate::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub max_input_chars: Option<NonZeroU32>,
 }

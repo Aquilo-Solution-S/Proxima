@@ -1176,7 +1176,11 @@ fn build_router<A: FlavorApp>(
     config: &crate::RuntimeConfig,
 ) -> Router {
     let health_router = if config.health_endpoints {
-        crate::health::router(app_ctx.host().pool.clone(), cancel.clone())
+        crate::health::router(
+            app_ctx.host().pool.clone(),
+            cancel.clone(),
+            app_ctx.host().engine.clone(),
+        )
     } else {
         Router::new()
     };

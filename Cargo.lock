@@ -2364,6 +2364,8 @@ name = "proxima-llm-openai-compat"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
+ "httpdate",
  "proxima-core",
  "reqwest",
  "serde",

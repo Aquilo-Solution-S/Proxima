@@ -545,10 +545,12 @@ impl RuntimeBuilder {
     }
 
     /// Serve anonymous `GET /healthz` (process up) and `GET /readyz`
-    /// (database reachable, not shutting down) on the MCP listener, outside
-    /// the Host guard and bearer auth so an orchestrator probe needs
-    /// neither. Off by default: a host that mounts its own would otherwise
-    /// collide. Env equivalent: `PROXIMA_HEALTH_ENDPOINTS`.
+    /// (database reachable and not shutting down) on the MCP listener.
+    /// Observed embedding configuration faults keep readiness at HTTP 200
+    /// with a sanitized degraded body; database failure or shutdown returns 503.
+    /// Both probes sit outside the Host guard and bearer auth so an orchestrator
+    /// probe needs neither. Off by default: a host that mounts its own would
+    /// otherwise collide. Env equivalent: `PROXIMA_HEALTH_ENDPOINTS`.
     #[must_use]
     pub const fn health_endpoints(mut self, health_endpoints: bool) -> Self {
         self.health_endpoints = Some(health_endpoints);

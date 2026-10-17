@@ -206,8 +206,12 @@ mod embedding_failure_regressions {
         calls[1] = endpoint.calls.load(Ordering::SeqCst);
         let hybrid = call("core_search_memories", search_args("hybrid")).await??;
         calls[2] = endpoint.calls.load(Ordering::SeqCst);
+        // Each handler must receive its own malformed response, independently
+        // of the preceding client's retry backoff.
+        router.set_default(bound(Arc::new(endpoint.client.as_ref().clone())));
         let semantic = call("core_search_memories", search_args("semantic")).await?;
         calls[3] = endpoint.calls.load(Ordering::SeqCst);
+        router.set_default(bound(Arc::new(endpoint.client.as_ref().clone())));
         let recall = call(
             "core_recall",
             serde_json::json!({"question": "sentinel needle", "kind": "Fact"}),
@@ -254,6 +258,12 @@ mod embedding_failure_regressions {
                 .embedding_router(router.clone())
                 .build()
                 .await?;
+            built
+                .feature_control(proxima::Feature::EmbeddingWorker)
+                .expect("the configured router starts a worker")
+                .quiesce()
+                .await
+                .expect("manual query cases run without background embedding calls");
             let result = exercise(&built, &router, owner).await;
             built.shutdown().await;
             result
@@ -265,8 +275,10 @@ mod embedding_failure_regressions {
             "core overflow handlers: calls={:?}; fixture removed",
             observed.calls,
         );
-        assert!(matches!(observed.adapter, Err(LlmError::Embed(ref message))
-            if message == "embedding 0 has non-finite component at position 1023"));
+        assert!(
+            matches!(observed.adapter, Err(LlmError::Retryable { ref message, .. })
+            if message == "embedding 0 has non-finite component at position 1023")
+        );
         assert_eq!(observed.calls, [1, 1, 2, 3, 4, 4]);
         for (page, mode, degraded) in [
             (&observed.lexical, "lexical", false),

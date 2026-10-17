@@ -97,7 +97,7 @@ impl Engine {
         let authorized = self.authorize_fact_ingest(authority, draft, &[]).await?;
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .fact_embedding_spaces(
+            .embedding_spaces_for_write(
                 authorized.owner_write_permit().owner(),
                 authorized.draft().schema_id.as_str(),
             )
@@ -569,27 +569,16 @@ impl Engine {
         }
     }
 
-    /// The embedding spaces a new Fact of `schema_id` owned by `owner` is
-    /// queued for: the spaces `owner`'s route names, unless the schema's
-    /// recipe resolves to no embed unit.
-    ///
-    /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
-    /// write in the process funnels through one of the four verbs that
-    /// persist one — `fact_ingest` above, plus the three below — and none
-    /// of them should have to remember. Count them when adding a fifth:
-    /// `fact_ingest` was missed for a release because it does not share
-    /// the `ingest_fact_*` name. Callers do not name a space at all: the
-    /// engine owns which client embeds, so no verb can queue a Fact for a
-    /// space the engine would not embed.
-    ///
-    /// Storage would be the lower boundary, and cannot host this: the
-    /// answer lives in the flavor registry, which storage does not hold.
+    /// Spaces a new memory of `schema_id` owned by `owner` is queued for:
+    /// the route's current and next spaces, unless the schema has no embed unit.
+    /// Fact and derived admission share this registry and routing-policy boundary;
+    /// selecting spaces never requests a provider vector.
     ///
     /// # Errors
     ///
     /// `Internal` when the host cannot route `owner`: the write fails
     /// rather than landing without the job that would make it searchable.
-    pub(in crate::engine) async fn fact_embedding_spaces(
+    pub(in crate::engine) async fn embedding_spaces_for_write(
         &self,
         owner: &OwnerId,
         schema_id: &str,
@@ -613,7 +602,7 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .fact_embedding_spaces(
+            .embedding_spaces_for_write(
                 authorized.owner_write_permit().owner(),
                 authorized.draft().schema_id.as_str(),
             )
@@ -644,7 +633,7 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .fact_embedding_spaces(
+            .embedding_spaces_for_write(
                 authorized.owner_write_permit().owner(),
                 authorized.draft().schema_id.as_str(),
             )
@@ -677,7 +666,7 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .fact_embedding_spaces(
+            .embedding_spaces_for_write(
                 authorized.owner_write_permit().owner(),
                 authorized.draft().schema_id.as_str(),
             )

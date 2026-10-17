@@ -53,6 +53,7 @@ aws-lc-rs = "1.15.0"
 base64 = "0.23"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1.5"
+httpdate = "1.0.3"
 http-body = "1"
 http-body-util = "0.1.2"
 tokio-util = "0.7.9"

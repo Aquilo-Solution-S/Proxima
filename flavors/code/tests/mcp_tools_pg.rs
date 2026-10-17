@@ -170,6 +170,12 @@ mod embedding_failure_regressions {
         )
         .await??;
         calls[2] = endpoint.calls.load(Ordering::SeqCst);
+        // Exercise a second malformed response independently of hybrid's
+        // client backoff, retaining the exact provider-call assertion.
+        router.set_default(
+            BoundEmbeddingClient::bind(Arc::new(endpoint.client.as_ref().clone()))
+                .expect("lane width"),
+        );
         // Keep the typed handler error instead of boxing it in run_tool.
         let semantic = tokio::time::timeout(
             DEADLINE,
@@ -208,8 +214,10 @@ mod embedding_failure_regressions {
             "code overflow handlers: calls={:?}; fixture removed",
             observed.calls,
         );
-        assert!(matches!(observed.adapter, Err(LlmError::Embed(ref message))
-            if message == "embedding 0 has non-finite component at position 1023"));
+        assert!(
+            matches!(observed.adapter, Err(LlmError::Retryable { ref message, .. })
+            if message == "embedding 0 has non-finite component at position 1023")
+        );
         assert_eq!(observed.calls, [1, 1, 2, 3]);
         for (page, mode, degraded) in [
             (&observed.lexical, "lexical", false),

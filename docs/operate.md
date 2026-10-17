@@ -88,9 +88,25 @@ HTTPS or allowed-plaintext host policy.
 ## Probes and shutdown
 
 With health endpoints enabled, anonymous `/healthz` is liveness and `/readyz`
-checks database reachability and shutdown state. These routes sit outside
-bearer and Host guards; expose them according to deployment policy.
+checks database reachability, shutdown state and observed embedding-client
+configuration faults. A paused client keeps readiness at HTTP 200 with a named
+degraded body, such as `degraded: embedding configuration fault: HTTP 401`,
+containing only sanitized status codes. Readiness returns 503 only when the
+database is unavailable or shutdown has started; liveness continues to answer.
+These routes sit outside bearer and Host guards; expose them according to
+deployment policy.
 An authenticated graph-resource read checks the served owner path.
+
+Accepted memory writes enqueue embedding work atomically without calling the
+provider. Only typed input refusals (413, 422 or a local input cap) enter chunk
+rescue and can become permanent job failures. Transient failures keep jobs
+pending and wait for backoff and any longer `Retry-After`. Configuration faults
+(400, 401, 403, 404) pause the original client shared by its owners. Replace its
+binding with a new client when configuration changes; mutating the same client
+does not reset the pause. Drains observe changed routes and clear faults once
+their old bindings are no longer active. Healthy clients continue draining.
+Calls through one original client serialize; the request deadline includes
+waiting for its dispatch slot and the provider call together.
 
 `proxima::serve` and `RunningProxima::until_shutdown_signal` drain on
 SIGTERM/SIGINT: readiness fails, listeners stop accepting, requests and streams

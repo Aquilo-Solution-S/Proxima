@@ -16,6 +16,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
+httpdate = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 # The input cap's whole claim is that an over-limit input is refused

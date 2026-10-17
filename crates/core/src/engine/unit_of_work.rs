@@ -633,30 +633,25 @@ impl<'a> UnitOfWork<'a> {
     /// Append a typed derived row in this transaction, inferring its phase from readable origins.
     ///
     /// # Errors
-    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    /// Returns authorization, provenance, schema, routing-policy, or storage errors.
     pub async fn derive_memory(
         &mut self,
         memory: crate::DerivedMemory,
     ) -> Result<crate::DerivedMemoryOutcome, ProtocolError> {
         let item = self
             .engine
-            .prepare_derived_memory(
-                self.authz()?,
-                memory,
-                &self.written_kinds,
-                self.session.is_some(),
-            )
+            .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
             .await?;
         self.write_prepared_derived(item).await
     }
 
     /// Prepare a batch before opening the write transaction, then append every row.
-    /// An already-open transaction defers embedding, as does
-    /// [`crate::EmbeddingMode::Deferred`]. Drop without commit rolls back the batch.
+    /// Every admitted row queues embedding work atomically without a provider
+    /// call. Drop without commit rolls back the batch and its jobs.
     /// Use sequential `derive_memory` calls when one result is an input to the next.
     ///
     /// # Errors
-    /// Returns authorization, provenance, schema, embedding, or storage errors.
+    /// Returns authorization, provenance, schema, routing-policy, or storage errors.
     pub async fn derive_memories(
         &mut self,
         memories: impl IntoIterator<Item = crate::DerivedMemory>,
@@ -665,12 +660,7 @@ impl<'a> UnitOfWork<'a> {
         for memory in memories {
             prepared.push(
                 self.engine
-                    .prepare_derived_memory(
-                        self.authz()?,
-                        memory,
-                        &self.written_kinds,
-                        self.session.is_some(),
-                    )
+                    .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
                     .await?,
             );
         }
@@ -948,7 +938,7 @@ impl<'a> UnitOfWork<'a> {
             .validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
             .engine
-            .fact_embedding_spaces(
+            .embedding_spaces_for_write(
                 authorized.owner_write_permit().owner(),
                 authorized.draft().schema_id.as_str(),
             )

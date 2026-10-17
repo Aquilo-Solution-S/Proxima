@@ -428,10 +428,10 @@ pub use proxima_core::{
 /// [`EmbeddingJobPort`] and the other `*Port` traits), so a host or backend that
 /// implements a port can write its signatures.
 pub use proxima_core::{
-    ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding,
-    EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome,
-    MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec,
-    OperatorPhase, goal_write::AchieveGoalAtomicRequest, goal_write::CreateGoalAtomicRequest,
+    ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddableEntityRef,
+    EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, MembershipRow,
+    MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, OperatorPhase,
+    goal_write::AchieveGoalAtomicRequest, goal_write::CreateGoalAtomicRequest,
     goal_write::DecomposeGoalAtomicRequest, goal_write::GoalAtomicContext, goal_write::GoalDraft,
     goal_write::GoalReplayOutcome, goal_write::GoalReplayRequest,
     goal_write::ModifyGoalAtomicRequest, goal_write::TransitionGoalAtomicRequest,
@@ -495,7 +495,7 @@ pub use proxima_core::{
 /// `try_compose` and `with_mcp_listener`. Without them a host can call each verb and cannot
 /// write its argument or result in a signature.
 pub use proxima_core::{
-    EmbeddingDrainOutcome, EmbeddingMode, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
+    EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
     EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationReadRequest,
     FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GroupMemberPage,

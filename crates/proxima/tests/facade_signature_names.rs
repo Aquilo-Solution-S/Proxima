@@ -120,7 +120,7 @@ facade_names! {
     // Needed by the storage-port methods' requests, rows and outcomes (`FactIngestPort`,
     // `GoalWritePort`, ...).
     storage_port_rows {
-        host_only: [AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, DerivedEmbedding, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
+        host_only: [AchieveGoalAtomicRequest, ActiveGoalSummary, AuthorDerivedOutcome, AuthorDerivedRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest, EmbeddableEntityRef, EmbeddingJobClaim, EmbeddingJobStatusCounts, EmbeddingWriteOutcome, GoalAtomicContext, GoalDraft, GoalReplayOutcome, GoalReplayRequest, MembershipRow, MemoryGraphIdentity, MemoryKindRow, MemoryOperatorKind, MemorySchemaSpec, ModifyGoalAtomicRequest, OperatorPhase, SeriesEraseOutcome, SeriesEraseReport, SeriesEraseRequest, TransitionGoalAtomicRequest],
         both_tiers: [],
     }
 
@@ -155,7 +155,7 @@ facade_names! {
     // `list_members`, ...).
     engine_verbs {
         host_only: [EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationPage, FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GroupMemberPage, InboundPinQuery, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts, StoragePortsBuilder],
-        both_tiers: [EmbeddingMode, UploadCompleted, UploadCompletionExpectation],
+        both_tiers: [UploadCompleted, UploadCompletionExpectation],
     }
 
     // Needed by `AuthzContext::{identity_for_revalidation, invoking_tool, with_trusted_model_id}`.

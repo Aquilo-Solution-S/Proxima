@@ -4,9 +4,10 @@
 //! canonical one.
 //!
 //! The surface is intentionally minimal. No retries; failures bubble up
-//! as `LlmError::Embed`, `LlmError::EmbedPermanent` when the provider refuses
-//! the input itself (HTTP 413/422), or `LlmError::Internal` when the client
-//! cannot be built.
+//! through typed input refusals (HTTP 413/422 or a local cap), configuration
+//! faults (HTTP 400/401/403/404), and retryable failures with optional HTTP
+//! status and Retry-After delay. Error-body diagnostics are bounded and best-effort;
+//! they never delay a known refusal. Client construction returns `LlmError::Internal`.
 
 use std::time::Duration;
 
