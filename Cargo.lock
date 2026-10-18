@@ -2352,7 +2352,7 @@ name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
  "proxima",
- "proxima-code",
+ "proxima-example",
  "proxima-pg-testkit",
  "proxima-storage-pg",
  "sqlx",

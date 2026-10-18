@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let report = run_core_and_flavor_migrations_with_policy(
         &pg,
-        proxima_code::CodeFlavor::migrators(),
+        compiled_flavor_migrators(),
         missing_policy,
     )
     .await?;
@@ -85,6 +85,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{source} migrations applied");
     }
     Ok(())
+}
+
+/// The migrators of the flavors this binary is built with.
+fn compiled_flavor_migrators() -> Vec<proxima::flavor::NamedMigrator> {
+    <proxima_example::ExampleFlavor as FlavorBundle>::migrators()
+}
+
+/// The schemas the compiled flavors own: core's plus one per flavor, from
+/// the frozen registry, the same names boot and the census use.
+fn compiled_schema_names() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut registry = proxima::flavor::FlavorRegistry::new();
+    <proxima_example::ExampleFlavor as FlavorBundle>::register(&mut registry)?;
+    let frozen = registry.try_freeze()?;
+    Ok(proxima::host::composed_schema_names(&frozen))
+}
+
+/// Every `proxima_*` schema outside `owned`, sorted.
+async fn unowned_proxima_schemas(
+    pool: &sqlx::PgPool,
+    owned: &[String],
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT schema_name::text
+           FROM information_schema.schemata
+          WHERE schema_name LIKE 'proxima\\_%' ESCAPE '\\'
+            AND NOT (schema_name = ANY($1::text[]))
+          ORDER BY schema_name",
+    )
+    .bind(owned)
+    .fetch_all(pool)
+    .await
 }
 
 /// Resolve the target database URL: `--database-url <URL>` (or
@@ -314,15 +345,7 @@ async fn reset_local_dev_database_confirmed(
     // tie. The two predicates have to agree on what the namespace is, so
     // the guard becomes a report: the schema goes with the rest, and the
     // operator sees it named before it does.
-    let unowned_schemas: Vec<String> = sqlx::query_scalar(
-        "SELECT schema_name::text
-           FROM information_schema.schemata
-          WHERE schema_name LIKE 'proxima\\_%' ESCAPE '\\'
-            AND schema_name NOT IN ('proxima_core', 'proxima_code')
-          ORDER BY schema_name",
-    )
-    .fetch_all(&pool)
-    .await?;
+    let unowned_schemas = unowned_proxima_schemas(&pool, &compiled_schema_names()?).await?;
     if !unowned_schemas.is_empty() {
         eprintln!(
             "dropping schemas no compiled flavor of this binary owns: {}",
@@ -340,7 +363,7 @@ async fn reset_local_dev_database_confirmed(
     // strict migration refuses it until the operator resets that lane explicitly.
     let mut flavor_versions = Vec::new();
     let mut flavor_ledger_tables = Vec::new();
-    for migrator in proxima_code::CodeFlavor::migrators() {
+    for migrator in compiled_flavor_migrators() {
         flavor_versions.extend(
             migrator
                 .migrator()
@@ -489,6 +512,45 @@ mod tests {
     // rather than be deleted by guesswork.
     const UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION: i64 = 20_260_622_000_000;
 
+    /// A schema left by a flavor no longer compiled in is reported as
+    /// unowned; the compiled flavors' schemas are not.
+    #[tokio::test]
+    async fn reset_reports_a_leftover_retired_flavor_schema_as_unowned() {
+        let db_name = unique_db_name("proxima_dev_migrate_unowned");
+        create_db(&db_name).await.expect("PG required for tests");
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+            sqlx::raw_sql(
+                "CREATE SCHEMA proxima_core; CREATE SCHEMA proxima_example; \
+                 CREATE SCHEMA proxima_retired",
+            )
+            .execute(&pool)
+            .await?;
+            assert_eq!(
+                unowned_proxima_schemas(&pool, &compiled_schema_names()?).await?,
+                ["proxima_retired"]
+            );
+            pool.close().await;
+            Ok(())
+        }
+        .await;
+        let _ = drop_db(&db_name).await;
+        result.expect("unowned schema report");
+    }
+
+    /// The example flavor's own ledger, which the reset test seeds next to
+    /// the shared one: the reset attributes it to the compiled flavor and
+    /// drops it with its schema.
+    async fn assert_example_ledger_dropped(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT to_regclass('public._sqlx_migrations_proxima_example') IS NOT NULL",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(!exists, "reset drops the compiled flavor's ledger");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn reset_deletes_core_namespace_rows_and_reports_leftovers() {
         let db_name = unique_db_name("proxima_dev_migrate_reset");
@@ -506,10 +568,10 @@ mod tests {
             sqlx::query("CREATE SCHEMA proxima_core")
                 .execute(&pg.clone_pool_for_backend())
                 .await?;
-            sqlx::query("CREATE SCHEMA proxima_code")
+            sqlx::query("CREATE SCHEMA proxima_example")
                 .execute(&pg.clone_pool_for_backend())
                 .await?;
-            sqlx::query(
+            sqlx::raw_sql(
                 "CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
                     version bigint PRIMARY KEY,
                     description text NOT NULL,
@@ -517,7 +579,9 @@ mod tests {
                     success boolean NOT NULL,
                     checksum bytea NOT NULL,
                     execution_time bigint NOT NULL
-                )",
+                );
+                CREATE TABLE public._sqlx_migrations_proxima_example
+                    (LIKE public._sqlx_migrations INCLUDING ALL);",
             )
             .execute(&pg.clone_pool_for_backend())
             .await?;
@@ -549,6 +613,7 @@ mod tests {
 
             reset_local_dev_database_confirmed(&pg, &url, DependentLanes::Refuse).await?;
 
+            assert_example_ledger_dropped(&pg.clone_pool_for_backend()).await?;
             let remaining: Vec<i64> =
                 sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
                     .fetch_all(&pg.clone_pool_for_backend())
@@ -560,10 +625,9 @@ mod tests {
                  unattributable leftover"
             );
 
-            let refused =
-                run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators())
-                    .await
-                    .expect_err("unattributable versions block migration after reset");
+            let refused = run_core_and_flavor_migrations(&pg, compiled_flavor_migrators())
+                .await
+                .expect_err("unattributable versions block migration after reset");
             assert!(
                 matches!(
                     refused,
@@ -589,7 +653,7 @@ mod tests {
                 remaining, 0,
                 "explicit lane reset clears unowned versions even without foreign dependents"
             );
-            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            run_core_and_flavor_migrations(&pg, compiled_flavor_migrators()).await?;
             Ok(())
         }
         .await;
@@ -659,7 +723,7 @@ mod tests {
                 PgTuning::from_env()?,
             )
             .await?;
-            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            run_core_and_flavor_migrations(&pg, compiled_flavor_migrators()).await?;
             let admin = sqlx::PgPool::connect(&url).await?;
             build_consumer_lanes(&pg, &admin).await?;
 
@@ -746,14 +810,14 @@ mod tests {
             // Proxima's own lane is not a dependent of itself, nor is a
             // default ACL scoped to one of its schemas: a freshly migrated
             // database resets without the opt-in.
-            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            run_core_and_flavor_migrations(&pg, compiled_flavor_migrators()).await?;
             sqlx::query(
                 "ALTER DEFAULT PRIVILEGES IN SCHEMA proxima_core GRANT SELECT ON TABLES TO PUBLIC",
             )
             .execute(&admin)
             .await?;
             reset_local_dev_database_confirmed(&pg, &url, DependentLanes::Refuse).await?;
-            run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
+            run_core_and_flavor_migrations(&pg, compiled_flavor_migrators()).await?;
             Ok(())
         }
         .await;
