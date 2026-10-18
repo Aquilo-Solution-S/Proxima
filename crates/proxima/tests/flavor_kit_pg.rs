@@ -1,112 +1,40 @@
-//! The flavor plumbing a flavor crate no longer hand-writes, end to end:
+//! The flavor plumbing a flavor crate no longer hand-writes, end to end, on
+//! the example flavor (`flavors/example`, a test and tutorial fixture):
 //!
 //! - `flavor_bundle!` composes a flavor with no hand-written impl;
 //! - its migration's owner RLS is one `proxima_core.install_owner_rls` call,
 //!   and the split-role boot's runtime RLS guard accepts the result;
-//! - `NamedMigrator::flavor` gives it its own ledger, and a flavor that ran on
-//!   core's shared ledger moves onto its own without re-running anything;
+//! - `NamedMigrator::flavor` gives it its own ledger;
 //! - the test support comes from `proxima::testkit` alone: split-role
 //!   databases, an owner-scoped authz, and the trigger drift assertion.
+//!
+//! The canonical bundle is `proxima_example::ExampleFlavor`; the negative
+//! variants below compose the same contract over an edited baseline.
 
 use std::borrow::Cow;
 
-use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry};
+use proxima::flavor::{FlavorBundle, PgSidecarRegistry};
 use proxima::testkit::{SplitRoleDb, assert_trigger_migrations, scoped_authz};
 use proxima::{AppInfo, FlavorApp, Proxima, QueryRequest, ServedSurface, company_owner};
-use proxima_core::flavor::{
-    EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
-    SearchProjectionDecl, TransferRule,
-};
-use proxima_core::verbs::schema::PayloadKind;
+use proxima_example::testkit::{register_notebook, remember_note};
+use proxima_example::{BASELINE_SQL, ExampleFlavor, NoteV1, baseline_sql_with_owner_rls};
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct KitNoteV1 {
-    note_id: Uuid,
-    body: String,
-}
+/// The example's baseline version (ordinal 11's lane).
+const EXAMPLE_MIGRATION_VERSION: i64 = 20_261_018_000_011;
 
-impl FactPayload for KitNoteV1 {
-    const SCHEMA_ID: &'static str = "kittest/note-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn receipt_key(&self) -> Vec<u8> {
-        self.note_id.as_bytes().to_vec()
-    }
-
-    fn render(&self) -> String {
-        self.body.clone()
-    }
-
-    fn sidecar_table() -> Option<&'static str> {
-        Some("kittest.note_v1")
-    }
-}
-
-proxima::flavor::pg_sidecar! {
-    payload: KitNoteV1,
-    row: KitNoteRow,
-    kinds: [Fact],
-    table: "kittest.note_v1",
-    key: t,
-    fields: {
-        note_id => note_id: (uuid),
-        body => body: (text),
-    },
-}
-
-static KIT_CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: "kittest",
-    ordinal: 11,
-    schemas: &[SchemaContract {
-        id: SchemaRef::new("kittest", "note", 1),
-        kind: PayloadKind::Fact,
-        sidecar_table: Some("kittest.note_v1"),
-        search: SearchProjectionDecl::None {
-            why: "a plumbing fixture, not a search surface",
-        },
-        embedding: EmbeddingRecipe::Never {
-            why: "a plumbing fixture, not a memory",
-        },
-        transfer: TransferRule::StaysOnKey,
-        provenance: Provenance::None,
-        surfaces: &[],
-        natural_key_columns: &[],
-    }],
-    state_surfaces: &[],
-    scopes: &[],
-    kernel_surfaces: &[],
-    tools: &[],
-    resources: &[],
-    bespoke_erase_legs: &[],
-    bespoke_transfer_legs: &[],
-    projection: ProjectionDecl::None {
-        why: "a plumbing fixture registers no search surface",
-    },
-};
-
-/// Host/example lane (`docs/build-a-flavor.md` §Migrations: timestamp versions ending
-/// `00..=19`).
-const KIT_MIGRATION_VERSION: i64 = 20_260_924_000_012;
-
-/// The fixture's baseline as a flavor ships one. Its whole owner-RLS
-/// section is the installer call; `leave_settings_unclassified` drops one
-/// table from the classification.
-fn kit_sql(leave_settings_unclassified: bool) -> String {
-    let ownerless = if leave_settings_unclassified {
-        "'{}'"
-    } else {
-        "ARRAY['settings']"
-    };
-    kit_sql_with_owner_rls(&[format!(
-        "SELECT proxima_core.install_owner_rls('kittest', ARRAY['sync_cursor'], ARRAY['note_v1'], {ownerless})"
-    )])
+/// The baseline with every table but `settings` classified.
+fn gap_sql() -> String {
+    baseline_sql_with_owner_rls(&[
+        "SELECT proxima_core.install_owner_rls('proxima_example', ARRAY['notebooks'], \
+         ARRAY['note_v1', 'digest_v1'], '{}')",
+    ])
 }
 
 /// How a host that adds its tables one migration at a time installs the
-/// fixture's owner RLS: one `install_owner_rls_table` call per table.
+/// example's owner RLS: one `install_owner_rls_table` call per table.
 #[derive(Clone, Copy)]
 enum PerTableHost {
     /// Calls the installer for every table, then asserts the census.
@@ -117,112 +45,32 @@ enum PerTableHost {
     ForgetsSettingsAssertsCensus,
 }
 
-fn kit_per_table_sql(host: PerTableHost) -> String {
+fn per_table_sql(host: PerTableHost) -> String {
     const SETTINGS: &str =
-        "SELECT proxima_core.install_owner_rls_table('kittest', 'settings', 'ownerless')";
-    const CENSUS: &str = "SELECT proxima_core.assert_owner_rls_census('kittest')";
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'settings', 'ownerless')";
+    const CENSUS: &str = "SELECT proxima_core.assert_owner_rls_census('proxima_example')";
     let rest: &[&str] = match host {
         PerTableHost::CallsEveryTable => &[SETTINGS, CENSUS],
         PerTableHost::ForgetsSettings => &[],
         PerTableHost::ForgetsSettingsAssertsCensus => &[CENSUS],
     };
-    let statements: Vec<String> = [
-        "SELECT proxima_core.install_owner_rls_table('kittest', 'sync_cursor', 'owner_id')",
-        "SELECT proxima_core.install_owner_rls_table('kittest', 'note_v1', 'fk_parent')",
+    let calls: Vec<&str> = [
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'notebooks', 'owner_id')",
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'note_v1', 'fk_parent')",
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'digest_v1', 'fk_parent')",
     ]
     .iter()
     .chain(rest)
     .copied()
-    .map(str::to_owned)
     .collect();
-    kit_sql_with_owner_rls(&statements)
+    baseline_sql_with_owner_rls(&calls)
 }
 
-/// [`kit_sql`] with the owner-RLS section spelled out.
-fn kit_sql_with_owner_rls(owner_rls: &[String]) -> String {
-    let mut registry = FlavorRegistry::new();
-    kit::register(&mut registry).expect("the kit fixture registers");
-    let registry = registry.try_freeze().expect("and freezes");
-    let mut sidecars = PgSidecarRegistry::new();
-    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
-    kit::register_pg_sidecars(&mut sidecars);
-    let sidecars = sidecars
-        .freeze_against(&registry)
-        .expect("the fixture's PG registrations match its contract");
-
-    let mut statements = vec![
-        "CREATE SCHEMA kittest".to_owned(),
-        "CREATE TABLE kittest.note_v1 (
-            t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
-            note_id uuid NOT NULL,
-            body text NOT NULL
-        )"
-        .to_owned(),
-        "CREATE TABLE kittest.sync_cursor (owner_id uuid PRIMARY KEY, position bigint NOT NULL)"
-            .to_owned(),
-        "CREATE TABLE kittest.settings (key text PRIMARY KEY, value text NOT NULL)".to_owned(),
-        "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
-             ('kittest.note_v1', 'kittest')"
-            .to_owned(),
-    ];
-    statements.extend(
-        sidecars
-            .declaration_trigger_artifacts("kittest")
-            .expect("declaration triggers")
-            .into_iter()
-            .map(|artifact| artifact.forward),
-    );
-    statements.extend(owner_rls.iter().cloned());
-    statements.extend(
-        sidecars
-            .presence_trigger_artifacts("kittest")
-            .expect("presence triggers")
-            .into_iter()
-            .map(|artifact| artifact.forward),
-    );
-    statements.join(";\n")
-}
-
-fn kit_migrator(leave_settings_unclassified: bool) -> Migrator {
+fn migrator(description: &'static str, sql: String) -> Migrator {
     Migrator {
         migrations: Cow::Owned(vec![Migration::new(
-            KIT_MIGRATION_VERSION,
-            Cow::Borrowed("kit baseline"),
-            MigrationType::Simple,
-            sqlx::AssertSqlSafe(kit_sql(leave_settings_unclassified)).into_sql_str(),
-            false,
-        )]),
-        ..Migrator::DEFAULT
-    }
-}
-
-fn kit_per_table_migrator(host: PerTableHost) -> Migrator {
-    Migrator {
-        migrations: Cow::Owned(vec![Migration::new(
-            KIT_MIGRATION_VERSION,
-            Cow::Borrowed("kit baseline, one owner-RLS call per table"),
-            MigrationType::Simple,
-            sqlx::AssertSqlSafe(kit_per_table_sql(host)).into_sql_str(),
-            false,
-        )]),
-        ..Migrator::DEFAULT
-    }
-}
-
-fn kit_view_migrator(security_invoker: bool) -> Migrator {
-    let options = if security_invoker {
-        " WITH (security_invoker = true)"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "{};\nCREATE VIEW kittest.cursor_view{options} AS SELECT owner_id, position FROM kittest.sync_cursor",
-        kit_sql(false)
-    );
-    Migrator {
-        migrations: Cow::Owned(vec![Migration::new(
-            KIT_MIGRATION_VERSION,
-            Cow::Borrowed("kit baseline with a view"),
+            EXAMPLE_MIGRATION_VERSION,
+            Cow::Borrowed(description),
             MigrationType::Simple,
             sqlx::AssertSqlSafe(sql).into_sql_str(),
             false,
@@ -231,13 +79,40 @@ fn kit_view_migrator(security_invoker: bool) -> Migrator {
     }
 }
 
+fn gap_migrator() -> Migrator {
+    migrator("example baseline, one table unclassified", gap_sql())
+}
+
+fn per_table_migrator(host: PerTableHost) -> Migrator {
+    migrator(
+        "example baseline, one owner-RLS call per table",
+        per_table_sql(host),
+    )
+}
+
+fn view_migrator(security_invoker: bool) -> Migrator {
+    let options = if security_invoker {
+        " WITH (security_invoker = true)"
+    } else {
+        ""
+    };
+    migrator(
+        "example baseline with a view",
+        format!(
+            "{BASELINE_SQL}\nCREATE VIEW proxima_example.notebook_view{options} AS SELECT owner_id, name FROM proxima_example.notebooks"
+        ),
+    )
+}
+
 mod kit_definer_view {
     proxima::flavor_bundle! {
         bundle = KitDefinerViewFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_view_migrator(false),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::view_migrator(false),
         app = { title = "Kit fixture with a definer view" },
     }
 }
@@ -245,33 +120,25 @@ mod kit_definer_view {
 mod kit_invoker_view {
     proxima::flavor_bundle! {
         bundle = KitInvokerViewFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_view_migrator(true),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::view_migrator(true),
         app = { title = "Kit fixture with an invoker view" },
-    }
-}
-
-mod kit {
-    proxima::flavor_bundle! {
-        bundle = KitFlavor,
-        name = "kittest",
-        display_name = "Kit",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_migrator(false),
-        app = { title = "Kit fixture", version = "0" },
     }
 }
 
 mod kit_gap {
     proxima::flavor_bundle! {
         bundle = KitGapFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_migrator(true),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::gap_migrator(),
         app = { title = "Kit fixture, one table unclassified" },
     }
 }
@@ -279,10 +146,12 @@ mod kit_gap {
 mod kit_per_table {
     proxima::flavor_bundle! {
         bundle = KitPerTableFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_per_table_migrator(super::PerTableHost::CallsEveryTable),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::per_table_migrator(super::PerTableHost::CallsEveryTable),
         app = { title = "Kit fixture, one owner-RLS call per table" },
     }
 }
@@ -290,10 +159,12 @@ mod kit_per_table {
 mod kit_forgotten_table {
     proxima::flavor_bundle! {
         bundle = KitForgottenTableFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_per_table_migrator(super::PerTableHost::ForgetsSettings),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::per_table_migrator(super::PerTableHost::ForgetsSettings),
         app = { title = "Kit fixture, one table without a call" },
     }
 }
@@ -301,10 +172,12 @@ mod kit_forgotten_table {
 mod kit_forgotten_table_census {
     proxima::flavor_bundle! {
         bundle = KitForgottenTableCensusFlavor,
-        name = "kittest",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_per_table_migrator(super::PerTableHost::ForgetsSettingsAssertsCensus),
+        name = "proxima-example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = super::per_table_migrator(super::PerTableHost::ForgetsSettingsAssertsCensus),
         app = { title = "Kit fixture, one table without a call, census at the end" },
     }
 }
@@ -330,11 +203,13 @@ mod kit_full {
 
     proxima::flavor_bundle! {
         bundle = KitFullFlavor,
-        name = "kittest",
-        display_name = "Kit",
-        fact_schemas = [super::KitNoteV1],
-        contract = &super::KIT_CONTRACT,
-        migrations = super::kit_migrator(false),
+        name = "proxima-example",
+        display_name = "Example",
+        fact_schemas = [proxima_example::NoteV1],
+        abstraction_schemas = [proxima_example::DigestV1],
+        mcp_tools = [proxima_example::ListNotebooksTool],
+        contract = &proxima_example::EXAMPLE_CONTRACT,
+        migrations = proxima_example::migrator(),
         workers = no_workers,
         app = {
             title = "Kit, every key",
@@ -360,8 +235,8 @@ async fn ledger_versions(db: &SplitRoleDb, table: &str) -> Option<Vec<i64>> {
             "public._sqlx_migrations" => sqlx::query_scalar(
                 "SELECT version FROM public._sqlx_migrations WHERE version > 9999 ORDER BY version",
             ),
-            "public._sqlx_migrations_kittest" => sqlx::query_scalar(
-                "SELECT version FROM public._sqlx_migrations_kittest ORDER BY version",
+            "public._sqlx_migrations_proxima_example" => sqlx::query_scalar(
+                "SELECT version FROM public._sqlx_migrations_proxima_example ORDER BY version",
             ),
             other => panic!("no ledger query for {other}"),
         };
@@ -393,25 +268,43 @@ async fn runtime_may_write(db: &SplitRoleDb, table: &str) -> bool {
     writable
 }
 
+/// A registry's `Debug` entries in a stable order: its map iterates in hash
+/// order, so two registries with the same entries can print them differently.
+fn debug_entries(debug: &str) -> Vec<String> {
+    let mut entries: Vec<String> = debug
+        .split("PgSidecarEntry {")
+        .skip(1)
+        .map(|part| {
+            let last_field = part
+                .find("projection_language:")
+                .expect("an entry ends with its projection language");
+            let close = part[last_field..].find(" }").expect("and closes after it");
+            part[..last_field + close].to_owned()
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
 #[test]
 fn the_bundle_is_the_hand_written_one() {
     assert_eq!(
-        kit::KitFlavor::app_info(),
+        ExampleFlavor::app_info(),
         AppInfo {
-            id: "kittest",
-            title: "Kit fixture",
-            version: "0",
+            id: "proxima-example",
+            title: "Proxima example flavor (test fixture)",
+            version: env!("CARGO_PKG_VERSION"),
         }
     );
-    let migrators = <kit::KitFlavor as FlavorBundle>::migrators();
+    let migrators = <ExampleFlavor as FlavorBundle>::migrators();
     assert_eq!(migrators.len(), 1);
-    assert_eq!(migrators[0].source(), "kittest");
+    assert_eq!(migrators[0].source(), "proxima-example");
     assert_eq!(
         migrators[0].migrator().table_name,
-        "public._sqlx_migrations_kittest"
+        "public._sqlx_migrations_proxima_example"
     );
     assert!(!migrators[0].migrator().ignore_missing);
-    assert_eq!(kit_gap::KitGapFlavor::app_info().id, "kittest");
+    assert_eq!(kit_gap::KitGapFlavor::app_info().id, "proxima-example");
     assert_eq!(
         kit_full::KitFullFlavor::app_info(),
         AppInfo {
@@ -422,32 +315,34 @@ fn the_bundle_is_the_hand_written_one() {
     );
 
     let mut registry = PgSidecarRegistry::new();
-    <kit::KitFlavor as FlavorBundle>::register_pg_sidecars(&mut registry);
+    <ExampleFlavor as FlavorBundle>::register_pg_sidecars(&mut registry);
     let mut hand_written = PgSidecarRegistry::new();
-    hand_written.add_fact::<KitNoteV1>();
-    assert_eq!(format!("{registry:?}"), format!("{hand_written:?}"));
+    hand_written.add_fact::<NoteV1>();
+    hand_written.add_abstraction::<proxima_example::DigestV1>();
+    assert_eq!(
+        debug_entries(&format!("{registry:?}")),
+        debug_entries(&format!("{hand_written:?}"))
+    );
 
-    assert_trigger_migrations::<kit::KitFlavor>("kittest", &[&kit_sql(false)]);
+    assert_trigger_migrations::<ExampleFlavor>("proxima-example", &[BASELINE_SQL]);
 }
 
 #[test]
 #[should_panic(expected = "appear in no migration")]
 fn the_trigger_drift_assertion_names_a_missing_trigger() {
-    let without_presence = kit_sql(false)
+    let without_presence = BASELINE_SQL
         .split(";\n")
         .filter(|statement| !statement.contains("assert_declared_sidecar_present"))
         .collect::<Vec<_>>()
         .join(";\n");
-    assert_trigger_migrations::<kit::KitFlavor>("kittest", &[&without_presence]);
+    assert_trigger_migrations::<ExampleFlavor>("proxima-example", &[&without_presence]);
 }
 
-#[tokio::test]
-async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
-    let db = SplitRoleDb::create("proxima_flavor_kit", &[])
-        .await
-        .expect("PG required");
+/// Boot `F` as a single owner, register a notebook, write a note into it
+/// through the Engine and read it back.
+async fn write_and_read_a_note<F: FlavorApp + 'static>(db: &SplitRoleDb, expect: &str) {
     let owner = company_owner(Uuid::now_v7());
-    let built = Proxima::<kit::KitFlavor>::app()
+    let built = Proxima::<F>::app()
         .database_url(db.runtime_url())
         .store_number(0)
         .platform_database_url(db.platform_url())
@@ -456,21 +351,31 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         .served_surface(ServedSurface::All)
         .build()
         .await
-        .expect("an installer-only owner-RLS migration passes the runtime RLS guard");
+        .expect(expect);
 
     let authz = scoped_authz(owner);
-    let note = KitNoteV1 {
-        note_id: Uuid::now_v7(),
-        body: "written under owner RLS".to_owned(),
-    };
+    let runtime = sqlx::PgPool::connect(db.runtime_url()).await.unwrap();
+    let notebook_id = register_notebook(
+        &runtime,
+        authz.owner_scope().expect("owner scope"),
+        owner,
+        "boot",
+    )
+    .await
+    .expect("the owner-id write policy admits the owner's notebook");
     let engine = built.host().engine();
-    let outcome = engine
-        .ingest_fact(
-            &authz,
-            proxima::FactWrite::new(owner, "kittest/boot", &note),
-        )
-        .await
-        .expect("the FK-parent write policy admits the owner's sidecar row");
+    let memory_id = remember_note(
+        engine,
+        &authz,
+        owner,
+        &NoteV1 {
+            notebook_id,
+            key: "boot".to_owned(),
+            body: "written under owner RLS".to_owned(),
+        },
+    )
+    .await
+    .expect("the FK-parent write policy admits the owner's sidecar row");
     let response = engine
         .query(&authz, &QueryRequest::readable())
         .await
@@ -479,14 +384,27 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         response
             .memories
             .iter()
-            .any(|memory| memory.id == outcome.memory_id),
+            .any(|memory| memory.id == memory_id),
         "the owner reads its own note back"
     );
+    runtime.close().await;
     built.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
+    let db = SplitRoleDb::create("proxima_flavor_kit", &[])
+        .await
+        .expect("PG required");
+    write_and_read_a_note::<ExampleFlavor>(
+        &db,
+        "an installer-only owner-RLS migration passes the runtime RLS guard",
+    )
+    .await;
 
     assert_eq!(
-        ledger_versions(&db, "public._sqlx_migrations_kittest").await,
-        Some(vec![KIT_MIGRATION_VERSION]),
+        ledger_versions(&db, "public._sqlx_migrations_proxima_example").await,
+        Some(vec![EXAMPLE_MIGRATION_VERSION]),
         "the flavor records on its own ledger"
     );
     assert_eq!(
@@ -494,7 +412,10 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         Some(Vec::new()),
         "and not on core's"
     );
-    for ledger in ["public._sqlx_migrations_kittest", "public._sqlx_migrations"] {
+    for ledger in [
+        "public._sqlx_migrations_proxima_example",
+        "public._sqlx_migrations",
+    ] {
         assert!(
             !runtime_may_write(&db, ledger).await,
             "the runtime role reads {ledger} and cannot change it"
@@ -509,43 +430,11 @@ async fn per_table_installer_calls_boot_under_the_runtime_rls_guard() {
     let db = SplitRoleDb::create("proxima_flavor_kit_per_table", &[])
         .await
         .expect("PG required");
-    let owner = company_owner(Uuid::now_v7());
-    let built = Proxima::<kit_per_table::KitPerTableFlavor>::app()
-        .database_url(db.runtime_url())
-        .store_number(0)
-        .platform_database_url(db.platform_url())
-        .owner(owner)
-        .allow_insecure_single_owner()
-        .served_surface(ServedSurface::All)
-        .build()
-        .await
-        .expect("a schema of per-table owner-RLS calls passes the runtime RLS guard");
-
-    let authz = scoped_authz(owner);
-    let note = KitNoteV1 {
-        note_id: Uuid::now_v7(),
-        body: "written under per-table owner RLS".to_owned(),
-    };
-    let engine = built.host().engine();
-    let outcome = engine
-        .ingest_fact(
-            &authz,
-            proxima::FactWrite::new(owner, "kittest/boot", &note),
-        )
-        .await
-        .expect("the FK-parent write policy admits the owner's sidecar row");
-    let response = engine
-        .query(&authz, &QueryRequest::readable())
-        .await
-        .expect("owner query");
-    assert!(
-        response
-            .memories
-            .iter()
-            .any(|memory| memory.id == outcome.memory_id),
-        "the owner reads its own note back"
-    );
-    built.shutdown().await;
+    write_and_read_a_note::<kit_per_table::KitPerTableFlavor>(
+        &db,
+        "a schema of per-table owner-RLS calls passes the runtime RLS guard",
+    )
+    .await;
 }
 
 /// A table added with no call carries none of the policies, and the runtime
@@ -567,7 +456,7 @@ async fn a_table_added_without_a_call_refuses_boot() {
         .await
         .expect_err("a table without the policies must refuse the boot");
     let message = refused.to_string();
-    assert!(message.contains("kittest.settings"), "{message}");
+    assert!(message.contains("proxima_example.settings"), "{message}");
     assert!(
         message.contains("ENABLE and FORCE ROW LEVEL SECURITY"),
         "{message}"
@@ -593,7 +482,7 @@ async fn the_census_refuses_a_migration_that_forgot_a_table() {
         .expect_err("the census must refuse a table without the policies");
     let message = refused.to_string();
     assert!(
-        message.contains("table kittest.settings lacks ENABLE/FORCE RLS"),
+        message.contains("table proxima_example.settings lacks ENABLE/FORCE RLS"),
         "{message}"
     );
 }
@@ -615,7 +504,7 @@ async fn an_unclassified_table_refuses_the_migration() {
         .expect_err("an unclassified table must refuse the boot");
     let message = refused.to_string();
     assert!(
-        message.contains("owner RLS classification missing for kittest.settings"),
+        message.contains("owner RLS classification missing for proxima_example.settings"),
         "the refusal names the table: {message}"
     );
 }
@@ -636,7 +525,10 @@ async fn a_flavor_definer_view_refuses_boot_and_names_the_view() {
         .await
         .expect_err("an ordinary definer view must refuse split-role boot");
     let message = refused.to_string();
-    assert!(message.contains("kittest.cursor_view"), "{message}");
+    assert!(
+        message.contains("proxima_example.notebook_view"),
+        "{message}"
+    );
     assert!(message.contains("security_invoker=true"), "{message}");
 }
 
@@ -658,10 +550,13 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
         .await
         .expect("a security_invoker view passes split-role boot");
     let admin = sqlx::PgPool::connect(&db.admin_url()).await.unwrap();
-    for (row_owner, position) in [(owner, 1_i64), (other, 2_i64)] {
-        sqlx::query("INSERT INTO kittest.sync_cursor(owner_id, position) VALUES ($1, $2)")
-            .bind(row_owner.into_inner())
-            .bind(position)
+    for (row_owner, name) in [(owner, "mine"), (other, "theirs")] {
+        sqlx::query(
+            "INSERT INTO proxima_example.notebooks(notebook_id, owner_id, name) VALUES ($1, $2, $3)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(row_owner.into_inner())
+        .bind(name)
             .execute(&admin)
             .await
             .unwrap();
@@ -674,12 +569,12 @@ async fn a_flavor_invoker_view_boots_and_hides_other_owners() {
     )
     .await
     .unwrap();
-    let visible: Vec<(Uuid, i64)> =
-        sqlx::query_as("SELECT owner_id, position FROM kittest.cursor_view")
+    let visible: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT owner_id, name FROM proxima_example.notebook_view")
             .fetch_all(&mut *transaction)
             .await
             .unwrap();
-    assert_eq!(visible, vec![(owner.into_inner(), 1)]);
+    assert_eq!(visible, vec![(owner.into_inner(), "mine".to_owned())]);
     transaction.rollback().await.unwrap();
     runtime.close().await;
     admin.close().await;
@@ -695,22 +590,22 @@ async fn a_preexisting_invoker_view_moves_to_the_split_platform_owner() {
         .await
         .unwrap();
     sqlx::raw_sql(
-        "CREATE SCHEMA kittest;
-         CREATE TABLE kittest.legacy_table(owner_id uuid);
-         CREATE VIEW kittest.legacy_view WITH (security_invoker = true)
-            AS SELECT owner_id FROM kittest.legacy_table",
+        "CREATE SCHEMA proxima_example;
+         CREATE TABLE proxima_example.legacy_table(owner_id uuid);
+         CREATE VIEW proxima_example.legacy_view WITH (security_invoker = true)
+            AS SELECT owner_id FROM proxima_example.legacy_table",
     )
     .execute(&admin)
     .await
     .unwrap();
-    proxima::testkit::split_role_urls_for(database.name(), &["kittest"])
+    proxima::testkit::split_role_urls_for(database.name(), &["proxima_example"])
         .await
         .expect("the fixture transfers existing views along with their tables");
     let view_owner: String = sqlx::query_scalar(
         "SELECT r.rolname FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
          JOIN pg_roles r ON r.oid = c.relowner
-         WHERE n.nspname = 'kittest' AND c.relname = 'legacy_view'",
+         WHERE n.nspname = 'proxima_example' AND c.relname = 'legacy_view'",
     )
     .fetch_one(&admin)
     .await

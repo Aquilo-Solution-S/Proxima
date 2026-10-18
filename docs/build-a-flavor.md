@@ -7,20 +7,22 @@ facade; it neither runs as a remote plugin nor accesses core tables directly.
 
 ## Walk through the executable example
 
-The facade's
+The test flavor
+[`flavors/example`](https://github.com/Aquilo-Solution-S/Proxima/tree/main/flavors/example)
+(`proxima-example`, a test and tutorial fixture, not a product) is a complete
+small flavor. It uses the same public SDK as an external crate. Follow its
+`NoteV1` payload and sidecar (`src/payload.rs`), `EXAMPLE_CONTRACT`
+(`src/contract.rs`), migration (`migrations/`), tool (`src/tool.rs`) and
+`ExampleFlavor` bundle (`src/lib.rs`) in that order. The facade's
 [`flavor_kit_pg.rs`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/tests/flavor_kit_pg.rs)
-is a complete small flavor and host. It uses the same public SDK as an external
-crate. Follow its `KitNoteV1`, sidecar, `KIT_CONTRACT`, migration, and `kit`
-bundle in that order, then run it against your owned development test server:
+composes it as a host and runs it against your owned development test server:
 
 ```sh
-cargo test -p proxima --test flavor_kit_pg
+cargo test -p proxima --features testkit --test flavor_kit_pg
 ```
 
 The fixture verifies typed sidecar persistence, split-role boot, RLS
-classification, migration ledgers, and registry behavior. The larger production
-example is
-[`flavors/code`](https://github.com/Aquilo-Solution-S/Proxima/tree/main/flavors/code).
+classification, migration ledgers, and registry behavior.
 Build the API reference locally with `cargo doc -p proxima --no-deps --open`;
 `proxima::flavor` is the SDK entry point.
 
@@ -74,7 +76,7 @@ Add a migration in the flavor's migration directory. Its sidecar has the
 admission key and the payload's typed columns; table shape stays in that
 migration. Declare every table's owner-RLS class using the core installer and
 assert the schema census. The example migration in `flavor_kit_pg.rs` shows the
-installer; released Code migrations show the production lane.
+installer; the example flavor's `migrations/` directory shows a lane on disk.
 
 For a one-row payload, the typed helper connects fields to the sidecar:
 

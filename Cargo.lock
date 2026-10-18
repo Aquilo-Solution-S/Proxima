@@ -2216,6 +2216,7 @@ dependencies = [
  "proxima-blob-s3",
  "proxima-code",
  "proxima-core",
+ "proxima-example",
  "proxima-llm-openai-compat",
  "proxima-mcp-server",
  "proxima-pg-testkit",
@@ -2357,6 +2358,21 @@ dependencies = [
  "proxima-storage-pg",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "proxima-example"
+version = "0.1.0"
+dependencies = [
+ "proxima",
+ "proxima-core",
+ "proxima-example",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

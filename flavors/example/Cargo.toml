@@ -1,0 +1,33 @@
+[package]
+name = "proxima-example"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Test and tutorial fixture flavor for Proxima; not a product."
+
+[lib]
+name = "proxima_example"
+
+[features]
+default = []
+testkit = []
+
+[dependencies]
+proxima = { path = "../../crates/proxima" }
+proxima-core = { path = "../../crates/core" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proxima = { path = "../../crates/proxima", features = ["testkit"] }
+proxima-example = { path = ".", features = ["testkit"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

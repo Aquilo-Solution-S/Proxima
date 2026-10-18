@@ -24,8 +24,8 @@ OWNER_WRITE_PERMIT = "OwnerWritePermit"
 # stops suppressing findings and the failure renders the expiration date so
 # reviewers see why it started failing.
 #
-# Production `flavors/code/src` holds zero raw `proxima_core.*` SQL — every
-# flavor read goes through `proxima::flavor::authorized_*` — so the allowlist
+# A flavor under flavors/ holds zero raw `proxima_core.*` SQL in its `src` —
+# every flavor read goes through `proxima::flavor::authorized_*` — so the allowlist
 # is empty.
 ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {}
 
