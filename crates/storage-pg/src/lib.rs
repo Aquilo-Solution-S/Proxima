@@ -43,6 +43,7 @@ pub mod adopt;
 pub mod definitions;
 mod delegated_authority;
 mod error;
+mod lifecycle_scope;
 mod owner_scope;
 #[cfg(test)]
 mod pause_point;

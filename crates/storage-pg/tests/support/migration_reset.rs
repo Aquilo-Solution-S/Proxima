@@ -92,6 +92,11 @@ pub async fn apply_historical_schema(
     sqlx::query("SET LOCAL check_function_bodies = off")
         .execute(transaction.as_mut())
         .await?;
+    let policies = if versions.contains(&FORGOTTEN_AT_MIGRATION) {
+        policies
+    } else {
+        pre_forgotten_policies(policies)
+    };
     for sql in [definitions::FUNCTIONS, policies] {
         // SQL-POLICY: fixed-fragment — embedded definitions, with an asserted final section boundary.
         sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
@@ -100,6 +105,29 @@ pub async fn apply_historical_schema(
     }
     transaction.commit().await?;
     Ok(())
+}
+
+/// Migration 0039 adds `memory.forgotten_at`, which the memory owner policies
+/// read (#488).
+const FORGOTTEN_AT_MIGRATION: i64 = 39;
+const FORGOTTEN_PREDICATE: &str = " AND ((forgotten_at IS NULL) OR (current_setting('app.proxima_lifecycle'::text, true) = 'on'::text))";
+
+/// The owner policies as a store without `memory.forgotten_at` had them: the
+/// current text minus the forgotten-memory predicate.
+///
+/// # Panics
+///
+/// Panics if the memory policies no longer carry the predicate.
+fn pre_forgotten_policies(sql: &'static str) -> &'static str {
+    if !sql.contains("ON proxima_core.memory USING") {
+        return sql;
+    }
+    assert_eq!(
+        sql.matches(FORGOTTEN_PREDICATE).count(),
+        3,
+        "the memory read, write and check expressions each carry the forgotten predicate"
+    );
+    Box::leak(sql.replace(FORGOTTEN_PREDICATE, "").into_boxed_str())
 }
 
 fn pre_identity_definitions(sql: &'static str) -> &'static str {

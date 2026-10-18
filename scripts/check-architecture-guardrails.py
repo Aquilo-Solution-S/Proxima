@@ -815,6 +815,47 @@ def check_memory_reads(findings: list[Finding]) -> None:
         findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "memory read census", mismatch))
 
 
+# #488: the owner read policy shows forgotten memories only when the
+# transaction-local GUC below is on. One module sets it (PgLifecycleScope);
+# a second writer would be a way around the policy nobody reviewed.
+LIFECYCLE_GUC_WRITE = re.compile(
+    r"set_config\(\s*'app\.proxima_lifecycle'|\bSET\s+(?:LOCAL\s+)?(?:SESSION\s+)?app\.proxima_lifecycle\b",
+    re.IGNORECASE,
+)
+LIFECYCLE_GUC_MODULE = "crates/storage-pg/src/lifecycle_scope.rs"
+LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "flavors")
+
+
+def lifecycle_guc_writers(files: dict[str, str]) -> list[tuple[str, int]]:
+    """Every place outside the lifecycle module that sets the lifecycle GUC."""
+    writers: list[tuple[str, int]] = []
+    for rel, text in sorted(files.items()):
+        if rel == LIFECYCLE_GUC_MODULE:
+            continue
+        for index, line in enumerate(text.splitlines(), start=1):
+            if LIFECYCLE_GUC_WRITE.search(line):
+                writers.append((rel, index))
+    return writers
+
+
+def check_lifecycle_guc(findings: list[Finding]) -> None:
+    files: dict[str, str] = {}
+    for root in LIFECYCLE_GUC_ROOTS:
+        base = ROOT / root
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.suffix not in {".rs", ".sql"} or "target" in path.parts or not path.is_file():
+                continue
+            files[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    module = files.get(LIFECYCLE_GUC_MODULE, "")
+    if not LIFECYCLE_GUC_WRITE.search(module):
+        findings.append(Finding(ROOT / LIFECYCLE_GUC_MODULE, 1, "lifecycle scope", "the lifecycle module no longer sets app.proxima_lifecycle"))
+    for rel, line_no in lifecycle_guc_writers(files):
+        line = files[rel].splitlines()[line_no - 1]
+        findings.append(Finding(ROOT / rel, line_no, "app.proxima_lifecycle set outside PgLifecycleScope", line))
+
+
 def run_self_test() -> int:
     """Assert the flavor core SQL detector fires on its committed fixture.
 
@@ -902,6 +943,14 @@ async fn ingest_fact_atomic(
         failures.append("memory census: a platform-scope file was not recognized")
     if in_memory_census("let scope = owner_scope(&pool).await?;", ".rs"):
         failures.append("memory census: an owner-scope file was put in the census")
+    guc_files = {
+        LIFECYCLE_GUC_MODULE: "sqlx::query(\"SELECT set_config('app.proxima_lifecycle', 'on', true)\")",
+        "crates/storage-pg/src/other.rs": "sqlx::query(\"SELECT set_config( 'app.proxima_lifecycle', 'on', true)\")",
+        "crates/x/src/y.sql": "SET LOCAL app.proxima_lifecycle = 'on';",
+        "crates/storage-pg/definitions/policies.sql": "current_setting('app.proxima_lifecycle'::text, true) = 'on'::text",
+    }
+    if [rel for rel, _line in lifecycle_guc_writers(guc_files)] != ["crates/storage-pg/src/other.rs", "crates/x/src/y.sql"]:
+        failures.append("lifecycle scope: a second writer of app.proxima_lifecycle was not detected (or a reader was)")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
@@ -936,6 +985,7 @@ def main() -> int:
     check_owner_write_permit_surfaces(findings)
     check_removed_flavor_vocabulary(findings)
     check_memory_reads(findings)
+    check_lifecycle_guc(findings)
 
     if findings:
         print("architecture guardrail violations:", file=sys.stderr)
