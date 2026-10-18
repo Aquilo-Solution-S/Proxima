@@ -2404,6 +2404,7 @@ dependencies = [
  "proxima-blob-s3",
  "proxima-code",
  "proxima-core",
+ "proxima-example",
  "proxima-llm-openai-compat",
  "proxima-pg-testkit",
  "proxima-storage-pg",

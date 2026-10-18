@@ -41,6 +41,7 @@ base64 = { workspace = true }
 proxima-auth-oidc = { path = "../../crates/auth-oidc" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxima-example = { path = "../../flavors/example", features = ["testkit"] }
 jsonwebtoken = { workspace = true }
 uuid = { workspace = true }
 

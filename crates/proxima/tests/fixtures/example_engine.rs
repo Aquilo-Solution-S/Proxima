@@ -71,31 +71,7 @@ impl ExampleEngine {
         .initialize_store_number(0)
         .await
         .expect("store number");
-        let mut registry = FlavorRegistry::new();
-        ExampleFlavor::register(&mut registry).expect("the example flavor registers");
-        extra(&mut registry);
-        let registry = registry.freeze_or_panic_for_tests();
-        let mut sidecars = PgSidecarRegistry::new();
-        register_core_pg_sidecars(&mut sidecars);
-        ExampleFlavor::register_pg_sidecars(&mut sidecars);
-        let sidecars = sidecars
-            .freeze_against(&registry)
-            .expect("the example sidecars match the registry");
-        let platform_pool = sqlx::PgPool::connect(db.platform_url())
-            .await
-            .expect("platform connection");
-        let platform_scope =
-            PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
-                .await
-                .expect("platform validation");
-        let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect(db.runtime_url(), platform_scope, 0)
-            .await
-            .expect("runtime connection")
-            .with_sidecars(sidecars)
-            .with_flavors(&registry)
-            .with_cold(cold.clone());
-        let engine = Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports());
+        let (engine, cold) = compose(db.runtime_url(), db.platform_url(), extra).await;
         let pool = sqlx::PgPool::connect(&db.admin_url())
             .await
             .expect("admin connection");
@@ -122,6 +98,46 @@ impl ExampleEngine {
         .await
         .expect("the fixture notebook registers")
     }
+}
+
+/// Compose an Engine over the example flavor plus whatever `extra`
+/// registers, on its own pools to an already migrated database. A suite
+/// that races two Engines on one database calls this once per task, so a
+/// task blocked on a lock never holds a connection the test's probes need.
+///
+/// # Panics
+///
+/// When Postgres is unavailable or the composition is refused.
+pub async fn compose(
+    runtime_url: &str,
+    platform_url: &str,
+    extra: impl FnOnce(&mut FlavorRegistry),
+) -> (Engine, Arc<MemoryColdStore>) {
+    let mut registry = FlavorRegistry::new();
+    ExampleFlavor::register(&mut registry).expect("the example flavor registers");
+    extra(&mut registry);
+    let registry = registry.freeze_or_panic_for_tests();
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    ExampleFlavor::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .expect("the example sidecars match the registry");
+    let platform_pool = sqlx::PgPool::connect(platform_url)
+        .await
+        .expect("platform connection");
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
+        .await
+        .expect("platform validation");
+    let cold = Arc::new(MemoryColdStore::default());
+    let pg = PgStorage::connect(runtime_url, platform_scope, 0)
+        .await
+        .expect("runtime connection")
+        .with_sidecars(sidecars)
+        .with_flavors(&registry)
+        .with_cold(cold.clone());
+    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports());
+    (engine, cold)
 }
 
 /// A clock barrier: returns the first instant in a later millisecond than
