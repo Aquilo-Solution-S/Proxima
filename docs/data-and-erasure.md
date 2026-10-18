@@ -69,8 +69,12 @@ erased identities. Exact historical restoration uses the sealed integrity path.
 
 ## Publication copies
 
-Outbox records are captured typed delivery copies. Forgetting their Fact keeps
-undelivered records. Whole-owner and source erasure remove retained publication
+Outbox records are captured typed delivery copies. Forgetting their Fact cancels
+its undelivered delivery: pending and claimed lanes are deleted, and a record
+with no delivered lane is removed; a record some consumer already delivered is
+kept, settled. A lane already claimed may still deliver once (its mark is then
+stale). Restoring the Fact does not re-enqueue. The publication origin stays.
+Whole-owner and source erasure remove retained publication
 copies by immutable original attribution, including after the live Fact has
 transferred. Exact physical Fact erasure removes its publication copy and origin
 by admission identity.

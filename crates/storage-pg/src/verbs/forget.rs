@@ -1098,6 +1098,7 @@ async fn forget_marked(
     .await
     .map_err(map_err)?;
     delete_derived_dependents(tx, sidecars, surfaces, t).await?;
+    crate::verbs::publication_outbox::cancel_undelivered_for_forget(tx, t).await?;
     sync_memory_head(tx, handle).await?;
     lifecycle.leave(tx.as_mut()).await
 }

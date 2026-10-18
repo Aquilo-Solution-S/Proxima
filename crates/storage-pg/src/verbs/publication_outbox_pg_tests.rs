@@ -1704,46 +1704,46 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
 }
 
 #[tokio::test]
-async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
-    let (pg, db) = fresh_pg("pub_forget_keeps").await;
+async fn forgetting_a_fact_cancels_its_undelivered_records() {
+    let (pg, db) = fresh_pg("pub_forget_cancels").await;
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
     register_owner(&pool, &owner).await;
 
-    let outcome = ingest_listenable(&pg, &owner, &probe("cooled"), None)
+    let outcome = ingest_listenable(&pg, &owner, &probe("forgotten"), None)
         .await
         .expect("capture");
     let t = outcome.memory_id.into_inner();
+    let kept = ingest_listenable(&pg, &owner, &probe("kept"), None)
+        .await
+        .expect("capture");
 
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
         .await
-        .expect("cool through the configured storage port");
+        .expect("forget through the configured storage port");
 
     assert_eq!(
         outbox_rows(&pool).await,
         1,
-        "cooling the Fact does not un-commit the event captured with it"
+        "forgetting the Fact cancels its pending record and no other"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM proxima_core.publication_delivery WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .expect("lanes"),
+        0,
+        "no undelivered lane survives the forget"
     );
     assert_eq!(
         publication_origin(&pool, t).await,
         Some((owner.into_inner(), None)),
-        "cooling preserves its payload-free publication origin"
+        "the payload-free publication origin stays for erase to take"
     );
-    let mut cold_check = pool.begin().await.expect("begin cooled eligibility check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut cold_check)
-        .await
-        .expect("hold shared lifecycle fence while cooled");
-    let cold_eligibility = PublicationOriginEligibilityPort::check_in_transaction(
-        &pg,
-        &mut cold_check,
-        owner,
-        outcome.memory_id,
-    )
-    .await
-    .expect("cooling leaves origin eligibility intact");
-    assert_eq!(cold_eligibility, PublicationOriginEligibility::Eligible);
-    cold_check.commit().await.expect("finish cooled check");
 
     let publisher = PublisherId::new(PUBLISHER).expect("valid");
     let claimed = pg
@@ -1755,8 +1755,104 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
         )
         .await
         .expect("claim");
-    assert_eq!(claimed.len(), 1, "and it is still deliverable");
-    assert_eq!(claimed[0].id, t);
+    let ids: Vec<Uuid> = claimed.iter().map(|record| record.id).collect();
+    assert_eq!(
+        ids,
+        vec![kept.memory_id.into_inner()],
+        "only the record of the Fact still live is deliverable"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// A record one consumer already delivered keeps that lane and loses the
+/// pending one, and is then settled: every lane left is delivered.
+#[tokio::test]
+async fn forgetting_a_partially_delivered_fact_keeps_the_delivered_lane() {
+    let (pg, db) = fresh_pg("pub_forget_partial").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+    let audit = consumer("audit");
+    pg.register(&audit).await.expect("register");
+
+    let outcome = ingest_listenable(&pg, &owner, &probe("partial"), None)
+        .await
+        .expect("capture");
+    let t = outcome.memory_id.into_inner();
+    let to_default = claim_for(&pg, &default).await;
+    assert_eq!(ids(&to_default), vec![t]);
+    assert_eq!(
+        pg.mark_published(&default, t, to_default[0].claim)
+            .await
+            .expect("mark"),
+        AckOutcome::Published
+    );
+
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
+        .await
+        .expect("forget");
+
+    let lanes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT consumer, state::text FROM proxima_core.publication_delivery
+          WHERE t = $1 ORDER BY consumer",
+    )
+    .bind(t)
+    .fetch_all(&pool)
+    .await
+    .expect("lanes");
+    assert_eq!(
+        lanes,
+        vec![(default.as_str().to_owned(), "published".to_owned())],
+        "the delivered lane stays and the pending one goes"
+    );
+    let state: String =
+        sqlx::query_scalar("SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .expect("record");
+    assert_eq!(state, "published", "every lane left is delivered");
+    assert!(claim_for(&pg, &audit).await.is_empty());
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// A lane a publisher claimed before the forget committed is a lost claim
+/// afterwards: its mark is stale, not an error, and nothing comes back.
+#[tokio::test]
+async fn a_lane_claimed_before_the_forget_is_a_lost_claim() {
+    let (pg, db) = fresh_pg("pub_forget_race").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+
+    let outcome = ingest_listenable(&pg, &owner, &probe("claimed"), None)
+        .await
+        .expect("capture");
+    let t = outcome.memory_id.into_inner();
+    // Barrier: the claim has committed before the forget starts.
+    let claimed = claim_for(&pg, &default).await;
+    assert_eq!(ids(&claimed), vec![t]);
+
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
+        .await
+        .expect("forget commits over the claimed lane");
+
+    assert_eq!(
+        pg.mark_published(&default, t, claimed[0].claim)
+            .await
+            .expect("the publisher's mark is not an error"),
+        AckOutcome::StaleClaim
+    );
+    assert_eq!(outbox_rows(&pool).await, 0, "nothing is resurrected");
+    assert!(claim_for(&pg, &default).await.is_empty());
 
     drop(pg);
     let _ = drop_db(&db).await;

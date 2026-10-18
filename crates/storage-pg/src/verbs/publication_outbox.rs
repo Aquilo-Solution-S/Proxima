@@ -557,6 +557,66 @@ impl PublicationOutboxPort for PgStorage {
     }
 }
 
+/// Cancel what a forget of `t` must not deliver: every undelivered lane of
+/// its record goes, and the record itself goes when no lane is left;
+/// otherwise every lane left is delivered and the record is settled.
+/// `publication_origin` stays for erase. Restore does not re-enqueue.
+///
+/// Lanes are locked before the record, the order a publisher's mark takes
+/// them (lane, then `settle_records`), so the two cannot deadlock. A lane a
+/// publisher had claimed is simply gone: its mark finds no claim and answers
+/// `StaleClaim`.
+pub(crate) async fn cancel_undelivered_for_forget(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "SELECT 1 FROM proxima_core.publication_delivery
+          WHERE t = $1
+          ORDER BY consumer
+            FOR UPDATE",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let record = sqlx::query_scalar::<_, Uuid>(
+        "SELECT t FROM proxima_core.publication_outbox WHERE t = $1 FOR UPDATE",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if record.is_none() {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM proxima_core.publication_delivery
+          WHERE t = $1 AND state <> 'published'",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let removed = sqlx::query(
+        "DELETE FROM proxima_core.publication_outbox record
+          WHERE record.t = $1
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.publication_delivery lane
+                 WHERE lane.t = record.t
+            )",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    if removed == 0 {
+        settle_records(tx, &[t]).await?;
+    }
+    Ok(())
+}
+
 /// Mark published each of `records` that has no undelivered lane left.
 ///
 /// Locks the records FIRST, in a statement of its own, and decides in the
