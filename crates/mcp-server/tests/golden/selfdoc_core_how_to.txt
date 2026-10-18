@@ -1,0 +1,83 @@
+# Proxima shared-brain — how to use it
+
+Proxima is the **substrate**: storage, embeddings, the Fact → Abstraction → Perspective structure, goals, retrieval. **You are the cognition.** There is no autonomous engine deriving things for you — when you remember, abstract, or reflect, *you* are the operator. The brain only helps if you query it before acting and feed it as you learn.
+
+## The model: three layers
+
+- **Fact** — an immutable observation; something that happened or that you learned. Wire handle `<uuid>`.
+- **Abstraction** — a conclusion over a nonempty set of Facts or Abstractions. Wire handle `<uuid>`.
+- **Perspective** — a stance or self-model ("how I see X", "who I am"). Wire handle `<uuid>`.
+
+## The one hard law for agent-authored connections
+
+**No tool writes a connection.** An edge carries no information beyond its existence, so every edge is a consequence of what some node says: an `origin` entry from the handles a write declares it was made from, a `reference` entry from a schema-declared payload field. Nothing you call takes an edge kind as an argument.
+
+**To semantically relate Facts, derive over them:**
+
+```
+core_derive(kind="Abstraction", title=..., body=...,
+            source_handles=["00000000-0000-8000-8000-000000000001", "00000000-0000-8000-8000-000000000002", "00000000-0000-8000-8000-000000000003"])
+```
+
+`source_handles` lands `origin` entries from the new Abstraction/Perspective down to each source. **That is the graph.** Wanting to connect two Fact UUIDs is the signal to *abstract*. An Abstraction can also derive from a nonempty set of Abstractions; keep one input layer per call. A derived Perspective requires Abstraction origins.
+
+**A claim about memories that already exist is a Perspective, not an edge:**
+
+```
+core_interpret(claim="the outage followed the deploy", confidence=80,
+               subjects=["00000000-0000-8000-8000-000000000001", "00000000-0000-8000-8000-000000000004"])
+```
+
+It returns a Perspective UUID. A reason and a confidence are a judgment, and a judgment is a Perspective. Subjects may be Facts, Abstractions, or Perspectives; the new Perspective declares references, not derivation origins.
+
+## Memory spaces
+
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.
+
+## What to capture → which tool
+
+| You want to… | Use |
+|---|---|
+| Record an observation / something that happened / a fact you learned | `core_remember` → Fact |
+| Derive a conclusion from Facts or prior Abstractions | `core_derive` kind=**Abstraction**, `source_handles`=a nonempty set from one input layer |
+| Record or update a stance / self-model ("how I see X", "who I am") | `core_derive` kind=**Perspective**, `source_handles`=Abstractions |
+| **Relate / connect memories** | derive an Abstraction/Perspective over them — there is no connect verb |
+| Claim what existing memories mean, with a confidence | `core_interpret` → interpretation Perspective |
+| Set an intent / objective to pursue | `core_goal` action=set (+ action=decompose) |
+| Retrieve Self / situation-conditioned sketches | `core_recall` (question ∪ subjects; no sidecar) |
+| Walk provenance / episode siblings | `core_think` (cursor pages, not a stream) |
+| Precision search (tags/schema/words) | `core_search_memories` → `proxima://memory/{id}` (`?expand_neighbors=true`) |
+
+A generalization stored as a Fact flattens the hierarchy and loses its grounding — derive it instead.
+
+## Edge kinds
+
+Two kinds, and the vocabulary is closed. The kind follows the write that produced the row; nobody picks one.
+
+| Kind | Written by | Direction |
+|---|---|---|
+| `origin` | the write that declares what it was made from — `source_handles` on `core_derive` | new Abstraction/Perspective → each source memory |
+| `reference` | a schema-declared payload field of the node itself | referrer → referent |
+
+`core_interpret` writes no edge of its own: its `subjects` are payload fields of the interpretation Perspective, so they arrive as `reference` entries.
+
+## Worked example: turning the wheel
+
+1. **Observe.** `core_remember(title=..., body=...)` for each distinct thing that happened → Facts `fact-a`, `fact-b`, `fact-c`.
+2. **Abstract.** Once a pattern recurs across those Facts: `core_derive(kind="Abstraction", source_handles=["fact-a","fact-b","fact-c"], …)` → `abstraction-d`, with an `origin` entry to each Fact.
+3. **Take a stance.** When your view genuinely shifts: `core_derive(kind="Perspective", source_handles=["abstraction-d"], …)` → `perspective-e`.
+4. **Wire intent.** `core_goal` action=set to record what to pursue; action=decompose to break it down.
+
+## Reading: which surface first
+
+1. `core_recall` — cue packet (question ∪ subjects). This is how Self is retrieved.
+2. `core_search_memories` — precision search (tags/schema/words); neighbors default off.
+3. `proxima://memory/{id}` — fetch one entity after search locates it; add `?expand_neighbors=true` for immediate edges.
+4. `core_think` — paged pin walk (ancestors/descendants/episode_siblings).
+5. `proxima://memory/{id}/lineage?direction=ancestors` — walk provenance/deep lineage only when you specifically need it.
+
+Discover available reads with `resources/list` and `resources/templates/list`. Semantic ranking needs embeddings; a space with no embedding client degrades to lexical search. When the searched spaces score on different scales the result says `ranking: "rank"`: compare `score` only within one `space`.
+
+## Recall before acting
+
+Before architectural decisions, domain shifts, or debugging unfamiliar areas, search the brain first and pull your Perspective plus the relevant Facts. Memory you never query is dead weight. Consolidate at natural breaks: remember the key Facts, derive an Abstraction when a pattern recurred, update your Perspective when your stance shifts.

@@ -6,7 +6,7 @@
 //! `list_tools`, `resources/list`, and `resources/templates/list` advertise —
 //! so the How-To never references a surface a given deployment profile
 //! (`PROXIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
-//! deployment that drops code execution tools drops their guidance
+//! deployment that drops the goal tools drops their guidance
 //! too, automatically.
 //!
 //! The generators are pure functions of the advertised canonical tool-id and
@@ -38,13 +38,6 @@ pub const HOW_TO_DESCRIPTION: &str = "The Proxima memory contract in depth: the 
 /// MIME type of the How-To resource body.
 pub const HOW_TO_MIME: &str = "text/markdown";
 
-// Code-flavor tools live in `proxima-code`, which `mcp-server` does not
-// depend on, so these ids are matched as literals rather than via a
-// `McpTool::NAME` const. They stay correct as long as the flavor keeps these
-// registered tool names (the `memory` keep set in `apps/proxima-mcp` pins them too).
-const CODE_SEARCH_CHUNKS: &str = "proxima-code_search_chunks";
-const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
-const CODE_OPEN_FILE_REVISION: &str = "proxima-code_open_file_revision";
 /// The advertised surface, distilled to the booleans the generators key off.
 /// Computed once from the resolved tool-id and resource scope-key sets so
 /// `build_instructions` and `how_to_markdown` agree on what is exposed. The
@@ -65,9 +58,6 @@ struct Surface {
     get_memory: bool,
     lineage: bool,
     goals: bool,
-    code: bool,
-    code_search: bool,
-    code_open: bool,
 }
 
 impl Surface {
@@ -90,9 +80,6 @@ impl Surface {
             get_memory: has_resource(protocol_resource::MEMORY),
             lineage: has_resource(protocol_resource::MEMORY_LINEAGE),
             goals: has_tool(CoreGoalTool::NAME),
-            code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
-            code_search: has_tool(CODE_SEARCH_CHUNKS),
-            code_open: has_tool(CODE_OPEN_FILE_REVISION),
         }
     }
 }
@@ -216,13 +203,6 @@ pub fn build_instructions(
     }
 
     push_retrieval_instructions(&mut out, s);
-
-    if s.code {
-        out.push_str(
-            "Source code is memory too: the `proxima-code_*` tools search and open indexed \
-             repository revisions. ",
-        );
-    }
 
     out.push_str("Recall before you act, and consolidate at natural breaks.");
     if s.how_to {
@@ -444,21 +424,6 @@ fn push_capture_table(out: &mut String, s: Surface) {
         }
         out.push_str(" |\n");
     }
-    let code_tools: Vec<&str> = [
-        (s.code_search, CODE_SEARCH_CHUNKS),
-        (s.code_open, CODE_OPEN_FILE_REVISION),
-    ]
-    .into_iter()
-    .filter_map(|(advertised, name)| advertised.then_some(name))
-    .collect();
-    if !code_tools.is_empty() {
-        let names: Vec<String> = code_tools.iter().map(|name| format!("`{name}`")).collect();
-        let _ = writeln!(
-            out,
-            "| Search / open indexed source code | {} |",
-            names.join(", ")
-        );
-    }
     out.push_str(
         "\nA generalization stored as a Fact flattens the hierarchy and loses its grounding — \
          derive it instead.\n\n",
@@ -589,8 +554,6 @@ mod tests {
             RecallTool::NAME,
             ThinkTool::NAME,
             CoreGoalTool::NAME,
-            CODE_SEARCH_CHUNKS,
-            CODE_REGISTER_REPO,
         ]
         .into_iter()
         .collect()
@@ -616,7 +579,7 @@ mod tests {
     }
 
     /// A `memory`-style profile that keeps authoring + retrieval but, for the
-    /// sake of the test, has had goal and code tools denied.
+    /// sake of the test, has had goal tools denied.
     fn memory_minus_goals_tool_set() -> BTreeSet<&'static str> {
         [
             RememberTool::NAME,
@@ -635,7 +598,7 @@ mod tests {
     }
 
     /// Every tool id the generated texts can name.
-    const NAMEABLE_TOOLS: [&str; 12] = [
+    const NAMEABLE_TOOLS: [&str; 9] = [
         "core_remember",
         "core_record_utterance",
         "core_derive",
@@ -645,9 +608,6 @@ mod tests {
         "core_think",
         "core_goal",
         "core_memory_spaces",
-        "proxima-code_search_chunks",
-        "proxima-code_register_repo",
-        "proxima-code_open_file_revision",
     ];
 
     /// The whole surface, every nameable tool advertised.
@@ -683,7 +643,7 @@ mod tests {
     /// With the whole surface the memory-spaces clause is the one the docs
     /// quote (docs/15 §MCP, docs/agent/quickstart.md), word for word.
     #[test]
-    fn the_whole_surface_keeps_the_memory_spaces_clause_and_the_code_row() {
+    fn the_whole_surface_keeps_the_memory_spaces_clause() {
         let tools = whole_surface();
         let resources = full_resource_set();
         let instructions = build_instructions(&tools, &resources);
@@ -703,10 +663,6 @@ mod tests {
             )),
             "{how_to}"
         );
-        assert!(how_to.contains(
-            "| Search / open indexed source code | `proxima-code_search_chunks`, \
-             `proxima-code_open_file_revision` |\n"
-        ));
     }
 
     /// The `space` clause lists the advertised tools that take a `space`
@@ -746,28 +702,24 @@ mod tests {
         }
     }
 
-    /// The code row names the code tools that are advertised, and no row
-    /// appears when neither is (registering a repo alone documents nothing
-    /// to search).
+    /// The instructions and how-to for a core-only host, byte for byte. A
+    /// change to the generated guidance must update these snapshots on
+    /// purpose; dropping a flavor's gated text must leave them alone.
     #[test]
-    fn the_code_row_names_only_advertised_code_tools() {
+    fn core_only_surface_instructions_are_unchanged() {
+        let tools: BTreeSet<&str> = NAMEABLE_TOOLS
+            .into_iter()
+            .filter(|name| name.starts_with("core_"))
+            .collect();
         let resources = full_resource_set();
-        let row = |tools: &[&'static str]| {
-            let tools: BTreeSet<&str> = tools.iter().copied().collect();
-            how_to_markdown(&tools, &resources)
-                .lines()
-                .find(|line| line.starts_with("| Search / open indexed source code"))
-                .map(str::to_owned)
-        };
         assert_eq!(
-            row(&["proxima-code_search_chunks"]).as_deref(),
-            Some("| Search / open indexed source code | `proxima-code_search_chunks` |")
+            build_instructions(&tools, &resources),
+            include_str!("../tests/golden/selfdoc_core_instructions.txt")
         );
         assert_eq!(
-            row(&["proxima-code_open_file_revision"]).as_deref(),
-            Some("| Search / open indexed source code | `proxima-code_open_file_revision` |")
+            how_to_markdown(&tools, &resources),
+            include_str!("../tests/golden/selfdoc_core_how_to.txt")
         );
-        assert_eq!(row(&["proxima-code_register_repo"]), None);
     }
 
     #[test]
