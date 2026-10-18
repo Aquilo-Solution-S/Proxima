@@ -39,9 +39,10 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
             SET status = 'processing',
                 claimed_at = now(),
                 claim_token = uuidv7()
-           FROM claimed, proxima_core.memory m, proxima_core.owners o
+           FROM claimed, proxima_core.memory m, proxima_core.owners o /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
+            AND m.forgotten_at IS NULL
             AND o.owner_id = j.owner_id
         RETURNING j.job_id,
                   j.owner_id,
@@ -130,7 +131,7 @@ async fn missing_embedding_ids<'e>(
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
            FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE m.owner_id = $1
             AND NOT (m.schema_id = ANY($4::text[]))
             AND NOT EXISTS (

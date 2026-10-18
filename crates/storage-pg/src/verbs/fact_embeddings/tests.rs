@@ -692,6 +692,91 @@ mod pg_tests {
         result
     }
 
+    async fn forget_by_hand(pool: &sqlx::PgPool, memory_id: MemoryId) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE proxima_core.memory SET forgotten_at = now() WHERE t = $1")
+            .bind(memory_id.into_inner())
+            .execute(pool)
+            .await
+            .map(|_| ())
+    }
+
+    /// #488 S6: a job claimed before its memory is forgotten writes nothing.
+    /// The claim commits first (the barrier is the claim's own transaction),
+    /// then the flag commits, then the drainer's write arrives.
+    #[tokio::test]
+    async fn a_claimed_job_writes_no_vector_once_its_memory_is_forgotten()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("forgotten mid-job"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let claims = claim_pending_embedding_jobs(pg.pool_for_tests(), 1, &[], &[]).await?;
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].entity_id, memory.memory_id);
+            forget_by_hand(pg.pool_for_tests(), memory.memory_id).await?;
+            let entity = EmbeddableEntityRef::Memory {
+                kind: EntityKind::Fact,
+                memory_id: memory.memory_id,
+            };
+            let written = pg
+                .insert_embedding(
+                    &owner,
+                    entity,
+                    &[stub_vector(padded_embedding([0.4, 0.5, 0.6]))],
+                    EmbeddingWriteProof::for_claim_for_tests(&claims[0]),
+                )
+                .await?;
+            assert_eq!(written.embedding_version, 0, "the write is refused");
+            assert_eq!(
+                count_fact_embeddings(pg.pool_for_tests(), memory.memory_id).await?,
+                0
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// #488 S6: the drain does not claim a forgotten memory's pending job.
+    #[tokio::test]
+    async fn the_drain_does_not_claim_a_forgotten_memorys_job()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("forgotten before claim"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            forget_by_hand(pg.pool_for_tests(), memory.memory_id).await?;
+            assert!(
+                claim_pending_embedding_jobs(pg.pool_for_tests(), 1, &[], &[])
+                    .await?
+                    .is_empty()
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
     /// A provider that rejects an input will reject it again. Requeueing such a
     /// job spins claim → reject → requeue forever, which is why the two failure
     /// causes need separate statuses.

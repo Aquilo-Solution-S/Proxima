@@ -189,7 +189,7 @@ async fn embedding_entity_is_eligible(
     };
     sqlx::query_scalar(
         "SELECT EXISTS (
-            SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+            SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
             UNION ALL
             SELECT 1 FROM proxima_core.goal WHERE t = $1 AND owner_id = $2
         )",

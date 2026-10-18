@@ -170,7 +170,7 @@ pub(crate) async fn capture_publication_in_tx(
     }
     let captured = sqlx::query_scalar::<_, Option<String>>(
         "SELECT memory.source_id
-           FROM proxima_core.memory memory
+           FROM proxima_core.memory memory /* FORGET-POLICY: includes-forgotten (reads the Fact this transaction just inserted) */
            JOIN proxima_core.owners owner ON owner.owner_id = memory.owner_id
           WHERE memory.t = $1
             AND memory.owner_id = $2

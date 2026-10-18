@@ -735,20 +735,70 @@ def check_removed_flavor_vocabulary(findings: list[Finding]) -> None:
 # live memories only or forgotten ones too. The counts are pinned so a new
 # platform read is classified on purpose.
 FORGET_POLICY_MARKER = re.compile(r"FORGET-POLICY: (live-only|includes-forgotten) \(([^)]*\S[^)]*)\)")
-MEMORY_READ = re.compile(r"\b(?:FROM|JOIN|UPDATE|INTO)\s+proxima_core\.memory\b")
+MEMORY_READ = re.compile(
+    r"\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:[\w.]+(?:\s+\w+)?\s*,\s*)*proxima_core\.memory\b"
+)
 PLATFORM_SCOPE_BINDING = re.compile(
-    r"PgPlatformScope|platform_scope|set_config\('app\.proxima_scope', 'platform'"
+    r"PgPlatformScope|platform_scope|platform_transaction\(|set_config\('app\.proxima_scope', 'platform'"
 )
 FUNCTION_START = re.compile(r"CREATE (?:OR REPLACE )?FUNCTION ")
 MEMORY_CENSUS_ALWAYS = (
     "crates/storage-pg/definitions/functions.sql",
     "crates/storage-pg/definitions/triggers.sql",
 )
-EXPECTED_MEMORY_READS = {"live-only": 10, "includes-forgotten": 64}
+# Verb modules whose callers bind platform scope (ports/embeddings.rs) rather
+# than the module itself, so the file-level binding test cannot see them.
+MEMORY_CENSUS_PLATFORM_CALLEES = ("crates/storage-pg/src/verbs/fact_embeddings/",)
+# A live-only read filters forgotten rows itself (#488 S6): the read's line or
+# the statement lines right after it say so. Reads inside generated owner-RLS
+# policy text are hidden by the policy and say that in their reason instead.
+LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
+LIVE_ONLY_WINDOW = 8
+LIVE_ONLY_RLS_REASON = "under owner RLS"
+EXPECTED_MEMORY_READS = {"live-only": 15, "includes-forgotten": 65}
 
 
-def in_memory_census(text: str, suffix: str) -> bool:
-    return suffix in {".rs", ".sql"} and PLATFORM_SCOPE_BINDING.search(text) is not None
+def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
+    if suffix not in {".rs", ".sql"}:
+        return False
+    return rel.startswith(MEMORY_CENSUS_PLATFORM_CALLEES) or PLATFORM_SCOPE_BINDING.search(text) is not None
+
+
+def live_only_statement(lines: list[str], index: int, suffix: str) -> str:
+    """The rest of the statement a read starts: up to the literal's closing
+    quote (Rust) or the semicolon (SQL), at most LIVE_ONLY_WINDOW lines."""
+    end = '"' if suffix == ".rs" else ";"
+    match = MEMORY_READ.search(lines[index])
+    parts: list[str] = []
+    rest = lines[index][match.end() if match else 0 :]
+    for offset in range(LIVE_ONLY_WINDOW):
+        if offset:
+            if index + offset >= len(lines):
+                break
+            rest = lines[index + offset]
+        stop = rest.find(end)
+        if stop >= 0:
+            parts.append(rest[:stop])
+            break
+        parts.append(rest)
+    return "\n".join(parts)
+
+
+def unfiltered_live_only(text: str, suffix: str) -> list[int]:
+    """Live-only reads whose statement does not filter forgotten rows."""
+    lines = text.splitlines()
+    unfiltered: list[int] = []
+    for line_no, kind in memory_read_hits(text, suffix):
+        if kind != "live-only":
+            continue
+        if LIVE_ONLY_FILTER.search(live_only_statement(lines, line_no - 1, suffix)):
+            continue
+        if suffix == ".sql" and LIVE_ONLY_RLS_REASON in text:
+            reasons = [m.group(2) for m in FORGET_POLICY_MARKER.finditer(text) if m.group(1) == "live-only"]
+            if reasons and all(LIVE_ONLY_RLS_REASON in reason for reason in reasons):
+                continue
+        unfiltered.append(line_no)
+    return unfiltered
 
 
 def memory_read_hits(text: str, suffix: str) -> list[tuple[int, str | None]]:
@@ -793,7 +843,7 @@ def memory_census_files() -> list[Path]:
     for path in iter_files("crates/storage-pg/src"):
         if path.suffix not in {".rs", ".sql"} or path.stem == "tests" or path.stem.endswith("_tests"):
             continue
-        if in_memory_census(path.read_text(encoding="utf-8"), path.suffix):
+        if in_memory_census(path.read_text(encoding="utf-8"), path.suffix, path.relative_to(ROOT).as_posix()):
             files.append(path)
     return files
 
@@ -810,6 +860,10 @@ def check_memory_reads(findings: list[Finding]) -> None:
                 )
             else:
                 counts[kind] += 1
+        for line_no in unfiltered_live_only(text, path.suffix):
+            findings.append(
+                Finding(path, line_no, "live-only memory read without forgotten_at IS NULL", lines[line_no - 1])
+            )
     mismatch = memory_census_mismatch(EXPECTED_MEMORY_READS, counts)
     if mismatch:
         findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "memory read census", mismatch))
@@ -951,6 +1005,18 @@ async fn ingest_fact_atomic(
     }
     if [rel for rel, _line in lifecycle_guc_writers(guc_files)] != ["crates/storage-pg/src/other.rs", "crates/x/src/y.sql"]:
         failures.append("lifecycle scope: a second writer of app.proxima_lifecycle was not detected (or a reader was)")
+    live_fixture = (
+        'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */ WHERE t = $1")\n'
+        'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */\n'
+        '    WHERE t = $1 AND forgotten_at IS NULL")\n'
+        'sqlx::query("UPDATE j FROM claimed, proxima_core.memory m /* FORGET-POLICY: includes-forgotten (fixture) */")\n'
+    )
+    if unfiltered_live_only(live_fixture, ".rs") != [1]:
+        failures.append("memory census: a live-only read without the forgotten filter was not flagged (or a filtered one was)")
+    if [kind for _line, kind in memory_read_hits(live_fixture, ".rs")] != ["live-only", "live-only", "includes-forgotten"]:
+        failures.append("memory census: a comma join to proxima_core.memory was not recognized as a read")
+    if not in_memory_census("fn f() {}", ".rs", "crates/storage-pg/src/verbs/fact_embeddings/write.rs"):
+        failures.append("memory census: a platform callee module was not put in the census")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)

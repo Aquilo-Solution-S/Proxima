@@ -113,8 +113,8 @@ pub async fn load_embedding_texts_on_connection(
         .collect();
     let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT t, owner_id, schema_id
-           FROM proxima_core.memory
-          WHERE t = ANY($1::uuid[])",
+           FROM proxima_core.memory /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+          WHERE t = ANY($1::uuid[]) AND forgotten_at IS NULL",
     )
     .bind(&ids)
     .fetch_all(&mut *pool)
@@ -229,9 +229,10 @@ where
 {
     sqlx::query_scalar(
         "SELECT m.schema_id
-           FROM proxima_core.memory m
+           FROM proxima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE m.t = $1
-            AND m.owner_id = $2",
+            AND m.owner_id = $2
+            AND m.forgotten_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .bind(owner.into_inner())
