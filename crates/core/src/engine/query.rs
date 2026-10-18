@@ -126,6 +126,9 @@ impl Engine {
     /// and `core_think` follow (`mcp::core_tools::ancestry`, #480); the
     /// other-store rows of the page's nodes come back unexpanded in
     /// `external_edges`. Descendants follow `origin` pins, as the tool does.
+    /// Every node carries its real hop distance (the start is 0, a memory
+    /// first reached n hops away is n), in both directions and on every
+    /// page.
     ///
     /// # Errors
     ///

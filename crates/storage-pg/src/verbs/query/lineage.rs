@@ -102,13 +102,22 @@ pub(crate) async fn walk_memory_lineage_on_connection(
     .await?;
     let truncated = hops.len() > page_len;
     hops.truncate(page_len);
-    assemble_lineage_page_on_connection(connection, &owner_ids, start, hops, truncated, projections)
-        .await
+    assemble_lineage_page_on_connection(
+        connection,
+        &owner_ids,
+        req.direction,
+        start,
+        hops,
+        truncated,
+        projections,
+    )
+    .await
 }
 
 async fn assemble_lineage_page_on_connection(
     connection: &mut PgConnection,
     owner_ids: &[Uuid],
+    direction: MemoryLineageDirection,
     start: Uuid,
     hops: Vec<WalkHop>,
     truncated: bool,
@@ -139,7 +148,7 @@ async fn assemble_lineage_page_on_connection(
                 kind: parse_kind(&kind)?,
                 schema_id: SchemaId::new(schema),
                 snippet: snippets.remove(&id).unwrap_or_default(),
-                distance: u8::from(id != start),
+                distance: node_distance(direction, start, &hops, id),
             })
         })
         .collect();
@@ -253,6 +262,33 @@ pub(crate) async fn external_edges_on_connection(
             Ok((MemoryId::new(t), memory, kind))
         })
         .collect()
+}
+
+/// Hop distance of a page node: the start is 0; a node is reached at the
+/// distance of a hop whose far end it is (`tgt` toward ancestors, `src`
+/// toward descendants) and sits one level before a hop whose near end it is
+/// (a resumed page's frontier). Levels expand only unseen nodes, so the
+/// smallest of these is the node's level.
+fn node_distance(direction: MemoryLineageDirection, start: Uuid, hops: &[WalkHop], id: Uuid) -> u8 {
+    if id == start {
+        return 0;
+    }
+    hops.iter()
+        .filter_map(|hop| {
+            let (far, near) = match direction {
+                MemoryLineageDirection::Ancestors => (hop.tgt, hop.src),
+                MemoryLineageDirection::Descendants => (hop.src, hop.tgt),
+            };
+            if far == id {
+                Some(hop.dist)
+            } else if near == id {
+                Some(hop.dist.saturating_sub(1))
+            } else {
+                None
+            }
+        })
+        .min()
+        .unwrap_or(1)
 }
 
 fn project_lineage_edge(

@@ -311,6 +311,8 @@ pub struct MemoryLineageNode {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub snippet: String,
+    /// Hop distance from the start (0): the level at which the walk first
+    /// reached this memory. `lineage_nodes` returns 0; its caller sets it.
     pub distance: u8,
 }
 

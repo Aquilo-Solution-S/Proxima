@@ -1214,8 +1214,8 @@ async fn lineage_ancestors_page_within_limit_over_references_and_remote_leaves()
 }
 
 /// #480 follow-up: every lineage node carries its real hop distance, as
-/// edges do: a three-memory local chain renders 0, 1, 2, also when the
-/// deepest edge comes on its own page.
+/// edges do: a three-memory local chain renders 0, 1, 2 toward ancestors
+/// and toward descendants, also when the deepest edge comes on its own page.
 #[tokio::test]
 async fn lineage_nodes_carry_their_hop_distance() {
     let split_db = clone_split_core_db("proxima_lineage_node_distance")
@@ -1279,13 +1279,37 @@ async fn lineage_nodes_carry_their_hop_distance() {
         let cursor = first["next_cursor"].as_str().expect("a second page");
         let second = read_test_model_resource(
             &tools,
-            authz,
+            authz.clone(),
             owner,
             &format!("{base}&limit=1&cursor={cursor}"),
         )
         .await?;
         assert_eq!(distance(&second, middle), Some(1.into()), "{second}");
         assert_eq!(distance(&second, root), Some(2.into()), "{second}");
+
+        // Descendants (the storage walk the engine-level verb runs) carry
+        // the same real distances: root 0, middle 1, top 2, across pages.
+        let down = format!("proxima://memory/{root}/lineage?direction=descendants&depth=3");
+        let whole = read_test_model_resource(&tools, authz.clone(), owner, &down).await?;
+        assert_eq!(distance(&whole, root), Some(0.into()), "{whole}");
+        assert_eq!(distance(&whole, middle), Some(1.into()), "{whole}");
+        assert_eq!(distance(&whole, top), Some(2.into()), "{whole}");
+        let first =
+            read_test_model_resource(&tools, authz.clone(), owner, &format!("{down}&limit=1"))
+                .await?;
+        assert_eq!(distance(&first, middle), Some(1.into()), "{first}");
+        let cursor = first["next_cursor"]
+            .as_str()
+            .expect("a second descendants page");
+        let second = read_test_model_resource(
+            &tools,
+            authz,
+            owner,
+            &format!("{down}&limit=1&cursor={cursor}"),
+        )
+        .await?;
+        assert_eq!(distance(&second, middle), Some(1.into()), "{second}");
+        assert_eq!(distance(&second, top), Some(2.into()), "{second}");
 
         built.shutdown().await;
         Ok(())

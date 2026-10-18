@@ -80,9 +80,9 @@ pub struct LineageNodeOutput {
     pub kind: String,
     pub schema_id: String,
     pub snippet: String,
-    /// Hops from the start, which is 0. Toward ancestors, the hop at which
-    /// the walk first reached this memory, as on its edges. Toward
-    /// descendants every memory but the start still reads 1.
+    /// Hops from the start, which is 0: the level at which the walk first
+    /// reached this memory, in either direction and on every page, as on
+    /// its edges.
     pub distance: u8,
     /// Set only on a node of another store: its store number.
     #[serde(skip_serializing_if = "Option::is_none")]
