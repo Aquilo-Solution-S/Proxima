@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot};
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
@@ -10,7 +8,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
-    MemoryId, MemoryKindRow, OwnerId, StorageError, cold_object_key,
+    MemoryId, MemoryKindRow, OwnerId, StorageError,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -185,17 +183,12 @@ impl MemoryAuthoringPort for PgStorage {
     ) -> Result<(), StorageError> {
         let t = memory_id.into_inner();
         // The same-transaction probe in forget_memory_oneshot_in_transaction
-        // checks the permit's owner and kinds before reading or publishing
-        // any cold payload.
-        let key = cold_object_key(t);
+        // checks the permit's owner and kinds before marking the row.
         let storage = self.clone();
-        let cold = Arc::clone(&self.cold);
         let sidecars = self.sidecars.clone();
         let surfaces = self.surfaces.clone();
         with_bounded_retry(move || {
-            let key = key.clone();
             let storage = storage.clone();
-            let cold = Arc::clone(&cold);
             let sidecars = sidecars.clone();
             let surfaces = surfaces.clone();
             async move {
@@ -204,8 +197,6 @@ impl MemoryAuthoringPort for PgStorage {
                     tx,
                     &sidecars,
                     &surfaces,
-                    cold.as_ref(),
-                    &key,
                     t,
                     &verbs::forget::Reach::of(permit),
                 )

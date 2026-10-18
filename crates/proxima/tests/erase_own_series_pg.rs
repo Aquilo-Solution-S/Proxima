@@ -165,10 +165,10 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
         h.engine.forget_memory(&authz, owner, v1).await?;
         let cold_key = proxima_core::cold_object_key(v1.into_inner());
         assert!(
-            h.cold.get(&cold_key).await.is_ok(),
-            "forget wrote the cold object"
+            h.cold.get(&cold_key).await.is_err(),
+            "forget marks the row and writes no cold object"
         );
-        assert_eq!(footprint(&h.pool, &[v1, v2]).await, [1, 1, 1, 2, 0]);
+        assert_eq!(footprint(&h.pool, &[v1, v2]).await, [2, 0, 2, 2, 0]);
 
         let receipt = erase(
             &h.engine,
@@ -187,7 +187,10 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
         assert_eq!(receipt.series_erased, 1);
         assert_eq!(receipt.versions_erased, 2);
         assert_eq!(receipt.referencing_series, 0);
-        assert_eq!(receipt.cold_objects_pending, 1);
+        assert_eq!(
+            receipt.cold_objects_pending, 0,
+            "a forgotten version has no cold object"
+        );
         assert!(!receipt.more_remaining);
         assert_eq!(
             footprint(&h.pool, &[v1, v2]).await,
@@ -267,8 +270,8 @@ async fn a_dry_run_reports_what_the_erase_then_does_and_changes_nothing() {
             h.cold
                 .get(&proxima_core::cold_object_key(v1.into_inner()))
                 .await
-                .is_ok(),
-            "a dry run destroys no cold object"
+                .is_err(),
+            "forget wrote no cold object for the dry run to keep"
         );
 
         let wet = erase(
@@ -754,7 +757,10 @@ async fn sidecar_equals_erases_every_series_with_a_matching_version() {
             "each matching series goes whole, the one that left the notebook included"
         );
         assert_eq!(wet.series_erased, 3);
-        assert_eq!(wet.cold_objects_pending, 1);
+        assert_eq!(
+            wet.cold_objects_pending, 0,
+            "a forgotten version has no cold object"
+        );
         assert!(!wet.more_remaining);
         assert_eq!(footprint(&h.pool, &selected).await, [0, 0, 0, 0, 5]);
         assert_eq!(
@@ -831,8 +837,8 @@ async fn sidecar_equals_joins_its_predicates_inside_the_owner() {
 /// The declared clock is the payload's, not admission: a backfilled note
 /// ages by its `written_at`. The NEWEST version's value decides — a series
 /// whose newest version is recent keeps every version, one whose newest
-/// version is old goes whole — and a newest version that is cooled has no
-/// value to compare.
+/// version is old goes whole — and a forgotten newest version keeps its
+/// sidecar row, so it still carries the value that ages its series.
 #[tokio::test]
 async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
     run(async |h| {
@@ -931,7 +937,13 @@ async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
             EraseMode::Erase,
         )
         .await?;
-        let mut expected = vec![backfilled, corrected_v1, corrected_v2];
+        let mut expected = vec![
+            backfilled,
+            corrected_v1,
+            corrected_v2,
+            forgotten_v1,
+            forgotten_v2,
+        ];
         expected.sort_unstable();
         assert_eq!(receipt.versions, expected);
         assert!(!receipt.more_remaining);
@@ -942,8 +954,8 @@ async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
         );
         assert_eq!(
             footprint(&h.pool, &[forgotten_v1, forgotten_v2]).await,
-            [1, 1, 1, 2, 0],
-            "a cooled newest version carries no value, so its series stays"
+            [0, 0, 0, 0, 2],
+            "a forgotten newest version keeps its declared value, so its old series goes"
         );
         Ok(())
     })

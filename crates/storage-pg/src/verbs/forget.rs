@@ -153,55 +153,6 @@ pub struct ColdRecord {
     pub(crate) format_version: u8,
 }
 
-fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
-    let mut out = vec![COLD_FORMAT_VERSION];
-    write_uuid(&mut out, rec.row.handle);
-    write_uuid(&mut out, rec.row.t);
-    write_str(&mut out, &rec.row.kind)?;
-    write_uuid(&mut out, rec.row.owner_id);
-    write_uuid(&mut out, rec.row.by);
-    write_opt_uuid(&mut out, rec.row.via);
-    write_opt_str(&mut out, rec.row.source_id.as_deref())?;
-    write_opt_str(&mut out, rec.row.ingest_key.as_deref())?;
-    write_opt_uuid(&mut out, rec.row.blob_id);
-    write_uuid_list(&mut out, &rec.row.origins)?;
-    write_uuid_list(&mut out, &rec.row.refs)?;
-    write_uuid_list(&mut out, &rec.row.goal_refs)?;
-    write_opt_time(&mut out, rec.row.occurred_at)?;
-    write_str(&mut out, &rec.schema_id)?;
-    // The dump names are data from the cold boundary. Persist the original
-    // Memory stamp separately so a caller cannot mint a new valid sidecar by
-    // appending its name to the dump list during hydration.
-    write_str_list(&mut out, &rec.row.sidecar_tables)?;
-    write_count(&mut out, rec.sidecar_dumps.len())?;
-    for (table, json) in &rec.sidecar_dumps {
-        write_str(&mut out, table)?;
-        write_str(&mut out, json)?;
-    }
-    let embed_models: Vec<String> = rec
-        .embed_spaces
-        .iter()
-        .map(|space| space.model_id().to_owned())
-        .collect();
-    write_str_list(&mut out, &embed_models)?;
-    write_count(&mut out, rec.embed_spaces.len())?;
-    for space in &rec.embed_spaces {
-        let width = u16::try_from(space.dim().width())
-            .map_err(|_| StorageError::Internal("embedding width exceeds u16".into()))?;
-        write_u16(&mut out, width);
-    }
-    write_opt_str(&mut out, rec.sketch.as_deref())?;
-    write_count(&mut out, rec.detail_dumps.len())?;
-    for (table, rows) in &rec.detail_dumps {
-        write_str(&mut out, table)?;
-        write_count(&mut out, rows.len())?;
-        for row in rows {
-            write_str(&mut out, row)?;
-        }
-    }
-    Ok(out)
-}
-
 pub(crate) fn cold_digest(bytes: &[u8]) -> Vec<u8> {
     blake3::hash(bytes).as_bytes().to_vec()
 }
@@ -292,33 +243,6 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     })
 }
 
-fn write_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_be_bytes());
-}
-
-fn write_uuid(out: &mut Vec<u8>, value: Uuid) {
-    out.extend_from_slice(value.as_bytes());
-}
-
-fn write_count(out: &mut Vec<u8>, n: usize) -> Result<(), StorageError> {
-    let len = u16::try_from(n)
-        .map_err(|_| StorageError::ConstraintViolation("cold field count exceeds 65535".into()))?;
-    write_u16(out, len);
-    Ok(())
-}
-
-fn write_str(out: &mut Vec<u8>, value: &str) -> Result<(), StorageError> {
-    write_bytes(out, value.as_bytes())
-}
-
-fn write_str_list(out: &mut Vec<u8>, values: &[String]) -> Result<(), StorageError> {
-    write_count(out, values.len())?;
-    for value in values {
-        write_str(out, value)?;
-    }
-    Ok(())
-}
-
 fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageError> {
     let n = usize::from(read_u16(bytes, i)?);
     let mut out = Vec::with_capacity(n);
@@ -326,61 +250,6 @@ fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageErro
         out.push(read_str(bytes, i)?);
     }
     Ok(out)
-}
-
-fn write_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), StorageError> {
-    let len = u16::try_from(value.len())
-        .map_err(|_| StorageError::ConstraintViolation("cold field exceeds 65535 bytes".into()))?;
-    write_u16(out, len);
-    out.extend_from_slice(value);
-    Ok(())
-}
-
-fn write_opt_str(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), StorageError> {
-    match value {
-        None => out.push(0),
-        Some(text) => {
-            out.push(1);
-            write_str(out, text)?;
-        }
-    }
-    Ok(())
-}
-
-fn write_opt_uuid(out: &mut Vec<u8>, value: Option<Uuid>) {
-    match value {
-        None => out.push(0),
-        Some(id) => {
-            out.push(1);
-            write_uuid(out, id);
-        }
-    }
-}
-
-/// An optional instant as microseconds since the Unix epoch, the precision a
-/// `timestamptz` column holds.
-fn write_opt_time(
-    out: &mut Vec<u8>,
-    value: Option<time::OffsetDateTime>,
-) -> Result<(), StorageError> {
-    match value {
-        None => out.push(0),
-        Some(at) => {
-            let micros = i64::try_from(at.unix_timestamp_nanos().div_euclid(1_000))
-                .map_err(|_| StorageError::Internal("cold time exceeds i64 microseconds".into()))?;
-            out.push(1);
-            out.extend_from_slice(&micros.to_be_bytes());
-        }
-    }
-    Ok(())
-}
-
-fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) -> Result<(), StorageError> {
-    write_count(out, values.len())?;
-    for id in values {
-        write_uuid(out, *id);
-    }
-    Ok(())
 }
 
 fn read_u8(bytes: &[u8], i: &mut usize) -> Result<u8, StorageError> {
@@ -477,379 +346,6 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
 /// forget lane and the write-time constraint cannot drift apart.
 fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
     sidecars.is_owner_pinned_memory_sidecar_table(table)
-}
-
-/// The tables a cold record must carry a dump for: the row's own stamp, minus
-/// the owner-pinned tables the registry deliberately leaves in place.
-///
-/// One function so the writer that produces `sidecar_dumps` and the verifier
-/// that admits them cannot drift. They used to disagree: the dump silently
-/// skipped a stamped table whose row was absent, while the verifier demanded
-/// element-for-element equality — so such a record cooled and could then
-/// never be hydrated.
-fn dumpable_stamped_tables<'a>(
-    stamp: &'a [String],
-    sidecars: &PgSidecarRegistryFrozen,
-) -> Vec<&'a str> {
-    stamp
-        .iter()
-        .map(String::as_str)
-        .filter(|table| !is_owner_pinned(sidecars, table))
-        .collect()
-}
-
-async fn dump_stamped_sidecars(
-    conn: &mut PgConnection,
-    sidecars: &PgSidecarRegistryFrozen,
-    tables: &[String],
-    t: Uuid,
-) -> Result<Vec<(String, String)>, StorageError> {
-    for table in tables {
-        if !sidecars.is_memory_sidecar_table(table) {
-            return Err(StorageError::ConstraintViolation(format!(
-                "stamped sidecar table {table} is not registered"
-            )));
-        }
-    }
-    let dumpable = dumpable_stamped_tables(tables, sidecars);
-    let mut dumps = Vec::with_capacity(dumpable.len());
-    for table in dumpable {
-        // The row is found on the column the table's registration declares,
-        // never on a literal `t`. The delete half below reads the same
-        // column off `ForgetLeg::Dumped { key_column }`, and
-        // `freeze_against`'s `check_memory_key_against_contracts` holds the
-        // two declarations equal — so a sidecar keyed on anything else is
-        // dumped and deleted, rather than deleted with an empty cold record.
-        // `is_memory_sidecar_table` above already refused an unregistered
-        // table, so the lookup cannot miss; the arm names what to fix if it
-        // ever does rather than falling back.
-        let key = PgIdent::column(sidecars.memory_key_column(table).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "stamped sidecar table {table} declares no memory-key column; register the \
-                 payload with `pg_sidecar!(key: …)` so the dump knows which column to find the \
-                 forgotten row on"
-            ))
-        })?)?;
-        let ident = PgIdent::table(table)?;
-        let sql = format!(
-            "SELECT to_jsonb(s) - COALESCE((
-                 SELECT array_agg(a.attname::text)
-                   FROM pg_attribute a
-                   JOIN pg_class c ON c.oid = a.attrelid
-                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE n.nspname = split_part('{tbl}', '.', 1)
-                    AND c.relname = split_part('{tbl}', '.', 2)
-                    AND a.attgenerated <> ''
-              ), '{{}}'::text[])
-               FROM {tbl} s
-              WHERE s.{key} = $1",
-            tbl = ident.as_str(),
-            key = key.as_str()
-        );
-        // SQL-POLICY: PgIdent
-        let json: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(t)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(map_err)?;
-        // The stamp is the memory row's own declaration. A stamped table with
-        // no row means the row's account of itself no longer matches the
-        // physical state, and cooling it would mint a cold object whose dump
-        // list can never equal its stamp. Refuse here, where the divergence
-        // is visible and the memory is still whole.
-        let Some(json) = json else {
-            return Err(StorageError::ConstraintViolation(format!(
-                "stamped sidecar table {table} has no row for the memory being forgotten"
-            )));
-        };
-        dumps.push((table.to_owned(), json.to_string()));
-    }
-    Ok(dumps)
-}
-
-/// Dump every contract-declared cascaded MemoryT detail relation, including
-/// an explicit empty entry. The parent sidecar's FK will delete these rows
-/// during cooling, so a cold record that only carries the parent row is not a
-/// complete representation of the Memory payload.
-async fn dump_cascaded_details(
-    conn: &mut PgConnection,
-    surfaces: &OwnerSurfaces,
-    schema_id: &str,
-    t: Uuid,
-) -> Result<Vec<(String, Vec<String>)>, StorageError> {
-    let details = surfaces.cascaded_details_for_schema(schema_id);
-    let mut dumps = Vec::with_capacity(details.len());
-    for detail in details {
-        let table = PgIdent::table(detail.table)?;
-        let key = PgIdent::column(detail.key_column)?;
-        let sql = format!(
-            "SELECT COALESCE(jsonb_agg(row_json ORDER BY row_json::text), '[]'::jsonb)
-               FROM (
-                 SELECT to_jsonb(s) - COALESCE((
-                     SELECT array_agg(a.attname::text)
-                       FROM pg_attribute a
-                       JOIN pg_class c ON c.oid = a.attrelid
-                       JOIN pg_namespace n ON n.oid = c.relnamespace
-                      WHERE n.nspname = split_part('{tbl}', '.', 1)
-                        AND c.relname = split_part('{tbl}', '.', 2)
-                        AND a.attgenerated <> ''
-                   ), '{{}}'::text[]) AS row_json
-                   FROM {tbl} s
-                  WHERE s.{key} = $1
-               ) dumped",
-            tbl = table.as_str(),
-            key = key.as_str(),
-        );
-        // SQL-POLICY: PgIdent
-        let json: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(t)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(map_err)?;
-        let rows = json
-            .as_array()
-            .ok_or_else(|| {
-                StorageError::Internal(format!(
-                    "cascaded detail dump for {} is not an array",
-                    detail.table
-                ))
-            })?
-            .iter()
-            .map(serde_json::Value::to_string)
-            .collect();
-        dumps.push((detail.table.to_owned(), rows));
-    }
-    Ok(dumps)
-}
-
-async fn load_sketch_text(
-    conn: &mut PgConnection,
-    t: Uuid,
-) -> Result<Option<String>, StorageError> {
-    sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
-        .bind(t)
-        .fetch_optional(conn)
-        .await
-        .map_err(map_err)
-}
-
-async fn load_embed_spaces(
-    conn: &mut PgConnection,
-    t: Uuid,
-) -> Result<Vec<proxima_core::EmbeddingSpace>, StorageError> {
-    let rows: Vec<(String, i16)> = sqlx::query_as(
-        "SELECT DISTINCT model_id, dim
-           FROM proxima_core.embeddings
-          WHERE entity_id = $1
-          ORDER BY model_id, dim",
-    )
-    .bind(t)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(map_err)?;
-    rows.into_iter()
-        .map(|(model_id, dim)| crate::pgvector::stored_space(model_id, dim))
-        .collect()
-}
-
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-          WHERE t = $1";
-
-const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-          WHERE t = $1 AND owner_id = $2
-          FOR UPDATE";
-
-/// Hot row + registered sidecars + embed model ids. No row lock.
-pub async fn snapshot_hot(
-    conn: &mut PgConnection,
-    sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
-    t: Uuid,
-) -> Result<ColdRecord, StorageError> {
-    let row: HotRow = sqlx::query_as(HOT_ROW_SQL)
-        .bind(t)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_err)?
-        .ok_or(StorageError::NotFound)?;
-    let schema_id = row.schema_id.clone();
-    let sidecar_dumps = dump_stamped_sidecars(conn, sidecars, &row.sidecar_tables, t).await?;
-    let detail_dumps = dump_cascaded_details(conn, surfaces, &schema_id, t).await?;
-    let embed_spaces = load_embed_spaces(conn, t).await?;
-    let sketch = load_sketch_text(conn, t).await?;
-    Ok(ColdRecord {
-        row,
-        schema_id,
-        sidecar_dumps,
-        detail_dumps,
-        embed_spaces,
-        sketch,
-        format_version: COLD_FORMAT_VERSION,
-    })
-}
-
-/// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
-/// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
-/// a concurrent owner transfer that rewrote `owner_id` is `NotFound`.
-/// Production callers hold the complete series/grounding advisory set across
-/// their PUT, but do not hold this row lock across cold I/O. This function
-/// compensates the object if the locator write fails.
-///
-/// The caller must already hold `snapshot.row.handle`'s handle lock and the
-/// grounding lifecycle set — `forget_memory` and
-/// `forget_memory_oneshot_in_transaction` take
-/// both before the PUT this commits. Re-taking them here would sort a freshly
-/// queried set while this transaction already holds locks from the first
-/// acquisition, which is exactly the out-of-order extension
-/// `lock_forget_footprint_tx` refuses to do.
-pub async fn commit_forget(
-    tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
-    cold: &dyn ColdObjectStore,
-    object_key: &str,
-    snapshot: &ColdRecord,
-    expected_owner_id: Uuid,
-) -> Result<(), StorageError> {
-    let t = snapshot.row.t;
-    if snapshot.row.owner_id != expected_owner_id {
-        return Err(StorageError::NotFound);
-    }
-    let locked: HotRow = sqlx::query_as(HOT_ROW_FOR_UPDATE_OWNED_SQL)
-        .bind(t)
-        .bind(expected_owner_id)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?
-        .ok_or(StorageError::NotFound)?;
-    let schema_id = locked.schema_id.clone();
-    let sidecar_dumps =
-        dump_stamped_sidecars(tx.as_mut(), sidecars, &locked.sidecar_tables, t).await?;
-    let detail_dumps = dump_cascaded_details(tx.as_mut(), surfaces, &schema_id, t).await?;
-    let embed_spaces = load_embed_spaces(tx.as_mut(), t).await?;
-    let sketch = load_sketch_text(tx.as_mut(), t).await?;
-    let current = ColdRecord {
-        row: locked,
-        schema_id,
-        sidecar_dumps,
-        detail_dumps,
-        embed_spaces,
-        sketch,
-        format_version: COLD_FORMAT_VERSION,
-    };
-    if current != *snapshot {
-        cold.put(object_key, &encode_record(&current)?).await?;
-    }
-    let persist = persist_cooled_after_put(
-        tx,
-        sidecars,
-        surfaces,
-        object_key,
-        &current,
-        expected_owner_id,
-    )
-    .await;
-    if persist.is_err() {
-        delete_cold_object(cold, object_key).await;
-    }
-    persist
-}
-
-async fn persist_cooled_after_put(
-    tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
-    object_key: &str,
-    current: &ColdRecord,
-    expected_owner_id: Uuid,
-) -> Result<(), StorageError> {
-    let t = current.row.t;
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
-             origins, refs, goal_refs, cold_digest, \"by\", via)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
-    )
-    .bind(current.row.t)
-    .bind(current.row.handle)
-    .bind(current.row.owner_id)
-    .bind(&current.row.kind)
-    .bind(object_key)
-    .bind(current.row.blob_id)
-    .bind(current.row.content_id)
-    .bind(current.row.source_id.as_deref())
-    .bind(current.row.ingest_key.as_deref())
-    .bind(&current.row.origins)
-    .bind(&current.row.refs)
-    .bind(&current.row.goal_refs)
-    .bind(cold_digest(&encode_record(current)?))
-    .bind(current.row.by)
-    .bind(current.row.via)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    delete_memory_dependents(
-        tx,
-        sidecars,
-        surfaces,
-        &current.row.sidecar_tables,
-        t,
-        DependentsFor::Forget,
-    )
-    .await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-        .bind(t)
-        .bind(expected_owner_id)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sync_memory_head(tx, current.row.handle).await?;
-    // Content stays while the cooled stub names it.
-
-    Ok(())
-}
-
-/// Undo the pre-commit PUT of a forget attempt that failed before it
-/// committed, unless a committed cooled locator names that exact key.
-///
-/// Production forgets serialize before PUT. The locator check also makes a
-/// raw losing [`commit_forget`] safe without retaining payload after a
-/// concurrent owner transfer or hard erase, both of which leave no matching row.
-async fn compensate_forget_put(
-    tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdObjectStore,
-    object_key: &str,
-    t: Uuid,
-    err: &StorageError,
-) {
-    if matches!(err, StorageError::NotFound) {
-        let referenced = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.cooled
-                  WHERE t = $1 AND object_key = $2
-             )",
-        )
-        .bind(t)
-        .bind(object_key)
-        .fetch_one(tx.as_mut())
-        .await;
-        match referenced {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(lookup_err) => {
-                tracing::warn!(
-                    error = %lookup_err,
-                    key = object_key,
-                    t = %t,
-                    "failed to verify cold locator while compensating forget PUT"
-                );
-            }
-        }
-    }
-    delete_cold_object(cold, object_key).await;
 }
 
 /// Cold objects a committed erase still owes the object store.
@@ -1070,19 +566,6 @@ async fn clear_cold_purge_pending(
     Ok(deleted.rows_affected() == 1)
 }
 
-pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &str) {
-    match cold.delete(object_key).await {
-        Ok(()) | Err(StorageError::NotFound) => {}
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                key = object_key,
-                "failed to compensate an untracked cold object"
-            );
-        }
-    }
-}
-
 /// Take a sorted, deduplicated advisory-lock set in one round-trip.
 ///
 /// The ordering guarantee — the whole point of these locks — comes from two
@@ -1283,7 +766,6 @@ async fn delete_memory_dependents(
     surfaces: &OwnerSurfaces,
     sidecar_tables: &[String],
     t: Uuid,
-    lifecycle: DependentsFor,
 ) -> Result<(), StorageError> {
     let mut legs: Vec<(&str, &str)> = Vec::with_capacity(sidecar_tables.len() + 4);
     for table in sidecar_tables {
@@ -1314,24 +796,52 @@ async fn delete_memory_dependents(
         // above — so this is the assertion that the boot check ran, not a
         // second policy.
         let key_column = match surfaces.forget_leg(table) {
-            ForgetLeg::Dumped { key_column } => key_column,
+            ForgetLeg::Marked => sidecars.memory_key_column(table).unwrap_or("t"),
             ForgetLeg::Kept { why } => {
                 return Err(StorageError::Internal(format!(
                     "{table} declares ForgetRule::Keep ({why}) and is not owner-pinned, \
                      so the forget cannot honour it; freeze_against must refuse this registry"
                 )));
             }
-            ForgetLeg::Deleted { .. }
-            | ForgetLeg::DumpedCascade { .. }
-            | ForgetLeg::Cascaded { .. }
-            | ForgetLeg::Unreachable => "t",
+            ForgetLeg::Deleted { .. } | ForgetLeg::Cascaded { .. } | ForgetLeg::Unreachable => "t",
         };
         legs.push((table.as_str(), key_column));
     }
     legs.extend(surfaces.generated_forget_legs());
-    if lifecycle == DependentsFor::Erase {
-        legs.extend(erase_kept_memory_legs(surfaces));
-    }
+    legs.extend(erase_kept_memory_legs(surfaces));
+    run_forget_legs(tx, legs, t).await
+}
+
+/// What a forget deletes: the rows search and embedding derive from the
+/// memory — every linked flavor's search projection row, and its `Deleted`
+/// legs (the embedding triple and the sketch). The memory row and its
+/// sidecar rows stay, hidden by `forgotten_at`; before #488 the projection
+/// went by cascade with the sidecar row the forget deleted.
+async fn delete_derived_dependents(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    let projections = sidecars.projection_tables();
+    let mut legs: Vec<(&str, &str)> = projections
+        .iter()
+        .map(|table| {
+            (
+                table.as_str(),
+                proxima_core::flavor::PROJECTION_MEMORY_COLUMN,
+            )
+        })
+        .collect();
+    legs.extend(surfaces.generated_forget_legs());
+    run_forget_legs(tx, legs, t).await
+}
+
+async fn run_forget_legs(
+    tx: &mut Transaction<'_, Postgres>,
+    legs: Vec<(&str, &str)>,
+    t: Uuid,
+) -> Result<(), StorageError> {
     for (table, key_column) in legs {
         let sql = forget_leg_sql(table, key_column)?;
         // SQL-POLICY: generated
@@ -1344,12 +854,66 @@ async fn delete_memory_dependents(
     Ok(())
 }
 
-/// Which lifecycle verb [`delete_memory_dependents`] serves. A forget keeps
-/// what its declarations say it keeps; a hard erase also destroys those.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DependentsFor {
-    Forget,
-    Erase,
+/// Put `t` in the state a forget left before #488: a `cooled` stub naming a
+/// cold object, the row and its stamped sidecars deleted, the head rewound.
+///
+/// Test-only. Forget no longer produces this state, but `cooled` and its
+/// readers (erase, export, transfer, purge) stay until #488 S15/S16, and their
+/// tests need a cooled row to read. Writes a placeholder object under the
+/// cold key and returns the key.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn cool_legacy_for_tests(
+    pg: &crate::PgStorage,
+    cold: &dyn ColdObjectStore,
+    t: Uuid,
+) -> Result<String, StorageError> {
+    let key = cold_object_key(t);
+    cold.put(&key, b"legacy cold object (test fixture)").await?;
+    let mut tx = pg.pool_for_tests().begin().await.map_err(map_err)?;
+    let (handle, sidecar_tables): (Uuid, Vec<String>) = sqlx::query_as(
+        "SELECT handle, sidecar_tables FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
+          WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "INSERT INTO proxima_core.cooled
+            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
+             origins, refs, goal_refs, \"by\", via)
+         SELECT t, handle, owner_id, kind, $2, blob_id, content_id, source_id, ingest_key,
+                origins, refs, goal_refs, \"by\", via
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
+          WHERE t = $1",
+    )
+    .bind(t)
+    .bind(&key)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let mut legs: Vec<(&str, &str)> = Vec::new();
+    for table in &sidecar_tables {
+        if is_owner_pinned(&pg.sidecars, table)
+            || !matches!(pg.surfaces.forget_leg(table), ForgetLeg::Marked)
+        {
+            continue;
+        }
+        legs.push((
+            table.as_str(),
+            pg.sidecars.memory_key_column(table).unwrap_or("t"),
+        ));
+    }
+    legs.extend(pg.surfaces.generated_forget_legs());
+    run_forget_legs(&mut tx, legs, t).await?;
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1") /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sync_memory_head(&mut tx, handle).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(key)
 }
 
 /// The surfaces [`erase_memory`] deletes with a hand-written statement of
@@ -1401,17 +965,18 @@ fn forget_leg_sql(table: &str, key_column: &str) -> Result<String, StorageError>
     ))
 }
 
-/// Rewind `memory_head.t` to the latest remaining hot row, or delete the
-/// head when the series is empty. `memory.handle` FK requires the memory
-/// row to be gone first. The caller must already hold the complete advisory
-/// lock for this handle; with that contract, the head is present exactly when
-/// a hot row exists and always names the greatest surviving hot `t`.
+/// Point `memory_head.t` at the newest version that is not forgotten, or
+/// delete the head when the series has no row left. `memory.handle` FK
+/// requires the memory row to be gone first, so a series whose every version
+/// is forgotten keeps its head on the newest forgotten version; owner reads
+/// skip that row, so the series reads as absent. The caller must already hold
+/// the complete advisory lock for this handle.
 pub(crate) async fn sync_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     handle: Uuid,
 ) -> Result<(), StorageError> {
     let remaining: Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t DESC LIMIT 1", /* FORGET-POLICY: includes-forgotten (head sync sees forgotten rows, then skips them) */
+        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY (forgotten_at IS NULL) DESC, t DESC LIMIT 1", /* FORGET-POLICY: includes-forgotten (head sync sees forgotten rows, then skips them) */
     )
     .bind(handle)
     .fetch_optional(tx.as_mut())
@@ -1457,86 +1022,84 @@ async fn probe_memory_handle_for_owner(
     .map_err(map_err)
 }
 
+/// The owner's row for `t`, locked, when it is live.
+const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind::text FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+          WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL
+          FOR UPDATE";
+
+/// Forget one memory: mark its row `forgotten_at`, delete what search and
+/// embedding derive from it, and move the series head off it.
+///
+/// The row and its sidecar rows stay. Runs inside the lifecycle scope, the
+/// one place an owner transaction may write a forgotten row, and leaves it
+/// before returning. No object store is involved.
+///
+/// The caller holds `tx`; nothing here commits.
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
-    cold: &dyn ColdObjectStore,
-    object_key: &str,
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    let handle = probe_memory_handle_for_owner(tx, t, expected_owner_id)
-        .await?
-        .ok_or(StorageError::NotFound)?;
-    lock_forget_footprint_tx(tx, t, handle).await?;
-    let rec = snapshot_hot(tx.as_mut(), sidecars, surfaces, t).await?;
-    if rec.row.owner_id != expected_owner_id {
-        return Err(StorageError::NotFound);
-    }
-    cold.put(object_key, &encode_record(&rec)?).await?;
-    match commit_forget(
-        tx,
-        sidecars,
-        surfaces,
-        cold,
-        object_key,
-        &rec,
-        expected_owner_id,
-    )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            compensate_forget_put(tx, cold, object_key, t, &err).await;
-            Err(err)
-        }
-    }
+    forget_marked(tx, sidecars, surfaces, t, expected_owner_id, None).await
 }
 
 pub(crate) async fn forget_memory_oneshot_in_transaction(
     mut tx: Transaction<'static, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
-    cold: &dyn ColdObjectStore,
-    object_key: &str,
     t: Uuid,
     reach: &Reach,
 ) -> Result<(), StorageError> {
-    let expected_owner_id = reach.owner_id;
-    let handle = probe_memory_handle_for_owner(&mut tx, t, expected_owner_id)
-        .await?
-        .ok_or(StorageError::NotFound)?;
-    lock_forget_footprint_tx(&mut tx, t, handle).await?;
-    let rec = snapshot_hot(tx.as_mut(), sidecars, surfaces, t).await?;
-    if rec.row.owner_id != expected_owner_id || !reach.kinds.contains(&rec.row.kind.as_str()) {
-        return Err(StorageError::NotFound);
-    }
-    cold.put(object_key, &encode_record(&rec)?).await?;
-    if let Err(err) = commit_forget(
+    forget_marked(
         &mut tx,
         sidecars,
         surfaces,
-        cold,
-        object_key,
-        &rec,
-        expected_owner_id,
+        t,
+        reach.owner_id,
+        Some(&reach.kinds),
     )
+    .await?;
+    tx.commit().await.map_err(map_err)
+}
+
+async fn forget_marked(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    t: Uuid,
+    expected_owner_id: Uuid,
+    kinds: Option<&[&str]>,
+) -> Result<(), StorageError> {
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let handle = probe_memory_handle_for_owner(tx, t, expected_owner_id)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    lock_forget_footprint_tx(tx, t, handle).await?;
+    let (locked_handle, kind): (Uuid, String) = sqlx::query_as(LOCK_LIVE_OWNED_SQL)
+        .bind(t)
+        .bind(expected_owner_id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
+    if locked_handle != handle || kinds.is_some_and(|kinds| !kinds.contains(&kind.as_str())) {
+        return Err(StorageError::NotFound);
+    }
+    sqlx::query(
+        "UPDATE proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+            SET forgotten_at = now()
+          WHERE t = $1 AND owner_id = $2",
+    )
+    .bind(t)
+    .bind(expected_owner_id)
+    .execute(tx.as_mut())
     .await
-    {
-        compensate_forget_put(&mut tx, cold, object_key, t, &err).await;
-        let _ = tx.rollback().await;
-        return Err(err);
-    }
-    if let Err(err) = tx.commit().await.map_err(map_err) {
-        tracing::warn!(
-            error = %err,
-            key = object_key,
-            "retaining cold object after ambiguous forget commit"
-        );
-        return Err(err);
-    }
-    Ok(())
+    .map_err(map_err)?;
+    delete_derived_dependents(tx, sidecars, surfaces, t).await?;
+    sync_memory_head(tx, handle).await?;
+    lifecycle.leave(tx.as_mut()).await
 }
 
 /// Why a cold record cannot be restored.
@@ -1745,7 +1308,7 @@ pub async fn erase_memory(
     // Before the memory and cooled rows: a kept surface with no owner column
     // (memory_external_origin) finds its owner through its memory, hot OR
     // cooled, so its delete must run while that parent is still there.
-    delete_memory_dependents(tx, sidecars, surfaces, &stamped, t, DependentsFor::Erase).await?;
+    delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.into_inner())
@@ -2367,6 +1930,10 @@ SELECT object_key, backend FROM enqueued";
 pub(crate) mod forget_pg_tests;
 
 #[cfg(test)]
+#[path = "forget_marks_pg_tests.rs"]
+mod forget_marks_pg_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{ForgetLeg, OwnerSurfaces, forget_leg_sql};
 
@@ -2411,14 +1978,12 @@ mod tests {
                     "{} resolves to Unreachable, which freeze should have refused",
                     surface.table
                 ),
-                ForgetLeg::Dumped { key_column } | ForgetLeg::Deleted { key_column } => {
+                ForgetLeg::Deleted { key_column } => {
                     forget_leg_sql(surface.table, key_column).unwrap_or_else(|e| {
                         panic!("{} is a leg this crate cannot build: {e}", surface.table)
                     });
                 }
-                ForgetLeg::DumpedCascade { .. }
-                | ForgetLeg::Cascaded { .. }
-                | ForgetLeg::Kept { .. } => {}
+                ForgetLeg::Marked | ForgetLeg::Cascaded { .. } | ForgetLeg::Kept { .. } => {}
             }
         }
     }

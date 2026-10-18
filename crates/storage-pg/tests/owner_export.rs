@@ -9,9 +9,8 @@ use proxima_core::verbs::query::EntityKind;
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
+use proxima_storage_pg::verbs::forget::cold_object_key;
 use uuid::Uuid;
 
 /// The five sidecar legs exactly as the engine assembles them: from the
@@ -155,7 +154,6 @@ async fn export_carries_cooled_locators_and_sketches() {
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let cold = MemoryColdStore::default();
 
         let hot = pg
             .ingest_fact_atomic(&permit, &sketched("fact", "Still hot"), None)
@@ -165,18 +163,7 @@ async fn export_carries_cooled_locators_and_sketches() {
             .await?;
         let cooled_t = cooled.memory_id.into_inner();
         let key = cold_object_key(cooled_t);
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &contract_sidecar_tables(),
-            &cold,
-            &key,
-            cooled_t,
-            owner.into_inner(),
-        )
-        .await?;
-        tx.commit().await?;
+        pg.cool_legacy_for_tests(cooled_t).await?;
 
         // A neighbour owner's cooled admission and sketch must not appear.
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -185,19 +172,7 @@ async fn export_carries_cooled_locators_and_sketches() {
             .ingest_fact_atomic(&other_permit, &sketched("fact", "Not yours"), None)
             .await?;
         let neighbour_t = neighbour.memory_id.into_inner();
-        let neighbour_key = cold_object_key(neighbour_t);
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &contract_sidecar_tables(),
-            &cold,
-            &neighbour_key,
-            neighbour_t,
-            other.into_inner(),
-        )
-        .await?;
-        tx.commit().await?;
+        pg.cool_legacy_for_tests(neighbour_t).await?;
 
         // Populate the internal hard-erase witness while the owner still has
         // exportable rows. The witness is database metadata, never a public
@@ -729,8 +704,6 @@ async fn a_cooled_memorys_origins_and_refs_are_edges() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-        let cold = MemoryColdStore::default();
 
         let origin = pg
             .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
@@ -751,19 +724,7 @@ async fn a_cooled_memorys_origins_and_refs_are_edges() {
             .await?
             .memory_id
             .into_inner();
-        let key = cold_object_key(derived);
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &contract_sidecar_tables(),
-            &cold,
-            &key,
-            derived,
-            owner.into_inner(),
-        )
-        .await?;
-        tx.commit().await?;
+        pg.cool_legacy_for_tests(derived).await?;
 
         let auth =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });

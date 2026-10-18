@@ -236,7 +236,8 @@ END;
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.cooled_erase_witness() FROM PUBLIC;
 
--- FORGET-POLICY: includes-forgotten (cooled lifecycle, removed in S16) applies to every read in this function
+-- Fires on a cooled insert and, since #488, on memory.forgotten_at being set.
+-- FORGET-POLICY: includes-forgotten (forget grounding: locks every depender, checks the live ones) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -285,6 +286,8 @@ BEGIN
          WHERE m.kind <> 'fact'
            AND m.t <> NEW.t
            AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+           -- A forgotten depender is hidden; it needs no live grounding.
+           AND m.forgotten_at IS NULL
            AND NOT proxima_core.pins_have_grounding_support(
                  m.origins || m.refs, NEW.t, NEW.kind
                )
@@ -2074,7 +2077,12 @@ BEGIN
                  WHEN cooling IS NOT NULL AND p.id = cooling THEN
                    cooling_kind = 'fact'
                  ELSE
-                   EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
+                   -- A forgotten Fact still grounds; a forgotten non-Fact does not.
+                   EXISTS (
+                        SELECT 1 FROM proxima_core.memory h
+                         WHERE h.t = p.id
+                           AND (h.forgotten_at IS NULL OR h.kind = 'fact')
+                   )
                    OR EXISTS (
                         SELECT 1 FROM proxima_core.cooled c
                          WHERE c.t = p.id AND c.kind = 'fact'

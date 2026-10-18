@@ -39,9 +39,8 @@ mod pg_tests {
         load_embedding_texts, reclaim_stale_embedding_jobs, reconcile_embeddings,
         release_embedding_jobs, renew_embedding_jobs,
     };
-    use crate::core_pg_sidecars;
     use crate::test_fixtures::fresh_pg;
-    use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
+    use crate::verbs::forget::forget_memory;
 
     // Memory fixture shorthand around the production entity-based writer.
     async fn insert_memory_embedding(
@@ -1101,16 +1100,12 @@ mod pg_tests {
                 "reconcile must wait on the memory row selected for enqueue"
             );
 
-            let cold = MemoryColdStore::default();
-            let object_key = cold_object_key(t);
             forget_memory(
                 &mut forget_tx,
-                &core_pg_sidecars(),
+                &crate::core_pg_sidecars(),
                 &proxima_core::owner_inverse::OwnerSurfaces::for_registry(
                     &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
                 ),
-                &cold,
-                &object_key,
                 t,
                 owner.into_inner(),
             )

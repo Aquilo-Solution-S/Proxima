@@ -19,6 +19,7 @@ pub async fn query_heads(
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.owner_id = $1 AND h.schema_id = $2
+            AND m.forgotten_at IS NULL
           ORDER BY h.handle",
     )
     .bind(owner_id)

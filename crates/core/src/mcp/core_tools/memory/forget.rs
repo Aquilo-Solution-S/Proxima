@@ -21,7 +21,7 @@ pub struct ForgetTool;
 
 impl McpTool for ForgetTool {
     const NAME: &'static str = protocol_tool::CORE_FORGET;
-    const DESCRIPTION: &'static str = "Forget one memory: it moves to cold storage (not a hard delete), and search, recall and walks stop returning it. Refused if a remaining Abstraction or Perspective would be left with no live source and no forgotten Fact under it.";
+    const DESCRIPTION: &'static str = "Forget one memory: it is kept but hidden from search, recall, walks and other stores until restored; erase removes it. Refused if a remaining Abstraction or Perspective would be left with no live source and no forgotten Fact under it.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
     type Args = ForgetArgs;
     type Output = ForgetOutput;

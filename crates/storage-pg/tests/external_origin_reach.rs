@@ -14,7 +14,7 @@ use proxima_core::owner_inverse::{
     OwnerExportTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::{
-    FactIngestPort, MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
+    FactIngestPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -111,7 +111,7 @@ async fn hot_and_cooled(
         .memory_id;
     add_origins(pg, hot.into_inner(), 1).await?;
     add_origins(pg, cooled.into_inner(), 2).await?;
-    MemoryAuthoringPort::forget_memory(pg, permit, cooled).await?;
+    pg.cool_legacy_for_tests(cooled.into_inner()).await?;
     let cooled_rows: i64 =
         sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
             .bind(cooled.into_inner())

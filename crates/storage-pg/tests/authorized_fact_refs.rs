@@ -10,9 +10,7 @@ use proxima_core::flavor::{
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
     TransferRule,
 };
-use proxima_core::storage_ports::{
-    FactIngestPort, GoalWritePort, MemoryAuthoringPort, OwnerWritePermit,
-};
+use proxima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitedObjectDraft,
 };
@@ -1438,11 +1436,8 @@ async fn cooled_replay_requires_known_identical_refs() {
             ),
         );
         let outcome = pg.ingest_authorized_fact_atomic(&first, &[]).await?;
-        pg.forget_memory(
-            &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
-            outcome.memory_id,
-        )
-        .await?;
+        pg.cool_legacy_for_tests(outcome.memory_id.into_inner())
+            .await?;
 
         let replay = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),

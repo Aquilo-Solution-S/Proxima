@@ -121,7 +121,8 @@ impl OwnerSurfaces {
         for contract in registry.contracts() {
             for schema in contract.schemas {
                 for surface in schema.surfaces {
-                    if matches!(ForgetLeg::derive(surface), ForgetLeg::DumpedCascade { .. })
+                    if matches!(surface.forget, crate::flavor::ForgetRule::DumpThenCascade)
+                        && matches!(ForgetLeg::derive(surface), ForgetLeg::Marked)
                         && let KeyShape::MemoryT { column } = surface.key
                     {
                         cascaded_details
@@ -385,11 +386,9 @@ impl OwnerSurfaces {
     /// Every surface the forget deletes with a GENERATED statement, in table
     /// order, paired with the key column it deletes on.
     ///
-    /// The `Dumped` legs are deliberately NOT here: the row stamp drives
-    /// those, and the stamp is the historical record of what the dump read.
-    /// What is left is the derived rows nothing stamps — the embedding
-    /// triple and the sketch — which were four hand-written statements over
-    /// four `proxima_core.*` literals.
+    /// The `Marked` surfaces are deliberately NOT here: they stay with the
+    /// forgotten row. What is left is the derived rows nothing stamps — the
+    /// embedding triple and the sketch.
     ///
     /// One exception to table order: `embedding_jobs` comes first, the same
     /// order owner erase deletes in. A drainer writes an embedding head only

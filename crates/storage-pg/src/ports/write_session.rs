@@ -11,7 +11,6 @@ use proxima_core::verbs::goal_write::{
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, StorageError,
-    cold_object_key,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -449,9 +448,9 @@ impl WriteSession for PgWriteSession {
         let owner = permit.owner();
         let owner_id = owner.into_inner();
         let t = memory_id.into_inner();
-        // Ownership precondition, not a key ingredient: the cold key derives
-        // from `t` alone, but a `t` the caller does not own must be NotFound
-        // rather than a forget on someone else's row.
+        // Ownership and kind precondition: a `t` the caller does not own, or
+        // of a kind outside the permit, is NotFound rather than a forget on
+        // someone else's row.
         sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
               WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)",
@@ -463,17 +462,8 @@ impl WriteSession for PgWriteSession {
         .await
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
-        let key = cold_object_key(t);
-        verbs::forget::forget_memory(
-            &mut self.tx,
-            &self.sidecars,
-            &self.surfaces,
-            self.cold.as_ref(),
-            &key,
-            t,
-            owner_id,
-        )
-        .await
+        verbs::forget::forget_memory(&mut self.tx, &self.sidecars, &self.surfaces, t, owner_id)
+            .await
     }
 
     async fn erase_series(

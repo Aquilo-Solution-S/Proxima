@@ -9,7 +9,6 @@ use proxima_core::owner_inverse::{
     OwnerExportTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
     MemoryReadPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
@@ -653,7 +652,8 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        pg.cool_legacy_for_tests(first.memory_id.into_inner())
+            .await?;
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
@@ -774,7 +774,8 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        pg.cool_legacy_for_tests(first.memory_id.into_inner())
+            .await?;
 
         let mut later = draft();
         later.handle = Some(first.handle);
@@ -830,13 +831,15 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        pg.cool_legacy_for_tests(first.memory_id.into_inner())
+            .await?;
 
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("cooled-input-headless".into());
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, second.memory_id).await?;
+        pg.cool_legacy_for_tests(second.memory_id.into_inner())
+            .await?;
 
         let before: (i64, i64, i64) = sqlx::query_as(
             "SELECT
@@ -899,7 +902,8 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
         let destination = destination();
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        pg.cool_legacy_for_tests(written.memory_id.into_inner())
+            .await?;
 
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -1041,7 +1045,8 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        pg.cool_legacy_for_tests(first.memory_id.into_inner())
+            .await?;
         let mut second_draft = draft();
         second_draft.handle = Some(first.handle);
         second_draft.ingest_key = Some("k2".into());
@@ -2323,7 +2328,8 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        pg.cool_legacy_for_tests(first.memory_id.into_inner())
+            .await?;
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());

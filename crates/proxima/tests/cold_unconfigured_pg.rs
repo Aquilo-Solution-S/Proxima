@@ -6,7 +6,7 @@ use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GetMemoriesReadRequest,
     GroupId, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ServedSurface, UserId,
 };
-use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
+use proxima_core::{AgentNoteV1, ProtocolError};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
 
@@ -14,9 +14,9 @@ type TestResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 struct ForgetObservation {
-    expected: AgentNoteV1,
     forget: Result<(), ProtocolError>,
     rows_after_forget: (i64, i64, i64),
+    forgotten_after_forget: i64,
     readable_after_forget: Option<AgentNoteV1>,
     rows_after_restart: (i64, i64, i64),
     readable_after_restart: Option<AgentNoteV1>,
@@ -39,43 +39,43 @@ struct HeadState {
     t: Uuid,
 }
 
+/// #488: forget needs no object store. Without S3 it succeeds, keeps the row
+/// and its typed payload in Postgres marked forgotten, and by-id reads return
+/// nothing, before and after a restart. The head row stays on the forgotten
+/// version because it is the series' only one.
 #[tokio::test]
-async fn forget_without_s3_preserves_content_across_restart() -> TestResult<()> {
+async fn forget_without_s3_marks_the_row_and_hides_it_across_restart() -> TestResult<()> {
     let database = unique_db_name("proxima_no_s3_cold");
     create_db(&database).await?;
     let result = tokio::time::timeout(Duration::from_mins(1), observe_forget(&database)).await;
-    // Keep the failing safety assertion after cleanup, including on timeout.
     drop_db(&database).await?;
     let observed = result??;
     eprintln!("no-S3 forget/restart observation: {observed:?}");
 
-    if let Err(error) = &observed.forget {
-        assert_eq!(error.code, ErrorCode::Internal);
-        assert_eq!(
-            observed.rows_after_forget,
-            (1, 0, 1),
-            "refusal must retain the hot admission and typed payload: {observed:?}"
-        );
-        assert_eq!(
-            observed.readable_after_forget.as_ref(),
-            Some(&observed.expected),
-            "refusal must leave the original content readable"
-        );
-        assert_eq!(observed.rows_after_restart, (1, 0, 1));
-        assert_eq!(
-            observed.lifecycle_after_forget, observed.lifecycle_before_forget,
-            "refusal must not mutate the head"
-        );
-        assert_eq!(
-            observed.lifecycle_after_restart, observed.lifecycle_before_forget,
-            "the unchanged head must survive restart"
-        );
-        assert_eq!(
-            observed.readable_after_restart.as_ref(),
-            Some(&observed.expected),
-            "a new runtime still reads the refused forget's original typed payload: {observed:?}"
-        );
-    }
+    assert!(observed.forget.is_ok(), "forget needs no S3: {observed:?}");
+    assert_eq!(
+        observed.rows_after_forget,
+        (1, 0, 1),
+        "the admission and its typed payload stay, with no cooled stub: {observed:?}"
+    );
+    assert_eq!(observed.forgotten_after_forget, 1, "the row is marked");
+    assert_eq!(
+        observed.readable_after_forget, None,
+        "a by-id read returns nothing once forgotten"
+    );
+    assert_eq!(observed.rows_after_restart, (1, 0, 1));
+    assert_eq!(
+        observed.readable_after_restart, None,
+        "a new runtime does not read the forgotten memory either"
+    );
+    assert_eq!(
+        observed.lifecycle_after_forget, observed.lifecycle_before_forget,
+        "a series with one version keeps its head on it"
+    );
+    assert_eq!(
+        observed.lifecycle_after_restart, observed.lifecycle_before_forget,
+        "the head survives restart"
+    );
     Ok(())
 }
 
@@ -109,6 +109,12 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
         .forget_memory(&authz, owner, written.memory_id)
         .await;
     let rows_after_forget = rows(&admin_pool, written.memory_id).await?;
+    let forgotten_after_forget: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
+    )
+    .bind(written.memory_id.into_inner())
+    .fetch_one(&admin_pool)
+    .await?;
     let readable_after_forget = read_note(&initial, &authz, written.memory_id).await?;
     let lifecycle_after_forget = lifecycle(&admin_pool, written.handle).await?;
     // Consume the entire first runtime and close its pool before composition
@@ -121,9 +127,9 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let readable_after_restart = read_note(&restarted, &authz, written.memory_id).await?;
     stop(restarted).await;
     Ok(ForgetObservation {
-        expected,
         forget,
         rows_after_forget,
+        forgotten_after_forget,
         readable_after_forget,
         rows_after_restart,
         readable_after_restart,

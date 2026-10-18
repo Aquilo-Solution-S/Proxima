@@ -321,7 +321,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
 }
 
 #[tokio::test]
-async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
+async fn forgetting_takes_the_projection_row_and_keeps_the_sidecar_row() {
     with_db("proxima_proj_forget", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -334,8 +334,8 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
         assert_eq!(
             projection_of(pool, t).await?,
             None,
-            "a cooled admission has no hot text, so it must have no hot vector: \
-             leaving one behind puts a searchable row in front of bytes that are gone"
+            "a forgotten memory is not searchable: leaving its projection row puts a \
+             searchable row in front of a hidden memory"
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -344,8 +344,8 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
             .bind(t.into_inner())
             .fetch_one(pool)
             .await?,
-            0,
-            "the sidecar row went first; the projection followed it"
+            1,
+            "the sidecar row stays with the forgotten memory"
         );
         Ok(())
     })

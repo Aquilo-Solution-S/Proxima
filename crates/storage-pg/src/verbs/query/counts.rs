@@ -11,7 +11,9 @@ use crate::pg_enums::PgMemoryKind;
 
 /// One row per `memory_head` handle, so a stateful series counts once
 /// however many versions it has, and one row per `goal_head` handle in any
-/// state. `memory` is not read: its key is `(handle, t)`.
+/// state. `memory` is read only to drop a series whose every version is
+/// forgotten: its head stays on the newest forgotten version (the
+/// `memory.handle` FK keeps it), and owner RLS hides that row.
 ///
 /// `read_owners` is the one owner predicate. The per-kind narrowing is the
 /// owner RLS on `memory_head` and `goal_head` under the caller's bound scope;
@@ -29,8 +31,9 @@ pub(crate) async fn count_memories_on_connection(
 
     let heads: Vec<(PgMemoryKind, i64)> = sqlx::query_as(
         "SELECT kind, count(*)::bigint
-           FROM proxima_core.memory_head
-          WHERE owner_id = ANY($1::uuid[])
+           FROM proxima_core.memory_head h
+          WHERE h.owner_id = ANY($1::uuid[])
+            AND EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
           GROUP BY kind",
     )
     .bind(&owner_ids)

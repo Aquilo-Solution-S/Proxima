@@ -1091,13 +1091,14 @@ impl CounterRule {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgetRule {
-    /// Dumped into the cold record, then deleted from the hot table.
+    /// Kept with the forgotten memory row and hidden with it (before #488
+    /// it was dumped into a cold record, then deleted).
     DumpThenDelete,
     /// Deleted with the memory, not preserved.
     DeleteWithMemory,
-    /// Dumped into the cold record before the parent's declared cascade
-    /// deletes it. This is distinct from [`Self::DeleteWithMemory`], whose
-    /// rows are intentionally derived/disposable and are never restored.
+    /// Child payload of a memory sidecar, removed by the parent's declared
+    /// cascade on erase and kept with the forgotten row on forget. Distinct
+    /// from [`Self::DeleteWithMemory`], whose rows are derived and disposable.
     DumpThenCascade,
     /// Untouched by forget, with the reason stated.
     Keep { why: &'static str },
@@ -1107,28 +1108,19 @@ pub enum ForgetRule {
 /// registry time. The third partition, after [`EraseLeg`] and
 /// [`TransferLeg`], and the same bargain: the silence becomes a value.
 ///
-/// Forget has TWO iteration sources and that is deliberate, not an
-/// oversight. The `Dumped` legs are walked from the ROW STAMP
-/// (`memory.sidecar_tables`), because the stamp is what the dump read: a
-/// registry that gained a sidecar after a row was written must not delete
-/// from a table that row never touched, and one that lost a table must
-/// still forget rows written before it went. The `Deleted` legs have no
-/// stamp to walk — they are derived rows written by a lane the memory does
-/// not record — so they come off the declaration. `DumpedCascade` likewise
-/// comes from the schema declaration, but carries durable child payload into
-/// the cold record before its parent cascade removes it.
+/// A forget marks the memory row `forgotten_at` and leaves its payload in
+/// place: `Marked` surfaces (declared `DumpThenDelete` or `DumpThenCascade`)
+/// stay with the row and are hidden with it. The `Deleted` legs are the
+/// derived rows search and embedding rebuild; they come off the declaration
+/// because nothing stamps them on the memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgetLeg {
-    /// Dumped into the cold record, then deleted. The stamp names it; this
-    /// leg says the declaration agrees.
-    Dumped { key_column: &'static str },
-    /// Deleted for the forgotten `t` and not preserved: derived state
-    /// hydrate recomputes, or a queue entry with nothing to restore.
+    /// Stays with the forgotten row, hidden by its memory's `forgotten_at`;
+    /// erase removes it.
+    Marked,
+    /// Deleted for the forgotten `t` and not preserved: derived state a
+    /// restore recomputes, or a queue entry with nothing to restore.
     Deleted { key_column: &'static str },
-    /// Dumped into the cold record, then removed by the declared parent
-    /// cascade. The explicit leg keeps durable child payload distinct from a
-    /// derived `Cascaded` relation that hydrate rebuilds or discards.
-    DumpedCascade { via: DbConstraint },
     /// Deleted with the memory by a constraint that already proves it, with
     /// no cold payload. Hydrate does not restore this derived relation.
     Cascaded { via: DbConstraint },
@@ -1166,21 +1158,19 @@ impl ForgetLeg {
                     if static_str_eq(erase_via.relation, via.relation)
                         && static_str_eq(erase_via.name, via.name) =>
                 {
-                    Self::DumpedCascade { via }
+                    Self::Marked
                 }
                 _ => Self::Unreachable,
             },
             ForgetRule::DumpThenDelete => match surface.key {
-                KeyShape::MemoryT { column } | KeyShape::EntityT { column } => {
-                    Self::Dumped { key_column: column }
-                }
+                KeyShape::MemoryT { .. } | KeyShape::EntityT { .. } => Self::Marked,
                 _ => Self::Unreachable,
             },
         }
     }
 
     /// Whether the forget runs a statement built from this declaration.
-    /// `Dumped` is false: the stamp drives that statement, not the walk.
+    /// `Marked` is false: a forget leaves that surface in place.
     #[must_use]
     pub const fn is_generated(&self) -> bool {
         matches!(self, Self::Deleted { .. })
@@ -1833,10 +1823,7 @@ mod tests {
             counter: CounterRule::Uncounted { why: "detail" },
             completeness: Some(via),
         };
-        assert_eq!(
-            ForgetLeg::derive(&surface),
-            ForgetLeg::DumpedCascade { via }
-        );
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Marked);
         surface.key = KeyShape::EntityT { column: "entity_t" };
         assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
         surface.key = KeyShape::MemoryT { column: "parent_t" };

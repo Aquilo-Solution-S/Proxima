@@ -196,6 +196,7 @@ CREATE CONSTRAINT TRIGGER memory_declares_proxima_core_goal_change_v1
 CREATE OR REPLACE TRIGGER memory_align_head BEFORE INSERT ON proxima_core.memory FOR EACH ROW EXECUTE FUNCTION proxima_core.memory_align_head();
 CREATE OR REPLACE TRIGGER memory_append_only BEFORE UPDATE ON proxima_core.memory FOR EACH ROW EXECUTE FUNCTION proxima_core.memory_owner_or_append_only();
 CREATE OR REPLACE TRIGGER memory_erased_pin_target BEFORE DELETE ON proxima_core.memory FOR EACH ROW EXECUTE FUNCTION proxima_core.memory_erase_witness();
+CREATE OR REPLACE TRIGGER memory_forget_grounding BEFORE UPDATE OF forgotten_at ON proxima_core.memory FOR EACH ROW WHEN (((old.forgotten_at IS NULL) AND (new.forgotten_at IS NOT NULL))) EXECUTE FUNCTION proxima_core.cooled_forget_grounding();
 CREATE OR REPLACE TRIGGER memory_pin_checks BEFORE INSERT ON proxima_core.memory FOR EACH ROW EXECUTE FUNCTION proxima_core.memory_pin_checks();
 CREATE OR REPLACE TRIGGER memory_sidecar_stamp_declared BEFORE INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory FOR EACH ROW WHEN ((new.sidecar_tables <> '{}'::text[])) EXECUTE FUNCTION proxima_core.assert_sidecar_stamp_declared();
 

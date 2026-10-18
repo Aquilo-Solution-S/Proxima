@@ -1134,6 +1134,17 @@ impl PgStorage {
         self
     }
 
+    /// Write the pre-#488 cooled state for `t` against this storage's object
+    /// store (test fixture; see `verbs::forget::cool_legacy_for_tests`).
+    ///
+    /// # Errors
+    ///
+    /// The object store or Postgres refuses a step of the legacy cool.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub async fn cool_legacy_for_tests(&self, t: uuid::Uuid) -> Result<String, StorageError> {
+        verbs::forget::cool_legacy_for_tests(self, self.cold.as_ref(), t).await
+    }
+
     #[cfg(any(
         test,
         feature = "test-fixtures",

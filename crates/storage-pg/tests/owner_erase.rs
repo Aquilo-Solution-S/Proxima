@@ -673,7 +673,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg.ingest_fact_atomic(&permit, &draft(Some(("src", "k-cooled"))), None).await?;
         let t = written.memory_id.into_inner();
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        pg.cool_legacy_for_tests(written.memory_id.into_inner()).await?;
         let keys_after_forget: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cooled'",
         )
@@ -829,7 +829,8 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
             .await?;
         let t = written.memory_id.into_inner();
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        pg.cool_legacy_for_tests(written.memory_id.into_inner())
+            .await?;
         let key: String =
             sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
@@ -922,7 +923,8 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-cold"))), None)
             .await?;
         let t = written.memory_id.into_inner();
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        pg.cool_legacy_for_tests(written.memory_id.into_inner())
+            .await?;
         let key: String =
             sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
@@ -976,7 +978,8 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        pg.cool_legacy_for_tests(written.memory_id.into_inner())
+            .await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -1280,7 +1283,8 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         let shared_survivor = pg
             .ingest_fact_atomic(&permit, &shared_survivor, None)
             .await?;
-        MemoryAuthoringPort::forget_memory(&pg, &permit, shared_survivor.memory_id).await?;
+        pg.cool_legacy_for_tests(shared_survivor.memory_id.into_inner())
+            .await?;
         let shared_cold_key: String =
             sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
                 .bind(shared_survivor.memory_id.into_inner())

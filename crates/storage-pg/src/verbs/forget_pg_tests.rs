@@ -2,16 +2,15 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{
-    ColdPurgeEntry, ColdPurgePlan, MemoryColdStore, cold_object_key, commit_forget, erase_memory,
-    erase_memory_series, erase_memory_series_after_snapshot, forget_memory,
-    lock_admissions_for_erase, lock_lifecycle_targets_tx, lock_memory_handles_tx,
-    purge_cold_objects_after_commit, snapshot_hot, snapshot_series_for_erase_tx,
+    ColdPurgeEntry, ColdPurgePlan, MemoryColdStore, erase_memory, erase_memory_series,
+    erase_memory_series_after_snapshot, forget_memory, lock_admissions_for_erase,
+    lock_lifecycle_targets_tx, lock_memory_handles_tx, purge_cold_objects_after_commit,
+    snapshot_series_for_erase_tx,
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
@@ -205,17 +204,13 @@ async fn append_in_own_transaction(
 async fn cool_one(
     pool: &sqlx::PgPool,
     owner: &OwnerId,
-    cold: &MemoryColdStore,
     t: Uuid,
-    key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = pool.begin().await?;
     forget_memory(
         &mut tx,
         &core_pg_sidecars(),
         &surfaces(),
-        cold,
-        key,
         t,
         owner.into_inner(),
     )
@@ -263,15 +258,11 @@ async fn forget_non_last_t_rewinds_memory_head() {
         assert_eq!(second.handle, first.handle);
         assert_ne!(second.memory_id, first.memory_id);
 
-        let cold = MemoryColdStore::default();
-        let key = cold_object_key(second.memory_id.into_inner());
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            &key,
             second.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -529,15 +520,14 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let cold = MemoryColdStore::default();
         let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut second_draft = draft(None);
         second_draft.handle = Some(first.handle);
         let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         let first_t = first.memory_id.into_inner();
         let second_t = second.memory_id.into_inner();
-        cool_one(pool, &owner, &cold, first_t, &cold_object_key(first_t)).await?;
-        cool_one(pool, &owner, &cold, second_t, &cold_object_key(second_t)).await?;
+        cool_one(pool, &owner, first_t).await?;
+        cool_one(pool, &owner, second_t).await?;
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
@@ -545,8 +535,8 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
             .bind(first.handle)
             .fetch_one(pool)
             .await?,
-            0,
-            "a fully cooled series has no head"
+            1,
+            "a fully forgotten series keeps its head on the newest forgotten version"
         );
 
         // Append wins: the series erase captures the cooled handle and waits;
@@ -597,23 +587,23 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
             tokio::time::timeout(std::time::Duration::from_secs(10), erase).await???;
         assert_eq!(erased, 3);
 
-        // Recreate a fully cooled, headless series for the opposite
-        // linearization. A prepared append may have observed the empty head;
-        // if erase wins the handle it is allowed to survive after the erase.
+        // Recreate a fully forgotten series for the opposite linearization.
+        // If erase wins the handle, the append survives after the erase.
         let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let mut second_draft = draft(None);
         second_draft.handle = Some(first.handle);
         let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         let first_t = first.memory_id.into_inner();
         let second_t = second.memory_id.into_inner();
-        cool_one(pool, &owner, &cold, first_t, &cold_object_key(first_t)).await?;
-        cool_one(pool, &owner, &cold, second_t, &cold_object_key(second_t)).await?;
+        cool_one(pool, &owner, first_t).await?;
+        cool_one(pool, &owner, second_t).await?;
         let mut erase_holder = pool.begin().await?;
         lock_memory_handles_tx(&mut erase_holder, &[first.handle]).await?;
         let append_pool = pool.clone();
         let append_owner = owner;
         let mut append_draft = draft(None);
         append_draft.handle = Some(first.handle);
+        let retry_draft = append_draft.clone();
         let append = tokio::spawn(async move {
             append_in_own_transaction(&append_pool, append_owner, append_draft).await
         });
@@ -628,7 +618,16 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         .await?;
         assert_eq!(erased, 2);
         erase_holder.commit().await?;
-        let survivor = tokio::time::timeout(std::time::Duration::from_secs(10), append).await???;
+        // The append prepared against the head on the newest forgotten
+        // version; the erase deleted that head, so the append retries, as
+        // production's bounded retry does.
+        let survivor =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), append).await?? {
+                Err(StorageError::Retryable(_)) => {
+                    append_in_own_transaction(pool, owner, retry_draft).await?
+                }
+                other => other?,
+            };
         let head_t: Uuid =
             sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
@@ -829,39 +828,6 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
     result.expect("non-head erase raced append incorrectly");
 }
 
-struct BlockingPutCold {
-    inner: MemoryColdStore,
-    first_put_entered: tokio::sync::Semaphore,
-    release_first_put: tokio::sync::Semaphore,
-    puts: AtomicUsize,
-    deletes: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl ColdObjectStore for BlockingPutCold {
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        let put_index = self.puts.fetch_add(1, Ordering::SeqCst);
-        if put_index == 0 {
-            self.first_put_entered.add_permits(1);
-            self.release_first_put
-                .acquire()
-                .await
-                .map_err(|err| StorageError::Internal(err.to_string()))?
-                .forget();
-        }
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
-    }
-
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        self.deletes.fetch_add(1, Ordering::SeqCst);
-        self.inner.delete(key).await
-    }
-}
-
 fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
     cmd.kind = "abstraction".into();
@@ -939,14 +905,11 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
         // later hard erase deletes that row.
         let cooled = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let cooled_t = cooled.memory_id.into_inner();
-        let cooled_key = cold_object_key(cooled_t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            &cooled_key,
             cooled_t,
             owner.into_inner(),
         )
@@ -1009,101 +972,6 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("hard erase witness matrix failed");
-}
-
-/// The stamp is what a cold record must carry a dump for, so a stamped table
-/// with no row is a divergence between the memory row's account of itself and
-/// the physical state. Cooling it would mint an object whose dump list can
-/// never equal its stamp — hydratable never, discoverable only much later.
-/// The forget refuses it instead, while the memory is still whole.
-#[tokio::test]
-async fn a_stamped_sidecar_with_no_row_stops_the_forget() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_core_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let pool = pg.pool_for_tests();
-
-        // Stamped, and then the row taken away: exactly the state the writer
-        // and the verifier used to disagree about. Since
-        // the definitions trigger bundle refuses both ways
-        // in, so the fixture writes the pair and then deletes the row with
-        // the orphan guard switched off on a raw connection.
-        //
-        // That is the shape of the evidence, not a workaround. With the guard
-        // installed this state arises only in a database whose trigger someone
-        // removed, or in rows written before it existed — and forget has to
-        // refuse both. Disabling the trigger is exactly those conditions.
-        let written = ingest_stamped(
-            pool,
-            &permit,
-            &draft(None),
-            &[AGENT_NOTE.to_owned()],
-            &[
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-                 VALUES ($1, $1, 'n', 'orphaned', ARRAY['tag'])",
-            ],
-        )
-        .await?;
-        let t = written.memory_id.into_inner();
-        sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
-                 DISABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
-            .bind(t)
-            .execute(pool)
-            .await?;
-        sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
-                 ENABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
-        )
-        .execute(pool)
-        .await?;
-
-        let cold = MemoryColdStore::default();
-        let key = cold_object_key(t);
-        let mut tx = pool.begin().await?;
-        let err = forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &surfaces(),
-            &cold,
-            &key,
-            t,
-            owner.into_inner(),
-        )
-        .await
-        .expect_err("a stamped table with no row cannot be dumped");
-        tx.rollback().await?;
-        assert!(
-            matches!(&err, StorageError::ConstraintViolation(message)
-                if message.contains(AGENT_NOTE) && message.contains("has no row")),
-            "got {err:?}"
-        );
-
-        let still_hot: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(still_hot, 1, "the refused forget leaves the memory hot");
-        assert!(
-            cold.get(&key).await.is_err(),
-            "the refused forget writes no cold object"
-        );
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("stamped-without-row forget test failed");
 }
 
 #[tokio::test]
@@ -1222,7 +1090,6 @@ async fn forget_and_admit_preserve_grounding_support() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let cold = MemoryColdStore::default();
 
         let fact = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let abs = pg
@@ -1247,8 +1114,6 @@ async fn forget_and_admit_preserve_grounding_support() {
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            "cold/refuse-a",
             abs.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -1271,8 +1136,6 @@ async fn forget_and_admit_preserve_grounding_support() {
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            "cold/fact",
             fact.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -1296,8 +1159,6 @@ async fn forget_and_admit_preserve_grounding_support() {
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            "cold/mixed-src",
             abs.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -1310,8 +1171,6 @@ async fn forget_and_admit_preserve_grounding_support() {
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            "cold/a2",
             abs2.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -1324,8 +1183,6 @@ async fn forget_and_admit_preserve_grounding_support() {
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            "cold/a-after-a2",
             abs.memory_id.into_inner(),
             owner.into_inner(),
         )
@@ -1366,7 +1223,7 @@ async fn forget_and_admit_preserve_grounding_support() {
 /// at-least-once source re-delivering a cooled admission must still get the
 /// idempotent replay carrying the original handle and citation.
 #[tokio::test]
-async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
+async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1385,27 +1242,24 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
             .cited_object_id
             .expect("citation-bearing write returns its object");
 
-        let cold = MemoryColdStore::default();
-        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            &key,
             t,
             owner.into_inner(),
         )
         .await?;
         tx.commit().await?;
 
-        let cooled_blob: Option<Uuid> =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(cooled_blob, Some(cited_object_id));
+        let kept_blob: Option<Uuid> = sqlx::query_scalar(
+            "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(kept_blob, Some(cited_object_id));
 
         // The retry need not repeat the citation input: replay reads the
         // original witness from the admission selected by its ingest key.
@@ -1415,8 +1269,12 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         let replay = pg
             .ingest_fact_atomic(&permit, &replay_input, None)
             .await
-            .expect("re-delivery of a cooled admission");
+            .expect("re-delivery of a forgotten admission");
         assert!(replay.idempotent_replay);
+        assert!(
+            replay.forgotten,
+            "the replay says the admission is forgotten"
+        );
         assert_eq!(replay.memory_id, written.memory_id);
         assert_eq!(replay.handle, written.handle, "replay keeps the handle");
         assert_eq!(
@@ -1430,18 +1288,19 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         )
         .fetch_one(pool)
         .await?;
-        assert_eq!(hot, 0, "a replay mints no new hot row");
-        let stub: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(stub, 1, "the admission stays cooled");
+        assert_eq!(hot, 1, "a replay mints no new row");
+        let still_forgotten: bool = sqlx::query_scalar(
+            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert!(still_forgotten, "the admission stays forgotten");
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("cooled ingest-key replay test failed");
+    result.expect("forgotten ingest-key replay test failed");
 }
 
 #[tokio::test]
@@ -1564,16 +1423,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         let a2_owner = p2.owner().into_inner();
         let f1 = tokio::spawn(async move {
             let mut tx = pool_a.begin().await.map_err(|err| err.to_string())?;
-            let r = forget_memory(
-                &mut tx,
-                &core_pg_sidecars(),
-                &surfaces(),
-                &MemoryColdStore::default(),
-                "cold/conc-a1",
-                a1_t,
-                a1_owner,
-            )
-            .await;
+            let r = forget_memory(&mut tx, &core_pg_sidecars(), &surfaces(), a1_t, a1_owner).await;
             match &r {
                 Ok(()) => tx.commit().await.map_err(|err| err.to_string())?,
                 Err(_) => tx.rollback().await.map_err(|err| err.to_string())?,
@@ -1582,16 +1432,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         });
         let f2 = tokio::spawn(async move {
             let mut tx = pool_b.begin().await.map_err(|err| err.to_string())?;
-            let r = forget_memory(
-                &mut tx,
-                &core_pg_sidecars(),
-                &surfaces(),
-                &MemoryColdStore::default(),
-                "cold/conc-a2",
-                a2_t,
-                a2_owner,
-            )
-            .await;
+            let r = forget_memory(&mut tx, &core_pg_sidecars(), &surfaces(), a2_t, a2_owner).await;
             match &r {
                 Ok(()) => tx.commit().await.map_err(|err| err.to_string())?,
                 Err(_) => tx.rollback().await.map_err(|err| err.to_string())?,
@@ -1736,15 +1577,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
             "admit must wait on the lifecycle lock, not pass B2 against the still-hot A"
         );
 
-        forget_memory(
-            &mut tx_f,
-            &core_pg_sidecars(),
-            &surfaces(),
-            &MemoryColdStore::default(),
-            "cold/admit-race",
-            a_t,
-            owner_id,
-        )
+        forget_memory(&mut tx_f, &core_pg_sidecars(), &surfaces(), a_t, owner_id)
         .await?;
         tx_f.commit().await?;
 
@@ -1795,22 +1628,10 @@ async fn admission_locks_pins_before_series_head() {
         )];
         append.refs = vec![target_t];
 
-        let cold = Arc::new(BlockingPutCold {
-            inner: MemoryColdStore::default(),
-            first_put_entered: tokio::sync::Semaphore::new(0),
-            release_first_put: tokio::sync::Semaphore::new(0),
-            puts: AtomicUsize::new(0),
-            deletes: AtomicUsize::new(0),
-        });
-        let forget_pg = pg.clone().with_cold(cold.clone());
-        // Forgetting the Abstraction takes an Abstraction write limit.
-        let limit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
-        let forget = tokio::spawn(async move {
-            forget_pg
-                .forget_memory(&limit, proxima_core::MemoryId::new(target_t))
-                .await
-        });
-        cold.first_put_entered.acquire().await?.forget();
+        // The forget holds its whole lock footprint and pauses before it
+        // marks the row: the point the writer must queue behind.
+        let mut forget = pool.begin().await?;
+        super::lock_forget_footprint_tx(&mut forget, target_t, target.handle).await?;
 
         let writer_pg = pg.clone();
         let writer = tokio::spawn(async move {
@@ -1831,13 +1652,17 @@ async fn admission_locks_pins_before_series_head() {
             .expect("admission must not lock the series head before its pin lock");
         head_probe.rollback().await?;
 
-        cold.release_first_put.add_permits(1);
-        let (forget_result, writer_result) =
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                tokio::join!(forget, writer)
-            })
-            .await?;
-        forget_result??;
+        forget_memory(
+            &mut forget,
+            &core_pg_sidecars(),
+            &surfaces(),
+            target_t,
+            owner.into_inner(),
+        )
+        .await?;
+        forget.commit().await?;
+        let writer_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), writer).await?;
         let written = writer_result??;
         assert!(!written.idempotent_replay);
         assert_eq!(written.handle, target.handle);
@@ -1848,7 +1673,8 @@ async fn admission_locks_pins_before_series_head() {
             .bind(target.handle)
             .fetch_one(&pool)
             .await?,
-            1
+            2,
+            "the forgotten T stays as a row beside the append"
         );
         assert_eq!(
             sqlx::query_scalar::<_, Option<Uuid>>(
@@ -1859,13 +1685,14 @@ async fn admission_locks_pins_before_series_head() {
             .await?,
             Some(written.memory_id.into_inner())
         );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1",)
-                .bind(target_t)
-                .fetch_one(&pool)
-                .await?,
-            1,
-            "forget linearizes before the append and leaves T cooled"
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(target_t)
+            .fetch_one(&pool)
+            .await?,
+            "forget linearizes before the append and leaves T forgotten"
         );
         Ok(())
     }
@@ -1893,20 +1720,8 @@ async fn admission_locks_existing_head_without_declared_pins() {
         let prior = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let prior_t = prior.memory_id.into_inner();
         let handle = prior.handle;
-        let cold = Arc::new(BlockingPutCold {
-            inner: MemoryColdStore::default(),
-            first_put_entered: tokio::sync::Semaphore::new(0),
-            release_first_put: tokio::sync::Semaphore::new(0),
-            puts: AtomicUsize::new(0),
-            deletes: AtomicUsize::new(0),
-        });
-        let forget_pg = pg.clone().with_cold(cold.clone());
-        let forget = tokio::spawn(async move {
-            forget_pg
-                .forget_memory(&permit, proxima_core::MemoryId::new(prior_t))
-                .await
-        });
-        cold.first_put_entered.acquire().await?.forget();
+        let mut forget = pool.begin().await?;
+        super::lock_forget_footprint_tx(&mut forget, prior_t, handle).await?;
 
         let writer_pg = pg.clone();
         let writer = tokio::spawn(async move {
@@ -1929,13 +1744,17 @@ async fn admission_locks_existing_head_without_declared_pins() {
             .expect("append must not lock an existing head before its lifecycle set");
         head_probe.rollback().await?;
 
-        cold.release_first_put.add_permits(1);
-        let (forget_result, writer_result) =
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                tokio::join!(forget, writer)
-            })
-            .await?;
-        forget_result??;
+        forget_memory(
+            &mut forget,
+            &core_pg_sidecars(),
+            &surfaces(),
+            prior_t,
+            owner.into_inner(),
+        )
+        .await?;
+        forget.commit().await?;
+        let writer_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), writer).await?;
         let written = writer_result??;
         assert!(!written.idempotent_replay);
         assert_eq!(written.handle, handle);
@@ -1946,8 +1765,8 @@ async fn admission_locks_existing_head_without_declared_pins() {
             .bind(handle)
             .fetch_one(&pool)
             .await?,
-            1,
-            "the retry leaves one new hot version"
+            2,
+            "the retry leaves the forgotten prior and one new live version"
         );
         assert_eq!(
             sqlx::query_scalar::<_, Option<Uuid>>(
@@ -1958,13 +1777,14 @@ async fn admission_locks_existing_head_without_declared_pins() {
             .await?,
             Some(written.memory_id.into_inner())
         );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cooled WHERE t = $1")
-                .bind(prior_t)
-                .fetch_one(&pool)
-                .await?,
-            1,
-            "the prior head is cooled before the append retry"
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(prior_t)
+            .fetch_one(&pool)
+            .await?,
+            "the prior head is forgotten before the append retry"
         );
         Ok(())
     }
@@ -2121,7 +1941,7 @@ impl ColdObjectStore for FailDeleteCold {
 }
 
 #[tokio::test]
-async fn commit_forget_aborts_when_owner_transferred() {
+async fn forget_aborts_when_owner_transferred() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -2134,9 +1954,6 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let mut conn = pool.acquire().await?;
-        let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), &surfaces(), t).await?;
-        drop(conn);
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
         assert!(
@@ -2150,20 +1967,16 @@ async fn commit_forget_aborts_when_owner_transferred() {
             .await?
         );
 
-        let cold = MemoryColdStore::default();
-        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
-        let err = commit_forget(
+        let err = forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            &cold,
-            &key,
-            &snapshot,
+            t,
             owner.into_inner(),
         )
         .await
-        .expect_err("forget after a transfer must not cool the new owner");
+        .expect_err("forget after a transfer must not mark the new owner's row");
         assert!(matches!(err, StorageError::NotFound), "got {err:?}");
         tx.rollback().await?;
 
@@ -2173,12 +1986,13 @@ async fn commit_forget_aborts_when_owner_transferred() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(moved, dest.into_inner());
-        let cooled: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(cooled, 0);
+        let forgotten: bool = sqlx::query_scalar(
+            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert!(!forgotten, "the transferred row is not marked");
         Ok(())
     }
     .await;
@@ -2405,20 +2219,8 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let key = cold_object_key(t);
-        let ok_cold = MemoryColdStore::default();
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &surfaces(),
-            &ok_cold,
-            &key,
-            t,
-            owner.into_inner(),
-        )
-        .await?;
-        tx.commit().await?;
+        // A pre-#488 cooled row: the only state that still owes a cold purge.
+        let key = super::cool_legacy_for_tests(&pg, &MemoryColdStore::default(), t).await?;
 
         let mut tx = pool.begin().await?;
         let plan = erase_memory(
@@ -2562,8 +2364,9 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
         );
         assert_eq!(
             head_t().await?,
-            None,
-            "the head is deleted only when the hot series empties"
+            Some(t2),
+            "with only a forgotten version left, the head stays on it: memory.handle \
+             references memory_head, so the head goes only when the last row does"
         );
         Ok(())
     }
@@ -2572,13 +2375,13 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
     result.expect("the forget declarations must match shipped behaviour");
 }
 
-/// A `ForgetRule::Keep` sidecar that is not owner-pinned stops the forget
-/// instead of being deleted by it.
+/// A `ForgetRule::Keep` sidecar that is not owner-pinned stops the erase's
+/// stamp walk instead of being deleted by it.
 ///
-/// The stamp walk in `delete_memory_dependents` must not map `Kept` onto the
-/// key column `"t"` the way it maps `Dumped`: a surface declared as one the
-/// forget does not touch would be deleted by the forget, silently, with the
-/// declaration sitting three files away saying otherwise.
+/// Since #488 a forget leaves every sidecar in place, so the stamp walk in
+/// `delete_memory_dependents` serves erase only. It must still not map `Kept`
+/// onto the key column `"t"` the way it maps `Marked`: that would delete a
+/// surface the declaration says is kept, silently.
 ///
 /// A legacy `Keep` memory sidecar and its rows survive only because it is
 /// ALSO `TransferRule::RetainAtSource` and
@@ -2594,7 +2397,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 ///
 /// The assertion is that the forget REFUSES and the rows survive.
 #[tokio::test]
-async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
+async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
     use proxima_core::flavor::{ForgetRule, Surface};
 
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -2636,24 +2439,20 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
         .await?;
         let t = written.memory_id.into_inner();
 
-        let cold = MemoryColdStore::default();
-        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
-        let outcome = forget_memory(
+        let outcome = erase_memory(
             &mut tx,
             &core_pg_sidecars(),
-            &kept_surfaces,
-            &cold,
-            &key,
+            &erase_context(kept_surfaces),
+            &owner,
             t,
-            owner.into_inner(),
         )
         .await;
         tx.rollback().await?;
 
         let err = outcome.expect_err(
-            "a Keep declaration the substrate cannot honour must stop the forget, \
-             not be quietly overridden by it",
+            "a Keep declaration the substrate cannot honour must stop the erase's stamp \
+             walk, not be quietly overridden by it",
         );
         let rendered = err.to_string();
         assert!(
@@ -2673,7 +2472,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget failed");
+    result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase failed");
 }
 
 /// Wait until some backend of `pool`'s database is blocked on a row lock

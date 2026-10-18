@@ -2786,20 +2786,8 @@ async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member(
     result.expect("authorized-read owner-transfer visibility test failed");
 }
 
-async fn assert_read_resolves_cooled_kind(
-    engine: &proxima_core::Engine,
-    authz: &AuthzContext,
-    source: Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(
-        engine.memory_kinds(authz, &[MemoryId::new(source)]).await?,
-        [(MemoryId::new(source), proxima_core::EntityKind::Fact)]
-    );
-    Ok(())
-}
-
 #[tokio::test]
-async fn core_forget_cools_a_remembered_fact() {
+async fn core_forget_marks_a_remembered_fact() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
@@ -2865,20 +2853,20 @@ async fn core_forget_cools_a_remembered_fact() {
         .await?;
         assert_eq!(forgotten["ok"], serde_json::json!(true));
 
-        let hot: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
-                .bind(t)
-                .fetch_one(&admin_pool)
-                .await?;
-        assert_eq!(hot, 0, "forget must delete the hot row");
+        let (rows, forgotten): (i64, i64) = sqlx::query_as(
+            "SELECT count(*)::bigint, count(forgotten_at)::bigint
+               FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(&admin_pool)
+        .await?;
+        assert_eq!((rows, forgotten), (1, 1), "forget keeps the row, marked");
         let cooled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
                 .fetch_one(&admin_pool)
                 .await?;
-        assert_eq!(cooled, 1, "forget must leave the cooled stub");
-
-        assert_read_resolves_cooled_kind(built.host().engine(), &authz, t).await?;
+        assert_eq!(cooled, 0, "forget writes no cooled stub");
 
         let cold = built
             .host()
@@ -2887,8 +2875,10 @@ async fn core_forget_cools_a_remembered_fact() {
             .expect("configured S3 fixture")
             .cold_store();
         let cold_key = proxima_core::cold_object_key(t);
-        assert!(!cold.get(&cold_key).await?.is_empty());
-        cold.delete(&cold_key).await?;
+        assert!(
+            cold.get(&cold_key).await.is_err(),
+            "forget writes no cold object"
+        );
 
         built.shutdown().await;
         Ok(())
