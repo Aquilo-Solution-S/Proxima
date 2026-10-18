@@ -579,8 +579,8 @@ fn entity_kind_of(kind: PayloadKind) -> proxima_core::EntityKind {
 /// runs the other way, or a `NO ACTION` one, or a Rust function, leaves every
 /// erased owner's rows behind and nothing else notices.
 ///
-/// `flavors/code/tests/erase_repo_pg.rs` asks `pg_constraint` the same question
-/// for the code flavor. The core copy is the one that matters: flavor #0 speaks
+/// A flavor's own erase tests can ask `pg_constraint` the same question for
+/// that flavor. The core copy is the one that matters: flavor #0 speaks
 /// for the kernel spine.
 #[tokio::test]
 async fn every_cascade_flavor_zero_declares_is_a_cascade_the_schema_enforces() {

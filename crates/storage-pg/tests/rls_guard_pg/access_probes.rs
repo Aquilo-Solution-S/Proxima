@@ -73,7 +73,7 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
     .await;
 
     // Platform scope: every group, the join included.
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
         .await
         .expect("platform scope");
     let mut tx = scope.begin().await.unwrap();
@@ -137,7 +137,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     seed(&admin, group, manager, &[Relation::Admin]).await;
     seed(&admin, group, member, &[Relation::Admin, Relation::Ingest]).await;
 
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
         .await
         .expect("platform scope");
     let pg = PgStorage::connect_with_config(
@@ -213,13 +213,13 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
     super::execute(
         &admin,
         &format!(
-            "GRANT CREATE ON SCHEMA proxima_code TO {}",
+            "GRANT CREATE ON SCHEMA proxima_example TO {}",
             super::quoted_identifier(&runtime_role)
         ),
     )
     .await;
 
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_code"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
         .await
         .expect("platform scope");
     let refused = PgStorage::connect_with_config(
@@ -232,7 +232,7 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
     .await
     .expect_err("a runtime role unsafe on a composed schema is refused");
     assert!(
-        refused.to_string().contains("CREATE in proxima_code"),
+        refused.to_string().contains("CREATE in proxima_example"),
         "{refused}"
     );
 

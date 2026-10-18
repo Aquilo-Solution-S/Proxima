@@ -39,20 +39,20 @@ CREATE TABLE IF NOT EXISTS public._sqlx_migrations (
     installed_on timestamptz NOT NULL DEFAULT now(), success boolean NOT NULL,
     checksum bytea NOT NULL, execution_time bigint NOT NULL
 );
-CREATE TABLE IF NOT EXISTS public._sqlx_migrations_proxima_code
+CREATE TABLE IF NOT EXISTS public._sqlx_migrations_proxima_example
     (LIKE public._sqlx_migrations INCLUDING ALL);
 ALTER TABLE public._sqlx_migrations OWNER TO proxima_platform;
-ALTER TABLE public._sqlx_migrations_proxima_code OWNER TO proxima_platform;
-REVOKE ALL ON public._sqlx_migrations, public._sqlx_migrations_proxima_code
+ALTER TABLE public._sqlx_migrations_proxima_example OWNER TO proxima_platform;
+REVOKE ALL ON public._sqlx_migrations, public._sqlx_migrations_proxima_example
     FROM proxima_runtime;
-GRANT SELECT ON public._sqlx_migrations, public._sqlx_migrations_proxima_code
+GRANT SELECT ON public._sqlx_migrations, public._sqlx_migrations_proxima_example
     TO proxima_runtime;
 
 DO $ownership$
 DECLARE object record;
 BEGIN
     FOR object IN SELECT nspname FROM pg_namespace
-                   WHERE nspname IN ('proxima_core', 'proxima_code') LOOP
+                   WHERE nspname IN ('proxima_core', 'proxima_example') LOOP
         EXECUTE format('ALTER SCHEMA %I OWNER TO proxima_platform', object.nspname);
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO proxima_runtime', object.nspname);
         EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO proxima_runtime', object.nspname);
@@ -61,7 +61,7 @@ BEGIN
     -- Transfer tables before their owned sequences.
     FOR object IN SELECT n.nspname, c.relname, c.relkind FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname IN ('proxima_core', 'proxima_code') AND c.relkind IN ('r','p','S')
+        WHERE n.nspname IN ('proxima_core', 'proxima_example') AND c.relkind IN ('r','p','S')
         ORDER BY (c.relkind = 'S') LOOP
         IF object.relkind = 'S' THEN
             EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO proxima_platform', object.nspname, object.relname);
@@ -71,12 +71,12 @@ BEGIN
     END LOOP;
     FOR object IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) args
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname IN ('proxima_core', 'proxima_code') LOOP
+        WHERE n.nspname IN ('proxima_core', 'proxima_example') LOOP
         EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO proxima_platform', object.nspname, object.proname, object.args);
     END LOOP;
     FOR object IN SELECT n.nspname, t.typname FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE n.nspname IN ('proxima_core', 'proxima_code') AND t.typtype IN ('e','d') LOOP
+        WHERE n.nspname IN ('proxima_core', 'proxima_example') AND t.typtype IN ('e','d') LOOP
         EXECUTE format('ALTER TYPE %I.%I OWNER TO proxima_platform', object.nspname, object.typname);
     END LOOP;
 END

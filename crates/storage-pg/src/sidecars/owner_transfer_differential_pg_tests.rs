@@ -68,7 +68,8 @@
 //!   left every goal row exactly where it was.
 //! - The corpus is **flavor #0 only**. `proxima-storage-pg` depends on no
 //!   flavor, so a second flavor's surfaces cannot be reached from here; the
-//!   cross-flavor half is `owner_inverse_reach_pg` in `proxima-code`.
+//!   cross-flavor half is `owner_inverse_reach_pg` in the `proxima` facade's
+//!   tests, on core plus the example flavor.
 //!
 //! ## The publication-outbox regeneration (issue #305)
 //!

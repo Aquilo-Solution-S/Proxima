@@ -318,15 +318,15 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         .execute(&platform_pool)
         .await
         .unwrap();
-    let mut flavor_migrations = sqlx::migrate!("../../flavors/code/migrations");
-    flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
+    let mut flavor_migrations = sqlx::migrate!("../../flavors/example/migrations");
+    flavor_migrations.dangerous_set_table_name("public._sqlx_migrations_proxima_example");
     flavor_migrations.run(&platform_pool).await.unwrap();
     platform_pool.close().await;
     platform_storage.initialize_store_number(1).await.unwrap();
     execute(
         &admin,
         &format!(
-            "GRANT USAGE ON SCHEMA proxima_core, proxima_code TO {}, {}",
+            "GRANT USAGE ON SCHEMA proxima_core, proxima_example TO {}, {}",
             quoted_identifier(&runtime),
             quoted_identifier(&platform)
         ),
@@ -335,7 +335,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     execute(
         &admin,
         &format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA proxima_core, proxima_code TO {}",
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA proxima_core, proxima_example TO {}",
             quoted_identifier(&runtime)
         ),
     )
@@ -609,7 +609,7 @@ async fn platform_scope_rejects_missing_force_and_policy() {
 async fn information_schema_census_matches_catalog_guard_contract() {
     let (database, admin, runtime, platform, owner, runtime_role, _password) =
         setup_full_schema().await;
-    let schemas = ["proxima_core", "proxima_code"];
+    let schemas = ["proxima_core", "proxima_example"];
     // The privileged inventory cannot omit a table because the runtime lacks a grant.
     let tables: Vec<(String, String)> = sqlx::query_as(
         "SELECT table_schema, table_name FROM information_schema.tables
@@ -627,7 +627,7 @@ async fn information_schema_census_matches_catalog_guard_contract() {
     assert!(
         tables
             .iter()
-            .any(|(s, t)| s == "proxima_code" && t == "code_chunk_v1")
+            .any(|(s, t)| s == "proxima_example" && t == "note_v1")
     );
     let uncovered: Vec<String> = sqlx::query_scalar(
         "SELECT t.table_schema || '.' || t.table_name
@@ -784,7 +784,7 @@ async fn authenticated_witness_binds_and_clears_transaction_scope() {
 async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     let (database, admin, runtime, platform, platform_role, runtime_role, password) =
         setup_full_schema().await;
-    assert_runtime_rls(&runtime, &["proxima_core", "proxima_code"])
+    assert_runtime_rls(&runtime, &["proxima_core", "proxima_example"])
         .await
         .unwrap();
 

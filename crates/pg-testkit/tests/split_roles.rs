@@ -102,12 +102,12 @@ async fn split_roles_transfer_all_existing_public_migration_ledgers() {
            CREATE TABLE public._sqlx_migrations
                (LIKE public._sqlx_migrations_custom INCLUDING ALL);
            INSERT INTO public._sqlx_migrations SELECT * FROM public._sqlx_migrations_custom;
-           CREATE TABLE public._sqlx_migrations_proxima_code
+           CREATE TABLE public._sqlx_migrations_proxima_example
                (LIKE public._sqlx_migrations_custom INCLUDING ALL);
-           INSERT INTO public._sqlx_migrations_proxima_code SELECT * FROM public._sqlx_migrations_custom;
+           INSERT INTO public._sqlx_migrations_proxima_example SELECT * FROM public._sqlx_migrations_custom;
            GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON
                public._sqlx_migrations_custom, public."_sqlx_migrations_custom""quoted",
-               public._sqlx_migrations, public._sqlx_migrations_proxima_code
+               public._sqlx_migrations, public._sqlx_migrations_proxima_example
                TO proxima_test_runtime"#,
     )
     .execute(&mut admin)
@@ -115,7 +115,7 @@ async fn split_roles_transfer_all_existing_public_migration_ledgers() {
     .expect("seed admin-owned ledgers with existing runtime grants");
     admin.close().await.expect("close admin");
 
-    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &[])
+    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxima_example"])
         .await
         .expect("cut over existing flavor ledgers");
     let mut runtime = PgConnection::connect(&runtime_url).await.expect("runtime");
@@ -124,7 +124,7 @@ async fn split_roles_transfer_all_existing_public_migration_ledgers() {
         .expect("platform");
     for ledger in [
         "public._sqlx_migrations",
-        "public._sqlx_migrations_proxima_code",
+        "public._sqlx_migrations_proxima_example",
         "public._sqlx_migrations_custom",
         r#"public."_sqlx_migrations_custom""quoted""#,
     ] {
@@ -182,4 +182,77 @@ async fn split_roles_only_transfer_public_tables_with_the_literal_ledger_prefix(
     .expect("partitioned ledger ownership");
     assert!(platform_owns_partitioned);
     admin.close().await.expect("close admin");
+}
+
+/// A passed flavor schema gets its ledger pre-created and handed to the
+/// platform role; no other flavor's ledger appears.
+#[tokio::test]
+async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
+    let (guard, admin) = admin_database().await;
+    admin.close().await.expect("close admin");
+    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxima_example"])
+        .await
+        .expect("split roles");
+    let runtime = PgConnection::connect(&runtime_url).await.expect("runtime");
+    let mut platform = PgConnection::connect(&platform_url)
+        .await
+        .expect("platform");
+    let (platform_owns, runtime_reads, runtime_writes): (bool, bool, bool) = sqlx::query_as(
+        "SELECT pg_get_userbyid(relowner) = current_user,
+                has_table_privilege('proxima_test_runtime', oid, 'SELECT'),
+                has_table_privilege('proxima_test_runtime', oid,
+                                    'INSERT, UPDATE, DELETE, TRUNCATE')
+           FROM pg_class WHERE oid = 'public._sqlx_migrations_proxima_example'::regclass",
+    )
+    .fetch_one(&mut platform)
+    .await
+    .expect("the passed schema's ledger exists");
+    assert!(platform_owns, "platform owns the pre-created ledger");
+    assert!(runtime_reads && !runtime_writes, "runtime reads it only");
+    let code_ledger: bool = sqlx::query_scalar(
+        "SELECT to_regclass('public._sqlx_migrations_proxima_code') IS NOT NULL",
+    )
+    .fetch_one(&mut platform)
+    .await
+    .expect("ledger probe");
+    assert!(!code_ledger, "a schema nobody passed gets no ledger");
+    runtime.close().await.expect("close runtime");
+    platform.close().await.expect("close platform");
+}
+
+/// With no flavor schema passed, only `proxima_core` is prepared: a schema
+/// already in the database that nobody passed stays with its owner, and the
+/// runtime role gets nothing on it.
+#[tokio::test]
+async fn no_flavor_schema_passed_grants_only_core() {
+    let (guard, mut admin) = admin_database().await;
+    sqlx::raw_sql("CREATE SCHEMA proxima_code; CREATE SCHEMA proxima_core")
+        .execute(&mut admin)
+        .await
+        .expect("seed schemas");
+    admin.close().await.expect("close admin");
+    let (_runtime_url, platform_url) = split_role_urls_for(guard.name(), &[])
+        .await
+        .expect("split roles");
+    let mut platform = PgConnection::connect(&platform_url)
+        .await
+        .expect("platform");
+    let owners: Vec<(String, bool, bool)> = sqlx::query_as(
+        "SELECT nspname,
+                pg_get_userbyid(nspowner) = current_user,
+                has_schema_privilege('proxima_test_runtime', oid, 'USAGE')
+           FROM pg_namespace WHERE nspname IN ('proxima_core', 'proxima_code')
+          ORDER BY nspname",
+    )
+    .fetch_all(&mut platform)
+    .await
+    .expect("schema owners");
+    assert_eq!(
+        owners,
+        vec![
+            ("proxima_code".to_owned(), false, false),
+            ("proxima_core".to_owned(), true, true),
+        ]
+    );
+    platform.close().await.expect("close platform");
 }

@@ -20,7 +20,7 @@ async fn storage_construction_refuses_unsafe_registered_schema_outside_scope() {
     execute(
         &admin,
         &format!(
-            "ALTER TABLE proxima_code.code_chunk_v1 OWNER TO {}",
+            "ALTER TABLE proxima_example.note_v1 OWNER TO {}",
             quoted_identifier(&runtime_role)
         ),
     )
@@ -35,7 +35,7 @@ async fn storage_construction_refuses_unsafe_registered_schema_outside_scope() {
     )
     .await
     .expect_err("storage construction must reject the omitted unsafe schema");
-    assert!(error.to_string().contains("proxima_code.code_chunk_v1"));
+    assert!(error.to_string().contains("proxima_example.note_v1"));
 
     runtime.close().await;
     platform.close().await;

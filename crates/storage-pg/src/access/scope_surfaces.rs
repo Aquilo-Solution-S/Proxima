@@ -149,22 +149,22 @@ mod tests {
     use super::{ScopeSurfaces, generate_probe};
     use proxima_core::scope::{ScopeDecl, ScopeKind};
 
-    const KIND: ScopeKind = ScopeKind::new("code-repo");
+    const KIND: ScopeKind = ScopeKind::new("fixture-scope");
 
     const DECL: ScopeDecl = ScopeDecl {
         kind: KIND,
-        registry_table: "proxima_code.repos",
+        registry_table: "proxima_fixture.registry",
         id_column: "repo_id",
         owner_id_column: "owner_id",
     };
 
     /// Every name in the probe comes off the declaration. A generator that
-    /// hardcoded `repo_id` would pass for the code flavor and silently
+    /// hardcoded `repo_id` would pass for one flavor and silently
     /// probe the wrong column for the next one.
     #[test]
     fn the_probe_spells_only_what_the_declaration_names() {
         let sql = generate_probe(&DECL).expect("the shipped declaration splices");
-        assert!(sql.contains("FROM proxima_code.repos"));
+        assert!(sql.contains("FROM proxima_fixture.registry"));
         assert!(!sql.contains("owner_kind"));
         assert!(sql.contains("owner_id = $1"));
         assert!(sql.contains("repo_id = $2"));
@@ -183,11 +183,11 @@ mod tests {
     #[test]
     fn an_unspliceable_declaration_is_kept_as_its_error() {
         let err = generate_probe(&ScopeDecl {
-            registry_table: "proxima-code.repos",
+            registry_table: "proxima-fixture.registry",
             ..DECL
         })
         .expect_err("a hyphenated schema name is not an identifier");
-        assert!(err.contains("proxima-code.repos"), "{err}");
+        assert!(err.contains("proxima-fixture.registry"), "{err}");
     }
 
     /// An unknown kind is a refusal, never a silent pass. A storage that was
@@ -201,6 +201,6 @@ mod tests {
                 uuid::Uuid::from_u128(1),
             )])
             .expect_err("an undeclared scope cannot be fenced");
-        assert!(err.to_string().contains("code-repo"), "{err}");
+        assert!(err.to_string().contains("fixture-scope"), "{err}");
     }
 }

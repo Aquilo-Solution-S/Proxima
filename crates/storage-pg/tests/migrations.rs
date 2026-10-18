@@ -1823,8 +1823,8 @@ fn generator_output_is_the_migration_text() {
         "definitions/triggers.sql does not carry the projection trigger"
     );
 
-    // The code flavor's baseline is checked from its own crate's test
-    // (`flavors/code/tests/migrations_pg.rs`), which is where that file is.
+    // A flavor's baseline is checked from its own crate's tests (the
+    // example flavor's `tests/migration_pg.rs`), which is where that file is.
     assert!(
         baseline.contains(proxima_storage_pg::projection::BTREE_GIN_EXTENSION),
         "the composite GIN needs btree_gin"

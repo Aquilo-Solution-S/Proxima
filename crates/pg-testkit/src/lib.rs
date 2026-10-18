@@ -8,7 +8,7 @@
 //! - the first admin operation in a process sweeps clones older than
 //!   five minutes with no live backend (`pg_stat_activity`)
 //! - [`ensure_template`] drops other hashes in the same family (`proxima_tmpl_core_*`
-//!   / `proxima_tmpl_code_*`), keeping only the current fingerprint
+//!   / `proxima_tmpl_split_*`), keeping only the current fingerprint
 //! - a host owns a [`TemplateFamily`] of its own: [`ensure_template_in`] builds
 //!   `<prefix><hash>` and collects only idle templates of that family
 //! - the admin URL is `PROXIMA_TEST_PG_URL` and nothing else: unset is a
@@ -60,17 +60,12 @@ const TEMPLATE_HASH_DIGITS: usize = 16;
 const MAX_FAMILY_PREFIX_BYTES: usize = 63 - TEMPLATE_HASH_DIGITS;
 /// The built-in template families, collected by [`ensure_template`] and
 /// [`drop_stale_templates`].
-const BUILTIN_FAMILIES: [&str; 3] = [
-    "proxima_tmpl_core_",
-    "proxima_tmpl_code_",
-    "proxima_tmpl_split_",
-];
+const BUILTIN_FAMILIES: [&str; 2] = ["proxima_tmpl_core_", "proxima_tmpl_split_"];
 /// Every prefix a [`TemplateFamily`] must keep clear of: the built-in
 /// families and the staging databases of a template build.
-const RESERVED_PREFIXES: [&str; 4] = [
+const RESERVED_PREFIXES: [&str; 3] = [
     BUILTIN_FAMILIES[0],
     BUILTIN_FAMILIES[1],
-    BUILTIN_FAMILIES[2],
     "proxima_tmpl_build_",
 ];
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -366,10 +361,13 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
 
 /// [`split_role_urls`] for a database that also holds out-of-tree flavor
 /// schemas: objects already in `flavor_schemas` move to the platform role
-/// and the runtime role gets the same grants it gets on `proxima_core` and
-/// `proxima_code`.
-/// Existing public tables whose names start with `_sqlx_migrations` also
-/// move to the platform role, with read-only access for the runtime role.
+/// and the runtime role gets the same grants it gets on `proxima_core`.
+/// Each passed flavor schema also gets its migration ledger pre-created as
+/// `public._sqlx_migrations_<schema>`: the ledger a flavor's
+/// `NamedMigrator::flavor` records into when the flavor id's `-` maps to
+/// the schema's `_` (`proxima-example` → `proxima_example`). Existing
+/// public tables whose names start with `_sqlx_migrations` also move to the
+/// platform role, with read-only access for the runtime role.
 ///
 /// Only the first call on a database prepares it; a schema the platform
 /// role creates later (the usual case: boot migrates as platform) is
@@ -402,13 +400,18 @@ pub async fn split_role_urls_for(
             "flavor schema {schema:?} is not a plain lowercase identifier"
         )));
     }
-    let mut schemas: Vec<&str> = vec!["proxima_core", "proxima_code"];
+    let mut schemas: Vec<&str> = vec!["proxima_core"];
     for schema in flavor_schemas {
         if !schemas.contains(schema) {
             schemas.push(schema);
         }
     }
     let schema_list = schemas
+        .iter()
+        .map(|schema| sql_literal(schema))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let flavor_ledger_list = schemas[1..]
         .iter()
         .map(|schema| sql_literal(schema))
         .collect::<Vec<_>>()
@@ -519,20 +522,22 @@ pub async fn split_role_urls_for(
                  success boolean NOT NULL,
                  checksum bytea NOT NULL,
                  execution_time bigint NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS public._sqlx_migrations_proxima_code (
-                 version bigint PRIMARY KEY,
-                 description text NOT NULL,
-                 installed_on timestamptz NOT NULL DEFAULT now(),
-                 success boolean NOT NULL,
-                 checksum bytea NOT NULL,
-                 execution_time bigint NOT NULL
              )",
         )
         .execute(&mut target)
         .await?;
         let transfer = format!(
-            "DO $$ DECLARE r record; BEGIN
+            "DO $$ DECLARE r record; s text; BEGIN
+               FOREACH s IN ARRAY ARRAY[{flavor_ledger_list}]::text[] LOOP
+                 EXECUTE format('CREATE TABLE IF NOT EXISTS public.%I (
+                     version bigint PRIMARY KEY,
+                     description text NOT NULL,
+                     installed_on timestamptz NOT NULL DEFAULT now(),
+                     success boolean NOT NULL,
+                     checksum bytea NOT NULL,
+                     execution_time bigint NOT NULL
+                   )', '_sqlx_migrations_' || s);
+               END LOOP;
                FOR r IN SELECT n.nspname FROM pg_namespace n
                   WHERE n.nspname IN ({schema_list}) LOOP
                  EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{SPLIT_PLATFORM_ROLE}');
@@ -774,8 +779,8 @@ impl SplitRoleDb {
 /// The family is what makes garbage collection safe: [`ensure_template_in`]
 /// and [`drop_stale_templates_in`] drop idle templates of this family only,
 /// so a host's stale templates are collected and nobody else's are touched.
-/// [`ensure_template`] and [`drop_stale_templates`] keep their three built-in
-/// families (`proxima_tmpl_{core,code,split}_`); [`Self::new`] refuses any
+/// [`ensure_template`] and [`drop_stale_templates`] keep their two built-in
+/// families (`proxima_tmpl_{core,split}_`); [`Self::new`] refuses any
 /// prefix that could reach one, so the two collectors never meet.
 ///
 /// The family is passed to the call that builds the template. There is no
@@ -918,7 +923,7 @@ impl std::error::Error for TemplateFamilyError {}
 /// cannot be reused as complete templates.
 ///
 /// A success then drops the idle templates of `template`'s built-in family
-/// (`proxima_tmpl_{core,code,split}_`) other than `template`; a name in no
+/// (`proxima_tmpl_{core,split}_`) other than `template`; a name in no
 /// built-in family collects nothing. A host names its templates with
 /// [`ensure_template_in`] instead, so that they are collected too.
 ///
@@ -1154,10 +1159,10 @@ where
     }
 }
 
-/// Drop idle `proxima_tmpl_{core,code,split}_*` databases of `keep`'s
+/// Drop idle `proxima_tmpl_{core,split}_*` databases of `keep`'s
 /// family other than `keep`.
 ///
-/// No-op when `keep` is not a core/code/split template name. Called from
+/// No-op when `keep` is not a core/split template name. Called from
 /// [`ensure_template`]; exposed so a process can GC without rebuilding.
 ///
 /// # Errors
@@ -1405,7 +1410,6 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
              OR datname LIKE 'pub\\_%' ESCAPE '\\'
            )
            AND datname NOT LIKE 'proxima\\_tmpl\\_core\\_%' ESCAPE '\\'
-           AND datname NOT LIKE 'proxima\\_tmpl\\_code\\_%' ESCAPE '\\'
            AND NOT EXISTS (
              SELECT 1 FROM pg_stat_activity a WHERE a.datname = pg_database.datname
            )",
@@ -1703,15 +1707,12 @@ mod tests {
     }
 
     #[test]
-    fn template_family_only_core_code_and_split() {
+    fn template_family_only_core_and_split() {
         assert_eq!(
             template_family("proxima_tmpl_core_3f94e256ef4f396f"),
             Some("proxima_tmpl_core_")
         );
-        assert_eq!(
-            template_family("proxima_tmpl_code_2d01c98992e2f0a0"),
-            Some("proxima_tmpl_code_")
-        );
+        assert_eq!(template_family("proxima_tmpl_other_2d01c98992e2f0a0"), None);
         assert_eq!(
             template_family("proxima_tmpl_split_9a41c0d2e6b37f58"),
             Some("proxima_tmpl_split_")

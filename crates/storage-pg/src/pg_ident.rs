@@ -64,10 +64,10 @@ mod tests {
     #[test]
     fn table_accepts_schema_qualified_identifiers() {
         assert_eq!(
-            PgIdent::table("proxima_code.commit_summary_v1")
+            PgIdent::table("proxima_fixture.summary_v1")
                 .unwrap()
                 .as_str(),
-            "proxima_code.commit_summary_v1"
+            "proxima_fixture.summary_v1"
         );
         assert_eq!(PgIdent::table("_local").unwrap().as_str(), "_local");
     }

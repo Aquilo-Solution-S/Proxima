@@ -87,7 +87,8 @@
 //! bundle's key set is pinned separately, against the DECLARATIONS rather
 //! than against a corpus:
 //! `owner_export::the_bundle_carries_every_exportable_surface_even_when_empty`
-//! and the cross-flavor half in `proxima-code`'s `owner_inverse_reach_pg`.
+//! and the cross-flavor half in the facade's `owner_inverse_reach_pg`, which
+//! composes core with the example flavor.
 //! Neither belongs here — regenerating these goldens would destroy their
 //! provenance, which is the whole of this file's argument.
 //!

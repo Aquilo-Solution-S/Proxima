@@ -468,9 +468,9 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         assert!(miss.results.is_empty());
 
         let flavor = MemorySearchProjection {
-            schema_id: SchemaId::new("proxima-code/code-chunk-v1".into()),
-            sidecar_table: "proxima_code.code_chunk_v1".into(),
-            projection_table: "proxima_code.projection".into(),
+            schema_id: SchemaId::new("proxima-example/note-v1".into()),
+            sidecar_table: "proxima_example.note_v1".into(),
+            projection_table: "proxima_example.projection".into(),
             band_comparability: BandComparability::Divergent {
                 why: "the flavor has its own score bands",
             },
