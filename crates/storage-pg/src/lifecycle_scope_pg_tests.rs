@@ -219,3 +219,125 @@ async fn another_owner_does_not_see_a_forgotten_memory_in_lifecycle_scope() {
     );
     tx.rollback().await.expect("rollback");
 }
+
+// #488 S7: erase and transfer already run in platform scope, so they see a
+// forgotten memory as the row it is. These pin that before forget starts
+// setting the flag (S10).
+
+/// A standalone Fact with an agent note, forgotten by hand.
+async fn forgotten_note(pg: &crate::PgStorage, owner: OwnerId) -> Uuid {
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let t = ingest_stamped(
+        pg.pool_for_tests(),
+        &permit,
+        &draft(None),
+        &[AGENT_NOTE.to_owned()],
+        &[
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+           VALUES ($1, $1, 'n', 'forgotten', ARRAY['tag'])",
+        ],
+    )
+    .await
+    .expect("note")
+    .memory_id
+    .into_inner();
+    forget_by_hand(pg, t).await;
+    t
+}
+
+/// `(memory rows, agent notes)` for `t`, read past every policy.
+async fn stored(pg: &crate::PgStorage, t: Uuid) -> (i64, i64) {
+    let mut connection = pg.pool_for_tests().acquire().await.expect("admin");
+    sees(&mut connection, t).await
+}
+
+fn surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
+#[tokio::test]
+async fn an_owner_erase_removes_a_forgotten_memory_and_its_sidecar() {
+    use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+    use proxima_core::storage_ports::OwnerInversePort;
+    let (pg, _guard) = fresh_pg("s7_owner_erase").await;
+    let user = UserId::new(Uuid::now_v7());
+    let t = forgotten_note(&pg, OwnerId::from(user)).await;
+    assert_eq!(stored(&pg, t).await, (1, 1));
+    let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+        user_id: user,
+        drop_event_id: "s7-forgotten".into(),
+    });
+    let outcome = pg
+        .erase_personal_owner(&auth, user, &surfaces())
+        .await
+        .expect("erase");
+    assert!(
+        matches!(outcome, OwnerEraseOutcome::Completed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        stored(&pg, t).await,
+        (0, 0),
+        "no row and no sidecar survive"
+    );
+}
+
+#[tokio::test]
+async fn a_series_erase_selects_a_forgotten_version() {
+    let (pg, _guard) = fresh_pg("s7_series_erase").await;
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let t = forgotten_note(&pg, owner).await;
+    let mut tx = pg.pool_for_tests().begin().await.expect("tx");
+    let (erased, _) = crate::verbs::forget::erase_memory_series(
+        &mut tx,
+        &crate::core_pg_sidecars(),
+        &crate::PgHostStateEraseContext::for_surfaces_for_tests(surfaces())
+            .expect("no host lifecycle tables"),
+        &owner,
+        &[t],
+    )
+    .await
+    .expect("series erase");
+    tx.commit().await.expect("commit");
+    assert_eq!(erased, 1, "the forgotten version is selected");
+    assert_eq!(stored(&pg, t).await, (0, 0));
+}
+
+#[tokio::test]
+async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
+    use proxima_core::storage_ports::OwnerTransferPort;
+    let (pg, _guard) = fresh_pg("s7_transfer").await;
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let dest = OwnerId::from(UserId::new(Uuid::now_v7()));
+    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
+        .bind(dest.into_inner())
+        .execute(pg.pool_for_tests())
+        .await
+        .expect("destination owner");
+    let t = forgotten_note(&pg, owner).await;
+    let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
+    assert!(
+        pg.transfer_to_owner(
+            &permit,
+            proxima_core::EntityId::Memory(proxima_core::MemoryId::new(t)),
+            dest,
+            &surfaces(),
+            &[],
+        )
+        .await
+        .expect("transfer"),
+        "the forgotten memory is moved"
+    );
+    let (moved_to, still_forgotten): (Uuid, bool) = sqlx::query_as(
+        "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_one(pg.pool_for_tests())
+    .await
+    .expect("moved row");
+    assert_eq!(moved_to, dest.into_inner());
+    assert!(still_forgotten, "transfer keeps the flag");
+    assert_eq!(stored(&pg, t).await, (1, 1), "the sidecar moves with it");
+}
