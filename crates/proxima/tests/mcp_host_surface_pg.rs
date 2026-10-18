@@ -13,12 +13,13 @@ use proxima::{
 use proxima_core::{AuthError, AuthPath, Authenticator, Credentials, McpToolError, UserId};
 use proxima_pg_testkit::SplitRoleDb;
 use serde_json::{Value, json};
+use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const TOKEN: &str = "host-token";
-const SLEEP_TOOL: &str = "host_sleep";
+const GATE_TOOL: &str = "host_gate";
 
 struct HostApp;
 
@@ -42,19 +43,33 @@ impl FlavorApp for HostApp {
     }
 }
 
+/// A tool call that runs until the test releases it, so the call's length is
+/// set by the test's barrier rather than by a sleep racing the idle timeout.
 #[derive(Debug)]
-struct SleepTools;
+struct GateTools {
+    entered: Notify,
+    release: Semaphore,
+}
+
+impl GateTools {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: Notify::new(),
+            release: Semaphore::new(0),
+        })
+    }
+}
 
 #[async_trait]
-impl McpHostTools for SleepTools {
+impl McpHostTools for GateTools {
     async fn list(
         &self,
         _auth: &proxima::McpAuthContext,
     ) -> Result<Vec<McpHostTool>, McpToolError> {
         Ok(vec![
             McpHostTool::new(
-                SLEEP_TOOL,
-                "Sleep, then answer.",
+                GATE_TOOL,
+                "Run until released, then answer.",
                 json!({"type": "object"}),
                 ToolEffect::ReadOnly,
             )
@@ -62,10 +77,14 @@ impl McpHostTools for SleepTools {
         ])
     }
 
-    async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError> {
-        let ms = call.args["ms"].as_u64().unwrap_or(0);
-        tokio::time::sleep(Duration::from_millis(ms)).await;
-        Ok(ToolReply::Structured(json!({"slept_ms": ms})))
+    async fn call(&self, _call: ToolCall) -> Result<ToolReply, McpToolError> {
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .map_err(|err| McpToolError::Other(err.to_string()))?
+            .forget();
+        Ok(ToolReply::Structured(json!({"released": true})))
     }
 }
 
@@ -108,13 +127,28 @@ async fn sse_json(response: reqwest::Response) -> TestResult<Value> {
         .ok_or_else(|| format!("missing JSON SSE data in {text:?}").into())
 }
 
-async fn sse_messages(response: reqwest::Response) -> TestResult<Vec<Value>> {
-    let text = response.text().await?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .filter_map(|data| serde_json::from_str(data.trim()).ok())
-        .collect())
+/// Read an SSE response as it arrives, handing each JSON message to
+/// `on_message` before the next is read, until the stream ends.
+async fn sse_stream(
+    mut response: reqwest::Response,
+    mut on_message: impl FnMut(&Value),
+) -> TestResult<Vec<Value>> {
+    let mut pending = String::new();
+    let mut messages = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        pending.push_str(std::str::from_utf8(&chunk)?);
+        while let Some(end) = pending.find('\n') {
+            let line: String = pending.drain(..=end).collect();
+            if let Some(message) = line
+                .strip_prefix("data:")
+                .and_then(|data| serde_json::from_str::<Value>(data.trim()).ok())
+            {
+                on_message(&message);
+                messages.push(message);
+            }
+        }
+    }
+    Ok(messages)
 }
 
 async fn open_session(client: &reqwest::Client, base: &str, subject: UserId) -> TestResult<String> {
@@ -146,20 +180,46 @@ async fn open_session(client: &reqwest::Client, base: &str, subject: UserId) -> 
     Ok(session)
 }
 
+fn gate_call(meta: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+           "params": {"name": GATE_TOOL, "arguments": {}, "_meta": meta}})
+}
+
+async fn post_gate_call(
+    client: &reqwest::Client,
+    base: &str,
+    subject: UserId,
+    meta: &Value,
+) -> TestResult<(String, reqwest::Response)> {
+    let session = open_session(client, base, subject).await?;
+    let response = mcp_post(client, base, subject)
+        .header("Mcp-Session-Id", &session)
+        .json(&gate_call(meta))
+        .send()
+        .await?;
+    Ok((session, response))
+}
+
 #[tokio::test]
 async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without_one() -> TestResult
 {
-    const SLEEP_MS: u64 = 2_500;
+    // The idle timeout is this test's own choice: short enough to keep the
+    // test quick, long enough that the heartbeat (idle / 2) leaves a margin
+    // a loaded runner's scheduling hiccups do not eat. Beats are counted,
+    // not timed: the call is held open by a barrier until three beats have
+    // arrived, so it outlives the idle timeout by construction.
+    const IDLE: Duration = Duration::from_secs(2);
+    const BEATS: usize = 3;
     let db = SplitRoleDb::create("proxima_session_idle", &[]).await?;
     let subject = UserId::new(Uuid::now_v7());
-    let serve = |idle: Option<Duration>| {
+    let serve = |idle: Option<Duration>, gate: Arc<GateTools>| {
         Proxima::<HostApp>::app()
             .database_url(db.runtime_url())
             .store_number(0)
             .platform_database_url(db.platform_url())
             .mcp_bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .served_surface(ServedSurface::All)
-            .host_tools(Arc::new(SleepTools))
+            .host_tools(gate)
             .mcp_transport(proxima_mcp_server::McpTransportConfig {
                 session_idle_timeout: idle,
                 ..proxima_mcp_server::McpTransportConfig::default()
@@ -168,25 +228,27 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
             .run()
     };
     let client = reqwest::Client::new();
-    let sleep_call = |meta: Value| {
-        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-               "params": {"name": SLEEP_TOOL, "arguments": {"ms": SLEEP_MS}, "_meta": meta}})
-    };
 
-    let running = serve(Some(Duration::from_secs(1))).await?;
+    let gate = GateTools::new();
+    let running = serve(Some(IDLE), Arc::clone(&gate)).await?;
     let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
-    let session = open_session(&client, &base, subject).await?;
-    let response = mcp_post(&client, &base, subject)
-        .header("Mcp-Session-Id", &session)
-        .json(&sleep_call(json!({"progressToken": "ingest-1"})))
-        .send()
-        .await?;
-    let messages = sse_messages(response).await?;
+    let meta = json!({"progressToken": "ingest-1"});
+    let (_, response) = post_gate_call(&client, &base, subject, &meta).await?;
+    let mut beats = 0;
+    let messages = sse_stream(response, |message| {
+        if message["method"] == "notifications/progress" {
+            beats += 1;
+            if beats == BEATS {
+                gate.release.add_permits(1);
+            }
+        }
+    })
+    .await?;
     let beats: Vec<&Value> = messages
         .iter()
         .filter(|message| message["method"] == "notifications/progress")
         .collect();
-    assert!(beats.len() >= 2, "{messages:?}");
+    assert_eq!(beats.len(), BEATS, "{messages:?}");
     assert!(
         beats
             .iter()
@@ -196,16 +258,13 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     assert_eq!(result["id"], json!(7), "{messages:?}");
     assert_eq!(
         result["result"]["structuredContent"],
-        json!({"slept_ms": SLEEP_MS})
+        json!({"released": true})
     );
 
-    let session = open_session(&client, &base, subject).await?;
-    let response = mcp_post(&client, &base, subject)
-        .header("Mcp-Session-Id", &session)
-        .json(&sleep_call(json!({})))
-        .send()
-        .await?;
-    let messages = sse_messages(response).await?;
+    // Without a progress token nothing keeps the session alive: the gate is
+    // never released, and the stream ends when the idle timeout closes it.
+    let (session, response) = post_gate_call(&client, &base, subject, &json!({})).await?;
+    let messages = sse_stream(response, |_| {}).await?;
     assert!(
         messages
             .iter()
@@ -222,21 +281,27 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
         "session closed: {}",
         after.status()
     );
+    gate.release.add_permits(1);
     running.shutdown().await;
 
-    let running = serve(None).await?;
+    // With no idle timeout the same call completes once released.
+    let gate = GateTools::new();
+    let running = serve(None, Arc::clone(&gate)).await?;
     let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
-    let session = open_session(&client, &base, subject).await?;
-    let response = mcp_post(&client, &base, subject)
-        .header("Mcp-Session-Id", &session)
-        .json(&sleep_call(json!({})))
-        .send()
-        .await?;
-    let messages = sse_messages(response).await?;
+    let call = async {
+        let (_, response) = post_gate_call(&client, &base, subject, &json!({})).await?;
+        sse_stream(response, |_| {}).await
+    };
+    let release = async {
+        gate.entered.notified().await;
+        gate.release.add_permits(1);
+    };
+    let (messages, ()) = tokio::join!(call, release);
+    let messages = messages?;
     let result = messages.last().ok_or("no messages")?;
     assert_eq!(
         result["result"]["structuredContent"],
-        json!({"slept_ms": SLEEP_MS}),
+        json!({"released": true}),
         "{messages:?}"
     );
     running.shutdown().await;
