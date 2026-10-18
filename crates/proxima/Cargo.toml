@@ -68,6 +68,7 @@ tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
 time = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true }
@@ -138,4 +139,12 @@ required-features = ["testkit"]
 
 [[test]]
 name = "goal_targeting_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "owner_rls_installer_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "owner_rls_table_pg"
 required-features = ["testkit"]

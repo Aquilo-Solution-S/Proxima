@@ -28,6 +28,20 @@ static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
     .expect("core plus the example flavor is a lineup the runner accepts")
 });
 
+/// A split-role clone of the template: core and the example flavor
+/// migrated, nothing else composed. For suites that talk to Postgres
+/// directly.
+///
+/// # Panics
+///
+/// When Postgres is unavailable.
+pub async fn migrated_db(prefix: &str) -> SplitRoleDb {
+    TEMPLATE
+        .clone_split_role(prefix, &["proxima_example"])
+        .await
+        .expect("PG required for tests")
+}
+
 /// One test's database and the Engine over it.
 pub struct ExampleEngine {
     pub pool: sqlx::PgPool,
@@ -46,10 +60,7 @@ impl ExampleEngine {
     ///
     /// When Postgres is unavailable or the composition is refused.
     pub async fn new(prefix: &str, extra: impl FnOnce(&mut FlavorRegistry)) -> Self {
-        let db = TEMPLATE
-            .clone_split_role(prefix, &["proxima_example"])
-            .await
-            .expect("PG required for tests");
+        let db = migrated_db(prefix).await;
         PgMigrationStorage::connect_with_config(
             db.platform_url(),
             PgPoolConfig::default(),
