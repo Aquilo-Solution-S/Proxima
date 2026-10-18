@@ -117,8 +117,15 @@ impl Engine {
         edge_exists_authorized(&self.storage.query, authz.owner_scope(), &read_owners, req).await
     }
 
-    /// Provenance/Supersession lineage walk from one memory.
+    /// Provenance/Supersession lineage walk from one memory, in storage.
     /// Same auth shape as `Query`.
+    ///
+    /// Its ancestors follow local `origin` pins only. It does NOT apply the
+    /// shared ancestor-edge rule (declared payload subjects as `reference`,
+    /// other-store memories as leaves) that the `walk_memory_lineage` tool
+    /// and `core_think` follow (`mcp::core_tools::ancestry`, #480); the
+    /// other-store rows of the page's nodes come back unexpanded in
+    /// `external_edges`. Descendants follow `origin` pins, as the tool does.
     ///
     /// # Errors
     ///

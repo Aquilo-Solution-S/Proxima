@@ -1213,6 +1213,87 @@ async fn lineage_ancestors_page_within_limit_over_references_and_remote_leaves()
     result.expect("lineage paging test failed");
 }
 
+/// #480 follow-up: every lineage node carries its real hop distance, as
+/// edges do: a three-memory local chain renders 0, 1, 2, also when the
+/// deepest edge comes on its own page.
+#[tokio::test]
+async fn lineage_nodes_carry_their_hop_distance() {
+    let split_db = clone_split_core_db("proxima_lineage_node_distance")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let handle = |made: serde_json::Value| made["handle"].as_str().expect("handle").to_owned();
+        let fact = handle(
+            call(
+                "core_remember",
+                serde_json::json!({"title": "root", "body": "root fact", "tags": []}),
+            )
+            .await?,
+        );
+        let mut chain = vec![fact];
+        for title in ["first derivation", "second derivation"] {
+            let made = call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Abstraction",
+                    "title": title,
+                    "body": title,
+                    "source_handles": [chain.last().expect("parent")],
+                    "model_id": "test-model"
+                }),
+            )
+            .await?;
+            chain.push(handle(made));
+        }
+        let (root, middle, top) = (&chain[0], &chain[1], &chain[2]);
+        let base = format!("proxima://memory/{top}/lineage?direction=ancestors&depth=3");
+        let whole = read_test_model_resource(&tools, authz.clone(), owner, &base).await?;
+        let distance = |page: &serde_json::Value, memory: &str| {
+            node(page, memory).map(|node| node["distance"].clone())
+        };
+        assert_eq!(distance(&whole, top), Some(0.into()), "{whole}");
+        assert_eq!(distance(&whole, middle), Some(1.into()), "{whole}");
+        assert_eq!(distance(&whole, root), Some(2.into()), "{whole}");
+
+        let first =
+            read_test_model_resource(&tools, authz.clone(), owner, &format!("{base}&limit=1"))
+                .await?;
+        let cursor = first["next_cursor"].as_str().expect("a second page");
+        let second = read_test_model_resource(
+            &tools,
+            authz,
+            owner,
+            &format!("{base}&limit=1&cursor={cursor}"),
+        )
+        .await?;
+        assert_eq!(distance(&second, middle), Some(1.into()), "{second}");
+        assert_eq!(distance(&second, root), Some(2.into()), "{second}");
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("lineage distance test failed");
+}
+
 /// Other stores whose list never answers.
 struct DownInventory;
 

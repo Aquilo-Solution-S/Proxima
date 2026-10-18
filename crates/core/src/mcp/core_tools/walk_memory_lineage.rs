@@ -1,6 +1,6 @@
 //! `core/walk_memory_lineage` — wire-facing memory lineage walk.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,9 @@ pub struct LineageNodeOutput {
     pub kind: String,
     pub schema_id: String,
     pub snippet: String,
+    /// Hops from the start, which is 0. Toward ancestors, the hop at which
+    /// the walk first reached this memory, as on its edges. Toward
+    /// descendants every memory but the start still reads 1.
     pub distance: u8,
     /// Set only on a node of another store: its store number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,13 +306,24 @@ async fn walk_ancestors(
     }
     let (start_distance, keyset) = resume_point(after);
     let mut hops: Vec<AncestorHop> = Vec::new();
-    let mut seen = HashSet::from([start]);
+    // Hop distance at which each local memory is first reached; the start
+    // is 0. A memory is expanded once, from its first level.
+    let mut reached: HashMap<MemoryId, u8> = HashMap::from([(start, 0)]);
     let mut frontier = vec![start];
     'walk: for distance in 1..=depth {
         if frontier.is_empty() {
             break;
         }
         let level = super::ancestry::ancestor_edges(engine, ctx, &frontier).await?;
+        let mut next: Vec<MemoryId> = Vec::new();
+        for edge in &level {
+            if let AncestorTarget::Local(id) = edge.target
+                && !reached.contains_key(&id)
+            {
+                reached.insert(id, distance);
+                next.push(id);
+            }
+        }
         if distance >= start_distance {
             for edge in &level {
                 if distance == start_distance
@@ -327,14 +341,6 @@ async fn walk_ancestors(
                 }
             }
         }
-        let mut next: Vec<MemoryId> = level
-            .iter()
-            .filter_map(|edge| match edge.target {
-                AncestorTarget::Local(id) => Some(id),
-                AncestorTarget::Remote(_) => None,
-            })
-            .filter(|id| seen.insert(*id))
-            .collect();
         next.sort_by_key(|id| std::cmp::Reverse(*id));
         frontier = next;
     }
@@ -348,7 +354,7 @@ async fn walk_ancestors(
             target: crate::EntityRef::Memory(MemoryId::new(last.edge.target.uuid())),
         }
     });
-    let (nodes, edges) = render_ancestor_page(ctx, engine, start, &hops).await?;
+    let (nodes, edges) = render_ancestor_page(ctx, engine, start, &hops, &reached).await?;
     Ok(Some(AncestorPage {
         nodes,
         edges,
@@ -356,15 +362,17 @@ async fn walk_ancestors(
     }))
 }
 
-/// Nodes and edges of an ancestors page. Local nodes render as the storage
-/// walk rendered them (distance 0 for the start, else 1); an unreadable
-/// local target is a redacted edge end. Other-store targets are read in one
+/// Nodes and edges of an ancestors page. Local nodes carry the hop
+/// distance at which the walk first reached them (`reached`; the start is
+/// 0), as edges and other-store nodes do; an unreadable local target is a
+/// redacted edge end. Other-store targets are read in one
 /// bounded batch and placed at their edge's distance.
 async fn render_ancestor_page(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
     start: MemoryId,
     hops: &[AncestorHop],
+    reached: &HashMap<MemoryId, u8>,
 ) -> Result<(Vec<LineageNodeOutput>, Vec<LineageEdgeOutput>), McpToolError> {
     let mut local_ids = vec![start];
     for hop in hops {
@@ -384,7 +392,7 @@ async fn render_ancestor_page(
             kind: node.kind.as_str().to_string(),
             schema_id: node.schema_id.as_str().to_string(),
             snippet: node.snippet,
-            distance: u8::from(node.memory_id != start),
+            distance: reached.get(&node.memory_id).copied().unwrap_or_default(),
             store: None,
             status: None,
             unavailable_reason: None,
