@@ -13,7 +13,8 @@ CREATE TABLE proxima_example.note_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     notebook_id uuid NOT NULL,
     key text NOT NULL,
-    body text NOT NULL
+    body text NOT NULL,
+    written_at timestamptz NOT NULL
 );
 CREATE TABLE proxima_example.digest_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),

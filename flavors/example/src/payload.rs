@@ -24,6 +24,11 @@ pub struct NoteV1 {
     pub key: String,
     /// The note's text.
     pub body: String,
+    /// When the note was written: the payload's own declared clock, which
+    /// retention can age a series by instead of its admission time.
+    #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "String")]
+    pub written_at: time::OffsetDateTime,
 }
 
 impl FactPayload for NoteV1 {
@@ -97,6 +102,7 @@ proxima::flavor::pg_sidecar! {
         notebook_id => notebook_id: (uuid),
         key => key: (text),
         body => body: (text),
+        written_at => written_at: (timestamptz),
     },
 }
 

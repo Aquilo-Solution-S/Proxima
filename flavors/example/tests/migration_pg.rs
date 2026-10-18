@@ -85,6 +85,7 @@ async fn the_baseline_applies_under_split_roles_and_the_census_passes() {
             notebook_id,
             key: "first".to_owned(),
             body: "a note under owner RLS".to_owned(),
+            written_at: time::OffsetDateTime::now_utc(),
         },
     )
     .await

@@ -372,6 +372,7 @@ async fn write_and_read_a_note<F: FlavorApp + 'static>(db: &SplitRoleDb, expect:
             notebook_id,
             key: "boot".to_owned(),
             body: "written under owner RLS".to_owned(),
+            written_at: time::OffsetDateTime::now_utc(),
         },
     )
     .await

@@ -123,3 +123,7 @@ required-features = ["testkit"]
 [[test]]
 name = "host_membership_transaction_pg"
 required-features = ["testkit"]
+
+[[test]]
+name = "erase_own_series_pg"
+required-features = ["testkit"]
