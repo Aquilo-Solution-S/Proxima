@@ -518,10 +518,12 @@ async fn a_fresh_database_lists_everything_in_runner_order() {
 #[tokio::test]
 async fn a_database_without_any_ledger_lists_everything() {
     let db = Db::empty().await;
-    sqlx::query("DROP TABLE public._sqlx_migrations, public._sqlx_migrations_proxima_code")
-        .execute(&db.admin)
-        .await
-        .expect("drop the ledgers role provisioning created");
+    sqlx::query(
+        "DROP TABLE IF EXISTS public._sqlx_migrations, public._sqlx_migrations_proxima_example",
+    )
+    .execute(&db.admin)
+    .await
+    .expect("drop the ledgers role provisioning created");
     assert!(
         !db.ledger_exists(CORE).await && !db.ledger_exists(FORGE).await,
         "no ledger"

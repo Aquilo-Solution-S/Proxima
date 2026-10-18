@@ -58,7 +58,7 @@ pub struct NamedMigrator {
 
 impl NamedMigrator {
     /// Build a named migrator. Use the flavor id or host app id as
-    /// `source`, e.g. `proxima-code`.
+    /// `source`, e.g. `fixture-flavor`.
     ///
     /// The migrator keeps whatever tracking table it declares; a flavor
     /// that declares none records into core's `public._sqlx_migrations`.
@@ -108,7 +108,7 @@ impl NamedMigrator {
 
 /// The tracking table [`NamedMigrator::flavor`] gives flavor `id`:
 /// `public._sqlx_migrations_<id>`, `-` spelled `_`
-/// (`proxima-code` → `public._sqlx_migrations_proxima_code`).
+/// (`fixture-flavor` → `public._sqlx_migrations_fixture_flavor`).
 ///
 /// # Panics
 ///
@@ -1968,8 +1968,8 @@ mod tests {
     fn a_ledger_is_named_as_flavor_ledger_table_names_it() {
         assert_eq!(core_source().ledger(), "public._sqlx_migrations");
         assert_eq!(
-            NamedMigrator::flavor("proxima-code", migrator(&[1])).ledger(),
-            flavor_ledger_table("proxima-code")
+            NamedMigrator::flavor("fixture-flavor", migrator(&[1])).ledger(),
+            flavor_ledger_table("fixture-flavor")
         );
         let mut declared = migrator(&[1]);
         declared.dangerous_set_table_name("acme._sqlx_migrations");

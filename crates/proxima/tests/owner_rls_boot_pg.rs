@@ -153,23 +153,23 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
     )
 }
 
-struct CodeApp;
+struct ExampleApp;
 
-impl FlavorBundle for CodeApp {
+impl FlavorBundle for ExampleApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        proxima_code::CodeFlavor::register(registry)
+        proxima_example::ExampleFlavor::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
-        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+        proxima_example::ExampleFlavor::register_pg_sidecars(registry);
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        proxima_code::CodeFlavor::migrators()
+        proxima_example::ExampleFlavor::migrators()
     }
 }
 
-impl FlavorApp for CodeApp {
+impl FlavorApp for ExampleApp {
     fn app_info() -> AppInfo {
         AppInfo {
             id: "owner-rls-boot-test",
@@ -185,7 +185,7 @@ async fn boot(
     owner: OwnerId,
     skip_migrations: bool,
 ) -> Result<proxima::BuiltProxima, proxima::ProximaError> {
-    let mut app = Proxima::<CodeApp>::app()
+    let mut app = Proxima::<ExampleApp>::app()
         .store_number(0)
         .database_url(runtime_url)
         .owner(owner)
@@ -279,7 +279,7 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
 }
 
 #[tokio::test]
-async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
+async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
     let _guard = BOOT_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -293,18 +293,18 @@ async fn fresh_split_role_boot_migrates_core_and_code_automatically() {
         false,
     )
     .await
-    .expect("fresh core+Code automatic migration");
+    .expect("fresh core+example automatic migration");
     first.shutdown().await;
     let (base_tables, flavor_tables): (i64, i64) = sqlx::query_as(
         "SELECT
            (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxima_core'),
-           (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxima_code')",
+           (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxima_example')",
     )
     .fetch_one(&admin)
     .await
     .expect("fresh schema census");
     assert!(base_tables > 0);
-    assert!(flavor_tables > 0);
+    assert_eq!(flavor_tables, 4, "notebooks, settings and the two sidecars");
     exec(
         &admin,
         format!(
@@ -326,7 +326,7 @@ async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
-    let built = Proxima::<CodeApp>::app()
+    let built = Proxima::<ExampleApp>::app()
         .database_url(runtime_url)
         .store_number(0)
         .platform_database_url(platform_url)

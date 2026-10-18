@@ -856,9 +856,9 @@ impl proxima::flavor::AbstractionPayload for TierAbstraction {
 fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // `AbstractionPayload` and `PerspectivePayload` let a flavor *declare*
     // derived schemas; `DerivedMemory` is the typed write request.
-    // The in-tree precedent (`flavors/code`) reaches the same lane through
-    // a direct `proxima-storage-pg` dependency, which a flavor depending
-    // only on `proxima` does not have.
+    // A flavor with a direct `proxima-storage-pg` dependency reaches the
+    // same lane through it, which a flavor depending only on `proxima`
+    // does not have.
     //
     // This constructs the request rather than merely naming the types, so
     // a field added, removed or retyped upstream breaks here instead of
@@ -933,7 +933,7 @@ fn flavor_sdk_exposes_the_payload_reference_lane() {
 }
 
 /// A flavor-owned service, standing in for the store a real flavor hands
-/// its tools (`proxima-code` puts a `CodeFlavorStore` here). Core cannot
+/// its tools (the example flavor puts its `ExampleStore` here). Core cannot
 /// name this type, which is the entire point of the service map.
 struct TierFlavorStore {
     marker: &'static str,

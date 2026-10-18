@@ -238,13 +238,13 @@ fn registry_dump_is_deterministic() {
 #[test]
 fn composed_schema_names_cover_core_and_every_linked_flavor() {
     let mut registry = FlavorRegistry::new();
-    proxima_code::CodeFlavor::register(&mut registry).expect("the code flavor registers");
+    proxima_example::ExampleFlavor::register(&mut registry).expect("the example flavor registers");
     register_conformance_flavor(&mut registry).expect("the conformance flavor registers");
     let frozen = registry.try_freeze().expect("two flavors freeze");
 
     assert_eq!(
         proxima::host::composed_schema_names(&frozen),
-        ["proxima_code", "proxima_conformance", "proxima_core"],
+        ["proxima_conformance", "proxima_core", "proxima_example"],
         "core's schema plus one per flavor, sorted and without repeats"
     );
     // The facade re-exports the one definition.

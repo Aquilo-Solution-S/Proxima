@@ -362,13 +362,13 @@ mod tests {
 
     #[test]
     fn composed_schemas_get_dml_and_scoped_defaults_and_never_escalation() {
-        let schemas = owned(&["proxima_code", "proxima_core"]);
+        let schemas = owned(&["proxima_core", "proxima_fixture"]);
         let statements = grant_statements(
             "runtime",
             &schemas,
             &[
                 ledger("public", "_sqlx_migrations"),
-                ledger("public", "_sqlx_migrations_proxima_code"),
+                ledger("public", "_sqlx_migrations_proxima_fixture"),
             ],
         );
         let sql = sql(&statements);
@@ -424,7 +424,7 @@ mod tests {
                 .all(|s| !s.contains("IN SCHEMA \"public\" GRANT"))
         );
         assert!(sql.contains(
-            &"GRANT SELECT ON \"public\".\"_sqlx_migrations_proxima_code\" TO \"runtime\""
+            &"GRANT SELECT ON \"public\".\"_sqlx_migrations_proxima_fixture\" TO \"runtime\""
         ));
     }
 
@@ -475,23 +475,23 @@ mod tests {
     #[test]
     fn ledger_names_are_qualified_and_deduplicated() {
         let named = crate::migrations::NamedMigrator::new(
-            "proxima-code",
-            proxima_code_like_migrator("public._sqlx_migrations_proxima_code"),
+            "fixture-flavor",
+            fixture_migrator("public._sqlx_migrations_proxima_fixture"),
         );
         let unqualified = crate::migrations::NamedMigrator::new(
             "inline-flavor",
-            proxima_code_like_migrator("_sqlx_migrations"),
+            fixture_migrator("_sqlx_migrations"),
         );
         assert_eq!(
             ledger_names(&[named, unqualified]),
             owned(&[
                 "public._sqlx_migrations",
-                "public._sqlx_migrations_proxima_code"
+                "public._sqlx_migrations_proxima_fixture"
             ])
         );
     }
 
-    fn proxima_code_like_migrator(table: &'static str) -> sqlx::migrate::Migrator {
+    fn fixture_migrator(table: &'static str) -> sqlx::migrate::Migrator {
         let mut migrator = sqlx::migrate::Migrator::DEFAULT;
         migrator.dangerous_set_table_name(table);
         migrator

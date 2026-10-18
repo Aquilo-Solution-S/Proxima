@@ -1,16 +1,13 @@
 //! Authorized flavor-read facade.
 //!
-//! Lifted from `flavors/code/src/store.rs`: every one of
-//! these helpers routes candidate filtering through
+//! Lifted from a flavor's own store module: every one of these helpers routes candidate filtering through
 //! [`proxima_core::Engine::query`], the same authorization/visibility path
 //! Owner-scoped reads use everywhere else (owner/group scoping). Flavor
 //! crates get typed, authorized
 //! payload projection without ever holding a raw `PgPool` or writing SQL
 //! against `proxima_core.*` themselves.
 //!
-//! Chunk series heads ride `Engine::query` `HeadsOnly` (`memory_head`).
-//! Listing heads by NK (ingest / `open_file`) lives in storage-pg
-//! `code_series_heads`, not here.
+//! Series heads ride `Engine::query` `HeadsOnly` (`memory_head`).
 
 use std::collections::{HashMap, HashSet};
 

@@ -74,11 +74,11 @@ macro_rules! assert_ledger_is_read_only_to {
     }};
 }
 
-/// The tables a host lineup records on: core's, the Code flavor's and the
+/// The tables a host lineup records on: core's, the example flavor's and the
 /// host's own.
 const LEDGER_TABLES: [&str; 3] = [
     "public._sqlx_migrations",
-    "public._sqlx_migrations_proxima_code",
+    "public._sqlx_migrations_proxima_example",
     "public._sqlx_migrations_hosttpl",
 ];
 
@@ -102,7 +102,7 @@ fn migrator(migrations: Vec<Migration>) -> Migrator {
     }
 }
 
-/// The host's own migrator, on its own ledger, after the Code flavor's.
+/// The host's own migrator, on its own ledger, after the example flavor's.
 fn host_migrator() -> NamedMigrator {
     NamedMigrator::flavor(
         "hosttpl",
@@ -118,7 +118,7 @@ fn host_migrator() -> NamedMigrator {
 
 /// What a host's `FlavorBundle::migrators` returns: the flavor's and its own.
 fn migrators() -> Vec<NamedMigrator> {
-    let mut all = proxima_code::CodeFlavor::migrators();
+    let mut all = proxima_example::ExampleFlavor::migrators();
     all.push(host_migrator());
     all
 }
@@ -127,11 +127,11 @@ struct HostApp;
 
 impl FlavorBundle for HostApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        proxima_code::CodeFlavor::register(registry)
+        proxima_example::ExampleFlavor::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
-        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+        proxima_example::ExampleFlavor::register_pg_sidecars(registry);
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -160,7 +160,7 @@ static SUITE: LazyLock<HostTemplate> = LazyLock::new(|| {
 
 async fn clone() -> SplitRoleDb {
     SUITE
-        .clone_split_role("proxima_host_template", &["proxima_code"])
+        .clone_split_role("proxima_host_template", &["proxima_example"])
         .await
         .expect("PG required")
 }
@@ -192,7 +192,7 @@ async fn ledger_rows(pool: &PgPool) -> Vec<(&'static str, i64, Vec<u8>, String)>
         };
     }
     add!("public._sqlx_migrations");
-    add!("public._sqlx_migrations_proxima_code");
+    add!("public._sqlx_migrations_proxima_example");
     add!("public._sqlx_migrations_hosttpl");
     snapshot
 }
@@ -273,7 +273,7 @@ async fn the_runtime_role_is_unprivileged_and_cannot_write_a_ledger() {
     );
 
     assert_ledger_is_read_only_to!(runtime, "public._sqlx_migrations");
-    assert_ledger_is_read_only_to!(runtime, "public._sqlx_migrations_proxima_code");
+    assert_ledger_is_read_only_to!(runtime, "public._sqlx_migrations_proxima_example");
     assert_ledger_is_read_only_to!(runtime, "public._sqlx_migrations_hosttpl");
     // The host's table is the runtime role's to read and write, not to alter.
     sqlx::query("INSERT INTO public.hosttpl_notes VALUES (2, 'runtime row')")
@@ -379,7 +379,7 @@ async fn sixteen_concurrent_clones_are_distinct_and_complete() {
             let template = Arc::clone(&template);
             tokio::spawn(async move {
                 template
-                    .clone_split_role("proxima_host_template_conc", &["proxima_code"])
+                    .clone_split_role("proxima_host_template_conc", &["proxima_example"])
                     .await
             })
         })

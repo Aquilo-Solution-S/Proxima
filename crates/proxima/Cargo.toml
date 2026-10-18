@@ -55,7 +55,6 @@ rest = ["proxima-mcp-server/rest"]
 testkit = ["dep:proxima-pg-testkit", "proxima-core/test-fixtures"]
 
 [dev-dependencies]
-proxima-code = { path = "../../flavors/code" }
 proxima-example = { path = "../../flavors/example", features = ["testkit"] }
 proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
 aws-lc-rs = { workspace = true }

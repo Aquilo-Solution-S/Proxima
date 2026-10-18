@@ -16,31 +16,31 @@ use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// Composed schemas of the Code-flavor bundle.
-const SCHEMAS: [&str; 2] = ["proxima_code", "proxima_core"];
-/// Migration ledgers of core and the Code flavor.
+/// Composed schemas of the example-flavor bundle.
+const SCHEMAS: [&str; 2] = ["proxima_core", "proxima_example"];
+/// Migration ledgers of core and the example flavor.
 const LEDGERS: [&str; 2] = [
     "public._sqlx_migrations",
-    "public._sqlx_migrations_proxima_code",
+    "public._sqlx_migrations_proxima_example",
 ];
 
-struct CodeGrantsApp;
+struct ExampleGrantsApp;
 
-impl FlavorBundle for CodeGrantsApp {
+impl FlavorBundle for ExampleGrantsApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        proxima_code::CodeFlavor::register(registry)
+        proxima_example::ExampleFlavor::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
-        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+        proxima_example::ExampleFlavor::register_pg_sidecars(registry);
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        proxima_code::CodeFlavor::migrators()
+        proxima_example::ExampleFlavor::migrators()
     }
 }
 
-impl FlavorApp for CodeGrantsApp {
+impl FlavorApp for ExampleGrantsApp {
     fn app_info() -> AppInfo {
         AppInfo {
             id: "runtime-grants-test",
@@ -166,7 +166,7 @@ async fn build(
     runtime_grants: bool,
     skip_migrations: bool,
 ) -> Result<proxima::BuiltProxima, ProximaError> {
-    let mut app = Proxima::<CodeGrantsApp>::app()
+    let mut app = Proxima::<ExampleGrantsApp>::app()
         .database_url(fixture.runtime_url.clone())
         .store_number(0)
         .platform_database_url(fixture.platform_url.clone())
@@ -301,14 +301,14 @@ async fn assert_runtime_serves(fixture: &Fixture, booted: &proxima::BuiltProxima
 async fn assert_default_privileges(fixture: &Fixture, platform_pool: &PgPool) {
     exec(
         platform_pool,
-        "CREATE TABLE proxima_code.runtime_grants_default_probe (id int); \
-         CREATE SEQUENCE proxima_code.runtime_grants_default_seq",
+        "CREATE TABLE proxima_example.runtime_grants_default_probe (id int); \
+         CREATE SEQUENCE proxima_example.runtime_grants_default_seq",
     )
     .await;
     let (admin, runtime) = (&fixture.admin, fixture.runtime.as_str());
-    let table = "proxima_code.runtime_grants_default_probe";
+    let table = "proxima_example.runtime_grants_default_probe";
     assert!(has(admin, Probe::Table, runtime, table, "INSERT").await);
-    let sequence = "proxima_code.runtime_grants_default_seq";
+    let sequence = "proxima_example.runtime_grants_default_seq";
     assert!(has(admin, Probe::Sequence, runtime, sequence, "USAGE").await);
 }
 
@@ -397,7 +397,7 @@ async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_flavor_schema() {
     exec(
         &fixture.admin,
         format!(
-            "GRANT TRUNCATE ON proxima_code.repos TO {}",
+            "GRANT TRUNCATE ON proxima_example.notebooks TO {}",
             ident(&fixture.runtime)
         ),
     )
@@ -407,7 +407,7 @@ async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_flavor_schema() {
         .expect_err("runtime safety covers linked flavor schemas as well as core");
     assert!(
         matches!(error, ProximaError::Storage(ref message)
-            if message.contains("proxima_code.repos") && message.contains("TRUNCATE")),
+            if message.contains("proxima_example.notebooks") && message.contains("TRUNCATE")),
         "{error}"
     );
     cleanup(fixture).await;
@@ -420,7 +420,7 @@ async fn runtime_grants_refuse_without_split_roles() {
     let unreachable = |user: &str| format!("postgres://{user}:pw@127.0.0.1:1/runtime_grants");
     let owner = company_owner(Uuid::now_v7());
     let boot = |database_url: String, platform_database_url: Option<String>| {
-        let app = Proxima::<CodeGrantsApp>::app()
+        let app = Proxima::<ExampleGrantsApp>::app()
             .database_url(database_url)
             .owner(owner)
             .served_surface(ServedSurface::All)

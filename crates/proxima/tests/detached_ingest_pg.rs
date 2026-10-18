@@ -11,23 +11,23 @@ use proxima_core::{AgentNoteV1, AuthPath, AuthzContext, OwnerId, ToolCtx, ToolSe
 use proxima_pg_testkit::SplitRoleDb;
 use proxima_storage_pg::PgPoolConfig;
 
-struct CodeApp;
+struct ExampleApp;
 
-impl FlavorBundle for CodeApp {
+impl FlavorBundle for ExampleApp {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        proxima_code::CodeFlavor::register(registry)
+        proxima_example::ExampleFlavor::register(registry)
     }
 
     fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
-        proxima_code::CodeFlavor::register_pg_sidecars(registry);
+        proxima_example::ExampleFlavor::register_pg_sidecars(registry);
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        proxima_code::CodeFlavor::migrators()
+        proxima_example::ExampleFlavor::migrators()
     }
 }
 
-impl FlavorApp for CodeApp {
+impl FlavorApp for ExampleApp {
     fn app_info() -> AppInfo {
         AppInfo {
             id: "detached-ingest-test",
@@ -38,7 +38,7 @@ impl FlavorApp for CodeApp {
 }
 
 async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxima {
-    Proxima::<CodeApp>::app()
+    Proxima::<ExampleApp>::app()
         .database_url(db.runtime_url())
         .store_number(0)
         .platform_database_url(db.platform_url())

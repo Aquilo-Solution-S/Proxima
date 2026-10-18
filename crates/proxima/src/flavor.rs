@@ -101,9 +101,9 @@ pub use proxima_core::verbs::schema::PayloadKind;
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per
 /// natural key and an explicit deletion observation — cannot write that
-/// override without it. The in-tree precedent (`flavors/code`'s
-/// `FileRevisionV1`) reaches it through a direct `proxima-core` dependency
-/// an out-of-tree flavor does not have. Without the override a schema can
+/// override without it. A flavor's file-revision sidecar can reach it
+/// through a direct `proxima-core` dependency, which an out-of-tree flavor
+/// does not have. Without the override a schema can
 /// still declare `natural_key_columns`, but registry consumers cannot
 /// identify which hot-head payload value represents a deletion observation.
 /// Core Query does not filter tombstone heads.
