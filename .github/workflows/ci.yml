@@ -312,8 +312,8 @@ jobs:
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
           tool: nextest
-      # All features cover REST and Code integrations. The shipped substrate
-      # host also runs its default-feature tests below.
+      # All features cover REST. The shipped substrate host also runs its
+      # default-feature tests below.
       - name: build
         run: cargo build --workspace --all-targets --all-features --locked
       - name: test

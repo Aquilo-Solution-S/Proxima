@@ -29,8 +29,8 @@ principles; Rust code and tests define runtime behavior. A principle change
 starts in the kernel.
 
 One deployment links core, storage, transports, and flavor crates at build
-time. The canonical host is [proxima-mcp](apps/proxima-mcp); its Code flavor
-requires `--features code`. The default host is substrate-only. Crates
+time. The canonical host is [proxima-mcp](apps/proxima-mcp); it serves the
+core only and links no flavor. A host that wants a flavor links it. Crates
 are unpublished; Rust consumers pin the same git selector across the graph.
 
 License: [Apache-2.0](LICENSE), [contribution terms](LICENSING.md).

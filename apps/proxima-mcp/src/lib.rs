@@ -10,8 +10,6 @@ pub use args::{
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 
 use std::collections::{BTreeSet, HashSet};
-#[cfg(feature = "code")]
-use std::ffi::OsString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -22,8 +20,7 @@ use proxima::{
     missing_migration_policy_from_lookup, run_core_and_flavor_migrations_with_policy,
 };
 use proxima_core::llm::{
-    BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SemanticWeight,
-    SingleClientRouter,
+    BoundEmbeddingClient, QueryInstruction, QueryInstructions, QueryTask, SingleClientRouter,
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
@@ -45,13 +42,9 @@ const PROXIMA_EMBED_MAX_INPUT_CHARS: &str = "PROXIMA_EMBED_MAX_INPUT_CHARS";
 const DEFAULT_EMBED_MAX_INPUT_CHARS: NonZeroU32 =
     NonZeroU32::new(16_384).expect("embedding input default is positive");
 const PROXIMA_EMBED_QUERY_INSTRUCTION: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION";
-const PROXIMA_EMBED_QUERY_INSTRUCTION_CODE: &str = "PROXIMA_EMBED_QUERY_INSTRUCTION_CODE";
-const PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT: &str = "PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
-#[cfg(feature = "code")]
-const PROXIMA_CODE_REPO_ROOTS: &str = "PROXIMA_CODE_REPO_ROOTS";
 
 /// Tool/action scope keys advertised by the `memory` profile. Flat entries
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
@@ -100,40 +93,11 @@ fn memory_keep_set() -> Vec<&'static str> {
             .map(|action| action.scope_key),
     );
     ids.extend(all_core_resources().map(|resource| resource.scope_key));
-
-    #[cfg(feature = "code")]
-    {
-        // code-as-memory
-        ids.extend(code_keep_set());
-    }
-
     ids
 }
 
-/// Tool scope keys the `code` profile's palette holds: the code flavor's
-/// reads — no memory write, no repository administration. A code-search
-/// deployment built on it cannot author memory whatever an agent is told;
-/// `PROXIMA_TOOL_ALLOW` adds administration back. Like every palette it
-/// admits every read for every audience besides (12 §Scope keys).
-#[cfg(feature = "code")]
-fn code_keep_set() -> [&'static str; 4] {
-    use proxima_code::mcp::open_file_revision::CodeOpenFileRevisionTool;
-    use proxima_code::mcp::repos::CodeListReposTool;
-    use proxima_code::mcp::search_chunks::CodeSearchChunksTool;
-    use proxima_code::mcp::search_commits::CodeSearchCommitsTool;
-    use proxima_core::mcp::McpTool;
-
-    [
-        CodeSearchChunksTool::NAME,
-        CodeOpenFileRevisionTool::NAME,
-        CodeSearchCommitsTool::NAME,
-        CodeListReposTool::NAME,
-    ]
-}
-
-#[cfg(feature = "code")]
-type LinkedFlavors = (proxima_code::CodeFlavor,);
-#[cfg(not(feature = "code"))]
+/// proxima-mcp serves the core only: it links no flavor. A host that wants a
+/// flavor composes its own app with it.
 type LinkedFlavors = ();
 
 #[derive(Debug)]
@@ -170,22 +134,8 @@ impl FlavorApp for ProximaMcpApp {
         )
     }
 
-    fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
-        #[cfg(feature = "code")]
-        {
-            let host = ctx.host();
-            let mut services = FlavorServices::default();
-            services.try_insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
-                host.clone_pool_for_host(),
-                host.pg_tuning_for_host(),
-            ))?;
-            Ok(services)
-        }
-        #[cfg(not(feature = "code"))]
-        {
-            let _ = ctx;
-            Ok(FlavorServices::default())
-        }
+    fn services(_ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
+        Ok(FlavorServices::default())
     }
 }
 
@@ -470,9 +420,6 @@ async fn maintenance_storage(
     )
     .await
     .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    #[cfg(feature = "code")]
-    let schemas = ["proxima_core", "proxima_code"];
-    #[cfg(not(feature = "code"))]
     let schemas = ["proxima_core"];
     let platform_scope =
         proxima_storage_pg::PgPlatformScope::new(migration_pg.clone_pool_for_backend(), &schemas)
@@ -590,10 +537,6 @@ fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
 /// Returns facade config, storage, migration, engine, bind, or transport failures.
 pub async fn run_with_handle(config: McpConfig) -> Result<RunningProxima, CliError> {
     let app = build_app(config, proxima_core::process_env)?;
-    #[cfg(feature = "code")]
-    let app = app.services(FlavorServices::with(code_repo_roots_from_lookup(&|key| {
-        std::env::var_os(key)
-    })?));
     app.run().await.map_err(Into::into)
 }
 
@@ -618,23 +561,8 @@ fn build_app(
     Ok(app)
 }
 
-#[cfg(feature = "code")]
-fn code_repo_roots_from_lookup(
-    lookup: &impl Fn(&str) -> Option<OsString>,
-) -> Result<proxima_code::CodeRepoRoots, CliError> {
-    let Some(raw) = lookup(PROXIMA_CODE_REPO_ROOTS).filter(|value| !value.is_empty()) else {
-        return Ok(proxima_code::CodeRepoRoots::empty());
-    };
-    proxima_code::CodeRepoRoots::new(std::env::split_paths(&raw).collect()).map_err(|err| {
-        CliError::Runtime(ProximaError::Config(format!(
-            "{PROXIMA_CODE_REPO_ROOTS}: {err}"
-        )))
-    })
-}
-
 /// Every Owner embedded through `client`, its search queries worded by the
-/// configured query instructions and code search fused at the configured
-/// weight.
+/// configured query instruction.
 fn embedding_router_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     client: OpenAiCompatEmbeddingClient,
@@ -642,48 +570,11 @@ fn embedding_router_from_env(
     let bound = BoundEmbeddingClient::bind(Arc::new(client))
         .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?
         .with_query_instructions(query_instructions_from_env(lookup)?);
-    let bound = match code_semantic_weight_from_env(lookup)? {
-        None => bound,
-        #[cfg(feature = "code")]
-        Some(weight) => {
-            bound.with_semantic_weight(proxima_code::mcp::search_chunks::CODE_QUERY_TASK, weight)
-        }
-        #[cfg(not(feature = "code"))]
-        Some(_) => {
-            return Err(CliError::Runtime(ProximaError::Config(format!(
-                "{PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT} needs the code flavor, which this build \
-                 does not include"
-            ))));
-        }
-    };
     Ok(SingleClientRouter::new(bound))
 }
 
-/// `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT`: the hybrid weight code search fuses
-/// at when a call names none. Unset leaves both rankings weighed alike.
-fn code_semantic_weight_from_env(
-    lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<SemanticWeight>, CliError> {
-    lookup_non_empty(lookup, PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT)
-        .map(|raw| {
-            raw.trim()
-                .parse::<f32>()
-                .ok()
-                .and_then(|weight| SemanticWeight::new(weight).ok())
-                .ok_or_else(|| {
-                    CliError::Runtime(ProximaError::Config(format!(
-                        "{PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT} must be a number within \
-                         0.0..=1.0, got {raw:?}"
-                    )))
-                })
-        })
-        .transpose()
-}
-
-/// The instructions `PROXIMA_EMBED_QUERY_INSTRUCTION` (every search query)
-/// and `PROXIMA_EMBED_QUERY_INSTRUCTION_CODE` (code search, over the
-/// default) wrap a search query in before it is embedded. Unset embeds the
-/// query as sent.
+/// The instruction `PROXIMA_EMBED_QUERY_INSTRUCTION` wraps every search
+/// query in before it is embedded. Unset embeds the query as sent.
 fn query_instructions_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<QueryInstructions, CliError> {
@@ -691,25 +582,6 @@ fn query_instructions_from_env(
     if let Some(instruction) = query_instruction_from_env(lookup, PROXIMA_EMBED_QUERY_INSTRUCTION)?
     {
         instructions = instructions.with_instruction(QueryTask::DEFAULT, instruction);
-    }
-    if let Some(instruction) =
-        query_instruction_from_env(lookup, PROXIMA_EMBED_QUERY_INSTRUCTION_CODE)?
-    {
-        #[cfg(feature = "code")]
-        {
-            instructions = instructions.with_instruction(
-                proxima_code::mcp::search_chunks::CODE_QUERY_TASK,
-                instruction,
-            );
-        }
-        #[cfg(not(feature = "code"))]
-        {
-            drop(instruction);
-            return Err(CliError::Runtime(ProximaError::Config(format!(
-                "{PROXIMA_EMBED_QUERY_INSTRUCTION_CODE} needs the code flavor, which this build \
-                 does not include"
-            ))));
-        }
     }
     Ok(instructions)
 }
@@ -732,8 +604,6 @@ fn query_instruction_from_env(
 enum ToolProfile {
     Full,
     Memory,
-    #[cfg(feature = "code")]
-    Code,
 }
 
 /// Every key deployment configuration may name: one id per flat tool, one
@@ -813,8 +683,6 @@ fn resolve_served_surface(
     let mut palette: BTreeSet<ScopeKey> = match profile {
         ToolProfile::Full => registered_ids.iter().cloned().collect(),
         ToolProfile::Memory => keep_set_keys(memory_keep_set()),
-        #[cfg(feature = "code")]
-        ToolProfile::Code => keep_set_keys(code_keep_set()),
     };
     palette.extend(allow);
     for key in deny {
@@ -827,19 +695,10 @@ fn parse_tool_profile(raw: &str) -> Result<ToolProfile, CliError> {
     match raw.trim() {
         protocol_profile::FULL => Ok(ToolProfile::Full),
         protocol_profile::MEMORY => Ok(ToolProfile::Memory),
-        #[cfg(feature = "code")]
-        protocol_profile::CODE => Ok(ToolProfile::Code),
-        #[cfg(not(feature = "code"))]
-        protocol_profile::CODE => Err(CliError::Runtime(ProximaError::Config(format!(
-            "{PROXIMA_TOOL_PROFILE} \"{}\" needs the code flavor, which this build does not \
-             include",
-            protocol_profile::CODE
-        )))),
         other => Err(CliError::Runtime(ProximaError::Config(format!(
-            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"{}\", \"{}\" or \"{}\"",
+            "unknown {PROXIMA_TOOL_PROFILE} {other:?}; expected \"{}\" or \"{}\"",
             protocol_profile::FULL,
             protocol_profile::MEMORY,
-            protocol_profile::CODE
         )))),
     }
 }
@@ -943,13 +802,8 @@ fn embedding_client_from_env(
     let matryoshka_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
     let dim_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_DIM).is_some();
     let max_input_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
-    let query_instruction_is_set = [
-        PROXIMA_EMBED_QUERY_INSTRUCTION,
-        PROXIMA_EMBED_QUERY_INSTRUCTION_CODE,
-        PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT,
-    ]
-    .into_iter()
-    .any(|key| lookup_non_empty(&lookup, key).is_some());
+    let query_instruction_is_set =
+        lookup_non_empty(&lookup, PROXIMA_EMBED_QUERY_INSTRUCTION).is_some();
 
     if base_url.is_none()
         && model.is_none()
@@ -1305,17 +1159,6 @@ mod tests {
                 descriptor.name,
             );
         }
-
-        // The loop above only says something about flavors when a flavor is
-        // linked, so pin that this build has one.
-        #[cfg(feature = "code")]
-        assert!(
-            frozen
-                .list_mcp_tools()
-                .iter()
-                .any(|tool| tool.name.starts_with("proxima-code_")),
-            "the `code` feature must contribute flavor tools to this check",
-        );
     }
 
     #[tokio::test]
@@ -1467,8 +1310,8 @@ mod tests {
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
             protocol_tool::CORE_FORGET,
             protocol_action::CORE_GOAL_SET,
-            "proxima-code_register_repo",
-            "proxima-code_emit_execution_request",
+            "test-flavor_register_notebook",
+            "test-flavor_emit_request",
         ]));
 
         // No PROXIMA_TOOL_PROFILE => fail-closed `memory` default, NOT full.
@@ -1522,58 +1365,47 @@ mod tests {
             &tool(protocol_tool::CORE_TRANSFER)
         ));
 
-        // Code-flavor tools join the memory keep set only when the `code`
-        // flavor is compiled in (the keep set references their `NAME`
-        // consts under the same cfg).
-        #[cfg(feature = "code")]
-        assert!(!configured(&memory, &key("proxima-code_register_repo")));
+        // A flavor's tools are not in the memory keep set; an allow entry
+        // adds one back.
+        assert!(!configured(&memory, &key("test-flavor_register_notebook")));
         assert!(configured(&memory, &key(protocol_action::CORE_GOAL_SET)));
-        assert!(!configured(
-            &memory,
-            &key("proxima-code_emit_execution_request")
-        ));
+        assert!(!configured(&memory, &key("test-flavor_emit_request")));
 
         let overridden = resolve_served_surface(
             Some(protocol_profile::MEMORY),
-            Some("proxima-code_emit_execution_request"),
+            Some("test-flavor_emit_request"),
             Some(protocol_resource::MEMORY),
             &registered_ids,
         )
         .expect("overridden memory profile");
         assert!(!configured(&overridden, &key(protocol_resource::MEMORY)));
-        assert!(configured(
-            &overridden,
-            &key("proxima-code_emit_execution_request")
-        ));
+        assert!(configured(&overridden, &key("test-flavor_emit_request")));
     }
 
+    /// `PROXIMA_TOOL_PROFILE=code` is a startup refusal that names the
+    /// profiles there are, not a silent fallback to another palette.
     #[test]
-    fn default_tools_list_excludes_repository_administration() {
-        let registered = registered_tool_ids().expect("registered code tools");
-        let scope = resolve_served_surface(None, None, None, &registered).expect("default palette");
-        let listed = admitted(&frozen_registry(), &scope);
-        for name in [
-            "proxima-code_register_repo",
-            "proxima-code_ingest_head_snapshot",
-            "proxima-code_start_ingest_head_snapshot",
-            "proxima-code_get_ingest_run",
-        ] {
-            let mandatory_read = name == "proxima-code_get_ingest_run" && cfg!(feature = "code");
-            assert_eq!(
-                listed.contains(name),
-                mandatory_read,
-                "default tools/list: {name}"
-            );
-            #[cfg(feature = "code")]
-            {
-                let full = resolve_served_surface(Some("full"), None, None, &registered)
-                    .expect("full palette");
-                assert!(admitted(&frozen_registry(), &full).contains(name));
-                let explicit = resolve_served_surface(None, Some(name), None, &registered)
-                    .expect("explicit administration grant");
-                assert!(admitted(&frozen_registry(), &explicit).contains(name));
-            }
-        }
+    fn tool_profile_code_is_refused_naming_the_valid_profiles() {
+        let err = resolve_served_surface(Some("code"), None, None, &RegisteredKeys::default())
+            .expect_err("the code profile is gone");
+        let message = err.to_string();
+        assert!(
+            message.contains(PROXIMA_TOOL_PROFILE)
+                && message.contains("\"memory\"")
+                && message.contains("\"full\"")
+                && !message.contains("\"code\" or"),
+            "{message}"
+        );
+    }
+
+    /// The shipped host links no flavor: its frozen registry stores into
+    /// the core schema only, under every feature set.
+    #[test]
+    fn the_default_host_links_no_flavor() {
+        assert_eq!(
+            proxima::host::composed_schema_names(&frozen_registry()),
+            ["proxima_core"]
+        );
     }
 
     #[test]
@@ -1581,91 +1413,6 @@ mod tests {
         let err = resolve_served_surface(Some("unknown"), None, None, &RegisteredKeys::default())
             .expect_err("unknown profile");
         assert!(err.to_string().contains("unknown PROXIMA_TOOL_PROFILE"));
-    }
-
-    #[cfg(feature = "code")]
-    #[test]
-    fn code_repo_roots_require_existing_directories() {
-        let missing = code_repo_roots_from_lookup(&|key| {
-            (key == PROXIMA_CODE_REPO_ROOTS).then(|| OsString::from("/definitely/missing"))
-        })
-        .expect_err("a missing repository root must fail boot");
-        assert!(missing.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
-
-        let file = std::env::temp_dir().join(format!("proxima-code-root-{}", uuid::Uuid::now_v7()));
-        std::fs::write(&file, b"not a directory").expect("create root fixture");
-        let error = code_repo_roots_from_lookup(&|key| {
-            (key == PROXIMA_CODE_REPO_ROOTS).then(|| file.as_os_str().to_owned())
-        })
-        .expect_err("a file must fail boot");
-        std::fs::remove_file(&file).expect("remove root fixture");
-        assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
-    }
-
-    #[cfg(all(feature = "code", unix))]
-    #[test]
-    fn code_repo_roots_validate_non_unicode_os_path_list() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let mut name = format!("proxima-code-root-{}-", uuid::Uuid::now_v7()).into_bytes();
-        name.push(0xff);
-        let root = std::env::temp_dir().join(OsString::from_vec(name));
-        let created = std::fs::create_dir(&root);
-        let raw = std::env::join_paths([&root]).expect("OS path list");
-        let parsed = code_repo_roots_from_lookup(&|key| {
-            (key == PROXIMA_CODE_REPO_ROOTS).then(|| raw.clone())
-        });
-        if let Ok(()) = created {
-            std::fs::remove_dir(&root).expect("remove root fixture");
-            parsed.expect("readable OS paths do not require Unicode");
-        } else {
-            // Some filesystems refuse non-Unicode names. The configured
-            // path must still be validated, rather than treated as unset.
-            let error = parsed.expect_err("unreadable OS path must fail boot");
-            assert!(error.to_string().contains(PROXIMA_CODE_REPO_ROOTS));
-        }
-    }
-
-    /// Against everything this build registers, the `code` profile admits
-    /// the reads every palette admits — the code flavor's four among them —
-    /// and no write; `PROXIMA_TOOL_ALLOW` adds repository administration back
-    /// (#358). Judged by the gate's own predicate, not by palette membership.
-    #[cfg(feature = "code")]
-    #[test]
-    fn code_profile_admits_reads_and_no_write() {
-        let frozen = frozen_registry();
-        let registered = registered_tool_ids().expect("registered ids");
-        let served_reads: BTreeSet<String> = registered
-            .served_reads
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        for code_read in [
-            "proxima-code_list_repos",
-            "proxima-code_open_file_revision",
-            "proxima-code_search_chunks",
-            "proxima-code_search_commits",
-        ] {
-            assert!(served_reads.contains(code_read), "{code_read} is a read");
-        }
-
-        let code = resolve_served_surface(Some(protocol_profile::CODE), None, None, &registered)
-            .expect("code profile");
-        assert_eq!(admitted(&frozen, &code), served_reads);
-
-        let administered = resolve_served_surface(
-            Some(protocol_profile::CODE),
-            Some("proxima-code_register_repo,proxima-code_start_ingest_head_snapshot"),
-            None,
-            &registered,
-        )
-        .expect("code profile with administration");
-        let mut expected = served_reads;
-        expected.extend([
-            "proxima-code_register_repo".to_string(),
-            "proxima-code_start_ingest_head_snapshot".to_string(),
-        ]);
-        assert_eq!(admitted(&frozen, &administered), expected);
     }
 
     /// Deployment policy always serves declared reads, including Owner
@@ -1693,19 +1440,6 @@ mod tests {
                 .served_reads
                 .contains(&key(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS))
         );
-    }
-
-    #[cfg(not(feature = "code"))]
-    #[test]
-    fn code_profile_needs_the_code_flavor() {
-        let err = resolve_served_surface(
-            Some(protocol_profile::CODE),
-            None,
-            None,
-            &RegisteredKeys::default(),
-        )
-        .expect_err("a build without the code flavor has no code profile");
-        assert!(err.to_string().contains("needs the code flavor"), "{err}");
     }
 
     #[test]
@@ -1878,16 +1612,6 @@ mod tests {
                 "Query:{query}",
                 PROXIMA_EMBED_BASE_URL,
             ),
-            (
-                PROXIMA_EMBED_QUERY_INSTRUCTION_CODE,
-                "Query:{query}",
-                PROXIMA_EMBED_BASE_URL,
-            ),
-            (
-                PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT,
-                "0.8",
-                PROXIMA_EMBED_BASE_URL,
-            ),
         ] {
             let err = embedding_client_from_env(
                 |key| (key == configured_key).then(|| value.to_string()),
@@ -1901,11 +1625,11 @@ mod tests {
         }
     }
 
-    /// The default instruction words every search query and the code one
-    /// code search over it; `\n` is a newline, and a template without the
-    /// placeholder fails boot naming its variable (#354).
+    /// The default instruction words every search query; `\n` is a newline,
+    /// and a template without the placeholder fails boot naming its
+    /// variable (#354).
     #[test]
-    fn query_instructions_read_the_default_and_the_code_override() {
+    fn query_instructions_read_the_default() {
         let unset = query_instructions_from_env(&|_: &str| None).expect("unset configures");
         assert!(unset.is_empty());
 
@@ -1929,64 +1653,6 @@ mod tests {
                 .contains(PROXIMA_EMBED_QUERY_INSTRUCTION),
             "{missing}"
         );
-    }
-
-    #[cfg(feature = "code")]
-    #[test]
-    fn the_code_query_instruction_words_code_search_only() {
-        use proxima_code::mcp::search_chunks::CODE_QUERY_TASK;
-
-        let both = query_instructions_from_env(&|key: &str| match key {
-            PROXIMA_EMBED_QUERY_INSTRUCTION => Some("note: {query}".to_string()),
-            PROXIMA_EMBED_QUERY_INSTRUCTION_CODE => Some("code: {query}".to_string()),
-            _ => None,
-        })
-        .expect("both configure");
-        assert_eq!(both.render("q", CODE_QUERY_TASK), "code: q");
-        assert_eq!(both.render("q", QueryTask::DEFAULT), "note: q");
-
-        let code_only = query_instructions_from_env(&|key: &str| {
-            (key == PROXIMA_EMBED_QUERY_INSTRUCTION_CODE).then(|| "code: {query}".to_string())
-        })
-        .expect("code configures");
-        assert_eq!(code_only.render("q", CODE_QUERY_TASK), "code: q");
-        assert_eq!(code_only.render("q", QueryTask::DEFAULT), "q");
-    }
-
-    /// `PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT` reads a number in `0.0..=1.0`
-    /// and fails boot on anything else, naming the variable (#355).
-    #[test]
-    fn the_code_semantic_weight_reads_a_number_in_range() {
-        let read = |raw: &'static str| {
-            code_semantic_weight_from_env(&move |key: &str| {
-                (key == PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT).then(|| raw.to_string())
-            })
-        };
-        assert_eq!(
-            code_semantic_weight_from_env(&|_: &str| None).expect("unset configures"),
-            None
-        );
-        assert_eq!(
-            read("0.8").expect("in range"),
-            Some(SemanticWeight::new(0.8).expect("in range"))
-        );
-        for bad in ["1.5", "-0.1", "NaN", "most"] {
-            let err = read(bad).expect_err("out of range");
-            assert!(
-                err.to_string().contains(PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT),
-                "{bad}: {err}"
-            );
-        }
-    }
-
-    #[cfg(not(feature = "code"))]
-    #[test]
-    fn the_code_query_instruction_needs_the_code_flavor() {
-        let err = query_instructions_from_env(&|key: &str| {
-            (key == PROXIMA_EMBED_QUERY_INSTRUCTION_CODE).then(|| "code: {query}".to_string())
-        })
-        .expect_err("a build without the code flavor has no code search to word");
-        assert!(err.to_string().contains("needs the code flavor"), "{err}");
     }
 
     #[test]

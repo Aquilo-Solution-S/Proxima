@@ -24,10 +24,6 @@ pub async fn runtime_storage(
     .await?;
     migration.run_migrations().await?;
     migration.initialize_store_number(0).await?;
-    let platform = sqlx::PgPool::connect(platform_url).await?;
-    sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_code")
-        .execute(&platform)
-        .await?;
     let scope = proxima_storage_pg::PgPlatformScope::new(
         sqlx::PgPool::connect(platform_url).await?,
         schemas(),
@@ -54,10 +50,6 @@ pub async fn owner_access(
     )
     .await?;
     migration.run_migrations().await?;
-    let platform = sqlx::PgPool::connect(platform_url).await?;
-    sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_code")
-        .execute(&platform)
-        .await?;
     let scope = proxima_storage_pg::PgPlatformScope::new(
         sqlx::PgPool::connect(platform_url).await?,
         schemas(),

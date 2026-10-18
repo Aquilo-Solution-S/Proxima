@@ -40,7 +40,6 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_TOOL_PROFILE | served-surface profile | deployment commands plus mandatory reads | `served_surface_from_env` |
 | PROXIMA_TOOL_ALLOW | served-surface additions | extend deployment commands | `served_surface_from_env` |
 | PROXIMA_TOOL_DENY | served-surface removals | narrow commands; mandatory reads cannot be denied | `served_surface_from_env` |
-| PROXIMA_CODE_REPO_ROOTS | OS path list of repository root directories (`:` on Unix, `;` on Windows); each canonicalized at boot, missing or non-directory roots fail boot | Code repository access; see [operate](operate.md#container-and-network-boundary) | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_BASE_URL | embedding endpoint; redirects are refused, so configure the provider's final endpoint directly | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_API_KEY | embedding bearer | hosted embedding endpoint | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_MODEL | embedding model | enable embeddings | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
@@ -48,8 +47,6 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_EMBED_MATRYOSHKA | nested-prefix request switch | Matryoshka model | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_MAX_INPUT_CHARS | embedding input ceiling | provider input tuning | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_QUERY_INSTRUCTION | memory query template | instruction-tuned model | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
-| PROXIMA_EMBED_QUERY_INSTRUCTION_CODE | code query template | code flavor search | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
-| PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT | code semantic fusion weight | code hybrid search tuning | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS | provider request timeout | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_BATCH_SIZE | provider batch size | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_WORKER_INTERVAL_SECONDS | worker poll interval | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |

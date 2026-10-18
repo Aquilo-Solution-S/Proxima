@@ -55,10 +55,9 @@ Environment:
   PROXIMA_OIDC_SUBJECT_MAP_JSON Issuer-aware (iss,sub)->user_id identity map:
                                 a JSON array of {iss, sub, user_id} objects.
                                 Required when PROXIMA_OIDC_ISSUER is set.
-  PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default),
-                                full (opt-in; adds core_transfer/core_membership)
-                                or code (code search, no memory writes); every
-                                profile admits reads for every audience
+  PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default) or
+                                full (opt-in; adds core_transfer/core_membership);
+                                every profile admits reads for every audience
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from
                                 profile; naming a read fails startup
@@ -77,13 +76,6 @@ Environment:
   PROXIMA_EMBED_QUERY_INSTRUCTION
                                 Template every search query is embedded in;
                                 holds {query}, \n is a newline (default: none)
-  PROXIMA_EMBED_QUERY_INSTRUCTION_CODE
-                                Template for code search queries, over the
-                                default (default: none)
-  PROXIMA_EMBED_CODE_SEMANTIC_WEIGHT
-                                Hybrid code search weight on the semantic
-                                ranking when a call names none (0.0..=1.0;
-                                default 0.5)
 
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile

@@ -113,9 +113,6 @@ These JSON-RPC bodies can be pasted into an MCP client:
 No `PROXIMA_EMBED_*` variables are needed for this path. Semantic search
 requires an embedding client; lexical search remains available without one.
 
-For Code builds and repository administration, see
-[operate](operate.md#container-and-network-boundary).
-
 ## Troubleshooting
 
 - `DATABASE_URL` or `PROXIMA_PLATFORM_DATABASE_URL` is missing: export both

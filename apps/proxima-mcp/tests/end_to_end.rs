@@ -26,12 +26,9 @@ const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
 /// Ceiling on the serialized `tools/list` result for the authorized full
 /// catalog. Clients that put every definition into context pay for each
 /// char, so growth is a decision: trim prose or schema before raising it.
-/// Measured in bytes when set (#375): with `code` 124,488 before, 80,110
-/// after; without it 71,509 before, 42,601 after.
-#[cfg(feature = "code")]
-const TOOLS_LIST_BUDGET: usize = 84_000;
-#[cfg(not(feature = "code"))]
-const TOOLS_LIST_BUDGET: usize = 45_000;
+/// Measured in bytes when set (#375): 71,509 before, 42,601 after; 39,048
+/// when proxima-mcp stopped linking a flavor (#473).
+const TOOLS_LIST_BUDGET: usize = 41_000;
 
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {

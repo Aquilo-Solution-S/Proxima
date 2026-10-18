@@ -24,7 +24,7 @@ concepts and integration; avoid a second invariant or configuration ledger.
 
 | Path | Responsibility |
 |---|---|
-| `apps/proxima-mcp` | Canonical MCP host; Code flavor opt-in |
+| `apps/proxima-mcp` | Canonical MCP host; core only, links no flavor |
 | `crates/core` | Domain types, engine, typed ports, registry |
 | `crates/proxima` | Host facade and flavor SDK |
 | `crates/storage-pg`, `crates/blob-s3` | PostgreSQL and object backends |

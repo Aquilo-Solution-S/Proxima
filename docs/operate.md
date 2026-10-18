@@ -47,13 +47,8 @@ Build the default substrate-only MCP image:
 docker build -t proxima-mcp .
 ```
 
-Code is opt-in: build the host with `--features code`. The default `memory`
-palette includes Code reads when linked; repository registration and ingestion
-require `full` or explicit `PROXIMA_TOOL_ALLOW` grants. Configure
-[`PROXIMA_CODE_REPO_ROOTS`](configuration.md) before boot. Registration and
-ingestion accept only canonical repository paths under those canonical roots,
-refusing symlink escapes and every path when no roots are set. Ingest rechecks
-registered paths against the current roots before starting and reading a tree.
+The image serves the core only: proxima-mcp links no flavor. A deployment that
+needs a flavor builds its own host that links it.
 
 Supply the database connections, store number, and OIDC configuration through the
 deployment's secret/config mechanism. Use a loopback bind for local use. A

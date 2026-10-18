@@ -8,7 +8,6 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-proxima-code = { path = "../../flavors/code", optional = true }
 proxima-core = { path = "../../crates/core" }
 proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
 proxima-blob-s3 = { path = "../../crates/blob-s3" }
@@ -22,9 +21,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = []
-# The shipped host is substrate-only. Operators opt into the code flavor with
-# `--features code`.
-code = ["dep:proxima-code", "proxima-code/host-api"]
 # Compile the `/v1` REST surface into the binary. Serving it still needs
 # `PROXIMA_REST_ENABLED=true` at runtime — see docs/17-rest-surface.md.
 rest = ["proxima/rest"]

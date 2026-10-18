@@ -18,9 +18,6 @@ cargo run -p proxima-mcp
 `dev-idp` prints the OIDC exports and a ready-to-paste agent command.
 Listens at `http://127.0.0.1:31415/mcp`.
 
-For Code builds and repository administration, see
-[`operate`](../../docs/operate.md#container-and-network-boundary).
-
 ## Auth
 
 - MCP bearer auth is host/OIDC only. Local means a local issuer, not a bypass.
@@ -30,9 +27,8 @@ For Code builds and repository administration, see
 ## Tool Profiles
 
 Default is fail-closed `memory`. Local full surface (including
-`core_membership` / `core_transfer`): `PROXIMA_TOOL_PROFILE=full`. Code search
-without memory tools: `PROXIMA_TOOL_PROFILE=code` (see
-[`docs/get-started.md`](../../docs/get-started.md)).
+`core_membership` / `core_transfer`): `PROXIMA_TOOL_PROFILE=full`. Any other
+value, `code` included, is refused at startup.
 
 ## Discovery
 
