@@ -127,3 +127,15 @@ required-features = ["testkit"]
 [[test]]
 name = "erase_own_series_pg"
 required-features = ["testkit"]
+
+[[test]]
+name = "stateful_heads_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "derived_supersession_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "goal_targeting_pg"
+required-features = ["testkit"]

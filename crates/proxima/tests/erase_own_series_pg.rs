@@ -6,92 +6,27 @@
 //! the ones production writes, not a fixture's idea of them.
 #![allow(clippy::too_many_lines)]
 
-use std::sync::{Arc, LazyLock};
+#[path = "fixtures/example_engine.rs"]
+mod example_engine;
 
+use example_engine::{ExampleEngine, next_millisecond};
 use proxima::flavor::{
-    EraseMode, FlavorBundle, MAX_ERASE_SERIES_PER_CALL, PgSidecarRegistry, SeriesEraseError,
-    SeriesEraseReceipt, SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
-    register_core_pg_sidecars,
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
+    SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
 };
-use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily};
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, ErrorCode, FactPayload,
     FactWrite, GroupId, MemoryId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
 };
-use proxima_example::testkit::register_notebook;
-use proxima_example::{ExampleFlavor, FLAVOR_ID, NoteV1};
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
-use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
+use proxima_example::{FLAVOR_ID, NoteV1};
 use uuid::Uuid;
 
 const EXAMPLE: &str = FLAVOR_ID;
 
-/// Core and the example flavor, migrated once per server and cloned per test.
-static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
-    HostTemplate::new(
-        TemplateFamily::new("proxima_example_erase_").expect("a valid template family"),
-        "erase_own_series",
-        ExampleFlavor::migrators(),
-    )
-    .expect("core plus the example flavor is a lineup the runner accepts")
-});
-
-struct Harness {
-    // Dropped last: the clone goes after the pools close, and stays after a
-    // panic.
-    pool: sqlx::PgPool,
-    engine: Engine,
-    cold: Arc<MemoryColdStore>,
-    db: SplitRoleDb,
-}
+type Harness = ExampleEngine;
 
 async fn harness() -> Harness {
-    let db = TEMPLATE
-        .clone_split_role("proxima_erase_own_series", &["proxima_example"])
-        .await
-        .expect("PG required for tests");
-    PgMigrationStorage::connect_with_config(
-        db.platform_url(),
-        PgPoolConfig::default(),
-        PgTuning::default(),
-    )
-    .await
-    .expect("migration connection")
-    .initialize_store_number(0)
-    .await
-    .expect("store number");
-    let mut registry = proxima_core::FlavorRegistry::new();
-    ExampleFlavor::register(&mut registry).expect("the example flavor registers");
-    let registry = registry.freeze_or_panic_for_tests();
-    let mut sidecars = PgSidecarRegistry::new();
-    register_core_pg_sidecars(&mut sidecars);
-    ExampleFlavor::register_pg_sidecars(&mut sidecars);
-    let sidecars = sidecars
-        .freeze_against(&registry)
-        .expect("the example sidecars match its registry");
-    let platform_pool = sqlx::PgPool::connect(db.platform_url())
-        .await
-        .expect("platform connection");
-    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
-        .await
-        .expect("platform validation");
-    let cold = Arc::new(MemoryColdStore::default());
-    let pg = PgStorage::connect(db.runtime_url(), platform_scope, 0)
-        .await
-        .expect("runtime connection")
-        .with_sidecars(sidecars)
-        .with_flavors(&registry)
-        .with_cold(cold.clone());
-    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports());
-    let pool = sqlx::PgPool::connect(&db.admin_url())
-        .await
-        .expect("admin connection");
-    Harness {
-        pool,
-        engine,
-        cold,
-        db,
-    }
+    ExampleEngine::new("proxima_erase_own_series", |_| {}).await
 }
 
 fn personal() -> (OwnerId, AuthzContext) {
@@ -120,17 +55,6 @@ fn note_at(notebook_id: Uuid, key: &str, written_at: time::OffsetDateTime) -> No
 
 fn note_schema() -> SchemaId {
     SchemaId::new(NoteV1::SCHEMA_ID.into())
-}
-
-async fn registered_notebook(pool: &sqlx::PgPool, owner: &OwnerId) -> Uuid {
-    register_notebook(
-        pool,
-        &proxima_core::test_fixtures::owner_scope_for_tests(&[*owner]),
-        *owner,
-        "erase fixture",
-    )
-    .await
-    .expect("the fixture notebook registers")
 }
 
 async fn ingest(
@@ -211,19 +135,6 @@ fn invalid_argument(result: Result<SeriesEraseReceipt, SeriesEraseError>) -> Str
     }
 }
 
-/// A clock barrier: returns the first instant in a later millisecond than
-/// the call's, the resolution of the admission order (`t` is a v7 UUID).
-async fn next_millisecond() -> time::OffsetDateTime {
-    let start = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
-    loop {
-        let now = time::OffsetDateTime::now_utc();
-        if now.unix_timestamp_nanos() / 1_000_000 > start {
-            return now;
-        }
-        tokio::task::yield_now().await;
-    }
-}
-
 async fn run(test: impl AsyncFnOnce(&Harness) -> Result<(), Box<dyn std::error::Error>>) {
     let harness = harness().await;
     let result = test(&harness).await;
@@ -239,7 +150,7 @@ async fn run(test: impl AsyncFnOnce(&Harness) -> Result<(), Box<dyn std::error::
 async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let v1 = ingest(&h.engine, &authz, owner, &note(notebook_id, "a1"), None).await;
         let handle = handle_of(&h.pool, v1).await;
         let v2 = ingest(
@@ -325,7 +236,7 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
 async fn a_dry_run_reports_what_the_erase_then_does_and_changes_nothing() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let v1 = ingest(&h.engine, &authz, owner, &note(notebook_id, "d1"), None).await;
         let handle = handle_of(&h.pool, v1).await;
         let v2 = ingest(
@@ -389,7 +300,7 @@ async fn a_dry_run_reports_what_the_erase_then_does_and_changes_nothing() {
 async fn a_selection_outside_the_flavor_the_owner_or_the_role_is_refused_before_any_delete() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let own = ingest(&h.engine, &authz, owner, &note(notebook_id, "r1"), None).await;
         let core_note = h
             .engine
@@ -410,7 +321,7 @@ async fn a_selection_outside_the_flavor_the_owner_or_the_role_is_refused_before_
             .await?
             .memory_id;
         let (stranger, stranger_authz) = personal();
-        let stranger_notebook = registered_notebook(&h.pool, &stranger).await;
+        let stranger_notebook = h.notebook(&stranger).await;
         let theirs = ingest(
             &h.engine,
             &stranger_authz,
@@ -537,7 +448,7 @@ async fn a_selection_outside_the_flavor_the_owner_or_the_role_is_refused_before_
 async fn admitted_before_takes_only_series_whose_newest_version_is_older() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let old = ingest(&h.engine, &authz, owner, &note(notebook_id, "o1"), None).await;
         let kept_v1 = ingest(&h.engine, &authz, owner, &note(notebook_id, "k1"), None).await;
         let kept = handle_of(&h.pool, kept_v1).await;
@@ -587,7 +498,7 @@ async fn admitted_before_takes_only_series_whose_newest_version_is_older() {
 async fn the_cap_refuses_an_oversized_id_list_and_pages_a_cutoff() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let mut ids = Vec::new();
         for n in 0..=MAX_ERASE_SERIES_PER_CALL {
             ids.push(
@@ -649,13 +560,14 @@ async fn the_cap_refuses_an_oversized_id_list_and_pages_a_cutoff() {
 /// authorizes nothing else.
 #[tokio::test]
 async fn the_host_erases_under_system_authority_with_the_same_scope_rules() {
+    let harness = harness().await;
+    let (owner, authz) = personal();
+    let notebook_id = harness.notebook(&owner).await;
     let Harness {
         pool, engine, db, ..
-    } = harness().await;
+    } = harness;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let (engine, system) = engine.into_system_authority();
-        let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&pool, &owner).await;
         let fact = ingest(&engine, &authz, owner, &note(notebook_id, "h1"), None).await;
         let core_note = engine
             .ingest_fact(
@@ -729,7 +641,7 @@ async fn the_host_erases_under_system_authority_with_the_same_scope_rules() {
 async fn an_erase_is_the_first_and_only_operation_of_its_unit() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_id = registered_notebook(&h.pool, &owner).await;
+        let notebook_id = h.notebook(&owner).await;
         let fact = ingest(&h.engine, &authz, owner, &note(notebook_id, "u1"), None).await;
 
         let mut written = h.engine.unit_of_work(&authz).await?;
@@ -788,8 +700,8 @@ async fn an_erase_is_the_first_and_only_operation_of_its_unit() {
 async fn sidecar_equals_erases_every_series_with_a_matching_version() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook_a = registered_notebook(&h.pool, &owner).await;
-        let notebook_b = registered_notebook(&h.pool, &owner).await;
+        let notebook_a = h.notebook(&owner).await;
+        let notebook_b = h.notebook(&owner).await;
         let single = ingest(&h.engine, &authz, owner, &note(notebook_a, "a1"), None).await;
         let moved_v1 = ingest(&h.engine, &authz, owner, &note(notebook_a, "m1"), None).await;
         let moved = handle_of(&h.pool, moved_v1).await;
@@ -864,11 +776,11 @@ async fn sidecar_equals_erases_every_series_with_a_matching_version() {
 async fn sidecar_equals_joins_its_predicates_inside_the_owner() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook = registered_notebook(&h.pool, &owner).await;
+        let notebook = h.notebook(&owner).await;
         let hit = ingest(&h.engine, &authz, owner, &note(notebook, "shared"), None).await;
         let other_key = ingest(&h.engine, &authz, owner, &note(notebook, "other"), None).await;
         let (stranger, stranger_authz) = personal();
-        let stranger_notebook = registered_notebook(&h.pool, &stranger).await;
+        let stranger_notebook = h.notebook(&stranger).await;
         let theirs = ingest(
             &h.engine,
             &stranger_authz,
@@ -925,7 +837,7 @@ async fn sidecar_equals_joins_its_predicates_inside_the_owner() {
 async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook = registered_notebook(&h.pool, &owner).await;
+        let notebook = h.notebook(&owner).await;
         let now = time::OffsetDateTime::now_utc();
         let old = now - time::Duration::days(30);
         let cutoff = now - time::Duration::days(1);
@@ -1045,7 +957,7 @@ async fn declared_before_ages_series_by_their_newest_versions_declared_time() {
 async fn sidecar_selections_page_at_the_cap_oldest_first() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook = registered_notebook(&h.pool, &owner).await;
+        let notebook = h.notebook(&owner).await;
         let base = time::OffsetDateTime::now_utc() - time::Duration::days(30);
         let mut ids = Vec::new();
         for n in 0..=MAX_ERASE_SERIES_PER_CALL {
@@ -1100,7 +1012,7 @@ async fn sidecar_selections_page_at_the_cap_oldest_first() {
 async fn a_sidecar_selection_outside_its_declaration_is_refused_before_any_delete() {
     run(async |h| {
         let (owner, authz) = personal();
-        let notebook = registered_notebook(&h.pool, &owner).await;
+        let notebook = h.notebook(&owner).await;
         let old = time::OffsetDateTime::now_utc() - time::Duration::days(30);
         let fact = ingest(
             &h.engine,
