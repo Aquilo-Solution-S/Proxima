@@ -255,7 +255,6 @@ async fn merge_cold_records(
             Err(ColdRejection::UnsupportedFormat(version)) => {
                 (format!("unsupported_format({version})"), false)
             }
-            Err(ColdRejection::UnsupportedSidecar) => ("unsupported_sidecar".to_owned(), false),
             // The shared verifier answers this for a pre-witness locator only.
             Err(ColdRejection::UnsupportedObject) => ("pre_witness".to_owned(), false),
         };

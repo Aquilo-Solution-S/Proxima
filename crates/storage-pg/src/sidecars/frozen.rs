@@ -117,18 +117,6 @@ impl PgSidecarRegistryFrozen {
         })
     }
 
-    /// Whether a memory sidecar has the complete generic restore contract.
-    /// Read-only registrations cannot safely be reconstructed from an
-    /// untrusted cold object, even when they expose a memory-key column.
-    #[must_use]
-    pub(crate) fn is_hydratable_memory_sidecar_table(&self, table: &str) -> bool {
-        self.entries.values().any(|entry| {
-            entry.memory_insert.is_some()
-                && entry.memory_key_column.is_some()
-                && entry.sidecar_table == table
-        })
-    }
-
     /// Test-only: a registered memory table that does not exist in PG.
     /// Forget must not SELECT it unless the row stamped it.
     #[must_use]

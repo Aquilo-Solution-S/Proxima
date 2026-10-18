@@ -744,7 +744,7 @@ MEMORY_CENSUS_ALWAYS = (
     "crates/storage-pg/definitions/functions.sql",
     "crates/storage-pg/definitions/triggers.sql",
 )
-EXPECTED_MEMORY_READS = {"live-only": 10, "includes-forgotten": 66}
+EXPECTED_MEMORY_READS = {"live-only": 10, "includes-forgotten": 64}
 
 
 def in_memory_census(text: str, suffix: str) -> bool:

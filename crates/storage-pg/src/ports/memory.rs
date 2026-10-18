@@ -10,7 +10,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
-    MemoryHydrationBatchOutcome, MemoryId, MemoryKindRow, OwnerId, StorageError, cold_object_key,
+    MemoryId, MemoryKindRow, OwnerId, StorageError, cold_object_key,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -208,45 +208,6 @@ impl MemoryAuthoringPort for PgStorage {
                     &key,
                     t,
                     &verbs::forget::Reach::of(permit),
-                )
-                .await
-            }
-        })
-        .await
-    }
-
-    async fn hydrate_memories(
-        &self,
-        permit: &OwnerWritePermit,
-        memory_ids: &[MemoryId],
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
-    ) -> Result<MemoryHydrationBatchOutcome, StorageError> {
-        let storage = self.clone();
-        let sidecars = self.sidecars.clone();
-        let surfaces = self.surfaces.clone();
-        let cold = Arc::clone(&self.cold);
-        let ids = memory_ids.to_vec();
-        let non_embeddable_schemas = self.non_embeddable_schemas.clone();
-        with_bounded_retry(move || {
-            let storage = storage.clone();
-            let sidecars = sidecars.clone();
-            let surfaces = surfaces.clone();
-            let cold = Arc::clone(&cold);
-            let ids = ids.clone();
-            let non_embeddable_schemas = non_embeddable_schemas.clone();
-            async move {
-                let tx = storage.owner_maintenance_transaction(permit).await?;
-                verbs::forget::hydrate_memories_oneshot(
-                    tx,
-                    &sidecars,
-                    &surfaces,
-                    cold.as_ref(),
-                    permit,
-                    &ids,
-                    verbs::fact_embeddings::RouteSpaces {
-                        spaces: embedding_spaces,
-                        non_embeddable_schemas: &non_embeddable_schemas,
-                    },
                 )
                 .await
             }
