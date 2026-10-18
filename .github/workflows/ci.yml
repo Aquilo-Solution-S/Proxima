@@ -71,6 +71,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
+    # Usually 1-2 min; 20 covers a cold cache.
+    timeout-minutes: 20
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -196,6 +198,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.image == 'true') }}
     runs-on: ubuntu-latest
+    # Usually 5-8 min; 20 is over 2x the slowest seen.
+    timeout-minutes: 20
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -222,6 +226,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
+    # Usually 12-21 min; 45 is about 2x the slowest seen, so a hang that
+    # escapes nextest's slow-timeout still cannot hold the serial Verify queue.
+    timeout-minutes: 45
     services:
       postgres:
         image: pgvector/pgvector:pg18@sha256:212765b63c1462883de295c4c415edcd22191b8d8d46853e86ad05d4b577a4cb
