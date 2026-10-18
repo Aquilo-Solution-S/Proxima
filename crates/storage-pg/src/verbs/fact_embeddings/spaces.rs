@@ -26,7 +26,7 @@ const EMBEDDING_COVERAGE_SQL: &str = "
 WITH heads AS MATERIALIZED (
      SELECT m.t
        FROM proxima_core.memory_head mh
-       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
+       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
       WHERE m.owner_id = $1
         AND mh.schema_id <> ALL($2::text[])
  ),
@@ -309,7 +309,7 @@ pub(crate) async fn enqueue_series_head_in_tx(
         "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
          SELECT mh.t, r.model_id, r.dim, $2
            FROM proxima_core.memory_head mh
-           JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
+           JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           CROSS JOIN unnest($3::text[], $4::smallint[]) AS r(model_id, dim)
           WHERE mh.handle = $1
             AND mh.schema_id <> ALL($5::text[])

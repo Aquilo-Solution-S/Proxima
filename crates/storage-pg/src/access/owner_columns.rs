@@ -1466,7 +1466,7 @@ pub(crate) async fn visible_home_owner<'e>(
         EntityId::Memory(memory_id) => {
             sqlx::query_as(
                 "WITH candidates AS (
-                     SELECT owner_id, kind FROM proxima_core.memory WHERE t = $1
+                     SELECT owner_id, kind FROM proxima_core.memory WHERE t = $1 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
                      UNION
                      SELECT owner_id, kind FROM proxima_core.cooled WHERE t = $1
                  )
@@ -1653,7 +1653,7 @@ async fn transfer_memory_t(
         "SELECT handle
            FROM (
                  SELECT handle, 1 AS live
-                   FROM proxima_core.memory
+                   FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
                   WHERE t = $1 AND owner_id = $2
                  UNION ALL
                  SELECT handle, 0 AS live
@@ -1674,7 +1674,7 @@ async fn transfer_memory_t(
     transfer_memory_handle(tx, surfaces, t, handle, from_id, to_owner, embeddings).await
 }
 
-const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
+const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
      UNION
      SELECT t FROM proxima_core.cooled WHERE handle = $1 AND owner_id = $2
      ORDER BY t";
@@ -1908,7 +1908,7 @@ async fn ensure_series_uploads_published(
                 AND u.content_hash IS NOT NULL
                 AND b.blob_id IN (
                     SELECT m.blob_id
-                      FROM proxima_core.memory m
+                      FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
                      WHERE m.handle = $2
                        AND m.owner_id = $1
                        AND m.blob_id IS NOT NULL
@@ -2026,7 +2026,7 @@ async fn transfer_memory_handle(
     } else {
         let hot_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.memory WHERE handle = $1
+                 SELECT 1 FROM proxima_core.memory WHERE handle = $1 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
              )",
         )
         .bind(handle)
@@ -2264,7 +2264,7 @@ async fn transfer_cited_blobs(
     let leg = dedupe_leg(surfaces, BLOB_SURFACE)?;
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT blob_id
-           FROM proxima_core.memory
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
           WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL
          UNION
          SELECT blob_id
@@ -2456,7 +2456,7 @@ async fn transfer_one_cited_blob(
     let shared: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
-               FROM proxima_core.memory
+               FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
               WHERE blob_id = $1
                 AND handle <> $2
                 AND owner_id <> $3
@@ -2763,7 +2763,7 @@ async fn transfer_content_for_handle(
            FROM proxima_core.content c
            JOIN (
                  SELECT content_id
-                   FROM proxima_core.memory
+                   FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
                   WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
                  UNION
                  SELECT content_id
@@ -2815,7 +2815,7 @@ pub(crate) async fn home_owner<'e>(
         EntityId::Memory(memory_id) => {
             sqlx::query_scalar(
                 "SELECT m.owner_id
-               FROM proxima_core.memory m
+               FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
               WHERE m.t = $1",
             )
             .bind(memory_id.into_inner())

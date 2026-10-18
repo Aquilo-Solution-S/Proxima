@@ -514,7 +514,7 @@ async fn delete_owned_surfaces(
                 format!(
                     "DELETE FROM {tbl} a
                       WHERE a.{owner} = $1
-                        AND (EXISTS (SELECT 1 FROM proxima_core.memory m
+                        AND (EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                                       WHERE m.t = a.{key} AND m.source_id = $2)
                           OR EXISTS (SELECT 1 FROM proxima_core.cooled c
                                       WHERE c.t = a.{key} AND c.source_id = $2))",
@@ -1152,7 +1152,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, handle, kind)
                  SELECT t, handle, kind::text
-                   FROM proxima_core.memory
+                   FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                   WHERE owner_id = $1
                  UNION ALL
                  SELECT t, handle, kind::text
@@ -1168,7 +1168,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, handle, kind)
                  SELECT m.t, m.handle, m.kind::text
-                   FROM proxima_core.memory m
+                   FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                   WHERE m.owner_id = $1
                     AND m.source_id = $2
                  UNION ALL
@@ -1205,7 +1205,7 @@ async fn create_selected_sets(
                 "INSERT INTO selected_blobs(blob_id)
                  SELECT blob_id FROM (
                      SELECT m.blob_id
-                       FROM proxima_core.memory m
+                       FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                        JOIN selected_memories sm ON sm.memory_id = m.t
                       WHERE m.blob_id IS NOT NULL
                      UNION
@@ -1277,7 +1277,7 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
                   FROM (
                     SELECT handle, t,
                            row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
-                      FROM proxima_core.memory
+                      FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                      WHERE owner_id = $1
                        AND handle IN (SELECT handle FROM selected_memory_handles)
                   ) ranked
@@ -1295,7 +1295,7 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
           WHERE h.owner_id = $1
             AND h.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.memory m
+                SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                  WHERE m.handle = h.handle AND m.owner_id = $1
             )",
     )
@@ -1311,7 +1311,7 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
           WHERE c.owner_id = $1
             AND c.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.memory m WHERE m.handle = c.handle
+                SELECT 1 FROM proxima_core.memory m WHERE m.handle = c.handle /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
             )
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.cooled k WHERE k.handle = c.handle
@@ -1511,7 +1511,7 @@ async fn delete_selected_memories(
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
     let result = sqlx::query(
-        "DELETE FROM proxima_core.memory m
+        "DELETE FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           USING selected_memories s
           WHERE m.t = s.memory_id
             AND m.owner_id = $1
@@ -1594,7 +1594,7 @@ async fn selected_content_ids(
     sqlx::query_scalar(
         "SELECT DISTINCT content_id FROM (
              SELECT m.content_id
-               FROM proxima_core.memory m
+               FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                JOIN selected_memories sm ON sm.memory_id = m.t
               WHERE m.owner_id = $1
                 AND ($2::text IS NULL OR m.source_id = $2)
@@ -1709,7 +1709,7 @@ async fn delete_blobs(
         sqlx::query(
             "DELETE FROM selected_blobs sb
               WHERE EXISTS (
-                    SELECT 1 FROM proxima_core.memory m
+                    SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                      WHERE m.blob_id = sb.blob_id
               )
                  OR EXISTS (

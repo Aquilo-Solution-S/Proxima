@@ -81,7 +81,7 @@ async fn embedding_ann_observability_on_connection(
              UNION ALL
              SELECT kind::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.memory
+               FROM proxima_core.memory /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
          ),
          orphan_embeddings AS (
              SELECT count(*)::bigint AS count
@@ -363,7 +363,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
              UNION ALL
              SELECT kind::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.memory
+               FROM proxima_core.memory /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
          ),
          deleted_jobs AS (
              DELETE FROM proxima_core.embedding_jobs job

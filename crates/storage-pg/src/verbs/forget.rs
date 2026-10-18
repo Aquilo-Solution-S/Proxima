@@ -700,11 +700,11 @@ async fn load_embed_spaces(
 }
 
 const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
-           FROM proxima_core.memory
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1";
 
 const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, \"by\", via, schema_id, source_id, ingest_key, blob_id, origins, refs, goal_refs, sidecar_tables, content_id, occurred_at
-           FROM proxima_core.memory
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
 
@@ -847,7 +847,7 @@ async fn persist_cooled_after_put(
         DependentsFor::Forget,
     )
     .await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
         .bind(t)
         .bind(expected_owner_id)
         .execute(tx.as_mut())
@@ -1208,7 +1208,7 @@ async fn lock_forget_footprint_tx(
     // only the source handle here would invert the order and leave the
     // dependent handle outside this operation's serialization domain.
     let dependent_handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory
+        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -1229,7 +1229,7 @@ async fn lock_forget_footprint_tx(
     lock_memory_handles_tx(tx, &handles).await?;
 
     let grounded: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT t, handle FROM proxima_core.memory
+        "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -1263,7 +1263,7 @@ async fn lock_forget_footprint_tx(
     lock_lifecycle_targets_tx(tx, &targets).await?;
 
     let after: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT t, handle FROM proxima_core.memory
+        "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -2028,7 +2028,7 @@ pub(crate) async fn sync_memory_head(
     handle: Uuid,
 ) -> Result<(), StorageError> {
     let remaining: Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t DESC LIMIT 1",
+        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t DESC LIMIT 1", /* FORGET-POLICY: includes-forgotten (head sync sees forgotten rows, then skips them) */
     )
     .bind(handle)
     .fetch_optional(tx.as_mut())
@@ -2139,7 +2139,7 @@ async fn probe_memory_handle_for_owner(
     owner_id: Uuid,
 ) -> Result<Option<Uuid>, StorageError> {
     sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory
+        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (hydrate, removed in S4) */
           WHERE t = $1 AND owner_id = $2
          UNION ALL
          SELECT handle FROM proxima_core.cooled
@@ -2597,7 +2597,7 @@ async fn insert_hydrated_memory_row(
         ..
     } = prepared;
     let result = sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxima_core.memory /* FORGET-POLICY: includes-forgotten (hydrate, removed in S4) */
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
              content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
@@ -2728,7 +2728,7 @@ async fn owned_hot_exists(
 ) -> Result<bool, StorageError> {
     sqlx::query_scalar(
         "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.memory
+             SELECT 1 FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (hydrate, removed in S4) */
               WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)
          )",
     )
@@ -3163,7 +3163,7 @@ pub async fn erase_memory(
         ));
     }
     let content_id = sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
          UNION ALL
          SELECT content_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
          LIMIT 1",
@@ -3176,7 +3176,7 @@ pub async fn erase_memory(
     .flatten();
     let is_fact: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact'
+             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact' /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
              UNION ALL
              SELECT 1 FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2 AND kind = 'fact'
          )",
@@ -3211,7 +3211,7 @@ pub async fn erase_memory(
     .await
     .map_err(map_err)?;
     let stamped: Vec<String> = sqlx::query_scalar(
-        "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
+        "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
     )
     .bind(t)
     .bind(owner.into_inner())
@@ -3228,7 +3228,7 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
         .bind(t)
         .bind(owner.into_inner())
         .execute(tx.as_mut())
@@ -3465,13 +3465,13 @@ async fn snapshot_series_for_erase_tx(
 
 const SNAPSHOT_SERIES_FOR_ERASE_SQL: &str = "\
 WITH handles AS (
-    SELECT handle FROM proxima_core.memory
+    SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
     UNION
     SELECT handle FROM proxima_core.cooled
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
 ), versions AS (
-    SELECT m.handle, m.t FROM proxima_core.memory m
+    SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
       JOIN handles h ON h.handle = m.handle
      WHERE m.owner_id = $2
     UNION
@@ -3503,7 +3503,7 @@ async fn snapshot_series_for_handles_tx(
 }
 
 const SNAPSHOT_SERIES_BY_HANDLES_SQL: &str = "\
-SELECT m.handle, m.t FROM proxima_core.memory m
+SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
   JOIN unnest($1::uuid[]) h(handle) ON h.handle = m.handle
  WHERE m.owner_id = $2
 UNION
@@ -3549,7 +3549,7 @@ const ADMISSIONS_OUTSIDE_OWNER_SQL: &str = "\
 SELECT c.t
   FROM unnest($1::uuid[]) AS c(t)
  WHERE NOT EXISTS (
-           SELECT 1 FROM proxima_core.memory m
+           SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
             WHERE m.t = c.t AND m.owner_id = $2
        )
    AND NOT EXISTS (
@@ -3613,7 +3613,7 @@ pub async fn lock_admissions_for_erase(
     // it yet; acquire every named series handle here so a later series erase
     // only re-enters handles this transaction already owns.
     let handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory
+        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
         UNION
         SELECT handle FROM proxima_core.cooled
@@ -3628,7 +3628,7 @@ pub async fn lock_admissions_for_erase(
     lock_memory_handles_tx(tx, &handles).await?;
 
     let present: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory
+        "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
         UNION
         SELECT t FROM proxima_core.cooled
@@ -3658,7 +3658,7 @@ pub async fn lock_admissions_for_erase(
 }
 
 const LOCK_ADMISSIONS_SQL: &str =
-    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE";
+    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE"; /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
 
 /// The blobs the given admissions cite, held.
 ///
@@ -3713,7 +3713,7 @@ pub async fn cited_blobs_locked_for_erase(
 /// rather than in a `UNION` the locking clause could not attach to.
 const CITED_BLOBS_LOCKED_SQL: &str = "\
 WITH cited AS (
-    SELECT m.blob_id FROM proxima_core.memory m
+    SELECT m.blob_id FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
     UNION
     SELECT c.blob_id FROM proxima_core.cooled c
@@ -3793,7 +3793,7 @@ WITH orphans AS MATERIALIZED (
      WHERE b.blob_id = ANY($1::uuid[])
        AND b.owner_id = $2
        AND NOT EXISTS (
-               SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id
+               SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content) */
            )
        AND NOT EXISTS (
                SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = b.blob_id

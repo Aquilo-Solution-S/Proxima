@@ -643,6 +643,7 @@ fn export_statement(
         // home is the memory spine hot OR cooled. Derived from the
         // declaration (see `KeyShape::home`), never from a table name.
         let base = if cooled_rows_reach_home(surface) {
+            // FORGET-POLICY: includes-forgotten (export lists forgotten rows)
             "(SELECT t, owner_id FROM proxima_core.memory \
               UNION ALL SELECT t, owner_id FROM proxima_core.cooled)"
                 .to_owned()

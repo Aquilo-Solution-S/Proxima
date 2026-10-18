@@ -32,6 +32,7 @@ BEGIN
 END;
 $$;
 
+-- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.assert_erased_pin_target_insert()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -71,6 +72,7 @@ END;
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.assert_erased_pin_target_insert() FROM PUBLIC;
 
+-- FORGET-POLICY: includes-forgotten (a forgotten memory keeps its sidecar rows) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.assert_memory_declares_sidecar() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -128,6 +130,7 @@ $function$;
 REVOKE ALL ON FUNCTION proxima_core.assert_owner_rls_census(target_schema text) FROM PUBLIC;
 COMMENT ON FUNCTION proxima_core.assert_owner_rls_census(target_schema text) IS 'Raises on the first base table of the schema without ENABLE/FORCE RLS, exactly three policies and the owner-role platform policy.';
 
+-- FORGET-POLICY: includes-forgotten (a forgotten memory keeps its sidecar rows) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.assert_row_not_still_declared() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -209,6 +212,7 @@ BEGIN
 END;
 $function$;
 
+-- FORGET-POLICY: includes-forgotten (cooled lifecycle, removed in S16) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.cooled_erase_witness()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -232,6 +236,7 @@ END;
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.cooled_erase_witness() FROM PUBLIC;
 
+-- FORGET-POLICY: includes-forgotten (cooled lifecycle, removed in S16) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -293,6 +298,7 @@ END;
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.cooled_forget_grounding() FROM PUBLIC;
 
+-- FORGET-POLICY: includes-forgotten (cooled lifecycle, removed in S16) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.cooled_identity_seal()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -500,6 +506,7 @@ BEGIN
 END;
 $function$;
 
+-- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.goal_pin_target_checks()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -1432,6 +1439,7 @@ BEGIN
 END;
 $function$;
 
+-- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -1768,6 +1776,7 @@ REVOKE ALL ON FUNCTION proxima_core.owner_group_kind_guard() FROM PUBLIC;
 
 -- Generate SQL for an unaliased, schema-qualified target relation.
 -- Parent queries retain their ordinary RLS; generation does not bind a scope.
+-- FORGET-POLICY: live-only (policy subqueries run under owner RLS) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
  RETURNS TABLE(read_expr text, write_expr text, select_expr text)
  LANGUAGE plpgsql
@@ -2046,6 +2055,7 @@ REVOKE ALL ON FUNCTION proxima_core.owner_rls_parent_fk(caller text, target_sche
 
 -- Pin functions
 
+-- FORGET-POLICY: includes-forgotten (grounding support counts forgotten sources) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxima_core.memory_kind)
  RETURNS boolean
  LANGUAGE plpgsql

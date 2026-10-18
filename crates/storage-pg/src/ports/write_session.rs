@@ -453,7 +453,7 @@ impl WriteSession for PgWriteSession {
         // from `t` alone, but a `t` the caller does not own must be NotFound
         // rather than a forget on someone else's row.
         sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT handle FROM proxima_core.memory
+            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
               WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)",
         )
         .bind(t)

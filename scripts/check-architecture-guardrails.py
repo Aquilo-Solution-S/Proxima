@@ -729,6 +729,92 @@ def check_removed_flavor_vocabulary(findings: list[Finding]) -> None:
             findings.append(Finding(path, line_no, "crate source names an in-tree flavor", line))
 
 
+# Census of reads of `proxima_core.memory` that do not go through the owner
+# read policy (#488). Owner-scope SQL is decided by `proxima_owner_read`;
+# platform-scope SQL bypasses it, so every such read states whether it wants
+# live memories only or forgotten ones too. The counts are pinned so a new
+# platform read is classified on purpose.
+FORGET_POLICY_MARKER = re.compile(r"FORGET-POLICY: (live-only|includes-forgotten) \(([^)]*\S[^)]*)\)")
+MEMORY_READ = re.compile(r"\b(?:FROM|JOIN|UPDATE|INTO)\s+proxima_core\.memory\b")
+PLATFORM_SCOPE_BINDING = re.compile(
+    r"PgPlatformScope|platform_scope|set_config\('app\.proxima_scope', 'platform'"
+)
+FUNCTION_START = re.compile(r"CREATE (?:OR REPLACE )?FUNCTION ")
+MEMORY_CENSUS_ALWAYS = (
+    "crates/storage-pg/definitions/functions.sql",
+    "crates/storage-pg/definitions/triggers.sql",
+)
+EXPECTED_MEMORY_READS = {"live-only": 10, "includes-forgotten": 66}
+
+
+def in_memory_census(text: str, suffix: str) -> bool:
+    return suffix in {".rs", ".sql"} and PLATFORM_SCOPE_BINDING.search(text) is not None
+
+
+def memory_read_hits(text: str, suffix: str) -> list[tuple[int, str | None]]:
+    """Each read of the memory spine, with its marker class (None: unmarked)."""
+    lines = text.splitlines()
+    comment = "//" if suffix == ".rs" else "--"
+    hits: list[tuple[int, str | None]] = []
+    for index, line in enumerate(lines):
+        # An inline test module ends the census: tests read the spine freely.
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        if suffix == ".rs" and line == "#[cfg(test)]" and re.match(r"mod \w+ \{", following):
+            break
+        if line.strip().startswith(comment) or not MEMORY_READ.search(line):
+            continue
+        kind = None
+        candidates = [line, lines[index - 1] if index else ""]
+        if suffix == ".sql":
+            # A function body is pinned verbatim elsewhere (migrations,
+            # generated triggers), so a definitions function carries one
+            # marker, on the line above its CREATE, for every read inside it.
+            for back in range(index, -1, -1):
+                if FUNCTION_START.match(lines[back]):
+                    candidates.append(lines[back - 1] if back else "")
+                    break
+        for candidate in candidates:
+            marker = FORGET_POLICY_MARKER.search(candidate)
+            if marker:
+                kind = marker.group(1)
+                break
+        hits.append((index + 1, kind))
+    return hits
+
+
+def memory_census_mismatch(expected: dict[str, int], actual: dict[str, int]) -> str | None:
+    if expected == actual:
+        return None
+    return f"EXPECTED_MEMORY_READS = {expected}, found {actual}"
+
+
+def memory_census_files() -> list[Path]:
+    files = [ROOT / rel for rel in MEMORY_CENSUS_ALWAYS]
+    for path in iter_files("crates/storage-pg/src"):
+        if path.suffix not in {".rs", ".sql"} or path.stem == "tests" or path.stem.endswith("_tests"):
+            continue
+        if in_memory_census(path.read_text(encoding="utf-8"), path.suffix):
+            files.append(path)
+    return files
+
+
+def check_memory_reads(findings: list[Finding]) -> None:
+    counts = {"live-only": 0, "includes-forgotten": 0}
+    for path in memory_census_files():
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for line_no, kind in memory_read_hits(text, path.suffix):
+            if kind is None:
+                findings.append(
+                    Finding(path, line_no, "platform-scope memory read without FORGET-POLICY marker", lines[line_no - 1])
+                )
+            else:
+                counts[kind] += 1
+    mismatch = memory_census_mismatch(EXPECTED_MEMORY_READS, counts)
+    if mismatch:
+        findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "memory read census", mismatch))
+
+
 def run_self_test() -> int:
     """Assert the flavor core SQL detector fires on its committed fixture.
 
@@ -793,6 +879,29 @@ async fn ingest_fact_atomic(
         failures.append(f"flavor vocabulary derivation changed: {vocabulary}")
     if len(crate_src_flavor_hits("// proxima_example\nproxima-example_note\nproxima_core", vocabulary)) != 2:
         failures.append("crate source flavor vocabulary not detected")
+    memory_fixture = ROOT / "scripts/fixtures/architecture-guardrails/memory_reads.rs"
+    memory_hits = memory_read_hits(memory_fixture.read_text(encoding="utf-8"), ".rs")
+    unmarked = [line for line, kind in memory_hits if kind is None]
+    marked = sorted(kind for _line, kind in memory_hits if kind is not None)
+    if len(unmarked) != 2:
+        failures.append(f"memory census: expected the unmarked and the empty-reason read flagged, got {unmarked}")
+    if marked != ["includes-forgotten", "live-only"]:
+        failures.append(f"memory census: marked reads not classified (same line, line above): {marked}")
+    sql_fixture = (
+        "-- FORGET-POLICY: live-only (fixture) applies to every read in this function\n"
+        "CREATE OR REPLACE FUNCTION proxima_core.f() RETURNS void AS $$\n"
+        "  SELECT 1 FROM proxima_core.memory m;\n$$;\n"
+        "CREATE OR REPLACE FUNCTION proxima_core.g() RETURNS void AS $$\n"
+        "  SELECT 1 FROM proxima_core.memory m;\n$$;\n"
+    )
+    if [kind for _line, kind in memory_read_hits(sql_fixture, ".sql")] != ["live-only", None]:
+        failures.append("memory census: a function-level marker must cover its own function only")
+    if memory_census_mismatch({"live-only": 1, "includes-forgotten": 1}, {"live-only": 1, "includes-forgotten": 2}) is None:
+        failures.append("memory census: a count mismatch was not detected")
+    if not in_memory_census("let scope = PgPlatformScope::begin(&pool).await?;", ".rs"):
+        failures.append("memory census: a platform-scope file was not recognized")
+    if in_memory_census("let scope = owner_scope(&pool).await?;", ".rs"):
+        failures.append("memory census: an owner-scope file was put in the census")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
@@ -826,6 +935,7 @@ def main() -> int:
     check_caller_supplied_audit(findings)
     check_owner_write_permit_surfaces(findings)
     check_removed_flavor_vocabulary(findings)
+    check_memory_reads(findings)
 
     if findings:
         print("architecture guardrail violations:", file=sys.stderr)

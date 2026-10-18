@@ -15,7 +15,7 @@ WITH scoped AS MATERIALIZED (
             m.owner_id,
             h2.embedding_version AS head_version
        FROM proxima_core.memory_head mh
-       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
+       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
        LEFT JOIN proxima_core.embedding_heads h2
          ON h2.entity_id = m.t
         AND h2.model_id = $1
@@ -47,7 +47,7 @@ WITH scoped AS MATERIALIZED (
  limited AS MATERIALIZED (
      SELECT e.*
        FROM eligible e
-       JOIN proxima_core.memory m ON m.t = e.memory_id
+       JOIN proxima_core.memory m ON m.t = e.memory_id /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
       ORDER BY e.memory_id ASC
       LIMIT $2
       FOR UPDATE OF m

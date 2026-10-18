@@ -39,6 +39,7 @@ ALTER TABLE proxima_core.goal_replay_declaration
 CREATE TEMP TABLE retired_call_admissions ON COMMIT DROP AS
     SELECT t FROM proxima_core.mcp_call_logged_v1
     UNION
+    -- FORGET-POLICY: includes-forgotten (retiring a schema removes forgotten rows too)
     SELECT t FROM proxima_core.memory WHERE schema_id = 'core/mcp-call-logged-v1'
     UNION
     SELECT t FROM proxima_core.cooled WHERE source_id = 'core/mcp-call'
@@ -54,6 +55,7 @@ CREATE TEMP TABLE retired_call_handles ON COMMIT DROP AS
     SELECT handle FROM proxima_core.memory_head
      WHERE schema_id = 'core/mcp-call-logged-v1'
     UNION
+    -- FORGET-POLICY: includes-forgotten (retiring a schema removes forgotten rows too)
     SELECT handle FROM proxima_core.memory
      WHERE t IN (SELECT t FROM pg_temp.retired_call_admissions)
     UNION
@@ -86,6 +88,7 @@ DELETE FROM proxima_core.ingest_keys
 
 -- Keep the normal DELETE triggers: erased pin targets retain their
 -- payload-free identity witness; projection rows cascade with hot admissions.
+-- FORGET-POLICY: includes-forgotten (retiring a schema removes forgotten rows too)
 DELETE FROM proxima_core.memory
  WHERE t IN (SELECT t FROM pg_temp.retired_call_admissions);
 DELETE FROM proxima_core.cooled
@@ -96,6 +99,7 @@ DELETE FROM proxima_core.closed_handle
  WHERE handle IN (SELECT handle FROM pg_temp.retired_call_handles);
 DELETE FROM proxima_core.content c
  WHERE schema_id = 'core/mcp-call-logged-v1'
+   -- FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content)
    AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id)
    AND NOT EXISTS (SELECT 1 FROM proxima_core.cooled m WHERE m.content_id = c.content_id);
 
@@ -106,6 +110,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM proxima_core.blob b
          WHERE b.schema_id = 'core/mcp-call-io-v1'
+           -- FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content)
            AND (EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id)
              OR EXISTS (SELECT 1 FROM proxima_core.cooled m WHERE m.blob_id = b.blob_id))
     ) THEN
