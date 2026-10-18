@@ -564,9 +564,8 @@ pub trait FactPayload:
     /// The scope id THIS row carries, read out of the payload's own field.
     ///
     /// Returns `None` for a row that names no scope — a nullable scope
-    /// column is a real domain state (the code flavor's cross-repository
-    /// development perspective), and such a row is unscoped in fact, not by
-    /// omission.
+    /// column is a real domain state (a row that may span several scopes on
+    /// purpose), and such a row is unscoped in fact, not by omission.
     #[must_use]
     fn scope_id(&self) -> Option<uuid::Uuid> {
         None
@@ -647,9 +646,8 @@ pub trait AbstractionPayload:
     /// The scope id THIS row carries, read out of the payload's own field.
     ///
     /// Returns `None` for a row that names no scope — a nullable scope
-    /// column is a real domain state (the code flavor's cross-repository
-    /// development perspective), and such a row is unscoped in fact, not by
-    /// omission.
+    /// column is a real domain state (a row that may span several scopes on
+    /// purpose), and such a row is unscoped in fact, not by omission.
     #[must_use]
     fn scope_id(&self) -> Option<uuid::Uuid> {
         None
@@ -708,9 +706,8 @@ pub trait PerspectivePayload:
     /// The scope id THIS row carries, read out of the payload's own field.
     ///
     /// Returns `None` for a row that names no scope — a nullable scope
-    /// column is a real domain state (the code flavor's cross-repository
-    /// development perspective), and such a row is unscoped in fact, not by
-    /// omission.
+    /// column is a real domain state (a row that may span several scopes on
+    /// purpose), and such a row is unscoped in fact, not by omission.
     #[must_use]
     fn scope_id(&self) -> Option<uuid::Uuid> {
         None

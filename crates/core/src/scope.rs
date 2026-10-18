@@ -65,8 +65,8 @@ impl std::fmt::Display for ScopeKind {
 ///
 /// Read off a payload value, because the id is a payload field and the kind
 /// is a property of the payload TYPE. A payload whose scope column is
-/// nullable (the code flavor's cross-repository development perspective)
-/// returns `None` for the rows that name no scope, and those rows are
+/// nullable (a row that may span several scopes on purpose) returns
+/// `None` for the rows that name no scope, and those rows are
 /// unscoped in fact as well as in declaration.
 ///
 /// Ordered so a batch's distinct scopes can be taken as one sorted,

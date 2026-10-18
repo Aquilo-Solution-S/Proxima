@@ -179,8 +179,8 @@ pub use proxima_core::{
 ///
 /// [`MAX_TEXT_CAP_CHARS`] is the ceiling on a caller-supplied cap over
 /// returned text (`body_max_chars`, `snippet_max_chars`). The *default*
-/// under it is deliberately not shared — how much of a code chunk versus a
-/// memory body is worth returning is a property of the object.
+/// under it is deliberately not shared — how much of a short snippet versus
+/// a memory body is worth returning is a property of the object.
 pub use proxima_core::{
     MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit, validate_search_query,
 };

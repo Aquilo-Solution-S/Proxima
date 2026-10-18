@@ -123,8 +123,8 @@ pub enum LanguagePolicy {
     /// renders (`FlavorRegistryError::ProjectionLanguageColumn`).
     PerRow { column: &'static str },
     /// One configuration for the whole surface, whatever the caller asked
-    /// for (the code flavor pins `english`: code search must not follow the
-    /// deployment's prose configuration).
+    /// for (a code-search flavor would pin `english`: identifier search must
+    /// not follow the deployment's prose configuration).
     Pinned(&'static str),
     /// The union of several pinned configurations, concatenated in the
     /// declared order — `lexical_tsv(c1, txt) || lexical_tsv(c2, txt)`.
@@ -179,10 +179,9 @@ pub enum SubstringArm {
     /// index (probe-measured regression).
     MemoryFirstNestedLoop,
     /// A same-table `LIKE` scan over the sidecar's own text columns, run
-    /// only when the `@@` arm returned zero rows. The code flavor's three
-    /// search tools all use this shape; naming it is what keeps their
-    /// substring lane a declaration instead of an undeclared third
-    /// mechanism.
+    /// only when the `@@` arm returned zero rows. Naming this shape is what
+    /// keeps a flavor's substring lane a declaration instead of an
+    /// undeclared third mechanism.
     SameTableLike,
 }
 

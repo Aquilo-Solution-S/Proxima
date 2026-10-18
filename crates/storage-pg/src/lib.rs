@@ -501,8 +501,8 @@ async fn ensure_pgvector_runtime_compatible(
 /// come back `Unreachable` instead of `Deduped`; the freeze-time validation
 /// that a bespoke leg has a home never runs against them.
 ///
-/// `for_registry` over a registry holding flavor #0 alone is the same shape
-/// the code flavor's `flavor_surfaces()` uses, and it is what `with_flavors`
+/// `for_registry` over a registry holding flavor #0 alone is the same call
+/// a flavor makes over its own registry, and it is what `with_flavors`
 /// does once a host widens the set.
 fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     // A fresh registry holds flavor #0 and nothing else, and flavor #0 is a
