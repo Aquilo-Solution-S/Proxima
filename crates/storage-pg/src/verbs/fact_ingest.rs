@@ -459,7 +459,9 @@ async fn citation_object_for_t(
     owner_id: uuid::Uuid,
     memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let blob_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+    // A replay may answer a forgotten Fact; its citation is still its own.
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let blob_id: Result<Option<Option<uuid::Uuid>>, StorageError> = sqlx::query_scalar(
         "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
              UNION ALL
              SELECT blob_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
@@ -469,8 +471,9 @@ async fn citation_object_for_t(
     .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
-    .map_err(map_err)?;
-    Ok(blob_id.flatten())
+    .map_err(map_err);
+    lifecycle.leave(tx.as_mut()).await?;
+    Ok(blob_id?.flatten())
 }
 
 /// Verify a by-ref citation target: the cited object must exist for the

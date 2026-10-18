@@ -341,3 +341,91 @@ async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
     assert!(still_forgotten, "transfer keeps the flag");
     assert_eq!(stored(&pg, t).await, (1, 1), "the sidecar moves with it");
 }
+
+// #488 S8: export lists forgotten rows; replays see them.
+
+#[tokio::test]
+async fn export_lists_a_forgotten_memory_with_its_forgotten_at() {
+    use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget};
+    use proxima_core::storage_ports::OwnerInversePort;
+    let (pg, _guard) = fresh_pg("s8_export").await;
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let live = ingest_stamped(
+        pg.pool_for_tests(),
+        &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+        &draft(None),
+        &[],
+        &[],
+    )
+    .await
+    .expect("live")
+    .memory_id
+    .into_inner();
+    let forgotten = forgotten_note(&pg, owner).await;
+    let auth =
+        ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
+    let bundle = pg
+        .export_owner_bundle(&auth, &surfaces())
+        .await
+        .expect("export");
+    let row = |t: Uuid| {
+        bundle
+            .table("proxima_core.memory")
+            .iter()
+            .find(|row| row["t"].as_str() == Some(t.to_string().as_str()))
+            .cloned()
+            .unwrap_or_else(|| panic!("memory {t} missing from the export"))
+    };
+    assert!(
+        row(forgotten)["forgotten_at"].is_string(),
+        "forgotten row carries forgotten_at"
+    );
+    assert!(
+        row(live)["forgotten_at"].is_null(),
+        "a live row carries null"
+    );
+    assert_eq!(
+        bundle
+            .table(AGENT_NOTE)
+            .iter()
+            .filter(|note| note["t"].as_str() == Some(forgotten.to_string().as_str()))
+            .count(),
+        1,
+        "the forgotten memory's sidecar is exported"
+    );
+}
+
+#[tokio::test]
+async fn replaying_a_forgotten_write_answers_its_handle_and_writes_nothing() {
+    use proxima_core::storage_ports::FactIngestPort;
+    let (pg, _guard) = fresh_pg("s8_replay").await;
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let write = draft(Some(("s8-source", "s8-key")));
+    let first = pg
+        .ingest_fact_atomic(&permit, &write, None)
+        .await
+        .expect("first");
+    assert!(!first.forgotten);
+    forget_by_hand(&pg, first.memory_id.into_inner()).await;
+
+    let replay = pg
+        .ingest_fact_atomic(&permit, &write, None)
+        .await
+        .expect("replay");
+    assert!(replay.idempotent_replay, "the key replays");
+    assert!(replay.forgotten, "the replay says the memory is forgotten");
+    assert_eq!(replay.memory_id, first.memory_id);
+    assert_eq!(replay.handle, first.handle);
+    let (rows, still_forgotten): (i64, bool) = sqlx::query_as(
+        "SELECT count(*), bool_and(forgotten_at IS NOT NULL)
+           FROM proxima_core.memory WHERE owner_id = $1",
+    )
+    .bind(owner.into_inner())
+    .fetch_one(pg.pool_for_tests())
+    .await
+    .expect("rows");
+    assert_eq!(rows, 1, "no row was written");
+    assert!(still_forgotten, "the replay does not clear the flag");
+}

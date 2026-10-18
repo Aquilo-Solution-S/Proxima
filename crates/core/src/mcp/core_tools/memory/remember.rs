@@ -84,6 +84,10 @@ pub struct RememberCitation {
 pub struct RememberOutput {
     pub handle: String,
     pub idempotent_replay: bool,
+    /// Present (true) only on a replay of a memory that has been forgotten:
+    /// the write was not repeated and the memory stays forgotten.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub forgotten: bool,
 }
 
 #[derive(Debug)]
@@ -156,6 +160,7 @@ impl McpTool for RememberTool {
             Ok(RememberOutput {
                 handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
+                forgotten: outcome.forgotten,
             })
         })
     }

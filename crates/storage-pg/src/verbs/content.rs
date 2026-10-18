@@ -148,7 +148,7 @@ pub async fn gc_unreferenced_content(
         "DELETE FROM proxima_core.content c
           WHERE c.content_id = $1
             AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id
+                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
                 )
             AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id
@@ -179,7 +179,7 @@ pub async fn gc_unreferenced_content_batch(
         "DELETE FROM proxima_core.content c
           WHERE c.content_id = ANY($1::uuid[])
             AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id
+                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
                 )
             AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id

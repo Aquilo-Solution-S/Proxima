@@ -19,12 +19,9 @@ pub(crate) struct PgLifecycleScope {
     _sealed: (),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the lifecycle verbs adopt it next (#488 S7-S9)")
-)]
 impl PgLifecycleScope {
     /// Begin an owner transaction that also sees forgotten memories.
+    #[cfg_attr(not(test), expect(dead_code, reason = "restore adopts it (#488 S14)"))]
     ///
     /// # Errors
     ///
@@ -47,6 +44,16 @@ impl PgLifecycleScope {
             .await
             .map_err(map_err)?;
         Ok(Self { _sealed: () })
+    }
+
+    /// Narrow the transaction back to owner reads that hide forgotten
+    /// memories, for a lifecycle read inside an ordinary owner write.
+    pub(crate) async fn leave(self, connection: &mut PgConnection) -> Result<(), StorageError> {
+        sqlx::query("SELECT set_config('app.proxima_lifecycle', 'off', true)")
+            .execute(connection)
+            .await
+            .map_err(map_err)?;
+        Ok(())
     }
 }
 

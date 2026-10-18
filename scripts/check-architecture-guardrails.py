@@ -748,14 +748,18 @@ MEMORY_CENSUS_ALWAYS = (
 )
 # Verb modules whose callers bind platform scope (ports/embeddings.rs) rather
 # than the module itself, so the file-level binding test cannot see them.
-MEMORY_CENSUS_PLATFORM_CALLEES = ("crates/storage-pg/src/verbs/fact_embeddings/",)
+MEMORY_CENSUS_PLATFORM_CALLEES = (
+    "crates/storage-pg/src/verbs/fact_embeddings/",
+    # Content GC runs only inside transfer, forget and erase transactions.
+    "crates/storage-pg/src/verbs/content.rs",
+)
 # A live-only read filters forgotten rows itself (#488 S6): the read's line or
 # the statement lines right after it say so. Reads inside generated owner-RLS
 # policy text are hidden by the policy and say that in their reason instead.
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 15, "includes-forgotten": 65}
+EXPECTED_MEMORY_READS = {"live-only": 15, "includes-forgotten": 67}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:

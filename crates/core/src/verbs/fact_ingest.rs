@@ -874,6 +874,11 @@ pub struct FactIngestOutcome {
     /// upload is that the second caller gets the first caller's object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_object_id: Option<Uuid>,
+    /// True when this is a replay of a memory that has since been forgotten
+    /// (#488): the handle answers, the memory stays forgotten, and nothing
+    /// was written. Always false for a fresh admission.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forgotten: bool,
 }
 
 #[cfg(test)]

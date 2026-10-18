@@ -549,22 +549,26 @@ async fn load_ingest_replay(
     else {
         return Ok(None);
     };
-    // Forget keeps the `ingest_keys` row and moves the handle to the cooled
-    // stub, so a source re-delivering a cooled admission still replays. A
+    // Forget keeps the `ingest_keys` row, so a source re-delivering a
+    // forgotten admission still replays: the row is read in the lifecycle
+    // scope, which sees it (#488), and the replay says it is forgotten. A
     // legacy cooled row has NULL refs; accepting it as an empty vector would
     // silently bless a changed declaration.
-    let replay_row: (Uuid, Option<Vec<Uuid>>, Option<Vec<Uuid>>) = sqlx::query_as(
-        "SELECT handle, refs, goal_refs FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let replay_row: Result<Option<ReplayRow>, StorageError> = sqlx::query_as(
+        "SELECT handle, refs, goal_refs, forgotten_at IS NOT NULL
+           FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
          UNION ALL
-         SELECT handle, refs, goal_refs FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+         SELECT handle, refs, goal_refs, true FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
          LIMIT 1",
     )
     .bind(replay_t)
     .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
-    .map_err(map_err)?
-    .ok_or_else(|| {
+    .map_err(map_err);
+    lifecycle.leave(tx.as_mut()).await?;
+    let replay_row = replay_row?.ok_or_else(|| {
         internal(format!(
             "ingest key claims t {replay_t} with no hot or cooled row"
         ))
@@ -585,8 +589,12 @@ async fn load_ingest_replay(
         idempotent_replay: true,
         cited_object_id: None,
         handle: replay_row.0,
+        forgotten: replay_row.3,
     }))
 }
+
+/// `(handle, refs, goal_refs, forgotten)` of a replayed admission.
+type ReplayRow = (Uuid, Option<Vec<Uuid>>, Option<Vec<Uuid>>, bool);
 
 /// What a sourced admission's replay key resolves to, before any fence.
 #[derive(Debug)]
@@ -682,7 +690,8 @@ async fn latest_observation(
             "SELECT EXISTS (
                  SELECT 1
                    FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.t = $2 AND m.owner_id = $3
+                   JOIN proxima_core.memory m
+                     ON m.t = $2 AND m.owner_id = $3 AND m.forgotten_at IS NULL
                   WHERE h.handle = $1 AND h.t <> $2
              )",
         )
@@ -859,6 +868,7 @@ async fn materialize_prepared_memory_admission_after_locks(
         // narrowing of that gap rather than a change any caller observes.
         cited_object_id: prepared.draft.blob_id,
         handle: prepared.handle,
+        forgotten: false,
     })
 }
 
