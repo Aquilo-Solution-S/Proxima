@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/example", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "tools/dev-migrate", "tools/dev-idp", "crates/auth-oidc"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/example", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "tools/dev-migrate", "tools/dev-idp", "crates/auth-oidc"]
 
 [workspace.package]
 edition = "2024"
@@ -37,7 +37,6 @@ blake3 = "1"
 time = { version = "0.3.47", default-features = false, features = ["formatting", "parsing", "serde", "serde-human-readable", "serde-well-known", "std", "large-dates"] }
 tracing = { version = "0.1.40", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
-tokio-stream = { version = "0.1.17", default-features = false, features = ["sync"] }
 rmcp = { version = "3.4", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = { version = "1", features = ["uuid1", "preserve_order"] }
 # JSON Schema validator for tests only: tool results are checked against the
@@ -60,13 +59,6 @@ tokio-util = "0.7.9"
 tower = "0.5.2"
 hex = "0.4.3"
 whatlang = "0.18"
-# Ingest scoping. `git ls-tree` takes no pathspec magic (no `:(exclude)`, no
-# `:(glob)`) and the incremental poller lists arbitrary commit SHAs, where
-# `git ls-files` cannot reach at all — so scope matching happens in-process
-# over the listing. globset is ripgrep's matcher: gitignore-shaped `**`
-# semantics, and it compiles a pattern set into one automaton rather than
-# testing patterns one at a time per path.
-globset = "0.4"
 sha2 = "0.11"
 # Drop aws-sdk-s3's default `rustls` feature: it pulls the LEGACY rustls 0.21
 # stack (aws-smithy-http-client/legacy-rustls-ring -> rustls-webpki 0.101.7,
@@ -77,16 +69,6 @@ aws-sdk-s3 = { version = "1.79.0", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
 ] }
-
-# tree-sitter deps for the code flavor (Rust, TypeScript, Python, Go). Core
-# and grammar crates version independently and must stay ABI-compatible, so
-# bump them as a set and let CI confirm they parse (workspace nextest with
-# --all-features).
-tree-sitter = "0.27"
-tree-sitter-rust = "0.24"
-tree-sitter-typescript = "0.23"
-tree-sitter-python = "0.25"
-tree-sitter-go = "0.25"
 
 [profile.release]
 lto = "thin"

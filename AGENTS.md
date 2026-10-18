@@ -31,7 +31,6 @@ concepts and integration; avoid a second invariant or configuration ledger.
 | `crates/mcp-server`, `crates/auth-oidc` | Transports and bearer authentication |
 | `crates/llm-openai-compat` | Host-injected embedding adapter |
 | `crates/pg-testkit` | Owned-server test databases/templates |
-| `flavors/code` | Linked Code vocabulary |
 | `tools/dev-idp`, `tools/dev-migrate` | Local issuer and database bootstrap |
 
 ## Branch and release policy

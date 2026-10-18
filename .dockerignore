@@ -20,8 +20,8 @@ target/
 .local/
 
 # Not needed to compile the binary. Migrations live under crates/, and the
-# only `include_str!` targets are crates/storage-pg/migrations and
-# flavors/code/src/migrations — nothing reads docs/ or bench/ at build time.
+# build-time `migrate!`/`include_str!` targets are under crates/storage-pg —
+# nothing reads docs/ or bench/ at build time.
 docs/
 bench/
 .github/
