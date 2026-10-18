@@ -1,9 +1,9 @@
 //! End-to-end multi-owner MCP serving against real Postgres.
 //!
-//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built when
-//! the opt-in `code` feature is on so the production
-//! `ProximaMcpApp` bundle is exercised.
-#![cfg(feature = "code")]
+//! Each test boots on a pg-testkit database of its own, so the all-feature
+//! and shipped-default hosts can run in the same job against one server.
+//! Built in every feature set: it exercises the production `ProximaMcpApp`
+//! bundle through core tools only.
 
 mod common;
 
@@ -30,8 +30,6 @@ use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use uuid::Uuid;
 
-use common::require_env_or_skip;
-
 const KID: &str = "multi-owner-key";
 const ISSUER: &str = "https://idp.multi-owner.test";
 const AUDIENCE: &str = "proxima-mcp";
@@ -40,10 +38,7 @@ const AUDIENCE: &str = "proxima-mcp";
 #[allow(clippy::too_many_lines)]
 async fn multi_owner_sessions_bind_owner_palette_and_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping multi_owner_e2e: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
+    let (database_url, created_db) = live_database_url().await?;
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
 
     let subject_a = UserId::new(Uuid::now_v7());
@@ -215,6 +210,9 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     );
 
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
 }
 
@@ -462,13 +460,10 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
     result
 }
 
-/// `PROXIMA_TEST_DATABASE_URL` when the operator pinned one, otherwise a
-/// throwaway database. Unlike the palette/revocation test above, the
-/// transfer reachability regression must not silently skip.
+/// A pg-testkit database of the test's own, never a shared one: a build
+/// that linked a flavor migrates its schema into whatever database it boots
+/// on, and a host that links none then refuses that database at boot. Neither test silently skips.
 async fn live_database_url() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
-    if let Some(url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") {
-        return Ok((url, None));
-    }
     let name = format!("proxima_multi_owner_e2e_{}", Uuid::now_v7().simple());
     proxima_pg_testkit::create_db(&name)
         .await

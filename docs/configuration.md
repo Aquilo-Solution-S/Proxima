@@ -88,7 +88,6 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_TEST_PG_URL | test Postgres admin URL | pg-testkit tests | [PG testkit](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/src/lib.rs) |
 | PROXIMA_PG_TESTKIT_CHILD | pg-testkit child-process marker | split-template tests | [split-template test](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/tests/split_template.rs) |
 | PROXIMA_PG_TESTKIT_TEMPLATE | pg-testkit template database name | split-template tests | [split-template test](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/tests/split_template.rs) |
-| PROXIMA_TEST_DATABASE_URL | e2e database URL | HTTP/OIDC e2e tests | [OIDC e2e](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/tests/oidc_e2e.rs) |
 | PROXIMA_DIFFERENTIAL_DIR | differential dump directory | differential test inspection | [differential tests](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/tests/owner_erase_differential.rs) |
 | PROXIMA_SCHEMA_PG_URL | schema dump admin URL | schema regeneration | [schema script](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/regen-schema-sql.sh) |
 | PROXIMA_PG_DUMP | pg_dump executable | schema regeneration | [schema script](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/regen-schema-sql.sh) |

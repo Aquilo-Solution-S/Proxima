@@ -1,13 +1,12 @@
 //! End-to-end: boot the facade with an OIDC authenticator + resource metadata
 //! against a real Postgres, then prove the security surface over HTTP:
 //! discovery is public, `/mcp` is 401+WWW-Authenticate without a bearer, and a
-//! valid Zitadel-shaped JWT lists + calls the Code-flavor tools.
+//! valid Zitadel-shaped JWT lists + calls the core tools.
 //!
-//! Uses `PROXIMA_TEST_DATABASE_URL` when set; otherwise `create_db`. Built when
-//! the `code` feature is on (asserts the opt-in Code flavor's
-//! tools are present); the mounted REST smoke additionally requires `rest`
-//! (mounted through `rest_enabled(true)`, not process env).
-#![cfg(feature = "code")]
+//! Each test boots on a pg-testkit database of its own (`create_db`). Built in
+//! every feature set: it calls only core tools. The mounted REST smoke
+//! additionally requires `rest` (mounted through `rest_enabled(true)`, not
+//! process env).
 
 mod common;
 
@@ -24,16 +23,16 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use proxima::{Proxima, ResourceServerMetadata, S3RuntimeConfig};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
+#[cfg(feature = "rest")]
+use proxima_core::ToolScope;
 use proxima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId,
-    OwnerAccessPort, OwnerId, Relation, Role, ToolScope, UserId,
+    OwnerAccessPort, OwnerId, Relation, Role, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use serde_json::json;
 use uuid::Uuid;
-
-use common::require_env_or_skip;
 
 const KID: &str = "e2e-key";
 const ISSUER: &str = "https://idp.e2e.test";
@@ -74,7 +73,7 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // linear e2e: boot + 4 assertion phases read best in one flow
-async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
+async fn oidc_e2e_discovery_public_and_core_tools_behind_bearer()
 -> Result<(), Box<dyn std::error::Error>> {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
@@ -109,9 +108,6 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
-        .services(proxima::FlavorServices::with(
-            proxima_code::CodeRepoRoots::new(vec![std::env::temp_dir()])?,
-        ))
         .served_surface(proxima_core::ServedSurface::All)
         .database_url(runtime_url.clone())
         .store_number(0)
@@ -275,7 +271,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         Some("http://localhost:5173")
     );
 
-    // 3. A valid JWT initializes and lists the Code-flavor tools.
+    // 3. A valid JWT initializes and lists the core tools.
     let bearer = format!("Bearer {}", mint(&enc, "operator-sub"));
     let session = initialize(&client, &url, &bearer, &owner_key).await?;
     initialized(&client, &url, &session, &bearer).await?;
@@ -293,158 +289,76 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         .iter()
         .filter_map(|tool| tool["name"].as_str().map(String::from))
         .collect();
-    let code_tools: Vec<&String> = names
-        .iter()
-        .filter(|n| n.starts_with("proxima-code"))
-        .collect();
-    assert_eq!(
-        code_tools.len(),
-        13,
-        "expected the 13 Code-flavor tools, got {}: {code_tools:?}",
-        code_tools.len()
-    );
+    for core_tool in [
+        "core_remember",
+        "core_search_memories",
+        "core_memory_spaces",
+        "core_forget",
+    ] {
+        assert!(
+            names.iter().any(|name| name == core_tool),
+            "expected {core_tool} in the served catalog: {names:?}"
+        );
+    }
 
-    // 4. A Code-flavor tool is callable with the bearer (list_repos: empty ok).
-    let list_repos = names
-        .iter()
-        .find(|n| n.contains("list_repos"))
-        .expect("a list_repos tool");
+    // 4. A read-only core tool is callable with the bearer.
+    let tool_call = |id: u64, name: &str, arguments: serde_json::Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": name, "arguments": arguments}})
+    };
     let call = post_rpc(
         &client,
         &url,
         Some(&session),
         &bearer,
-        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": list_repos, "arguments": {}}}),
+        tool_call(3, "core_memory_spaces", json!({})),
     )
     .await?;
     assert!(
         call.get("result").is_some(),
-        "list_repos call should succeed, got {call:?}"
+        "core_memory_spaces call should succeed, got {call:?}"
     );
+    assert_ne!(call["result"]["isError"], json!(true), "{call:?}");
 
-    // 5. Ingest is a tracked run under owner RLS (issue #347): the async tool
-    // answers at once and its run is read back until it succeeds; the
-    // synchronous tool drives a run of its own.
-    let repo_dir =
-        std::env::temp_dir().join(format!("proxima-e2e-ingest-{}", uuid::Uuid::now_v7()));
-    std::fs::create_dir_all(repo_dir.join("src"))?;
-    std::fs::write(
-        repo_dir.join("src/lib.rs"),
-        "pub fn e2e_run_marker() -> u64 { 7 }\n",
-    )?;
-    for args in [
-        &["init", "-q"][..],
-        &["add", "."],
-        &[
-            "-c",
-            "user.name=e2e",
-            "-c",
-            "user.email=e2e@example.com",
-            "commit",
-            "-q",
-            "-m",
-            "e2e",
-        ],
-    ] {
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_dir)
-            .args(args)
-            .status()?;
-        assert!(status.success(), "git {args:?}");
-    }
-    let tool_call = |id: u64, name: &str, arguments: serde_json::Value| {
-        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
-               "params": {"name": name, "arguments": arguments}})
-    };
-    let registered = post_rpc(
+    // 5. A write under owner RLS is read back through the same bearer: the
+    // remembered memory is found by a search scoped to the caller.
+    let remembered = post_rpc(
         &client,
         &url,
         Some(&session),
         &bearer,
         tool_call(
             10,
-            "proxima-code_register_repo",
-            json!({"path": repo_dir.to_string_lossy()}),
+            "core_remember",
+            json!({"title": "e2e run marker", "body": "oidc e2e run marker", "tags": []}),
         ),
     )
     .await?;
-    let repo_handle = registered["result"]["structuredContent"]["repo"]["repo_handle"]
+    let remembered: serde_json::Value = serde_json::from_str(&mcp_text(&remembered))?;
+    let marker = remembered["handle"]
         .as_str()
-        .ok_or_else(|| format!("register_repo: {registered}"))?
+        .ok_or_else(|| format!("core_remember: {remembered}"))?
         .to_owned();
-    let started = post_rpc(
+    let search = post_rpc(
         &client,
         &url,
         Some(&session),
         &bearer,
         tool_call(
             11,
-            "proxima-code_start_ingest_head_snapshot",
-            json!({"repo_handle": repo_handle}),
+            "core_search_memories",
+            json!({"query": "marker", "mode": "lexical", "limit": 5}),
         ),
     )
     .await?;
-    let run_id = started["result"]["structuredContent"]["run"]["run_id"]
-        .as_str()
-        .ok_or_else(|| format!("start_ingest_head_snapshot: {started}"))?
-        .to_owned();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
-    let run = loop {
-        let read = post_rpc(
-            &client,
-            &url,
-            Some(&session),
-            &bearer,
-            tool_call(12, "proxima-code_get_ingest_run", json!({"run_id": run_id})),
-        )
-        .await?;
-        let run = read["result"]["structuredContent"]["run"].clone();
-        if matches!(run["status"].as_str(), Some("succeeded" | "failed")) {
-            break run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "run never finished: {read}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    assert_eq!(run["status"], "succeeded", "{run}");
-    assert_eq!(run["files_emitted"], 1, "{run}");
-    let synchronous = post_rpc(
-        &client,
-        &url,
-        Some(&session),
-        &bearer,
-        tool_call(
-            13,
-            "proxima-code_ingest_head_snapshot",
-            json!({"repo_handle": repo_handle}),
-        ),
-    )
-    .await?;
-    let sync_run = synchronous["result"]["structuredContent"]["run_id"]
-        .as_str()
-        .ok_or_else(|| format!("ingest_head_snapshot: {synchronous}"))?
-        .to_owned();
-    let latest = post_rpc(
-        &client,
-        &url,
-        Some(&session),
-        &bearer,
-        tool_call(
-            14,
-            "proxima-code_get_ingest_run",
-            json!({"repo_handle": repo_handle}),
-        ),
-    )
-    .await?;
-    let latest = &latest["result"]["structuredContent"]["run"];
-    assert_eq!(
-        (&latest["run_id"], &latest["status"]),
-        (&json!(sync_run), &json!("succeeded"))
+    assert_ne!(search["result"]["isError"], json!(true), "{search}");
+    let found: serde_json::Value = serde_json::from_str(&mcp_text(&search))?;
+    assert!(
+        found["memories"]
+            .as_array()
+            .is_some_and(|hits| hits.iter().any(|hit| hit["memory"] == marker.as_str())),
+        "the remembered memory is read back: {found}"
     );
-    let _ = std::fs::remove_dir_all(&repo_dir);
 
     assert!(
         names.iter().any(|name| name == "core_forget"),
@@ -546,9 +460,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         ) -> Result<AuthzContext, proxima_core::AuthError> {
             let names: &[&str] = match token.claims.subject.as_str() {
                 "rest-operator-sub" => return Ok(context),
-                "exact-command-sub" => &["proxima-code_list_repos"],
+                "exact-command-sub" => &["core_memory_spaces"],
                 "exact-reads-sub" => &[
-                    "proxima-code_list_repos",
+                    "core_memory_spaces",
                     "core_search_memories",
                     "resource:memory",
                 ],
@@ -593,7 +507,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 
     let allowed_tools = BTreeSet::from([
         "core_remember".to_string(),
-        "proxima-code_list_repos".to_string(),
+        "core_memory_spaces".to_string(),
     ]);
     let running = Proxima::<ProximaMcpApp>::app()
         .from_env()
@@ -729,9 +643,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         "a mixed dispatcher is listed for its reads"
     );
 
-    let list_repos_url = format!("{base}/v1/tools/proxima-code_list_repos");
+    let memory_spaces_url = format!("{base}/v1/tools/core_memory_spaces");
     let foreign_rest = client
-        .post(&list_repos_url)
+        .post(&memory_spaces_url)
         .header("Host", "foreign.e2e.test")
         .header("Origin", "http://localhost")
         .header("Authorization", bearer.as_str())
@@ -746,26 +660,29 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     );
 
     // Invoke a real mounted REST tool, not only its generated OpenAPI route.
-    let list_repos = client
-        .post(&list_repos_url)
+    let memory_spaces = client
+        .post(&memory_spaces_url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer.as_str())
         .header("X-Proxima-Owner", owner_key.as_str())
         .json(&json!({}))
         .send()
         .await?;
-    assert_eq!(list_repos.status(), reqwest::StatusCode::OK);
+    assert_eq!(memory_spaces.status(), reqwest::StatusCode::OK);
     assert_eq!(
-        list_repos
+        memory_spaces
             .headers()
             .get("Cache-Control")
             .and_then(|value| value.to_str().ok()),
         Some("private, no-store")
     );
-    let list_repos_body: serde_json::Value = list_repos.json().await?;
-    assert_eq!(list_repos_body["repos"], json!([]));
-    assert_eq!(list_repos_body["has_more"], false);
-    assert_eq!(list_repos_body["next_cursor"], serde_json::Value::Null);
+    let memory_spaces_body: serde_json::Value = memory_spaces.json().await?;
+    assert!(
+        memory_spaces_body["spaces"]
+            .as_array()
+            .is_some_and(|spaces| !spaces.is_empty()),
+        "the caller sees at least its own space: {memory_spaces_body}"
+    );
 
     // #489: the same mounted deployment admits only each caller's exact keys.
     let remembered = post_rpc(
@@ -805,7 +722,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        let mut expected = BTreeSet::from(["proxima-code_list_repos"]);
+        let mut expected = BTreeSet::from(["core_memory_spaces"]);
         if reads {
             expected.insert("core_search_memories");
         }
@@ -903,15 +820,15 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
             assert_eq!(search["error"]["code"], -32600, "{search}");
             assert_eq!(resource["error"]["code"], -32600, "{resource}");
         }
-        let repos = client
-            .post(format!("{base}/v1/tools/proxima-code_list_repos"))
+        let spaces = client
+            .post(format!("{base}/v1/tools/core_memory_spaces"))
             .header("Origin", "http://localhost")
             .header("Authorization", &scoped_bearer)
             .header("X-Proxima-Owner", &owner_key)
-            .json(&json!({"limit":5}))
+            .json(&json!({}))
             .send()
             .await?;
-        assert_eq!(repos.status(), reqwest::StatusCode::OK);
+        assert_eq!(spaces.status(), reqwest::StatusCode::OK);
         let search = client
             .post(format!("{base}/v1/tools/core_search_memories"))
             .header("Origin", "http://localhost")
@@ -1061,10 +978,10 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     Ok(())
 }
 
+/// A pg-testkit database of the test's own, never a shared one: a build
+/// that linked a flavor migrates its schema into whatever database it boots
+/// on, and a host that links none then refuses that database at boot.
 async fn live_database_url() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
-    if let Some(url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") {
-        return Ok((url, None));
-    }
     let name = format!("proxima_oidc_e2e_{}", Uuid::now_v7().simple());
     proxima_pg_testkit::create_db(&name)
         .await

@@ -254,10 +254,10 @@ jobs:
       # pg-testkit clones per-test DBs from this template (admin) URL.
       PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
       # Code HTTP e2e tests use the dedicated database created below. The
-      # catalog e2e creates its own pg-testkit database for the linked flavors,
-      # so all-feature and shipped-default hosts can run in the same job.
+      # catalog, OIDC and multi-owner e2e suites create their own pg-testkit
+      # databases for the linked flavors, so all-feature and shipped-default
+      # hosts can run in the same job.
       DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
-      PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       # Cited-blob lane. `S3RuntimeConfig::present_in_env()` gates those tests
       # on these being set, so they run here rather than silently skipping.
       PROXIMA_S3_BUCKET: proxima-cited-blobs

@@ -102,7 +102,6 @@ host.
 PG tests require `PROXIMA_TEST_PG_URL`, an admin URL for a server you own.
 Testkit sweep/GC touches every matching test database behind that URL.
 `admin_url_or_skip()` skips locally and fails in CI; report every skip.
-`PROXIMA_TEST_DATABASE_URL` is the separate e2e database connection.
 
 If any check fails, fix it, ledger exact command/output and a concrete deferral
 reason under `.local`, or escalate a blocker. Review must account for every
