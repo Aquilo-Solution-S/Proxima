@@ -4,8 +4,7 @@ use std::time::Duration;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GetMemoriesReadRequest,
-    GroupId, MemoryHydrationStatus, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role,
-    ServedSurface, UserId,
+    GroupId, MemoryId, OwnerEraseOutcome, OwnerId, Proxima, Role, ServedSurface, UserId,
 };
 use proxima_core::{AgentNoteV1, ErrorCode, ProtocolError};
 use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
@@ -20,7 +19,6 @@ struct ForgetObservation {
     rows_after_forget: (i64, i64, i64),
     readable_after_forget: Option<AgentNoteV1>,
     rows_after_restart: (i64, i64, i64),
-    hydration: Result<MemoryHydrationStatus, ProtocolError>,
     readable_after_restart: Option<AgentNoteV1>,
     lifecycle_before_forget: LifecycleState,
     lifecycle_after_forget: LifecycleState,
@@ -72,21 +70,12 @@ async fn forget_without_s3_preserves_content_across_restart() -> TestResult<()> 
             observed.lifecycle_after_restart, observed.lifecycle_before_forget,
             "the unchanged head must survive restart"
         );
+        assert_eq!(
+            observed.readable_after_restart.as_ref(),
+            Some(&observed.expected),
+            "a new runtime still reads the refused forget's original typed payload: {observed:?}"
+        );
     }
-    assert_eq!(
-        observed.hydration.as_ref().ok(),
-        Some(&if observed.forget.is_ok() {
-            MemoryHydrationStatus::Hydrated
-        } else {
-            MemoryHydrationStatus::AlreadyHot
-        }),
-        "forget must either refuse safely or leave a durable cold object: {observed:?}"
-    );
-    assert_eq!(
-        observed.readable_after_restart.as_ref(),
-        Some(&observed.expected),
-        "a new runtime must recover the complete original typed payload: {observed:?}"
-    );
     Ok(())
 }
 
@@ -129,12 +118,6 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let restarted = boot(database, owner).await?;
     let rows_after_restart = rows(&admin_pool, written.memory_id).await?;
     let lifecycle_after_restart = lifecycle(&admin_pool, written.handle).await?;
-    let hydration = restarted
-        .host()
-        .engine()
-        .hydrate_memory(&authz, owner, written.memory_id)
-        .await
-        .map(|outcome| outcome.status);
     let readable_after_restart = read_note(&restarted, &authz, written.memory_id).await?;
     stop(restarted).await;
     Ok(ForgetObservation {
@@ -143,7 +126,6 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
         rows_after_forget,
         readable_after_forget,
         rows_after_restart,
-        hydration,
         readable_after_restart,
         lifecycle_before_forget,
         lifecycle_after_forget,

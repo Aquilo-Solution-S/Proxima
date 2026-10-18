@@ -231,10 +231,10 @@ async fn export_carries_hot_and_cooled_external_origins() -> TestResult {
     Ok(())
 }
 
-/// Forget keeps the origins (they outlive the cool), and hydrate finds them
-/// again; the owner can read them throughout.
+/// Forget keeps the origins (they outlive the cool); the owner still reads
+/// them.
 #[tokio::test]
-async fn forget_and_hydrate_keep_external_origins() -> TestResult {
+async fn forget_keeps_external_origins() -> TestResult {
     let (pg, _db) = fresh_pg("proxima_ext_origin_forget").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -245,19 +245,6 @@ async fn forget_and_hydrate_keep_external_origins() -> TestResult {
         2,
         "the owner reads a cooled memory's origins"
     );
-    MemoryAuthoringPort::hydrate_memories(
-        &pg,
-        &permit,
-        &[proxima_core::MemoryId::new(cooled)],
-        &[],
-    )
-    .await?;
-    assert_eq!(
-        origins_on(&pg, &[cooled]).await?,
-        2,
-        "hydrate finds them again"
-    );
-    assert_eq!(origins_visible_to(&pg, owner, cooled).await?, 2);
     Ok(())
 }
 

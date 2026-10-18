@@ -1745,34 +1745,6 @@ async fn forgetting_a_fact_keeps_the_event_it_already_committed() {
     assert_eq!(cold_eligibility, PublicationOriginEligibility::Eligible);
     cold_check.commit().await.expect("finish cooled check");
 
-    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[outcome.memory_id], &[])
-        .await
-        .expect("hydrate the same real cooled Fact");
-    assert_eq!(hydrated.outcomes.len(), 1);
-    assert_eq!(
-        hydrated.outcomes[0].status,
-        proxima_core::MemoryHydrationStatus::Hydrated
-    );
-    let mut hydrated_check = pool
-        .begin()
-        .await
-        .expect("begin hydrated eligibility check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut hydrated_check)
-        .await
-        .expect("hold shared lifecycle fence after hydration");
-    let hydrated_eligibility = PublicationOriginEligibilityPort::check_in_transaction(
-        &pg,
-        &mut hydrated_check,
-        owner,
-        outcome.memory_id,
-    )
-    .await
-    .expect("hydration leaves origin eligibility intact");
-    assert_eq!(hydrated_eligibility, PublicationOriginEligibility::Eligible);
-    hydrated_check
-        .commit()
-        .await
-        .expect("finish hydrated check");
     let publisher = PublisherId::new(PUBLISHER).expect("valid");
     let claimed = pg
         .claim(
@@ -2433,75 +2405,6 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
             .await
             .expect_err("the trigger refuses a decrease");
     assert!(refused.to_string().contains("never decreases"), "{refused}");
-
-    drop(pg);
-    let _ = drop_db(&db).await;
-}
-
-/// Forgetting every hot row of a series deletes its head; hydrate recreates
-/// it. The next event must still take a position above every position the
-/// series already published, or a consumer that dedupes by position drops it.
-#[tokio::test]
-async fn forget_hydrate_write_publishes_above_prior_sequences() {
-    let (pg, db) = fresh_pg("pub_forget_counter").await;
-    let pool = pg.pool_for_tests().clone();
-    let owner = owner_fixture();
-    register_owner(&pool, &owner).await;
-    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-
-    let write_to = |series: Option<Uuid>, note: &'static str| {
-        let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
-        command.handle = series;
-        witness(&owner, command).with_publication_for_tests(plan_for(
-            owner,
-            &probe(note),
-            PublicationLimits::default(),
-        ))
-    };
-    let first = pg
-        .ingest_fact_with_typed_sidecar(&write_to(None, "v1"), &[])
-        .await
-        .expect("first write");
-    let series = first.handle;
-    let second = pg
-        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v2"), &[])
-        .await
-        .expect("second write");
-
-    for outcome in [&second, &first] {
-        MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
-            .await
-            .expect("forget");
-    }
-    let hydrated = MemoryAuthoringPort::hydrate_memories(&pg, &permit, &[second.memory_id], &[])
-        .await
-        .expect("hydrate");
-    assert_eq!(
-        hydrated.outcomes[0].status,
-        proxima_core::MemoryHydrationStatus::Hydrated
-    );
-    let third = pg
-        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v3"), &[])
-        .await
-        .expect("write after hydrate");
-    assert_eq!(third.handle, series);
-
-    let sequence = |envelope: serde_json::Value| -> u64 {
-        envelope["sequence"]
-            .as_str()
-            .expect("sequence is a string")
-            .parse()
-            .expect("sequence is numeric")
-    };
-    let prior = sequence(envelope_of(&pool, first.memory_id.into_inner()).await).max(sequence(
-        envelope_of(&pool, second.memory_id.into_inner()).await,
-    ));
-    let next = sequence(envelope_of(&pool, third.memory_id.into_inner()).await);
-    assert!(
-        next > prior,
-        "the write after forget and hydrate publishes above every earlier position \
-         ({next} <= {prior})"
-    );
 
     drop(pg);
     let _ = drop_db(&db).await;

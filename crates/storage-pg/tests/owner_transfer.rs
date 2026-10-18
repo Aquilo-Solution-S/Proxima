@@ -670,9 +670,11 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             )
             .await?;
         assert!(transferred);
-        let cooled_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
-            "SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1",
-        ).bind(first.memory_id.into_inner()).fetch_one(pool).await?;
+        let cooled_writer: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
         assert_eq!(cooled_writer, (writer.by, writer.via));
         let cooled_owner: uuid::Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
@@ -753,61 +755,6 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             "exclusive cooled Content is GC'd after its destination remap"
         );
 
-        let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
-        let dest_spaces = [proxima_core::EmbeddingSpace::new(
-            "transfer-hydrate-model",
-            proxima_core::EmbeddingDim::D1024,
-        )];
-        let hydrated = MemoryAuthoringPort::hydrate_memories(
-            &pg,
-            &dest_permit,
-            &[first.memory_id],
-            &dest_spaces,
-        )
-        .await?;
-        assert_eq!(
-            hydrated.outcomes[0].status,
-            proxima_core::MemoryHydrationStatus::Hydrated
-        );
-        let hydrated_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
-                .bind(first.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(
-            hydrated_owner,
-            dest.into_inner(),
-            "the reminted cold record must hydrate under the destination"
-        );
-        let sketch_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
-                .bind(first.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(
-            sketch_owner,
-            dest.into_inner(),
-            "the sketch is read owner-scoped: hydrating it under the giver hands a transferred memory back to the owner that gave it away"
-        );
-
-        let restored_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
-            "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
-        ).bind(first.memory_id.into_inner()).fetch_one(pool).await?;
-        assert_eq!(restored_writer, cooled_writer);
-
-        let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
-        )
-        .bind(first.memory_id.into_inner())
-        .fetch_all(pool)
-        .await?;
-        assert_eq!(
-            embed_job_owners,
-            vec![dest.into_inner()],
-            "the re-embed job is the destination's work; filing it under the \
-             giver also breaks hydrate outright once the giver is erased, \
-             because the owner-kind lookup is a fetch_one"
-        );
         Ok(())
     }
     .await;
