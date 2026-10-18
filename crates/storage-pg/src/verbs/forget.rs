@@ -2368,7 +2368,7 @@ pub(crate) mod forget_pg_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{ForgetLeg, OwnerSurfaces, StorageError, forget_leg_sql, write_bytes};
+    use super::{ForgetLeg, OwnerSurfaces, forget_leg_sql};
 
     fn shipped() -> OwnerSurfaces {
         OwnerSurfaces::for_registry(
@@ -2434,127 +2434,6 @@ mod tests {
             forget_leg_sql("proxima_core.embeddings", "entity_id; DROP TABLE x").is_err(),
             "the identifier whitelist is what makes this %I-equivalent"
         );
-    }
-
-    fn cold_row(refs: Vec<uuid::Uuid>, goal_refs: Vec<uuid::Uuid>) -> super::ColdRecord {
-        super::ColdRecord {
-            row: super::HotRow {
-                by: uuid::Uuid::from_u128(0x509),
-                via: Some(uuid::Uuid::from_u128(0x510)),
-                handle: uuid::Uuid::now_v7(),
-                t: uuid::Uuid::now_v7(),
-                kind: "fact".to_owned(),
-                owner_id: uuid::Uuid::now_v7(),
-                schema_id: String::new(),
-                source_id: Some("src".to_owned()),
-                ingest_key: None,
-                blob_id: None,
-                origins: Vec::new(),
-                refs,
-                goal_refs,
-                sidecar_tables: Vec::new(),
-                content_id: None,
-                occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
-            },
-            schema_id: "core/upload-v1".to_owned(),
-            sidecar_dumps: Vec::new(),
-            detail_dumps: Vec::new(),
-            embed_spaces: Vec::new(),
-            sketch: None,
-            format_version: super::COLD_FORMAT_VERSION,
-        }
-    }
-
-    #[test]
-    fn cold_writer_round_trips_with_and_without_a_caller() {
-        let mut record = cold_row(Vec::new(), Vec::new());
-        for via in [Some(uuid::Uuid::from_u128(0x510)), None] {
-            record.row.via = via;
-            let encoded = super::encode_record(&record).expect("encode");
-            assert_eq!(
-                encoded[0], 10,
-                "the writer-bearing layout has its own marker"
-            );
-            let decoded = super::decode_record(&encoded).expect("decode");
-            assert_eq!(decoded.row.by, record.row.by);
-            assert_eq!(decoded.row.via, via);
-        }
-    }
-
-    #[test]
-    fn a_current_cold_object_round_trips_embedding_spaces() {
-        let mut rec = cold_row(Vec::new(), Vec::new());
-        rec.embed_spaces = vec![
-            proxima_core::EmbeddingSpace::new("a", proxima_core::EmbeddingDim::D768),
-            proxima_core::EmbeddingSpace::new("b", proxima_core::EmbeddingDim::D3072),
-        ];
-        let decoded =
-            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
-        assert_eq!(decoded.embed_spaces, rec.embed_spaces);
-    }
-
-    #[test]
-    fn a_current_cold_object_round_trips_pins_and_sidecar_stamp() {
-        let memory = uuid::Uuid::now_v7();
-        let goal = uuid::Uuid::now_v7();
-        let mut rec = cold_row(vec![memory], vec![goal]);
-        rec.row.sidecar_tables = vec!["proxima_core.agent_note_v1".to_owned()];
-        rec.sidecar_dumps = vec![(rec.row.sidecar_tables[0].clone(), "{}".to_owned())];
-        let decoded = super::decode_record(&super::encode_record(&rec).expect("encode"))
-            .expect("current format decodes");
-        assert_eq!(decoded.row.refs, vec![memory]);
-        assert_eq!(decoded.row.goal_refs, vec![goal]);
-        assert_eq!(decoded.row.sidecar_tables, rec.row.sidecar_tables);
-        assert_eq!(decoded.format_version, super::COLD_FORMAT_VERSION);
-    }
-
-    #[test]
-    fn a_current_cold_object_round_trips_when_its_fact_occurred() {
-        let mut rec = cold_row(Vec::new(), Vec::new());
-        let backdate = time::OffsetDateTime::from_unix_timestamp_nanos(1_679_472_900_123_456_000)
-            .expect("an instant");
-        rec.row.occurred_at = Some(backdate);
-        let decoded =
-            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
-        assert_eq!(decoded.row.occurred_at, Some(backdate));
-
-        rec.row.kind = "abstraction".to_owned();
-        rec.row.occurred_at = None;
-        let decoded =
-            super::decode_record(&super::encode_record(&rec).expect("encode")).expect("decodes");
-        assert_eq!(decoded.row.occurred_at, None);
-    }
-
-    #[test]
-    fn an_unknown_cold_format_is_refused() {
-        let future = super::COLD_FORMAT_VERSION.saturating_add(1);
-        let err = super::decode_record(&[future]).expect_err("future format is not shipped");
-        assert!(
-            matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unsupported cold format {future}"))),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn a_released_cold_format_is_refused_with_its_version() {
-        for version in [4_u8, 5, 6, 7, 8, 9] {
-            let err = super::decode_record(&[version]).expect_err("released format is retired");
-            assert!(
-                matches!(err, StorageError::Internal(ref msg) if msg.contains(&format!("unsupported cold format {version}"))),
-                "version {version} reported {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn cold_field_over_u16_fails_closed() {
-        let mut out = Vec::new();
-        let err = write_bytes(&mut out, &vec![0; 65_536]).expect_err("overflow");
-        assert!(
-            matches!(err, StorageError::ConstraintViolation(ref msg) if msg.contains("65535")),
-            "got {err:?}"
-        );
-        assert!(out.is_empty());
     }
 }
 

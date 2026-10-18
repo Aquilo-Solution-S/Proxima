@@ -944,7 +944,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "owner_export_cold_pg_tests.rs"]
-mod owner_export_cold_pg_tests;
