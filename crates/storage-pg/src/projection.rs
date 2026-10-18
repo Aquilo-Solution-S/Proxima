@@ -15,9 +15,8 @@
 //! and de-provisioning a flavor in a deployment two readings of one
 //! derivation instead of two hand-maintained scripts. A hand-written
 //! inverse is the alternative, and it reaches whatever subset of the
-//! sidecars its author remembered; `flavors/code/src/repos/erase.rs` is
-//! the flavor's own inverse, where a test can compare it against the
-//! contract.
+//! sidecars its author remembered; a flavor that keeps its own inverse
+//! has a test compare it against the contract.
 //!
 //! Two consumers, deliberately:
 //!

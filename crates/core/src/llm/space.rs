@@ -399,7 +399,7 @@ mod tests {
         }
 
         let recording = std::sync::Arc::new(Recording::default());
-        let code = super::QueryTask::named("code");
+        let code = super::QueryTask::named("notes");
         let instruction = |template: &str| {
             super::super::QueryInstruction::new(template).expect("template holds the placeholder")
         };

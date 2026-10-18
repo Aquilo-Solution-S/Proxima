@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -657,6 +658,77 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
     check_authorized_fact_surface(findings)
 
 
+# Acceptance 1 of #473: the code flavor left the repository and stays in git
+# history only. This pattern names it, so the scan below skips this file (and
+# only this file) besides the generated release notes.
+REMOVED_FLAVOR_PATTERN = r"proxima[-_]code|flavors/code"
+REMOVED_FLAVOR_EXEMPT = {"CHANGELOG.md", "scripts/check-architecture-guardrails.py"}
+
+
+def git_lines(*args: str) -> list[str]:
+    result = subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+    if result.returncode not in (0, 1):
+        raise SystemExit(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.splitlines()
+
+
+def removed_flavor_hits(path: str, text: str) -> list[tuple[int, str]]:
+    """Lines of `text` naming a removed flavor, unless `path` is exempt."""
+    if path in REMOVED_FLAVOR_EXEMPT:
+        return []
+    rx = re.compile(REMOVED_FLAVOR_PATTERN, re.IGNORECASE)
+    return [(n, line) for n, line in enumerate(text.splitlines(), 1) if rx.search(line)]
+
+
+def flavor_vocabulary(package_names: list[str]) -> list[str]:
+    """The PG schema, flavor id and tool prefix each in-tree flavor owns.
+
+    A flavor's package name `proxima-x` is its flavor id; its schema is
+    `proxima_x` and its tools are named `proxima-x_*`.
+    """
+    words: list[str] = []
+    for name in package_names:
+        words.extend([name.replace("-", "_"), name, f"{name}_"])
+    return words
+
+
+def crate_src_flavor_hits(text: str, vocabulary: list[str]) -> list[tuple[int, str]]:
+    if not vocabulary:
+        return []
+    rx = re.compile("|".join(re.escape(word) for word in vocabulary))
+    return [(n, line) for n, line in enumerate(text.splitlines(), 1) if rx.search(line)]
+
+
+def in_tree_flavor_packages() -> list[str]:
+    names: list[str] = []
+    for manifest in sorted((ROOT / "flavors").glob("*/Cargo.toml")):
+        match = re.search(r'(?m)^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"))
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def check_removed_flavor_vocabulary(findings: list[Finding]) -> None:
+    # Rule 1: no tracked file names the removed code flavor.
+    for rel in git_lines("grep", "-l", "-i", "-I", "-E", REMOVED_FLAVOR_PATTERN):
+        path = ROOT / rel
+        for line_no, line in removed_flavor_hits(rel, path.read_text(encoding="utf-8")):
+            findings.append(Finding(path, line_no, "removed flavor named", line))
+    # Rule 2: crate sources never name an in-tree flavor's schema, flavor id
+    # or tool prefix. Crate tests may name the test flavor.
+    vocabulary = flavor_vocabulary(in_tree_flavor_packages())
+    for rel in git_lines("ls-files", "--", "crates/*/src/**"):
+        path = ROOT / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue
+        for line_no, line in crate_src_flavor_hits(text, vocabulary):
+            findings.append(Finding(path, line_no, "crate source names an in-tree flavor", line))
+
+
 def run_self_test() -> int:
     """Assert the flavor core SQL detector fires on its committed fixture.
 
@@ -710,6 +782,17 @@ async fn ingest_fact_atomic(
         failures.append("fixture-gated raw Fact adapter was not recognized")
     if not ungated or directly_fixture_gated(ungated_raw, ungated[0][2]):
         failures.append("ungated raw Fact adapter was not detected")
+    if not removed_flavor_hits("docs/x.md", "see flavors/code\nproxima_code.chunk\nPROXIMA-CODE\nproxima_core"):
+        failures.append("removed flavor name not detected")
+    elif len(removed_flavor_hits("docs/x.md", "flavors/code\nproxima_code\nPROXIMA-CODE\nproxima_core")) != 3:
+        failures.append("removed flavor rule must flag exactly the three spellings, not proxima_core")
+    if removed_flavor_hits("CHANGELOG.md", "proxima-code"):
+        failures.append("CHANGELOG.md must stay exempt from the removed flavor rule")
+    vocabulary = flavor_vocabulary(["proxima-example"])
+    if vocabulary != ["proxima_example", "proxima-example", "proxima-example_"]:
+        failures.append(f"flavor vocabulary derivation changed: {vocabulary}")
+    if len(crate_src_flavor_hits("// proxima_example\nproxima-example_note\nproxima_core", vocabulary)) != 2:
+        failures.append("crate source flavor vocabulary not detected")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
@@ -742,6 +825,7 @@ def main() -> int:
     check_public_witnesses(findings)
     check_caller_supplied_audit(findings)
     check_owner_write_permit_surfaces(findings)
+    check_removed_flavor_vocabulary(findings)
 
     if findings:
         print("architecture guardrail violations:", file=sys.stderr)

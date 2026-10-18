@@ -6,7 +6,7 @@
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FlavorDescriptor {
     /// Crate prefix used by `proxima_flavor! { name = ... }` —
-    /// e.g. `"proxima-code"`. Schemas, relations, personalities, and
+    /// e.g. `"proxima-notes"`. Schemas, relations, personalities, and
     /// MCP tools registered through the macro all start with this
     /// prefix followed by `/`.
     pub flavor_id: String,

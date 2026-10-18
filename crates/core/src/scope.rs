@@ -32,7 +32,7 @@
 
 use uuid::Uuid;
 
-/// The name of a flavor-owned lifecycle scope, e.g. `code-repo`.
+/// The name of a flavor-owned lifecycle scope, e.g. `notebook`.
 ///
 /// `&'static str` rather than an enum: the closed vocabulary lives in the
 /// linked flavors, not in core, and a core enum would have to be edited to
@@ -108,7 +108,7 @@ impl std::fmt::Display for ScopeRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeDecl {
     pub kind: ScopeKind,
-    /// Schema-qualified registry table, e.g. `proxima_code.repos`.
+    /// Schema-qualified registry table, e.g. `proxima_notes.notebooks`.
     pub registry_table: &'static str,
     /// Column holding the scope id.
     pub id_column: &'static str,
@@ -187,7 +187,7 @@ mod tests {
         );
         assert!(
             ScopeDecl {
-                registry_table: "proxima_code.repos",
+                registry_table: "proxima_notes.notebooks",
                 ..decl
             }
             .shape_error()
@@ -199,7 +199,7 @@ mod tests {
     fn a_declaration_must_name_every_column() {
         let decl = ScopeDecl {
             kind: KIND,
-            registry_table: "proxima_code.repos",
+            registry_table: "proxima_notes.notebooks",
             id_column: "",
             owner_id_column: "owner_id",
         };

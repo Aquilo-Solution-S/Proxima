@@ -159,7 +159,7 @@ impl QueryInstructions {
 mod tests {
     use super::{QueryInstruction, QueryInstructions, QueryTask};
 
-    const CODE: QueryTask = QueryTask::named("code");
+    const CODE: QueryTask = QueryTask::named("notes");
 
     fn instruction(template: &str) -> QueryInstruction {
         QueryInstruction::new(template).expect("template holds the placeholder")

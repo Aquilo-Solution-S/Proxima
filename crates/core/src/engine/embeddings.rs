@@ -232,7 +232,7 @@ impl Engine {
     ///
     /// Covers Facts *and* derived memories. Derived rows matter because a
     /// flavor can materialize Abstractions through its own sidecar path with
-    /// no embedding client in scope — code-chunk ingest does — leaving them
+    /// no embedding client in scope (bulk ingest can), leaving them
     /// semantically invisible until someone ran a global reconcile. Only
     /// the kinds up to the caller's write limit are queued.
     ///

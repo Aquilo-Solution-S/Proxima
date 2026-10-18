@@ -209,13 +209,13 @@ async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
     .expect("the passed schema's ledger exists");
     assert!(platform_owns, "platform owns the pre-created ledger");
     assert!(runtime_reads && !runtime_writes, "runtime reads it only");
-    let code_ledger: bool = sqlx::query_scalar(
-        "SELECT to_regclass('public._sqlx_migrations_proxima_code') IS NOT NULL",
+    let other_ledger: bool = sqlx::query_scalar(
+        "SELECT to_regclass('public._sqlx_migrations_proxima_notes') IS NOT NULL",
     )
     .fetch_one(&mut platform)
     .await
     .expect("ledger probe");
-    assert!(!code_ledger, "a schema nobody passed gets no ledger");
+    assert!(!other_ledger, "a schema nobody passed gets no ledger");
     runtime.close().await.expect("close runtime");
     platform.close().await.expect("close platform");
 }
@@ -226,7 +226,7 @@ async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
 #[tokio::test]
 async fn no_flavor_schema_passed_grants_only_core() {
     let (guard, mut admin) = admin_database().await;
-    sqlx::raw_sql("CREATE SCHEMA proxima_code; CREATE SCHEMA proxima_core")
+    sqlx::raw_sql("CREATE SCHEMA proxima_notes; CREATE SCHEMA proxima_core")
         .execute(&mut admin)
         .await
         .expect("seed schemas");
@@ -241,7 +241,7 @@ async fn no_flavor_schema_passed_grants_only_core() {
         "SELECT nspname,
                 pg_get_userbyid(nspowner) = current_user,
                 has_schema_privilege('proxima_test_runtime', oid, 'USAGE')
-           FROM pg_namespace WHERE nspname IN ('proxima_core', 'proxima_code')
+           FROM pg_namespace WHERE nspname IN ('proxima_core', 'proxima_notes')
           ORDER BY nspname",
     )
     .fetch_all(&mut platform)
@@ -250,8 +250,8 @@ async fn no_flavor_schema_passed_grants_only_core() {
     assert_eq!(
         owners,
         vec![
-            ("proxima_code".to_owned(), false, false),
             ("proxima_core".to_owned(), true, true),
+            ("proxima_notes".to_owned(), false, false),
         ]
     );
     platform.close().await.expect("close platform");

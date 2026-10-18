@@ -179,8 +179,8 @@ fn an_unsplicable_scope_declaration_refuses_the_freeze() {
 /// cross-check's subject — so the two halves are pinned to each other
 /// by `registering_a_scoped_payload_records_the_kind_it_names` and
 /// `a_scope_kind_no_contract_declares_refuses_the_freeze` instead. The
-/// shipped pair is the code flavor's, exercised end to end in
-/// `flavors/code/tests/repo_fence_pg.rs`.
+/// shipped pair is the example flavor's notebook scope, exercised end to
+/// end in `crates/proxima/tests/scope_fence_pg.rs`.
 #[test]
 fn a_declared_scope_freezes_and_is_reachable_on_the_frozen_registry() {
     let mut registry = FlavorRegistry::new();

@@ -125,7 +125,7 @@ async fn missing_embedding_ids<'e>(
     exclude_existing_jobs: bool,
     kinds: Option<&[&'static str]>,
 ) -> Result<Vec<MemoryId>, StorageError> {
-    // Chunks are memory rows. A second arm against code_chunk_v1 is a subset of
+    // Chunks are memory rows. A second arm against a flavor chunk sidecar is a subset of
     // this anti-join and duplicates t.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
@@ -663,7 +663,7 @@ mod tests {
         let needle = format!("{}{}", "to_reg", "class(");
         assert!(
             !src.contains(&needle),
-            "chunks are memory rows; do not dual-scan proxima_code"
+            "chunks are memory rows; do not dual-scan a flavor sidecar"
         );
     }
 

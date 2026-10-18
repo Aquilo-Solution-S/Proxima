@@ -294,7 +294,7 @@ pub const PRESENCE_TRIGGER_FUNCTION_NAME: &str = "proxima_core.assert_declared_s
 /// its dot flattened, under one prefix. Every one of them lives on
 /// `proxima_core.memory`, so the relation cannot disambiguate them and the
 /// name has to carry the schema — `proxima_core.chunk_v1` and
-/// `proxima_code.chunk_v1` are two tables and must be two triggers.
+/// `proxima_notes.chunk_v1` are two tables and must be two triggers.
 const PRESENCE_TRIGGER_PREFIX: &str = "memory_declares";
 
 /// What the `UPDATE` half of the declaration guard is called.

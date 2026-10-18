@@ -614,15 +614,12 @@ pub fn reject_zero_limit(limit: Option<u32>) -> Result<(), ToolError> {
 pub const MAX_QUERY_CHARS: usize = 512;
 
 /// Longest text cap a caller may ask a search result to carry, in
-/// characters — `core_search_memories`' `body_max_chars`,
-/// `proxima-code_search_chunks`' `snippet_max_chars`, and whatever a
-/// flavor names its own.
+/// characters — `core_search_memories`' `body_max_chars` and whatever a
+/// flavor names its own snippet cap.
 ///
-/// Shared rather than copied because the two in-tree values were already
-/// the same number by intent (the code flavor's comment said "matching
-/// `core_search_memories`") and nothing would have caught them drifting
-/// apart. Defaults are deliberately NOT shared: 2,000 for a code chunk and
-/// 8,000 for a memory body are different because the objects are.
+/// Shared rather than copied so a flavor's cap cannot drift apart from
+/// core's unnoticed. Defaults are deliberately NOT shared: a short snippet
+/// and an 8,000-character memory body differ because the objects do.
 pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
 
 /// Trim `value` and check its length against `1..=max` characters,

@@ -279,7 +279,7 @@ async fn memory_search_embeds_its_query_in_the_default_instruction() {
         let instructions = QueryInstructions::default()
             .with_instruction(QueryTask::DEFAULT, QueryInstruction::new("note: {query}")?)
             .with_instruction(
-                QueryTask::named("code"),
+                QueryTask::named("notes"),
                 QueryInstruction::new("code: {query}")?,
             );
         let (built, held) = HeldWorker::boot(

@@ -129,8 +129,8 @@ pub enum LanguagePolicy {
     /// The union of several pinned configurations, concatenated in the
     /// declared order — `lexical_tsv(c1, txt) || lexical_tsv(c2, txt)`.
     ///
-    /// Vocabulary extension rather than a generator feature:
-    /// `proxima_code.commit_search_tsv` indexes commit prose under
+    /// Vocabulary extension rather than a generator feature: a flavor's
+    /// `proxima_notes.body_search_tsv` can index prose under
     /// `simple` *and* `english` so non-English words survive English
     /// stop-word rules, and no single-configuration arm can say that. The
     /// FIRST configuration is the one stamped on the row.
@@ -1580,7 +1580,7 @@ pub struct FlavorContract {
     pub flavor_id: &'static str,
     pub ordinal: u16,
     pub schemas: &'static [SchemaContract],
-    /// Flavor-owned state that is not a memory sidecar (`proxima_code.repos`,
+    /// Flavor-owned state that is not a memory sidecar (`proxima_notes.notebooks`,
     /// `proxima_core.goal`). Same [`Surface`] rules; erase and transfer walk
     /// them identically.
     pub state_surfaces: &'static [Surface],
@@ -1593,7 +1593,7 @@ pub struct FlavorContract {
     /// do to a table's rows; a `ScopeDecl` says how to ASK whether one of
     /// those rows still exists and how to key the fence that holds the
     /// answer still. The registry table is normally a state surface as well
-    /// — `proxima_code.repos` is both — and the two declarations stay
+    /// — `proxima_notes.notebooks` is both — and the two declarations stay
     /// independent so a scope whose registry the flavor erases some other
     /// way is still fenceable.
     ///

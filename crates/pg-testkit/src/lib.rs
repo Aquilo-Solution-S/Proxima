@@ -365,7 +365,7 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
 /// Each passed flavor schema also gets its migration ledger pre-created as
 /// `public._sqlx_migrations_<schema>`: the ledger a flavor's
 /// `NamedMigrator::flavor` records into when the flavor id's `-` maps to
-/// the schema's `_` (`proxima-example` → `proxima_example`). Existing
+/// the schema's `_` (`proxima-notes` → `proxima_notes`). Existing
 /// public tables whose names start with `_sqlx_migrations` also move to the
 /// platform role, with read-only access for the runtime role.
 ///

@@ -123,8 +123,8 @@ pub use verbs::schema::{FlavorRegistryFrozen, composed_schema_names, sidecar_tab
 /// Expands to `&'static str` with the calling crate's name
 /// prefixed. Per docs/host-integration.md
 ///
-/// `proxima_schema_id!("commit")` in a crate named
-/// `proxima-code` evaluates to `"proxima-code/commit"`.
+/// `proxima_schema_id!("note")` in a crate named
+/// `proxima-notes` evaluates to `"proxima-notes/note"`.
 #[macro_export]
 macro_rules! proxima_schema_id {
     ($short:literal) => {
@@ -157,10 +157,10 @@ macro_rules! proxima_schema_id {
 ///
 /// ```ignore
 /// proxima_flavor! {
-///     name = "proxima-code",
-///     fact_schemas = [ CommitV1, FileChangeV1 ],
-///     cited_object_schemas = [ SourceFileV1 ],
-///     opaque_cited_object_schemas = [ "proxima-code/code-blob-v1" ],
+///     name = "proxima-notes",
+///     fact_schemas = [ NoteV1, NoteEditV1 ],
+///     cited_object_schemas = [ AttachmentV1 ],
+///     opaque_cited_object_schemas = [ "proxima-notes/attachment-blob-v1" ],
 ///     mcp_tools = [ MyTool ],
 /// }
 /// ```

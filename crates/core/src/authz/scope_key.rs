@@ -326,8 +326,8 @@ mod tests {
             Ok(resource_key("memory-lineage"))
         );
         assert_eq!(
-            parse("proxima-code_x:a.b"),
-            Ok(leaf("proxima-code_x", "a.b"))
+            parse("proxima-notes_x:a.b"),
+            Ok(leaf("proxima-notes_x", "a.b"))
         );
     }
 
@@ -431,7 +431,7 @@ mod tests {
             ("resource: memory", NotProviderSafe(Resource)),
             // characters outside the grammar
             ("a/b", NotProviderSafe(Tool)),
-            ("proxima-code/register_repo", NotProviderSafe(Tool)),
+            ("proxima-notes/register_notebook", NotProviderSafe(Tool)),
             ("core_goal:a/b", NotProviderSafe(Action)),
             ("caf\u{e9}", NotProviderSafe(Tool)),
             ("a\0b", NotProviderSafe(Tool)),

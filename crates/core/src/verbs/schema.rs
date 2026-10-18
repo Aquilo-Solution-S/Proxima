@@ -78,7 +78,7 @@ pub struct SchemaInfo {
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
-    /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
+    /// Sidecar table identifier (qualified, e.g. `proxima_notes.note_v1`)
     /// when the payload trait declares one. `None` is valid for typed Fact
     /// and Goal schemas whose payload needs no schema-owned columns, and is
     /// the only value for citation schemas, typed or opaque.
@@ -300,7 +300,7 @@ pub struct MemorySearchProjection {
 /// One `(sidecar table, column)` the embedding drain reads text from.
 ///
 /// Separate from `MemorySearchProjection`: a schema may embed without
-/// searching (`proxima-code/file-revision-v1` is exactly one), so embed
+/// searching (a file-revision schema that only feeds similarity is one), so embed
 /// text cannot live inside a search declaration without making such a
 /// schema unstateable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -923,7 +923,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Lookup a flavor descriptor by its `flavor_id`
-    /// (e.g. `"proxima-code"`).
+    /// (e.g. `"proxima-notes"`).
     #[must_use]
     pub fn flavor(&self, flavor_id: &str) -> Option<&FlavorDescriptor> {
         self.flavors.iter().find(|f| f.flavor_id == flavor_id)

@@ -53,7 +53,7 @@ mod tests {
     fn rejects_prefixed_uppercase_slash_and_leading_digit() {
         for raw in [
             "",
-            "proxima-code/actor",
+            "proxima-notes/actor",
             "Actor",
             "act/or",
             "1actor",
