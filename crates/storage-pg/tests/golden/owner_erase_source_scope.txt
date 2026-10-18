@@ -20,9 +20,9 @@
 {"ingest_key":"k4","owner_id":"<id013>","source_id":"src-a","t":"<id012>"}
 {"ingest_key":"k5","owner_id":"<id013>","source_id":"src-b","t":"<id016>"}
 ## export proxima_core.memory (3)
-{"blob_id":null,"by":"<id022>","content_id":"<id023>","goal_refs":[],"handle":"<id024>","ingest_key":"k1","kind":"fact","occurred_at":"<ts025>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id002>","via":null}
-{"blob_id":"<id007>","by":"<id026>","content_id":"<id027>","goal_refs":[],"handle":"<id024>","ingest_key":"k2","kind":"fact","occurred_at":"<ts028>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>","via":null}
-{"blob_id":null,"by":"<id029>","content_id":"<id023>","goal_refs":[],"handle":"<id030>","ingest_key":"k3","kind":"fact","occurred_at":"<ts031>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id006>","via":null}
+{"blob_id":null,"by":"<id022>","content_id":"<id023>","goal_refs":[],"handle":"<id024>","ingest_key":"k1","kind":"fact","lexical_language":"english","occurred_at":"<ts025>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id002>","via":null}
+{"blob_id":"<id007>","by":"<id026>","content_id":"<id027>","goal_refs":[],"handle":"<id024>","ingest_key":"k2","kind":"fact","lexical_language":"english","occurred_at":"<ts028>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id004>","via":null}
+{"blob_id":null,"by":"<id029>","content_id":"<id023>","goal_refs":[],"handle":"<id030>","ingest_key":"k3","kind":"fact","lexical_language":"english","occurred_at":"<ts031>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id006>","via":null}
 ## export proxima_core.sketch (7)
 {"kind":"fact","owner_id":"<id013>","t":"<id002>","text":"fact"}
 {"kind":"fact","owner_id":"<id013>","t":"<id004>","text":"fact"}
@@ -97,8 +97,8 @@
 ## proxima_core.lexical_languages (1)
 {"config":"english"}
 ## proxima_core.memory (2)
-{"blob_id":null,"by":"<id046>","content_id":null,"goal_refs":[],"handle":"<id047>","ingest_key":"n1","kind":"fact","occurred_at":"<ts048>","origins":[],"owner_id":"<id037>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id035>","via":null}
-{"blob_id":null,"by":"<id029>","content_id":"<id023>","goal_refs":[],"handle":"<id030>","ingest_key":"k3","kind":"fact","occurred_at":"<ts031>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id006>","via":null}
+{"blob_id":null,"by":"<id046>","content_id":null,"goal_refs":[],"handle":"<id047>","ingest_key":"n1","kind":"fact","lexical_language":"english","occurred_at":"<ts048>","origins":[],"owner_id":"<id037>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-a","t":"<id035>","via":null}
+{"blob_id":null,"by":"<id029>","content_id":"<id023>","goal_refs":[],"handle":"<id030>","ingest_key":"k3","kind":"fact","lexical_language":"english","occurred_at":"<ts031>","origins":[],"owner_id":"<id013>","refs":[],"schema_id":"core/test-fact-v1","sidecar_tables":["proxima_core.agent_note_v1"],"source_id":"src-b","t":"<id006>","via":null}
 ## proxima_core.memory_head (3)
 {"handle":"<id030>","kind":"fact","owner_id":"<id013>","schema_id":"core/test-fact-v1","t":"<id006>"}
 {"handle":"<id047>","kind":"fact","owner_id":"<id037>","schema_id":"core/test-fact-v1","t":"<id035>"}

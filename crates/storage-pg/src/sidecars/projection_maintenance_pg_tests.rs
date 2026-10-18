@@ -186,6 +186,42 @@ async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_lan
     .await;
 }
 
+async fn memory_language_of(
+    pool: &sqlx::PgPool,
+    t: MemoryId,
+) -> Result<(String, String), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT lexical_language::text, proxima_core.lexical_config()::text
+           FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(t.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
+/// The Memory row carries the language its words were projected in, so a
+/// later rebuild of the projection (restore, #488) can use it without the
+/// projection row. A write at the deployment default carries the default.
+#[tokio::test]
+async fn a_memory_carries_the_language_its_write_projected_with() {
+    with_db("proxima_proj_memory_language", async |pg| {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let german = write_note(pool, owner, Some("german")).await?;
+        let (stamped, default) = memory_language_of(pool, german).await?;
+        assert_ne!(
+            default, "german",
+            "the fixture needs a non-default language"
+        );
+        assert_eq!(stamped, "german");
+        let plain = write_note(pool, owner, None).await?;
+        let (stamped, default) = memory_language_of(pool, plain).await?;
+        assert_eq!(stamped, default);
+        Ok(())
+    })
+    .await;
+}
+
 /// A `PerRow` schema whose write named no language is refused, not
 /// projected at the deployment default.
 ///

@@ -441,7 +441,14 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
             .await?;
     assert_eq!(
         ledger,
-        [(33, true), (34, true), (35, true), (36, true), (37, true)]
+        [
+            (33, true),
+            (34, true),
+            (35, true),
+            (36, true),
+            (37, true),
+            (38, true)
+        ]
     );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
 
@@ -663,9 +670,18 @@ async fn external_origin_edge_kind_backfill_reads_interpretations_as_references(
     expected.push((subject, "origin".to_owned()));
     expected.sort();
 
+    // Through 0037 only: 0038 refuses this populated store (#488).
+    let mut through_0037 = core_migrator();
+    through_0037.migrations = std::borrow::Cow::Owned(
+        through_0037
+            .iter()
+            .filter(|migration| migration.version <= 37)
+            .cloned()
+            .collect(),
+    );
     let mut connection = platform.acquire().await?;
     let mut transaction = begin_migration_transaction(&mut connection).await?;
-    core_migrator().run(transaction.as_mut()).await?;
+    through_0037.run(transaction.as_mut()).await?;
     transaction.commit().await?;
     let read = || async {
         sqlx::query_as::<_, (Uuid, String)>(
@@ -691,5 +707,99 @@ async fn external_origin_edge_kind_backfill_reads_interpretations_as_references(
     .execute(&admin)
     .await;
     assert!(refused.is_err(), "edge_kind is origin or reference");
+    Ok(())
+}
+
+/// One live Memory, or (cooled) one forgotten into `cooled`, in the 0037 layout.
+async fn seed_v039_memory(admin: &PgPool, owner: Uuid, cooled: bool) -> TestResult {
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'test/retained-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner)
+    .bind(t)
+    .execute(admin)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, \"by\", occurred_at)
+         VALUES ($1, $2, 'fact', $3, 'test/retained-v1', $3, uuid_extract_timestamp($2))",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner)
+    .execute(admin)
+    .await?;
+    if cooled {
+        sqlx::query(
+            "INSERT INTO proxima_core.cooled
+                 (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, \"by\")
+             SELECT t, handle, owner_id, kind, 'cold/' || t, origins, refs, goal_refs, \"by\"
+               FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .execute(admin)
+        .await?;
+        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            .bind(t)
+            .execute(admin)
+            .await?;
+        sqlx::query("DELETE FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(handle)
+            .execute(admin)
+            .await?;
+    }
+    Ok(())
+}
+
+/// #488 migration 0038: forgetting becomes a state on the Memory row, and
+/// memories forgotten before it are not migrated. A store holding any
+/// Memory, Goal, cooled memory or retained identity refuses, unchanged.
+#[tokio::test]
+async fn forget_state_migration_refuses_a_used_store_without_changes() -> TestResult {
+    for cooled in [false, true] {
+        let (_guard, platform, admin) = empty_store().await?;
+        apply_historical_schema(&platform, &[33, 34, 35, 36, 37], definitions::POLICIES).await?;
+        let owner = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner)
+            .execute(&admin)
+            .await?;
+        seed_v039_memory(&admin, owner, cooled).await?;
+        let before = writer_rows(&admin).await?;
+        let schema_before = schema_state(&admin).await?;
+        let mut connection = platform.acquire().await?;
+        let mut transaction = begin_migration_transaction(&mut connection).await?;
+        let error = core_migrator()
+            .run(transaction.as_mut())
+            .await
+            .expect_err("a used store must refuse the forget-state migration");
+        let sqlx::migrate::MigrateError::ExecuteMigration(error, 38) = error else {
+            panic!("expected migration 0038 to refuse: {error}");
+        };
+        let database_error = error.as_database_error().expect("typed database refusal");
+        assert_eq!(
+            database_error.code().as_deref(),
+            Some("55000"),
+            "cooled={cooled}"
+        );
+        assert!(database_error.message().contains("fresh store required"));
+        assert_eq!(
+            database_error
+                .downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                .hint(),
+            Some("Create a fresh store before starting this release.")
+        );
+        transaction.rollback().await?;
+        drop(connection);
+        assert_eq!(writer_rows(&admin).await?, before, "cooled={cooled}");
+        assert_eq!(
+            schema_state(&admin).await?,
+            schema_before,
+            "cooled={cooled}"
+        );
+    }
     Ok(())
 }

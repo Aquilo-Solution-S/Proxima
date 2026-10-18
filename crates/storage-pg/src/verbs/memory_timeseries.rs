@@ -954,6 +954,16 @@ async fn advance_memory_head(
     Ok(())
 }
 
+/// The language a Memory row is stamped with: the draft's own, or `None`
+/// (the deployment configuration) when it named none or asked for the
+/// deployment default. The projection row's language follows the same
+/// draft, so a rebuild from the Memory row projects the words alike.
+fn stamped_language(draft_language: Option<&str>) -> Option<&str> {
+    draft_language.filter(|language| {
+        *language != proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT
+    })
+}
+
 /// Append the immutable Memory revision row itself.
 async fn insert_memory_revision(
     tx: &mut Transaction<'_, Postgres>,
@@ -965,9 +975,11 @@ async fn insert_memory_revision(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via)
+             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via,
+             lexical_language)
          VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14, $15, $16)",
+                 $13, $14, $15, $16,
+                 COALESCE($17::regconfig, proxima_core.lexical_config()))",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -985,6 +997,7 @@ async fn insert_memory_revision(
     .bind(prepared.occurred_at)
     .bind(prepared.writer.by)
     .bind(prepared.writer.via)
+    .bind(stamped_language(draft.lexical_language.as_deref()))
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
