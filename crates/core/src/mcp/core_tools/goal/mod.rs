@@ -115,7 +115,7 @@ pub struct GoalSetArgs {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstraction handles (`<uuid>`) that motivate the goal; at least one."
+        description = "Fact or Abstraction handles (`<uuid>`) that motivate the goal; at least one."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -266,7 +266,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         ));
     }
     let payload = encode_goal_payload(&ctx, args.payload)?;
-    let evidence = resolve_operator_goal_evidence(&ctx, &args.evidence)?;
+    let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence)?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
     let topology =
         GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
@@ -430,7 +430,7 @@ pub struct GoalModifyArgs {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Replacement Abstraction handles (`<uuid>`), at least one. Omit to keep the current evidence."
+        description = "Replacement Fact or Abstraction handles (`<uuid>`), at least one. Omit to keep the current evidence."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
@@ -451,7 +451,7 @@ async fn goal_modify(
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = match args.evidence.as_ref() {
-        Some(evidence) => Some(resolve_operator_goal_evidence(&ctx, evidence)?),
+        Some(evidence) => Some(resolve_goal_evidence_handles(&ctx, evidence)?),
         None => None,
     };
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
@@ -500,7 +500,7 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstraction handles (`<uuid>`) that motivate this child; at least one."
+        description = "Fact or Abstraction handles (`<uuid>`) that motivate this child; at least one."
     )]
     pub evidence: Vec<String>,
 }
@@ -543,7 +543,7 @@ async fn goal_decompose(
     for (index, child) in args.children.into_iter().enumerate() {
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
-            evidence: resolve_operator_goal_evidence(&ctx, &child.evidence)?,
+            evidence: resolve_goal_evidence_handles(&ctx, &child.evidence)?,
             // Cannot fail: the root bound leaves room for every child key.
             request_id: root_key
                 .child(DECOMPOSE_CHILD_PREFIX, index)
@@ -638,8 +638,8 @@ fn resolve_evidence(
         .collect()
 }
 
-/// Parse operator Goal evidence; storage checks its actual kind in the write transaction.
-pub(crate) fn resolve_operator_goal_evidence(
+/// Parse Goal evidence handles (bare UUIDs, at least one); storage checks each is a live owned Fact or Abstraction in the write transaction.
+pub(crate) fn resolve_goal_evidence_handles(
     ctx: &McpToolCtx,
     evidence: &[String],
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
@@ -684,6 +684,10 @@ fn target_perspective(
 ///
 /// The bound identity already reaches this: the edge resolves
 /// `ctx.author.model_id` to the trusted id when the token binds one.
+///
+/// The input-contract label (`fact-or-abstraction-evidence-v1`, #513) feeds
+/// only that hash: no stored column carries it, so renaming it changes no
+/// replay.
 pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
     let model_id = &ctx.author.model_id;
     let operator_key = format!(
@@ -694,7 +698,7 @@ pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str)
     let input_contract_id = uuid::Uuid::new_v5(
         &MCP_GOAL_INPUT_CONTRACT_NAMESPACE,
         format!(
-            "{}:{prompt_version}:abstraction-evidence-v1",
+            "{}:{prompt_version}:fact-or-abstraction-evidence-v1",
             protocol_tool::CORE_GOAL
         )
         .as_bytes(),
@@ -1047,18 +1051,18 @@ mod tests {
     }
 
     #[test]
-    fn operator_goal_evidence_rejects_prefixed_ids_before_storage() {
+    fn goal_evidence_rejects_prefixed_ids_before_storage() {
         let ctx = test_ctx();
         for prefix in ['F', 'A', 'P', 'G'] {
             let raw = format!("{prefix}:{}", uuid::Uuid::now_v7());
-            let err = resolve_operator_goal_evidence(&ctx, &[raw]).expect_err("bare UUID required");
+            let err = resolve_goal_evidence_handles(&ctx, &[raw]).expect_err("bare UUID required");
             assert!(matches!(err, McpToolError::InvalidInput(_)), "{err}");
         }
     }
 
     #[test]
-    fn operator_goal_evidence_rejects_empty_input() {
-        let err = resolve_operator_goal_evidence(&test_ctx(), &[])
+    fn goal_evidence_rejects_empty_input() {
+        let err = resolve_goal_evidence_handles(&test_ctx(), &[])
             .expect_err("operator Goal evidence must be nonempty");
         assert!(
             matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),

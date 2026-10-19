@@ -117,7 +117,7 @@ pub struct EpisodeGoalItem {
     pub payload: GoalPayloadArgs,
     #[schemars(
         length(min = 1),
-        description = "Abstractions motivating the goal: `<uuid>` or this call's `derive`."
+        description = "Facts or Abstractions motivating the goal: `<uuid>`, this call's `remember:N`, or this call's `derive`."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
@@ -688,7 +688,7 @@ fn resolve_goal_evidence(
                 }
             }
         } else {
-            resolved.extend(super::goal::resolve_operator_goal_evidence(
+            resolved.extend(super::goal::resolve_goal_evidence_handles(
                 ctx,
                 std::slice::from_ref(handle),
             )?);
