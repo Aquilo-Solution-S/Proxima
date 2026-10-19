@@ -145,12 +145,14 @@ impl EdgeEndpoint {
 /// may still have an endpoint the reader may not see; the row is
 /// returned with the endpoint withheld rather than suppressed, so the
 /// existence of a connection is not itself leaked or hidden by accident.
+/// A target the reader could read but which is forgotten is `Forgotten`;
+/// one the reader could not read in any state stays `Redacted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum EdgeTargetProjection {
     Visible { target: EdgeEndpoint },
     Redacted,
-    Unavailable,
+    Forgotten,
 }
 
 impl EdgeTargetProjection {
@@ -163,7 +165,7 @@ impl EdgeTargetProjection {
     pub const fn endpoint(self) -> Option<EdgeEndpoint> {
         match self {
             Self::Visible { target } => Some(target),
-            Self::Redacted | Self::Unavailable => None,
+            Self::Redacted | Self::Forgotten => None,
         }
     }
 }
@@ -429,7 +431,7 @@ mod tests {
             Some(endpoint)
         );
         assert_eq!(EdgeTargetProjection::Redacted.endpoint(), None);
-        assert_eq!(EdgeTargetProjection::Unavailable.endpoint(), None);
+        assert_eq!(EdgeTargetProjection::Forgotten.endpoint(), None);
     }
 
     #[test]

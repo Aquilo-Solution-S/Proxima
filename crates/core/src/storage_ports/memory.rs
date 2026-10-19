@@ -176,6 +176,18 @@ pub trait MemoryReadPort: Send + Sync {
         memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError>;
 
+    /// The forgotten rows among `memory_ids` that `read_owners` could read
+    /// were they not forgotten, as lineage nodes (no snippet, distance 0).
+    /// Bound by the same owner and kind permits as every read: an id the
+    /// caller could not read in either state is absent, so a pin to it stays
+    /// redacted.
+    async fn forgotten_nodes(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError>;
+
     /// Current owned series handle whose sidecar matches `columns`.
     /// Owner-only. A miss after an owner-to-owner transfer is expected.
     async fn owned_series_handle(

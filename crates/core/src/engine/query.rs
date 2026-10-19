@@ -192,6 +192,32 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
+    /// The forgotten rows among `memory_ids` the context could read were
+    /// they not forgotten, as lineage nodes (no snippet; distance 0). Same
+    /// auth shape as [`Self::lineage_nodes`]; an id it could not read in
+    /// either state is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context authorizes no reads, or
+    /// `Internal` when storage fails.
+    pub async fn forgotten_nodes(
+        &self,
+        authz: &AuthzContext,
+        memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        if read_owners.is_empty() || memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.storage
+            .query
+            .memory_read
+            .forgotten_nodes(authz.owner_scope(), &read_owners, memory_ids)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
     /// Current owned series handle whose sidecar matches `columns`.
     ///
     /// Owner-only. A transferred series is a miss for the prior

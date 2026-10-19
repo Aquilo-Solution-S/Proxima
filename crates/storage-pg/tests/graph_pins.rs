@@ -794,3 +794,82 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
     let _ = drop_db(&db_name).await;
     result.expect("lineage keyset test failed");
 }
+
+/// #488 S12: the forgotten-target probe answers only within the reader's
+/// owner and kind permits. The owner sees a forgotten Abstraction as
+/// forgotten; a reader of the same owner limited to Facts does not see it
+/// at all (its pin stays redacted), though it does see a forgotten Fact.
+#[tokio::test]
+async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        use proxima_core::storage_ports::MemoryAuthoringPort;
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let owner = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let grounding = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let other_grounding = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let abstraction = pg
+            .ingest_fact_atomic(
+                &permit,
+                &draft(
+                    "abstraction",
+                    vec![],
+                    vec![grounding.memory_id.into_inner()],
+                ),
+                None,
+            )
+            .await?;
+        let loose = pg
+            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .await?;
+        let _ = other_grounding;
+        let abstraction_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        MemoryAuthoringPort::forget_memory(&pg, &abstraction_permit, abstraction.memory_id).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, loose.memory_id).await?;
+        let ids = [abstraction.memory_id, loose.memory_id];
+
+        let found = |nodes: Vec<proxima_core::verbs::query::MemoryLineageNode>| {
+            let mut ids: Vec<_> = nodes.into_iter().map(|node| node.memory_id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        let mut both = ids.to_vec();
+        both.sort_unstable();
+        let admin = owner_scope_for_tests(&[owner]);
+        assert_eq!(
+            found(pg.forgotten_nodes(Some(&admin), &[owner], &ids).await?),
+            both,
+            "the owner's admin sees both as forgotten"
+        );
+
+        let fact_reader = proxima_core::test_fixtures::authenticated_context(
+            proxima_core::AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner, proxima_core::Role::ingest())],
+                proxima_core::AuthPath::HostBearer,
+            ),
+        );
+        let fact_scope = fact_reader.owner_scope().expect("verified scope").clone();
+        assert_eq!(
+            found(
+                pg.forgotten_nodes(Some(&fact_scope), &[owner], &ids)
+                    .await?
+            ),
+            vec![loose.memory_id],
+            "a reader limited to Facts learns nothing about the forgotten Abstraction"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forgotten probe permits");
+}

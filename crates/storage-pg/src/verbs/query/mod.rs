@@ -26,7 +26,8 @@ pub use goals::{ActiveGoalTargetRow, active_goals_for_memory_targets_on_connecti
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
 pub(crate) use lineage::{
-    external_edges_on_connection, lineage_nodes_on_connection, walk_memory_lineage_on_connection,
+    external_edges_on_connection, forgotten_nodes_on_connection, lineage_nodes_on_connection,
+    walk_memory_lineage_on_connection,
 };
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use memories::memory_page_sql_for_tests;

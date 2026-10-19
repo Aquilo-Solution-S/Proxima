@@ -140,11 +140,19 @@ fn cursor_key(cursor: Option<EdgeReadCursor>) -> Option<HopKey> {
     ))
 }
 
+/// What the reader may see of a page's memory targets: the live readable
+/// ones by kind, and the ones it could read but which are forgotten.
+#[derive(Debug, Default)]
+struct Seen {
+    live: HashMap<MemoryId, EntityKind>,
+    forgotten: HashSet<MemoryId>,
+}
+
 fn page_hops(
     mut hops: Vec<PinHop>,
     cursor: Option<EdgeReadCursor>,
     limit: u32,
-    visible: &HashMap<MemoryId, EntityKind>,
+    visible: &Seen,
 ) -> EdgeReadResponse {
     hops.sort_unstable_by(|left, right| hop_key(right).cmp(&hop_key(left)));
     if let Some(cursor) = cursor_key(cursor) {
@@ -169,10 +177,21 @@ fn page_hops(
     EdgeReadResponse { edges, next_cursor }
 }
 
-fn project_hop_edge(hop: &PinHop, visible: &HashMap<MemoryId, EntityKind>) -> Edge {
+fn project_hop_edge(hop: &PinHop, visible: &Seen) -> Edge {
     match hop.target {
         PinTarget::Memory(target) => {
-            project_listed_edge(hop.source_kind, hop.source_id, target, hop.kind, visible)
+            let mut edge = project_listed_edge(
+                hop.source_kind,
+                hop.source_id,
+                target,
+                hop.kind,
+                &visible.live,
+            );
+            if edge.target == EdgeTargetProjection::Redacted && visible.forgotten.contains(&target)
+            {
+                edge.target = EdgeTargetProjection::Forgotten;
+            }
+            edge
         }
         PinTarget::Goal(target) => Edge {
             source: EdgeEndpoint::memory(hop.source_kind, hop.source_id),
@@ -183,20 +202,40 @@ fn project_hop_edge(hop: &PinHop, visible: &HashMap<MemoryId, EntityKind>) -> Ed
     }
 }
 
+/// The live readable rows among `ids`, then — for the rest only — the ones
+/// the reader could read but which are forgotten.
 async fn load_visible(
     memory_read: &MemoryReadHandle,
     owner_scope: Option<&OwnerScope>,
     read_owners: &[OwnerId],
     ids: &[MemoryId],
-) -> Result<HashMap<MemoryId, EntityKind>, ProtocolError> {
+) -> Result<Seen, ProtocolError> {
     if ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(Seen::default());
     }
     let nodes = memory_read
         .load_pin_nodes(owner_scope, read_owners, ids)
         .await
         .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
-    Ok(nodes.into_iter().map(|node| (node.id, node.kind)).collect())
+    let live: HashMap<MemoryId, EntityKind> =
+        nodes.into_iter().map(|node| (node.id, node.kind)).collect();
+    let rest: Vec<MemoryId> = ids
+        .iter()
+        .copied()
+        .filter(|id| !live.contains_key(id))
+        .collect();
+    let forgotten = if rest.is_empty() {
+        HashSet::new()
+    } else {
+        memory_read
+            .forgotten_nodes(owner_scope, read_owners, &rest)
+            .await
+            .map_err(|err| internal_storage_error("forgotten_nodes", &err))?
+            .into_iter()
+            .map(|node| node.memory_id)
+            .collect()
+    };
+    Ok(Seen { live, forgotten })
 }
 
 /// Source and/or inbound pin nodes, then project a newest-first page.
@@ -425,10 +464,10 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         ids.dedup();
         ids
     };
-    let extra = load_visible(memory_read, owner_scope, read_owners, &missing).await?;
-    let mut visible: HashMap<MemoryId, EntityKind> =
-        by_id.iter().map(|(id, node)| (*id, node.kind)).collect();
-    visible.extend(extra);
+    let mut visible = load_visible(memory_read, owner_scope, read_owners, &missing).await?;
+    visible
+        .live
+        .extend(by_id.iter().map(|(id, node)| (*id, node.kind)));
 
     hops.sort_unstable_by(|left, right| hop_key(right).cmp(&hop_key(left)));
     hops.truncate(limit);
@@ -467,12 +506,29 @@ mod tests {
             vec![hop(source, missing, EdgeKind::Reference)],
             None,
             10,
-            &HashMap::new(),
+            &super::Seen::default(),
         );
         assert!(matches!(
             page.edges[0].target,
             EdgeTargetProjection::Redacted
         ));
+    }
+
+    #[test]
+    fn page_hops_lists_a_forgotten_target_as_forgotten() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let forgotten = MemoryId::new(uuid::Uuid::now_v7());
+        let seen = super::Seen {
+            live: HashMap::new(),
+            forgotten: [forgotten].into_iter().collect(),
+        };
+        let page = page_hops(
+            vec![hop(source, forgotten, EdgeKind::Origin)],
+            None,
+            10,
+            &seen,
+        );
+        assert_eq!(page.edges[0].target, EdgeTargetProjection::Forgotten);
     }
 
     struct FakePins {
@@ -481,6 +537,8 @@ mod tests {
         /// One entry per `load_visible_goal_ids` round trip. The point of
         /// the split is that a page with no Goal reference makes none.
         goal_probes: Arc<std::sync::Mutex<Vec<Vec<crate::GoalId>>>>,
+        /// Ids the reader could read but which are forgotten.
+        forgotten: Vec<MemoryId>,
     }
 
     impl FakePins {
@@ -489,6 +547,7 @@ mod tests {
                 nodes,
                 visible_goals,
                 goal_probes: Arc::new(std::sync::Mutex::new(Vec::new())),
+                forgotten: Vec::new(),
             }
         }
 
@@ -652,6 +711,26 @@ mod tests {
             _memory_ids: &[crate::MemoryId],
         ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError> {
             Err(StorageError::Internal("unused".into()))
+        }
+
+        async fn forgotten_nodes(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _read_owners: &[OwnerId],
+            memory_ids: &[crate::MemoryId],
+        ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError> {
+            Ok(self
+                .forgotten
+                .iter()
+                .filter(|id| memory_ids.contains(id))
+                .map(|id| crate::verbs::query::MemoryLineageNode {
+                    memory_id: *id,
+                    kind: EntityKind::Fact,
+                    schema_id: crate::SchemaId::new("test/fact".to_owned()),
+                    snippet: String::new(),
+                    distance: 0,
+                })
+                .collect())
         }
 
         async fn owned_series_handle(

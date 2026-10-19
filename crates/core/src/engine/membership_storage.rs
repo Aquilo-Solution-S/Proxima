@@ -214,6 +214,15 @@ impl MemoryReadPort for MembershipStorage {
         Ok(Vec::new())
     }
 
+    async fn forgotten_nodes(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerId],
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
     async fn load_memory_graph_payloads(
         &self,
         _scope: Option<&crate::OwnerScope>,

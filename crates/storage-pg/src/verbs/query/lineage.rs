@@ -152,9 +152,20 @@ async fn assemble_lineage_page_on_connection(
             })
         })
         .collect();
+    let unseen: Vec<Uuid> = hops
+        .iter()
+        .map(|h| h.tgt)
+        .filter(|t| !visible.contains_key(t))
+        .collect();
+    let forgotten: HashSet<Uuid> =
+        forgotten_nodes_on_connection(&mut *connection, &unseen, owner_ids)
+            .await?
+            .into_iter()
+            .map(|node| node.memory_id.into_inner())
+            .collect();
     let edges = hops
         .iter()
-        .filter_map(|h| project_lineage_edge(h, &visible))
+        .filter_map(|h| project_lineage_edge(h, &visible, &forgotten))
         .collect();
     // Other-store edges (origin or reference) of the page's visible nodes.
     let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
@@ -220,6 +231,50 @@ pub(crate) async fn lineage_nodes_on_connection(
                 kind: parse_kind(&kind)?,
                 schema_id: SchemaId::new(schema),
                 snippet: snippets.remove(&id).unwrap_or_default(),
+                distance: 0,
+            })
+        })
+        .collect())
+}
+
+/// The forgotten rows among `memory_ids` the transaction's reader could read
+/// were they not forgotten, as lineage nodes (no snippet; distance 0).
+///
+/// The one probe every "forgotten target" answer reads (pins, lineage): it
+/// widens the caller's OWNER transaction to the lifecycle scope for this one
+/// statement, so the owner read policy still applies the reader's owner and
+/// kind permits — an id the reader could not read in either state is absent
+/// and stays redacted. Never run it in platform scope: that would disclose
+/// forgotten rows the reader has no permit for.
+pub(crate) async fn forgotten_nodes_on_connection(
+    connection: &mut PgConnection,
+    memory_ids: &[Uuid],
+    owner_ids: &[Uuid],
+) -> Result<Vec<MemoryLineageNode>, StorageError> {
+    if memory_ids.is_empty() || owner_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(&mut *connection).await?;
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, m.schema_id
+           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (forgotten-target probe: only the forgotten rows the reader's permits reach) */
+          WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
+            AND m.forgotten_at IS NOT NULL",
+    )
+    .bind(memory_ids)
+    .bind(owner_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?;
+    lifecycle.leave(&mut *connection).await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, kind, schema)| {
+            Some(MemoryLineageNode {
+                memory_id: MemoryId::new(id),
+                kind: parse_kind(&kind)?,
+                schema_id: SchemaId::new(schema),
+                snippet: String::new(),
                 distance: 0,
             })
         })
@@ -294,11 +349,13 @@ fn node_distance(direction: MemoryLineageDirection, start: Uuid, hops: &[WalkHop
 fn project_lineage_edge(
     hop: &WalkHop,
     visible_kind: &HashMap<Uuid, EntityKind>,
+    forgotten: &HashSet<Uuid>,
 ) -> Option<MemoryLineageEdge> {
     let target = match visible_kind.get(&hop.tgt).copied() {
         Some(kind) => {
             EdgeTargetProjection::visible(EdgeEndpoint::memory(kind, MemoryId::new(hop.tgt)))
         }
+        None if forgotten.contains(&hop.tgt) => EdgeTargetProjection::Forgotten,
         None => EdgeTargetProjection::Redacted,
     };
     Some(MemoryLineageEdge {

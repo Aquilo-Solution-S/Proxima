@@ -14,6 +14,8 @@ use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLin
 const MAX_LINEAGE_DEPTH: u32 = 8;
 const DEFAULT_LINEAGE_DEPTH: u32 = 3;
 
+/// `status` of a local lineage node the caller could read but which is forgotten.
+const FORGOTTEN_STATUS: &str = "forgotten";
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
     /// Memory UUID.
@@ -87,10 +89,11 @@ pub struct LineageNodeOutput {
     /// Set only on a node of another store: its store number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<u16>,
-    /// Set only on an other-store node that could not be read: `erased`
-    /// (the store erased it) or `unavailable` (no port, the store did not
-    /// answer, or the caller may no longer read it). The walk never fails
-    /// on such a node.
+    /// Set on an other-store node that could not be read: `erased` (the
+    /// store erased it) or `unavailable` (no port, the store did not answer,
+    /// or the caller may no longer read it); and on a local node the caller
+    /// could read but which is forgotten: `forgotten` (no snippet; the walk
+    /// stops there). The walk never fails on such a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Why an `unavailable` origin was not read: `not readable` (the store
@@ -399,6 +402,33 @@ async fn render_ancestor_page(
         })
         .collect();
     let visible: HashSet<String> = nodes.iter().map(|node| node.memory.clone()).collect();
+    // Targets the caller could read but which are forgotten: a node with
+    // status `forgotten`, and the walk goes no further (#488 D4).
+    let unseen: Vec<MemoryId> = local_ids
+        .iter()
+        .copied()
+        .filter(|id| !visible.contains(&id.into_inner().to_string()))
+        .collect();
+    let forgotten: HashSet<String> = if unseen.is_empty() {
+        HashSet::new()
+    } else {
+        let found = engine.forgotten_nodes(&ctx.authz, &unseen).await?;
+        let handles = found
+            .iter()
+            .map(|node| node.memory_id.into_inner().to_string())
+            .collect();
+        nodes.extend(found.into_iter().map(|node| LineageNodeOutput {
+            memory: node.memory_id.into_inner().to_string(),
+            kind: node.kind.as_str().to_string(),
+            schema_id: node.schema_id.as_str().to_string(),
+            snippet: String::new(),
+            distance: reached.get(&node.memory_id).copied().unwrap_or_default(),
+            store: None,
+            status: Some(FORGOTTEN_STATUS.to_string()),
+            unavailable_reason: None,
+        }));
+        handles
+    };
     let mut edges = Vec::with_capacity(hops.len());
     let mut external = Vec::new();
     for hop in hops {
@@ -411,6 +441,11 @@ async fn render_ancestor_page(
                 let handle = id.into_inner().to_string();
                 let target = if visible.contains(&handle) {
                     handle
+                } else if forgotten.contains(&handle) {
+                    super::wire_ref::format_target_projection(
+                        ctx,
+                        crate::EdgeTargetProjection::Forgotten,
+                    )
                 } else {
                     super::wire_ref::format_target_projection(
                         ctx,

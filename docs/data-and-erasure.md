@@ -63,7 +63,11 @@ Shared objects survive while another admission still claims them; object-key
 fences serialize competing claim/delete decisions.
 
 Each erased target leaves a payload-free, owner-free identity/kind witness.
-Retained source pins stay byte-for-byte; rendering reports an unavailable target.
+Retained source pins stay byte-for-byte; rendering reports a redacted target.
+A pin or lineage edge to a memory the reader could read but which is forgotten
+renders as `forgotten target` (lineage node status `forgotten`), and lineage
+stops there; a reader without the owner or kind permit still sees a redacted
+target. Other stores' forgotten memories stay `unavailable`.
 New writes must resolve live targets and cannot use these witnesses to recreate
 erased identities. Exact historical restoration uses the sealed integrity path.
 
