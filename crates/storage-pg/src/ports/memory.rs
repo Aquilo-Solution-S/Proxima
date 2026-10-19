@@ -34,10 +34,20 @@ impl MemoryAuthoringPort for PgStorage {
             .await?;
             let draft = verbs::derive_append::DerivedDraft::from_request(req, self.store_number);
             // Share origin validation with the write-session authoring path.
-            verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
-                .await?;
-            verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut tx, req.references)
-                .await?;
+            verbs::derive_append::validate_derived_origins_in_tx(
+                &mut tx,
+                &draft,
+                req.origins,
+                req.references,
+            )
+            .await?;
+            verbs::derive_append::validate_derived_reference_kinds_in_tx(
+                &mut tx,
+                &draft,
+                req.origins,
+                req.references,
+            )
+            .await?;
             let sidecars = self.sidecars.writing_derived(&draft);
             let sidecar_payload = req.sidecar_payload.clone();
             let content_payload = sidecar_payload.clone();

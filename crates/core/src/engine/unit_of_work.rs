@@ -209,6 +209,14 @@ pub struct UnitOfWork<'a> {
     /// Session-visible `(t, kind)` pairs. A declaration must still agree
     /// with the kind of a row written earlier in this transaction.
     written_kinds: Vec<(MemoryId, EntityKind)>,
+    /// `(t, kind)` of writes in this unit that replayed a forgotten memory
+    /// (#488 review r3/r4). They are not session-visible: a later item may
+    /// name such a slot only as part of its own replay. A derived item that
+    /// names one is prepared with these kinds and must come back from
+    /// storage as a replay; storage refuses any new write that pins a
+    /// forgotten memory, and that refusal reads `entry not found`. Goal
+    /// writes never see these slots.
+    replayed_forgotten: Vec<(MemoryId, EntityKind)>,
     /// Resolved destinations, for owner-constrained pending Goal assignments.
     written_owners: Vec<(MemoryId, OwnerId)>,
     /// [`Self::erase_own_series`] ran. The unit then accepts only
@@ -383,6 +391,7 @@ impl Engine {
             poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            replayed_forgotten: Vec::new(),
             written_owners: Vec::new(),
             erased: false,
         })
@@ -416,6 +425,7 @@ impl Engine {
             poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            replayed_forgotten: Vec::new(),
             written_owners: Vec::new(),
             erased: false,
         })
@@ -487,6 +497,7 @@ impl Engine {
                 poisoned: false,
                 written: Vec::new(),
                 written_kinds: Vec::new(),
+                replayed_forgotten: Vec::new(),
                 written_owners: Vec::new(),
                 erased: false,
             },
@@ -638,11 +649,44 @@ impl<'a> UnitOfWork<'a> {
         &mut self,
         memory: crate::DerivedMemory,
     ) -> Result<crate::DerivedMemoryOutcome, ProtocolError> {
+        let (item, replay_only) = self.prepare_derived(memory).await?;
+        self.write_prepared_derived(item, replay_only).await
+    }
+
+    /// Prepare one derived item. When it names a slot that replayed a
+    /// forgotten memory, the slot's kind is known from this unit and the
+    /// item is marked replay-only: it must be a replay of its own earlier
+    /// write, or it is refused as an absent entry.
+    // `&mut self`: the unit holds a `dyn WriteSession`, which is Send but
+    // not Sync, so a shared borrow held across an await is not Send.
+    async fn prepare_derived(
+        &mut self,
+        memory: crate::DerivedMemory,
+    ) -> Result<(PreparedDerived, bool), ProtocolError> {
+        if self.replayed_forgotten.is_empty() {
+            let item = self
+                .engine
+                .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
+                .await?;
+            return Ok((item, false));
+        }
+        let kinds = self
+            .written_kinds
+            .iter()
+            .chain(&self.replayed_forgotten)
+            .copied()
+            .collect::<Vec<_>>();
         let item = self
             .engine
-            .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
+            .prepare_derived_memory(self.authz()?, memory, &kinds)
             .await?;
-        self.write_prepared_derived(item).await
+        let replay_only = item
+            .origins
+            .iter()
+            .chain(&item.references)
+            .filter_map(|endpoint| endpoint.memory_id())
+            .any(|id| self.replayed_forgotten.iter().any(|(seen, _)| *seen == id));
+        Ok((item, replay_only))
     }
 
     /// Prepare a batch before opening the write transaction, then append every row.
@@ -658,15 +702,11 @@ impl<'a> UnitOfWork<'a> {
     ) -> Result<Vec<crate::DerivedMemoryOutcome>, ProtocolError> {
         let mut prepared = Vec::new();
         for memory in memories {
-            prepared.push(
-                self.engine
-                    .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
-                    .await?,
-            );
+            prepared.push(self.prepare_derived(memory).await?);
         }
         let mut outcomes = Vec::with_capacity(prepared.len());
-        for item in prepared {
-            outcomes.push(self.write_prepared_derived(item).await?);
+        for (item, replay_only) in prepared {
+            outcomes.push(self.write_prepared_derived(item, replay_only).await?);
         }
         Ok(outcomes)
     }
@@ -961,6 +1001,9 @@ impl<'a> UnitOfWork<'a> {
                 .push((outcome.memory_id, EntityKind::Fact));
             self.written_owners
                 .push((outcome.memory_id, *authorized.permit().owner()));
+        } else if outcome.forgotten {
+            self.replayed_forgotten
+                .push((outcome.memory_id, EntityKind::Fact));
         }
         Ok(outcome)
     }
@@ -968,6 +1011,7 @@ impl<'a> UnitOfWork<'a> {
     async fn write_prepared_derived(
         &mut self,
         item: PreparedDerived,
+        replay_only: bool,
     ) -> Result<DerivedMemoryOutcome, ProtocolError> {
         let storage_req = item.storage_request();
         let outcome = self
@@ -976,17 +1020,31 @@ impl<'a> UnitOfWork<'a> {
             .author_derived(&storage_req, item.write_permit.owner_write_permit())
             .await
             .map_err(|err| {
+                if replay_only && matches!(err, crate::StorageError::ConstraintViolation(_)) {
+                    // Not a replay of its own write: a new write naming a
+                    // forgotten slot reads it as absent, as any id does.
+                    return ProtocolError::forbidden(super::pipeline::ENTRY_NOT_FOUND_MESSAGE);
+                }
                 super::errors::map_write_storage_error(
                     err,
                     "derived",
                     "derived write referenced row not found",
                 )
             })?;
+        if replay_only && !outcome.idempotent_replay {
+            // Storage refuses this; never commit a new row on a forgotten slot.
+            self.poisoned = true;
+            return Err(ProtocolError::forbidden(
+                super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
+            ));
+        }
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
             self.written_kinds.push((outcome.memory_id, item.kind));
             self.written_owners
                 .push((outcome.memory_id, *item.write_permit.owner()));
+        } else if outcome.forgotten {
+            self.replayed_forgotten.push((outcome.memory_id, item.kind));
         }
         Ok(DerivedMemoryOutcome {
             memory_id: outcome.memory_id,

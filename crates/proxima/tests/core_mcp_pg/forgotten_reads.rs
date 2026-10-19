@@ -1047,3 +1047,197 @@ async fn utterance_and_episode_replays_say_the_memory_is_forgotten() {
     .await;
     result.expect("replays say forgotten");
 }
+
+/// #488 review r3: an episode whose remembered Fact was forgotten answers
+/// its identical replay as a replay (the remember slot answers forgotten and
+/// the derive built on it replays), instead of refusing its own derive. A
+/// new derive over that slot is still refused.
+#[tokio::test]
+async fn an_episode_replay_over_a_forgotten_remembered_fact_answers_as_a_replay() {
+    let split_db = clone_split_core_db("proxima_episode_forgotten_slot")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let episode = serde_json::json!({
+            "remember": [{"title": "epslot fact", "body": "epslot fact", "idempotency_key": "ep-f"}],
+            "derive": {"title": "epslot derived", "body": "epslot derived",
+                "source_handles": ["remember:0"], "model_id": "test-model",
+                "idempotency_key": "ep-d"},
+        });
+        let committed = call("core_episode_commit", episode.clone()).await?;
+        let fact = committed["remembered"][0].as_str().ok_or("fact")?.to_owned();
+        let derived = committed["derived"].as_str().ok_or("derived")?.to_owned();
+        let standalone_args = serde_json::json!({
+            "kind": "Abstraction", "title": "epslot standalone", "body": "epslot standalone",
+            "tags": [], "source_handles": [fact.clone()], "model_id": "test-model",
+        });
+        let standalone = call("core_derive", standalone_args.clone()).await?;
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+
+        let replay = call("core_episode_commit", episode.clone()).await?;
+        assert_eq!(replay["remembered"], serde_json::json!([fact]), "{replay}");
+        assert_eq!(replay["derived"], derived.as_str(), "{replay}");
+        assert_eq!(replay["forgotten"], serde_json::json!([fact]), "{replay}");
+        // A standalone derive names its source by a caller-supplied id, and
+        // a forgotten id reads as absent there (#488 r1), replay or not. The
+        // episode's slot is its own item, not a caller-supplied id.
+        let refused = call("core_derive", standalone_args)
+            .await
+            .expect_err("a forgotten source id reads as absent");
+        assert!(refused.to_string().contains("entry not found"), "{refused}");
+        assert!(standalone["handle"].is_string());
+
+        // A new derive over the forgotten Fact is still refused.
+        let fresh = serde_json::json!({
+            "remember": [{"title": "epslot fact", "body": "epslot fact", "idempotency_key": "ep-f"}],
+            "derive": {"title": "epslot other", "body": "epslot other",
+                "source_handles": ["remember:0"], "model_id": "test-model",
+                "idempotency_key": "ep-d-other"},
+        });
+        let refused = call("core_episode_commit", fresh).await;
+        assert!(refused.is_err(), "a new derive cited a forgotten Fact: {refused:?}");
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("episode replay over a forgotten remembered Fact");
+}
+
+/// #488 review r4: a slot that replayed a forgotten memory answers only its
+/// own replay. A NEW stance in the same episode naming that slot
+/// (`remember:N`, `derive` or `stance:N`) is refused as `entry not found`
+/// and no live row comes to pin the forgotten memory. An identical replay of
+/// an episode whose stance subject was forgotten afterwards still answers.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, four episodes
+async fn a_new_stance_on_a_forgotten_replay_slot_is_refused() {
+    let split_db = clone_split_core_db("proxima_episode_forgotten_stance")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let live_pins = |target: String| {
+            let url = db_url(split_db.name());
+            async move {
+                let admin = sqlx::PgPool::connect(&url).await?;
+                let rows: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM proxima_core.memory
+                      WHERE forgotten_at IS NULL
+                        AND ($1 = ANY(refs) OR $1 = ANY(origins) OR $1 = ANY(goal_refs))",
+                )
+                .bind(Uuid::parse_str(&target)?)
+                .fetch_one(&admin)
+                .await?;
+                admin.close().await;
+                Ok::<i64, Box<dyn std::error::Error>>(rows)
+            }
+        };
+        let remember = |key: &str| serde_json::json!({"title": key, "body": key, "idempotency_key": key});
+        let derive = |key: &str| {
+            serde_json::json!({"title": key, "body": key, "source_handles": ["remember:0"],
+                "model_id": "test-model", "idempotency_key": key})
+        };
+        let stance = |claim: &str, subject: &str| {
+            serde_json::json!({"claim": claim, "confidence": 70, "subjects": [subject],
+                "model_id": "test-model"})
+        };
+        let refused = |result: Result<serde_json::Value, proxima::CoreMcpError>, what: &str| {
+            match result {
+                Ok(value) => panic!("{what}: a new stance pinned a forgotten slot: {value}"),
+                Err(err) => assert!(err.to_string().contains("entry not found"), "{what}: {err}"),
+            }
+        };
+
+        // remember:N
+        let first = call("core_episode_commit", serde_json::json!({"remember": [remember("r4-f")]})).await?;
+        let fact = first["remembered"][0].as_str().ok_or("fact")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+        refused(
+            call("core_episode_commit", serde_json::json!({
+                "remember": [remember("r4-f")],
+                "stance": [stance("rfour new claim fact", "remember:0")],
+            }))
+            .await,
+            "remember:0",
+        );
+        assert_eq!(live_pins(fact.clone()).await?, 0, "a live row pins the forgotten Fact");
+
+        // derive
+        let first = call("core_episode_commit", serde_json::json!({
+            "remember": [remember("r4-b")], "derive": derive("r4-d"),
+        }))
+        .await?;
+        let derived = first["derived"].as_str().ok_or("derived")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": derived})).await?;
+        refused(
+            call("core_episode_commit", serde_json::json!({
+                "remember": [remember("r4-b")], "derive": derive("r4-d"),
+                "stance": [stance("rfour new claim derive", "derive")],
+            }))
+            .await,
+            "derive",
+        );
+        assert_eq!(live_pins(derived.clone()).await?, 0, "a live row pins the forgotten derive");
+
+        // stance:N
+        let first = call("core_episode_commit", serde_json::json!({
+            "remember": [remember("r4-c")], "stance": [stance("rfour old stance", "remember:0")],
+        }))
+        .await?;
+        let old_stance = first["stances"][0].as_str().ok_or("stance")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": old_stance})).await?;
+        refused(
+            call("core_episode_commit", serde_json::json!({
+                "remember": [remember("r4-c")],
+                "stance": [stance("rfour old stance", "remember:0"),
+                    stance("rfour new claim stance", "stance:0")],
+            }))
+            .await,
+            "stance:0",
+        );
+        assert_eq!(live_pins(old_stance.clone()).await?, 0, "a live row pins the forgotten stance");
+
+        // An identical replay whose stance subject was forgotten afterwards
+        // still answers, with the forgotten Fact listed.
+        let episode = serde_json::json!({
+            "remember": [remember("r4-e")], "stance": [stance("rfour replayed stance", "remember:0")],
+        });
+        let first = call("core_episode_commit", episode.clone()).await?;
+        let fact = first["remembered"][0].as_str().ok_or("fact")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+        let replay = call("core_episode_commit", episode).await?;
+        assert_eq!(replay["stances"], first["stances"], "{replay}");
+        assert_eq!(replay["forgotten"], serde_json::json!([fact]), "{replay}");
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("new stance on a forgotten replay slot");
+}

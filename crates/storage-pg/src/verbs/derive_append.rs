@@ -129,22 +129,24 @@ async fn append_derived_timeseries(
     Ok(outcome)
 }
 
+fn derived_kind(draft: &DerivedDraft<'_>) -> Result<&'static str, StorageError> {
+    match draft.kind {
+        EntityKind::Fact => Ok("fact"),
+        EntityKind::Abstraction => Ok("abstraction"),
+        EntityKind::Perspective => Ok("perspective"),
+        EntityKind::Goal => Err(StorageError::ConstraintViolation(
+            "derived write cannot be a Goal".into(),
+        )),
+    }
+}
+
 async fn admit_derived(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     writer: proxima_core::WriterAttribution,
     input: DerivedAdmissionInput<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
-    let kind = match draft.kind {
-        EntityKind::Fact => "fact",
-        EntityKind::Abstraction => "abstraction",
-        EntityKind::Perspective => "perspective",
-        EntityKind::Goal => {
-            return Err(StorageError::ConstraintViolation(
-                "derived write cannot be a Goal".into(),
-            ));
-        }
-    };
+    let kind = derived_kind(draft)?;
     let handle = if let Some(prior) = draft.supersedes {
         let prior_handle: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
@@ -163,7 +165,9 @@ async fn admit_derived(
     } else {
         draft.memory_id
     };
-    if let Some(replay) = try_derived_replay(tx, handle, draft, kind, input).await? {
+    if let Some(replay) =
+        try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
+    {
         return Ok(replay);
     }
     let cmd = derived_memory_command(draft, handle, kind);
@@ -193,7 +197,9 @@ async fn admit_derived(
     // preparation. Preparation then observes its head and legitimately
     // passes the locked head comparison. Recheck under the existing fences
     // and handle/lifecycle locks before materializing another version.
-    if let Some(replay) = try_derived_replay(tx, handle, draft, kind, input).await? {
+    if let Some(replay) =
+        try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
+    {
         return Ok(replay);
     }
     let prepared = super::memory_timeseries::claim_prepared_memory_admission(tx, prepared).await?;
@@ -229,13 +235,14 @@ async fn try_derived_replay(
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
     kind: &str,
-    input: DerivedAdmissionInput<'_>,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
 ) -> Result<Option<DerivedOutcome>, StorageError> {
     if draft.supersedes.is_some() {
         return Ok(None);
     }
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
-    let result = derived_replay_in_lifecycle(tx, handle, draft, kind, input).await;
+    let result = derived_replay_in_lifecycle(tx, handle, draft, kind, origins, references).await;
     lifecycle.finish(tx.as_mut(), result).await
 }
 
@@ -244,18 +251,18 @@ async fn derived_replay_in_lifecycle(
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
     kind: &str,
-    input: DerivedAdmissionInput<'_>,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
 ) -> Result<Option<DerivedOutcome>, StorageError> {
     {
         let existing = load_derived_replay_head(tx, handle, draft, kind).await?;
         if let Some((t, forgotten)) = existing {
             let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
-            let incoming_origins = pin_memory_ids(input.origins);
+            let incoming_origins = pin_memory_ids(origins);
             if stored_origins == incoming_origins {
                 let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
                 let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
-                let (refs, goal_refs) =
-                    super::memory_timeseries::pin_reference_ids(input.references);
+                let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
                 if stored_refs != refs || stored_goal_refs != goal_refs {
                     return Err(StorageError::Conflict(
                         "derived replay changed declared refs".into(),
@@ -275,7 +282,7 @@ async fn derived_replay_in_lifecycle(
     // same pins is that write. A live non-head version that matches is not
     // a replay; re-deriving it appends a version that becomes head, as
     // before #488.
-    let incoming_origins = pin_memory_ids(input.origins);
+    let incoming_origins = pin_memory_ids(origins);
     let forgotten_version: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten version) */
           WHERE handle = $1 AND owner_id = $2
@@ -295,7 +302,7 @@ async fn derived_replay_in_lifecycle(
     if let Some(t) = forgotten_version {
         let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
         let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
-        let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(input.references);
+        let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
         if stored_refs != refs || stored_goal_refs != goal_refs {
             return Err(StorageError::Conflict(
                 "derived replay changed declared refs".into(),
@@ -628,13 +635,24 @@ pub(crate) async fn validate_derived_origins_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
 ) -> Result<(), StorageError> {
     let expected_input_kind = draft.operator_kind.phase().input_kind();
     let input_ids = collect_operator_inputs(origins)?;
     if input_ids.is_empty() {
         return Ok(());
     }
-    let rows = load_live_input_proof_rows_in_tx(tx, &input_ids).await?;
+    let mut rows = load_live_input_proof_rows_in_tx(tx, &input_ids).await?;
+    // A replay answers even when an input was forgotten after the first
+    // write (#488 review r3): the write is not repeated, so nothing new is
+    // built on the forgotten input. Its inputs are proved over every row,
+    // and the stored-kind checks below still apply. Any other write keeps
+    // the live-only proof.
+    if rows.len() != input_ids.len()
+        && replays_an_existing_version(tx, draft, origins, references).await?
+    {
+        rows = load_replay_input_proof_rows_in_tx(tx, &input_ids).await?;
+    }
     if rows.len() != input_ids.len() {
         return Err(StorageError::ConstraintViolation(
             "operator invocation inputs must exist and be live".into(),
@@ -664,8 +682,15 @@ pub(crate) async fn validate_derived_origins_in_tx(
 /// Stored kind for payload references. Missing targets are skipped:
 /// batch writes name sibling rows that land later in the same
 /// transaction. After those inserts, the batch path calls this again.
+///
+/// A reference to a forgotten memory is refused unless the write is a
+/// replay of an existing version (#488 review r4): a new write never pins a
+/// forgotten memory, whichever path resolved the id; the replay writes
+/// nothing, so it answers, as for origins.
 pub(crate) async fn validate_derived_reference_kinds_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
 ) -> Result<(), StorageError> {
     let ids: Vec<uuid::Uuid> = references
@@ -676,7 +701,35 @@ pub(crate) async fn validate_derived_reference_kinds_in_tx(
         return Ok(());
     }
     let stored = load_stored_memory_kinds_in_tx(tx, &ids).await?;
-    assert_declared_kinds_match_stored(references, &stored, false)
+    assert_declared_kinds_match_stored(references, &stored, false)?;
+    if stored.len() != ids.len()
+        && !load_forgotten_reference_ids_in_tx(tx, &ids)
+            .await?
+            .is_empty()
+        && !replays_an_existing_version(tx, draft, origins, references).await?
+    {
+        return Err(StorageError::ConstraintViolation(
+            "operator invocation inputs must exist and be live".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn load_forgotten_reference_ids_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ids: &[uuid::Uuid],
+) -> Result<Vec<uuid::Uuid>, StorageError> {
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let forgotten: Result<Vec<uuid::Uuid>, StorageError> = sqlx::query_scalar(
+        "SELECT m.t
+           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (finds the forgotten rows a new write must not pin) */
+          WHERE m.t = ANY($1::uuid[]) AND m.forgotten_at IS NOT NULL",
+    )
+    .bind(ids)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err);
+    lifecycle.finish(tx.as_mut(), forgotten).await
 }
 
 fn assert_declared_kinds_match_stored(
@@ -725,6 +778,40 @@ fn collect_operator_inputs(origins: &[EdgeEndpoint]) -> Result<Vec<uuid::Uuid>, 
     Ok(input_ids)
 }
 
+async fn replays_an_existing_version(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
+) -> Result<bool, StorageError> {
+    let kind = derived_kind(draft)?;
+    Ok(
+        try_derived_replay(tx, draft.memory_id, draft, kind, origins, references)
+            .await?
+            .is_some(),
+    )
+}
+
+async fn load_replay_input_proof_rows_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    input_ids: &[uuid::Uuid],
+) -> Result<Vec<InputProofRow>, StorageError> {
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let rows: Result<Vec<(uuid::Uuid, String)>, StorageError> = sqlx::query_as(
+        "SELECT m.t, m.kind::text
+           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay's inputs may have been forgotten since) */
+          WHERE m.t = ANY($1::uuid[])",
+    )
+    .bind(input_ids)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err);
+    let rows = lifecycle.finish(tx.as_mut(), rows).await?;
+    rows.into_iter()
+        .map(|(id, kind)| Ok((id, parse_stored_kind(&kind)?, None, true, true)))
+        .collect()
+}
+
 async fn load_live_input_proof_rows_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     input_ids: &[uuid::Uuid],
@@ -753,20 +840,19 @@ async fn load_stored_memory_kinds_in_tx(
     .await
     .map_err(map_err)?;
     rows.into_iter()
-        .map(|(id, kind)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                other => {
-                    return Err(StorageError::Internal(format!(
-                        "invalid memory kind {other}"
-                    )));
-                }
-            };
-            Ok((id, kind))
-        })
+        .map(|(id, kind)| Ok((id, parse_stored_kind(&kind)?)))
         .collect()
+}
+
+fn parse_stored_kind(kind: &str) -> Result<EntityKind, StorageError> {
+    match kind {
+        "fact" => Ok(EntityKind::Fact),
+        "abstraction" => Ok(EntityKind::Abstraction),
+        "perspective" => Ok(EntityKind::Perspective),
+        other => Err(StorageError::Internal(format!(
+            "invalid memory kind {other}"
+        ))),
+    }
 }
 
 #[cfg(test)]

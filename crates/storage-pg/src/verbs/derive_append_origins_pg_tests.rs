@@ -82,8 +82,8 @@ async fn append_with_edges(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    super::validate_derived_origins_in_tx(&mut tx, draft, origins).await?;
-    super::validate_derived_reference_kinds_in_tx(&mut tx, references).await?;
+    super::validate_derived_origins_in_tx(&mut tx, draft, origins, references).await?;
+    super::validate_derived_reference_kinds_in_tx(&mut tx, draft, origins, references).await?;
     let outcome = super::append_derived_with_content_payloads_in_tx(
         &mut tx,
         permit,
