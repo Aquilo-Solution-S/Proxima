@@ -4,9 +4,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use proxima_core::mcp::ToolEffect;
-use proxima_core::tool::{Tool, ToolCtx};
-use proxima_core::{OwnerScope, ToolError};
+use proxima::OwnerScope;
+use proxima::flavor::{Tool, ToolCtx, ToolEffect, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

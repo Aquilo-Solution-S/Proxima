@@ -2305,7 +2305,6 @@ name = "proxima-example"
 version = "0.1.0"
 dependencies = [
  "proxima",
- "proxima-core",
  "proxima-example",
  "schemars",
  "serde",

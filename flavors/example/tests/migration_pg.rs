@@ -136,7 +136,7 @@ async fn the_tool_is_owner_scoped() {
     let notebook_a = register_notebook(&runtime, scope_a, owner_a, "a's")
         .await
         .expect("a registers");
-    let both = proxima_core::test_fixtures::owner_scope_for_tests(&[owner_a, owner_b]);
+    let both = proxima::testkit::owner_scope_for_tests(&[owner_a, owner_b]);
     let store = ExampleStore::from_host_pool(runtime.clone());
     assert_eq!(
         store

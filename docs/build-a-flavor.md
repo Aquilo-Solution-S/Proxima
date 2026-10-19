@@ -10,7 +10,8 @@ facade; it neither runs as a remote plugin nor accesses core tables directly.
 The test flavor
 [`flavors/example`](https://github.com/Aquilo-Solution-S/Proxima/tree/main/flavors/example)
 (`proxima-example`, a test and tutorial fixture, not a product) is a complete
-small flavor. It uses the same public SDK as an external crate. Follow its
+small flavor. It uses the same public SDK as an external crate: among workspace
+crates its `Cargo.toml` depends on `proxima` only. Follow its
 `NoteV1` payload and sidecar (`src/payload.rs`), `EXAMPLE_CONTRACT`
 (`src/contract.rs`), migration (`migrations/`), tool (`src/tool.rs`) and
 `ExampleFlavor` bundle (`src/lib.rs`) in that order. The facade's

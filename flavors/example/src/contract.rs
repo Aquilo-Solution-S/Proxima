@@ -1,12 +1,11 @@
 //! The example flavor's contract. A test and tutorial fixture, not a product.
 
-use proxima_core::ScopeDecl;
-use proxima_core::flavor::{
+use proxima::flavor::{
     CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
     ToolContract, TransferRule,
 };
-use proxima_core::verbs::schema::PayloadKind;
+use proxima::flavor::{PayloadKind, ScopeDecl};
 
 use crate::payload::NOTEBOOK_SCOPE;
 

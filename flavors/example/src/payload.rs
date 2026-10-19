@@ -1,7 +1,7 @@
 //! The example flavor's payloads: a stateful note Fact, a digest
 //! Abstraction, and a stamp Fact that follows its memory on transfer.
 
-use proxima_core::{AbstractionPayload, FactPayload, ScopeKind};
+use proxima::flavor::{AbstractionPayload, FactPayload, ScopeKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

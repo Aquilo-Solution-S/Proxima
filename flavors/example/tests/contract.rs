@@ -1,12 +1,10 @@
 //! The example flavor's contract, without Postgres.
 
-use proxima::flavor::{FlavorBundle, FlavorRegistry};
-use proxima_core::mcp::ToolEffect;
-use proxima_core::tool::Tool;
-use proxima_core::verbs::schema::composed_schema_names;
+use proxima::composed_schema_names;
+use proxima::flavor::{FlavorBundle, FlavorRegistry, Tool, ToolEffect};
 use proxima_example::{EXAMPLE_CONTRACT, ExampleFlavor, ListNotebooksTool};
 
-fn frozen() -> proxima_core::FlavorRegistryFrozen {
+fn frozen() -> proxima::FlavorRegistryFrozen {
     let mut registry = FlavorRegistry::new();
     ExampleFlavor::register(&mut registry).expect("the example flavor registers");
     registry.try_freeze().expect("and the registry freezes")

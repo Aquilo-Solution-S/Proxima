@@ -3,7 +3,7 @@
 //! Behind `cfg(any(test, feature = "testkit"))`. A test and tutorial
 //! fixture, not a product.
 
-use proxima_core::{AuthzContext, Engine, OwnerId, OwnerScope, ProtocolError};
+use proxima::{AuthzContext, Engine, OwnerId, OwnerScope, ProtocolError};
 use uuid::Uuid;
 
 use crate::NoteV1;
@@ -47,7 +47,7 @@ pub async fn remember_note(
     authz: &AuthzContext,
     owner: OwnerId,
     note: &NoteV1,
-) -> Result<proxima_core::MemoryId, ProtocolError> {
+) -> Result<proxima::MemoryId, ProtocolError> {
     let outcome = engine
         .ingest_fact(
             authz,
@@ -154,7 +154,7 @@ impl From<ProtocolError> for Attempt {
 }
 
 /// Erase one notebook the way a flavor's scope erase runs: the notebook's
-/// series through core's [`proxima_core::UnitOfWork::erase_own_series`], a
+/// series through core's [`proxima::flavor::UnitOfWork::erase_own_series`], a
 /// page at a time, then the registry row under the notebook scope fence
 /// ([`proxima::flavor::lock_scope_fence_exclusive_tx`]), taken BEFORE the
 /// last read so a same-notebook write either committed before it (and is
@@ -292,10 +292,7 @@ async fn erase_page(
 ) -> Result<u64, Option<Attempt>> {
     use proxima::flavor::{EraseMode, SeriesEraseError, SeriesEraseRefusalKind, SeriesSelection};
 
-    let seeds = found
-        .iter()
-        .map(|t| proxima_core::MemoryId::new(*t))
-        .collect();
+    let seeds = found.iter().map(|t| proxima::MemoryId::new(*t)).collect();
     let mut unit = engine
         .unit_of_work(authz)
         .await
@@ -346,7 +343,7 @@ async fn retire_notebook(
     )
     .await
     .map_err(|err| match err {
-        proxima_core::StorageError::Retryable(message) => Attempt::Transient(message),
+        proxima::StorageError::Retryable(message) => Attempt::Transient(message),
         other => Attempt::Fatal(other.to_string()),
     })?;
     let exists: Option<(Uuid,)> = sqlx::query_as(NOTEBOOK_EXISTS_SQL)

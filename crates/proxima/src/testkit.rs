@@ -8,6 +8,10 @@
 
 pub use proxima_pg_testkit::*;
 
+/// A verified owner scope over several named owners (admin on each), for
+/// flavor tests that read across owners.
+pub use proxima_core::test_fixtures::owner_scope_for_tests;
+
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, Role, UserId};
 use proxima_storage_pg::{PgPoolConfig, PgSidecarRegistry, PgTuning, register_core_pg_sidecars};
 use sqlx::PgPool;
