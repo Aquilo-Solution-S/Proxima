@@ -469,8 +469,7 @@ async fn citation_object_for_t(
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err);
-    lifecycle.leave(tx.as_mut()).await?;
-    Ok(blob_id?.flatten())
+    Ok(lifecycle.finish(tx.as_mut(), blob_id).await?.flatten())
 }
 
 /// Verify a by-ref citation target: the cited object must exist for the

@@ -708,6 +708,18 @@ async fn forget_marked(
     kinds: Option<&[&str]>,
 ) -> Result<(), StorageError> {
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let result = forget_in_lifecycle(tx, sidecars, surfaces, t, expected_owner_id, kinds).await;
+    lifecycle.finish(tx.as_mut(), result).await
+}
+
+async fn forget_in_lifecycle(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    surfaces: &OwnerSurfaces,
+    t: Uuid,
+    expected_owner_id: Uuid,
+    kinds: Option<&[&str]>,
+) -> Result<(), StorageError> {
     let handle = probe_memory_handle_for_owner(tx, t, expected_owner_id)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -734,8 +746,7 @@ async fn forget_marked(
     .map_err(map_err)?;
     delete_derived_dependents(tx, sidecars, surfaces, t).await?;
     crate::verbs::publication_outbox::cancel_undelivered_for_forget(tx, t).await?;
-    sync_memory_head(tx, handle).await?;
-    lifecycle.leave(tx.as_mut()).await
+    sync_memory_head(tx, handle).await
 }
 
 /// The owner's row for `t`, locked, in either state.
@@ -769,7 +780,7 @@ pub(crate) async fn restore_memory_oneshot_in_transaction(
     tx.commit().await.map_err(map_err)
 }
 
-async fn restore_marked(
+pub(crate) async fn restore_marked(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     t: Uuid,
@@ -777,6 +788,17 @@ async fn restore_marked(
     embeddings: crate::verbs::fact_embeddings::RouteSpaces<'_>,
 ) -> Result<(), StorageError> {
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let result = restore_in_lifecycle(tx, sidecars, t, reach, embeddings).await;
+    lifecycle.finish(tx.as_mut(), result).await
+}
+
+async fn restore_in_lifecycle(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    t: Uuid,
+    reach: &Reach,
+    embeddings: crate::verbs::fact_embeddings::RouteSpaces<'_>,
+) -> Result<(), StorageError> {
     let handle = probe_memory_handle_for_owner(tx, t, reach.owner_id)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -829,7 +851,7 @@ async fn restore_marked(
         }
         sync_memory_head(tx, handle).await?;
     }
-    lifecycle.leave(tx.as_mut()).await
+    Ok(())
 }
 
 /// Hard-delete one admission of an abandoned owner.
@@ -852,9 +874,8 @@ pub async fn erase_memory(
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
-    let plan = erase_memory_in_lifecycle(tx, sidecars, context, owner, t).await?;
-    lifecycle.leave(tx.as_mut()).await?;
-    Ok(plan)
+    let result = erase_memory_in_lifecycle(tx, sidecars, context, owner, t).await;
+    lifecycle.finish(tx.as_mut(), result).await
 }
 
 #[allow(clippy::too_many_lines)] // the ordered hard-delete transaction keeps atomic DML sequencing visible
@@ -1023,10 +1044,13 @@ pub async fn erase_memory_series(
     // membership is the generation witness: handles are reusable after a
     // complete erase, so a non-empty post-lock series disjoint from this
     // snapshot is a replacement, not a late version of the requested series.
-    let before = snapshot_series_for_erase_tx(tx, owner_id, ts).await?;
-    let erased = erase_memory_series_after_snapshot(tx, sidecars, context, owner, before).await?;
-    lifecycle.leave(tx.as_mut()).await?;
-    Ok(erased)
+    let result = match snapshot_series_for_erase_tx(tx, owner_id, ts).await {
+        Ok(before) => {
+            erase_memory_series_after_snapshot(tx, sidecars, context, owner, before).await
+        }
+        Err(err) => Err(err),
+    };
+    lifecycle.finish(tx.as_mut(), result).await
 }
 
 async fn erase_memory_series_after_snapshot(

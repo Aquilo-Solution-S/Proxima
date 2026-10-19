@@ -14,7 +14,13 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use crate::error::map_err;
 
 /// Proof that a transaction was opened in the lifecycle scope.
+///
+/// The scope ends only through [`Self::finish`], which every caller runs on
+/// the success and the error path alike: a verb that fails after entering
+/// (a lost race, a kind mismatch, an absent id) is not a SQL error, so the
+/// transaction stays usable and would otherwise keep seeing forgotten rows.
 #[derive(Debug)]
+#[must_use = "end the lifecycle scope with `finish` on every path"]
 pub(crate) struct PgLifecycleScope {
     _sealed: (),
 }
@@ -47,8 +53,22 @@ impl PgLifecycleScope {
     }
 
     /// Narrow the transaction back to owner reads that hide forgotten
-    /// memories, for a lifecycle read inside an ordinary owner write.
-    pub(crate) async fn leave(self, connection: &mut PgConnection) -> Result<(), StorageError> {
+    /// memories, whatever `result` the scoped work produced, and return that
+    /// result. The work's own error wins over a failure to narrow: after a
+    /// SQL error the transaction is aborted and the reset cannot run, but no
+    /// later statement can either.
+    pub(crate) async fn finish<T>(
+        self,
+        connection: &mut PgConnection,
+        result: Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let left = self.leave(connection).await;
+        let value = result?;
+        left?;
+        Ok(value)
+    }
+
+    async fn leave(self, connection: &mut PgConnection) -> Result<(), StorageError> {
         sqlx::query("SELECT set_config('app.proxima_lifecycle', 'off', true)")
             .execute(connection)
             .await

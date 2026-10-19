@@ -99,8 +99,7 @@ impl OwnerAccessReadPort for PgStorage {
             let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
             let found =
                 access::owner_columns::visible_home_owner(tx.as_mut(), entity, read_owners).await;
-            lifecycle.leave(tx.as_mut()).await?;
-            found
+            lifecycle.finish(tx.as_mut(), found).await
         }
         .await;
         crate::owner_scope::finish_transaction(tx, result).await

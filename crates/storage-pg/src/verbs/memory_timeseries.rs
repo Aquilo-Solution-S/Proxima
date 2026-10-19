@@ -564,8 +564,9 @@ async fn load_ingest_replay(
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err);
-    lifecycle.leave(tx.as_mut()).await?;
-    let replay_row = replay_row?
+    let replay_row = lifecycle
+        .finish(tx.as_mut(), replay_row)
+        .await?
         .ok_or_else(|| internal(format!("ingest key claims t {replay_t} with no memory row")))?;
     let (Some(stored_refs), Some(stored_goal_refs)) = (replay_row.1, replay_row.2) else {
         return Err(StorageError::Conflict(

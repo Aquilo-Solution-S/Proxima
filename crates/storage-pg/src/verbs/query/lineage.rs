@@ -255,7 +255,7 @@ pub(crate) async fn forgotten_nodes_on_connection(
         return Ok(Vec::new());
     }
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(&mut *connection).await?;
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+    let rows: Result<Vec<(Uuid, String, String)>, StorageError> = sqlx::query_as(
         "SELECT m.t, m.kind::text, m.schema_id
            FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (forgotten-target probe: only the forgotten rows the reader's permits reach) */
           WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
@@ -265,8 +265,8 @@ pub(crate) async fn forgotten_nodes_on_connection(
     .bind(owner_ids)
     .fetch_all(&mut *connection)
     .await
-    .map_err(map_err)?;
-    lifecycle.leave(&mut *connection).await?;
+    .map_err(map_err);
+    let rows = lifecycle.finish(&mut *connection, rows).await?;
     Ok(rows
         .into_iter()
         .filter_map(|(id, kind, schema)| {

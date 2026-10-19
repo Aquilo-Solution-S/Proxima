@@ -191,7 +191,7 @@ async fn the_lifecycle_scope_sees_a_forgotten_memory_and_does_not_leak() {
     let mut connection = pg.pool.acquire().await.expect("connection");
     let mut tx = connection.begin().await.expect("begin");
     bind_owner_scope(&mut tx, &scope).await.expect("bind");
-    PgLifecycleScope::enter(&mut tx).await.expect("enter");
+    let _lifecycle = PgLifecycleScope::enter(&mut tx).await.expect("enter");
     assert_eq!(sees(&mut tx, child).await, (1, 1));
     tx.commit().await.expect("commit");
     let mut tx = connection.begin().await.expect("begin");
@@ -428,4 +428,123 @@ async fn replaying_a_forgotten_write_answers_its_handle_and_writes_nothing() {
     .expect("rows");
     assert_eq!(rows, 1, "no row was written");
     assert!(still_forgotten, "the replay does not clear the flag");
+}
+
+// #488 review r1 finding 3: a lifecycle verb that fails after entering the
+// scope must not leave it on for the rest of the transaction. A unit of
+// work that tolerates the error keeps reading and writing in that same
+// transaction, which would then see forgotten rows.
+
+/// An owner transaction with a forgotten note `t` in it, plus a `t` that
+/// names nothing.
+async fn failing_lifecycle_fixture(
+    name: &str,
+) -> (
+    crate::PgStorage,
+    impl Drop,
+    OwnerId,
+    Uuid,
+    sqlx::Transaction<'static, sqlx::Postgres>,
+) {
+    let (pg, guard) = fresh_pg(name).await;
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let t = forgotten_note(&pg, owner).await;
+    let tx =
+        crate::owner_scope::begin_owner_transaction(&pg.pool, &owner_scope_for_tests(&[owner]))
+            .await
+            .expect("owner tx");
+    (pg, guard, owner, t, tx)
+}
+
+#[tokio::test]
+async fn a_forget_that_loses_the_race_leaves_the_scope() {
+    let (_pg, _guard, owner, t, mut tx) = failing_lifecycle_fixture("r1_forget_race").await;
+    assert_eq!(sees(&mut tx, t).await, (0, 0), "owner scope hides it");
+    // `t` is already forgotten: the concurrent forget won. The probe sees
+    // it in the lifecycle scope, the live lock does not, so NotFound comes
+    // back after the scope was entered.
+    let lost = crate::verbs::forget::forget_memory(
+        &mut tx,
+        &crate::core_pg_sidecars(),
+        &surfaces(),
+        t,
+        owner.into_inner(),
+    )
+    .await;
+    assert!(
+        matches!(lost, Err(proxima_core::StorageError::NotFound)),
+        "{lost:?}"
+    );
+    assert_eq!(
+        sees(&mut tx, t).await,
+        (0, 0),
+        "the scope outlived the forget"
+    );
+    // And a forget of an id with no row at all.
+    let absent = crate::verbs::forget::forget_memory(
+        &mut tx,
+        &crate::core_pg_sidecars(),
+        &surfaces(),
+        Uuid::now_v7(),
+        owner.into_inner(),
+    )
+    .await;
+    assert!(absent.is_err(), "{absent:?}");
+    assert_eq!(
+        sees(&mut tx, t).await,
+        (0, 0),
+        "the scope outlived the forget"
+    );
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+async fn a_failed_restore_leaves_the_scope() {
+    let (_pg, _guard, owner, t, mut tx) = failing_lifecycle_fixture("r1_restore_fail").await;
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let failed = crate::verbs::forget::restore_marked(
+        &mut tx,
+        &crate::core_pg_sidecars(),
+        Uuid::now_v7(),
+        &crate::verbs::forget::Reach::of(&permit),
+        crate::verbs::fact_embeddings::RouteSpaces {
+            spaces: &[],
+            non_embeddable_schemas: &[],
+        },
+    )
+    .await;
+    assert!(
+        matches!(failed, Err(proxima_core::StorageError::NotFound)),
+        "{failed:?}"
+    );
+    assert_eq!(
+        sees(&mut tx, t).await,
+        (0, 0),
+        "the scope outlived the restore"
+    );
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+async fn a_failed_erase_leaves_the_scope() {
+    let (_pg, _guard, owner, t, mut tx) = failing_lifecycle_fixture("r1_erase_fail").await;
+    let failed = crate::verbs::forget::erase_memory(
+        &mut tx,
+        &crate::core_pg_sidecars(),
+        &crate::PgHostStateEraseContext::for_surfaces_for_tests(surfaces())
+            .expect("no host lifecycle tables"),
+        &owner,
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(
+        matches!(failed, Err(proxima_core::StorageError::NotFound)),
+        "{failed:?}"
+    );
+    assert_eq!(
+        sees(&mut tx, t).await,
+        (0, 0),
+        "the scope outlived the erase"
+    );
+    tx.rollback().await.expect("rollback");
 }
