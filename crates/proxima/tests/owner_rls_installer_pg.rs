@@ -8,10 +8,13 @@ mod example_engine;
 
 use sqlx::{Connection, PgConnection};
 
-/// The example schema's classification, as the example migrator states it (baseline plus `stamp_follows`).
-const OWNER_ID_TABLES: &[&str] = &["notebooks", "stamp_v1"];
+/// The example schema's classification, as the example migrator states it
+/// (baseline, `stamp_follows`, then `stamp_follows_memory_rls`).
+const OWNER_ID_TABLES: &[&str] = &["notebooks"];
 const FK_PARENT_TABLES: &[&str] = &["note_v1", "digest_v1"];
 const OWNERLESS_TABLES: &[&str] = &["settings"];
+/// The `owner: follows` stamp: visible exactly when its memory is.
+const MEMORY_OWNER_TABLES: &[&str] = &["stamp_v1"];
 
 const POLICIES: &str = "SELECT c.relname::text, p.polname::text, p.polcmd::text,
         p.polpermissive, p.polroles::text,
@@ -82,7 +85,14 @@ async fn refusal(
 /// Every classification the installer must refuse, each in a rolled-back
 /// transaction.
 async fn assert_refusals(conn: &mut PgConnection) {
-    let message = refusal(conn, &[], FK_PARENT_TABLES, OWNERLESS_TABLES, &[]).await;
+    let message = refusal(
+        conn,
+        &[],
+        FK_PARENT_TABLES,
+        OWNERLESS_TABLES,
+        MEMORY_OWNER_TABLES,
+    )
+    .await;
     assert!(
         message.contains("owner RLS classification missing for proxima_example.notebooks"),
         "an unclassified table refuses: {message}"
@@ -90,7 +100,14 @@ async fn assert_refusals(conn: &mut PgConnection) {
 
     let mut with_stale = FK_PARENT_TABLES.to_vec();
     with_stale.push("dropped_long_ago_v1");
-    let message = refusal(conn, OWNER_ID_TABLES, &with_stale, OWNERLESS_TABLES, &[]).await;
+    let message = refusal(
+        conn,
+        OWNER_ID_TABLES,
+        &with_stale,
+        OWNERLESS_TABLES,
+        MEMORY_OWNER_TABLES,
+    )
+    .await;
     assert!(
         message.contains("classified table proxima_example.dropped_long_ago_v1 does not exist"),
         "a stale name refuses: {message}"
@@ -98,7 +115,14 @@ async fn assert_refusals(conn: &mut PgConnection) {
 
     let mut twice = FK_PARENT_TABLES.to_vec();
     twice.push("notebooks");
-    let message = refusal(conn, OWNER_ID_TABLES, &twice, OWNERLESS_TABLES, &[]).await;
+    let message = refusal(
+        conn,
+        OWNER_ID_TABLES,
+        &twice,
+        OWNERLESS_TABLES,
+        MEMORY_OWNER_TABLES,
+    )
+    .await;
     assert!(
         message.contains("proxima_example.notebooks is classified 2 times"),
         "a double classification refuses: {message}"
@@ -106,7 +130,14 @@ async fn assert_refusals(conn: &mut PgConnection) {
 
     let mut owner_as_fk = FK_PARENT_TABLES.to_vec();
     owner_as_fk.push("notebooks");
-    let message = refusal(conn, &[], &owner_as_fk, OWNERLESS_TABLES, &[]).await;
+    let message = refusal(
+        conn,
+        &[],
+        &owner_as_fk,
+        OWNERLESS_TABLES,
+        MEMORY_OWNER_TABLES,
+    )
+    .await;
     assert!(
         message.contains(
             "proxima_example.notebooks has an owner_id column but is not in owner_id_tables"
@@ -114,7 +145,14 @@ async fn assert_refusals(conn: &mut PgConnection) {
         "an owner_id table cannot take a parent's policy: {message}"
     );
 
-    let message = refusal(conn, OWNER_ID_TABLES, FK_PARENT_TABLES, &[], &["settings"]).await;
+    let message = refusal(
+        conn,
+        OWNER_ID_TABLES,
+        FK_PARENT_TABLES,
+        &[],
+        &["settings", "stamp_v1"],
+    )
+    .await;
     assert!(
         message.contains("settings is in memory_owner_tables but has no uuid t column"),
         "a memory-owner table must be keyed by t: {message}"
@@ -308,7 +346,7 @@ async fn installer_refuses_invalid_classifications_and_preserves_live_policies()
         OWNER_ID_TABLES,
         FK_PARENT_TABLES,
         OWNERLESS_TABLES,
-        &[],
+        MEMORY_OWNER_TABLES,
     )
     .await
     .expect("the example classification installs");
@@ -324,7 +362,10 @@ async fn installer_refuses_invalid_classifications_and_preserves_live_policies()
         .expect("live policies");
     assert_eq!(
         live.len(),
-        3 * (OWNER_ID_TABLES.len() + FK_PARENT_TABLES.len() + OWNERLESS_TABLES.len()),
+        3 * (OWNER_ID_TABLES.len()
+            + FK_PARENT_TABLES.len()
+            + OWNERLESS_TABLES.len()
+            + MEMORY_OWNER_TABLES.len()),
         "every example table carries the three owner-RLS policies"
     );
     assert_eq!(live, expected, "live policies are the installer result");
@@ -341,6 +382,20 @@ async fn installer_refuses_invalid_classifications_and_preserves_live_policies()
             );
             assert!(!policy.5.contains("notebook_id"), "{}", policy.5);
             assert!(!policy.6.contains("notebook_id"), "{}", policy.6);
+        }
+    }
+
+    for table in MEMORY_OWNER_TABLES {
+        let read = named_policy(&live, table, "proxima_owner_read");
+        let write = named_policy(&live, table, "proxima_owner_write");
+        for policy in [read, write] {
+            assert!(
+                policy.5.contains("FROM proxima_core.memory parent")
+                    && policy.5.contains(&format!("parent.t = {table}.t")),
+                "{} reads through its memory: {}",
+                policy.1,
+                policy.5
+            );
         }
     }
 

@@ -112,7 +112,10 @@ async fn the_baseline_applies_under_split_roles_and_the_census_passes() {
     .fetch_all(&admin)
     .await
     .expect("the example's own ledger");
-    assert_eq!(versions, vec![20_261_018_000_011, 20_261_019_100_000]);
+    assert_eq!(
+        versions,
+        vec![20_261_018_000_011, 20_261_019_100_000, 20_261_019_200_000]
+    );
     admin.close().await;
     runtime.close().await;
     built.shutdown().await;

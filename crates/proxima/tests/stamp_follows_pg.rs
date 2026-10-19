@@ -1,10 +1,12 @@
-//! A1 (#474): `owner: follows` stamps `owner_id` at insert and rehomes on transfer.
+//! A1 (#474): `owner: follows` stamps `owner_id` at insert, rehomes on transfer,
+//! and is visible to owner reads exactly when its memory is.
 
 #[path = "fixtures/example_engine.rs"]
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
 mod example_engine;
 
 use example_engine::ExampleEngine;
+use proxima::flavor::{EraseMode, SeriesSelection};
 use proxima::{FactPayload, FactWrite};
 use proxima_core::{
     AuthPath, AuthzContext, EntityId, GroupId, OwnerId, Role, UserId,
@@ -51,6 +53,42 @@ async fn stamps_seen_by(runtime: &sqlx::PgPool, owner: OwnerId, t: Uuid) -> i64 
         .expect("stamp count under owner RLS");
     tx.rollback().await.expect("rollback");
     seen
+}
+
+/// After `destination` forgot memory `t`: the stamp row stays, still
+/// carrying the destination's `owner_id`, and a Follows row is visible exactly
+/// when its memory is, so a direct read of the sidecar table hides it from
+/// both owners.
+async fn assert_forgotten_stamp_hidden(
+    pool: &sqlx::PgPool,
+    runtime: &sqlx::PgPool,
+    destination: OwnerId,
+    source: OwnerId,
+    t: Uuid,
+) {
+    let after_forget: Uuid = sqlx::query_scalar(STAMP_OWNER_SQL)
+        .bind(t)
+        .fetch_one(pool)
+        .await
+        .expect("forget keeps the stamp row with the memory");
+    assert_eq!(after_forget, destination.into_inner());
+    assert_eq!(
+        memories_seen_by(runtime, destination, t).await,
+        0,
+        "the forgotten memory is hidden from its owner scope"
+    );
+    // A Follows row is visible exactly when its memory is: a direct read of
+    // the sidecar table hides it with the forgotten memory.
+    assert_eq!(
+        stamps_seen_by(runtime, destination, t).await,
+        0,
+        "the forgotten memory's stamp is hidden from its owner scope"
+    );
+    assert_eq!(
+        stamps_seen_by(runtime, source, t).await,
+        0,
+        "source does not see the forgotten stamp"
+    );
 }
 
 #[tokio::test]
@@ -192,19 +230,9 @@ async fn stamp_row_is_visible_to_its_owner_scope_only_across_transfer_forget_and
         .expect("destination forgets the memory");
     // #488: forget is a state. `DumpThenDelete` resolves to
     // `ForgetLeg::Marked`, so the stamp row stays with the forgotten memory,
-    // still carrying the destination's owner_id, while the memory itself is
-    // hidden from the owner scope. Only erase walks sidecar rows.
-    let after_forget: Uuid = sqlx::query_scalar(STAMP_OWNER_SQL)
-        .bind(t)
-        .fetch_one(&harness.pool)
-        .await
-        .expect("forget keeps the stamp row with the memory");
-    assert_eq!(after_forget, destination.into_inner());
-    assert_eq!(
-        memories_seen_by(&runtime, destination, t).await,
-        0,
-        "the forgotten memory is hidden from its owner scope"
-    );
+    // still carrying the destination's owner_id, while the memory and its
+    // stamp are hidden from the owner scope. Only erase walks sidecar rows.
+    assert_forgotten_stamp_hidden(&harness.pool, &runtime, destination, source, t).await;
 
     harness
         .engine
@@ -233,4 +261,58 @@ async fn stamp_row_is_visible_to_its_owner_scope_only_across_transfer_forget_and
         0,
         "source does not see the restored stamp"
     );
+}
+
+#[tokio::test]
+async fn forgotten_stamp_is_hidden_from_owner_reads_and_still_erased() {
+    let harness = ExampleEngine::new("proxima_stamp_follows_erase", |_| {}).await;
+    let runtime = sqlx::PgPool::connect(harness.db.runtime_url())
+        .await
+        .expect("runtime connection");
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let authz = authenticated_context(AuthzContext::for_subject(user, AuthPath::HostBearer));
+    let stamp = StampV1 {
+        mark: "erase-stamp".to_owned(),
+    };
+    let memory_id = harness
+        .engine
+        .ingest_fact(&authz, FactWrite::new(owner, StampV1::SCHEMA_ID, &stamp))
+        .await
+        .expect("stamp is remembered")
+        .memory_id;
+    let t = memory_id.into_inner();
+    harness
+        .engine
+        .forget_memory(&authz, owner, memory_id)
+        .await
+        .expect("owner forgets the memory");
+    assert_eq!(
+        stamps_seen_by(&runtime, owner, t).await,
+        0,
+        "the forgotten stamp is hidden from its owner"
+    );
+
+    let mut unit = harness
+        .engine
+        .unit_of_work(&authz)
+        .await
+        .expect("a unit opens");
+    let receipt = unit
+        .erase_own_series(
+            proxima_example::FLAVOR_ID,
+            owner,
+            SeriesSelection::Ids(vec![memory_id]),
+            EraseMode::Erase,
+        )
+        .await
+        .expect("the owner erases the forgotten series");
+    unit.commit().await.expect("the erase commits");
+    assert_eq!(receipt.versions_erased, 1);
+    let left: i64 = sqlx::query_scalar(STAMP_COUNT_SQL)
+        .bind(t)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("stamp count after erase");
+    assert_eq!(left, 0, "erase reaches the forgotten memory's stamp");
 }

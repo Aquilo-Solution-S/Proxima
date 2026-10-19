@@ -25,6 +25,7 @@ use uuid::Uuid;
 /// The example's baseline version (ordinal 11's lane).
 const EXAMPLE_MIGRATION_VERSION: i64 = 20_261_018_000_011;
 const STAMP_FOLLOWS_MIGRATION_VERSION: i64 = 20_261_019_100_000;
+const STAMP_FOLLOWS_MEMORY_RLS_MIGRATION_VERSION: i64 = 20_261_019_200_000;
 
 /// The baseline with every table but `settings` classified.
 fn gap_sql() -> String {
@@ -413,9 +414,10 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
         ledger_versions(&db, "public._sqlx_migrations_proxima_example").await,
         Some(vec![
             EXAMPLE_MIGRATION_VERSION,
-            STAMP_FOLLOWS_MIGRATION_VERSION
+            STAMP_FOLLOWS_MIGRATION_VERSION,
+            STAMP_FOLLOWS_MEMORY_RLS_MIGRATION_VERSION
         ]),
-        "the flavor records baseline and stamp_follows on its own ledger"
+        "the flavor records baseline and both stamp migrations on its own ledger"
     );
     assert_eq!(
         ledger_versions(&db, "public._sqlx_migrations").await,

@@ -101,6 +101,10 @@ insert and stays with that owner on transfer (`RetainAtSource`). Use
 `owner: follows` when the row stamps `owner_id` at insert (for RLS) but must
 move with the memory on transfer (`TransferRule::Follow` with
 `Surface.owner_column` set); freeze refuses Follows with RetainAtSource or Keep.
+Classify a Follows table in `install_owner_rls`'s `memory_owner_tables`, as the
+example's `stamp_v1` is: its policies read through `proxima_core.memory`, so a
+row is visible exactly when its memory is, and a forgotten memory hides it from
+owner reads while restore and erase still reach it.
 
 Use `PgMemorySidecar` directly for computed or multi-row sidecars. Authorized
 helpers and private permits bind reads/writes to admitted rows; do not query

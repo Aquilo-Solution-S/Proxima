@@ -54,10 +54,12 @@ const FK_PARENT: &[&str] = &[
 const OWNERLESS: &[&str] = &["settings"];
 const MEMORY_OWNER: &[&str] = &["self_v1", "projection", "m_keyed", "m_only", "m_plain"];
 
-/// The example schema's owner classification, as the example migrator states it (baseline plus `stamp_follows`).
-const EXAMPLE_OWNER_ID: &[&str] = &["notebooks", "stamp_v1"];
+/// The example schema's owner classification, as the example migrator states
+/// it (baseline, `stamp_follows`, then `stamp_follows_memory_rls`).
+const EXAMPLE_OWNER_ID: &[&str] = &["notebooks"];
 const EXAMPLE_FK_PARENT: &[&str] = &["note_v1", "digest_v1"];
 const EXAMPLE_OWNERLESS: &[&str] = &["settings"];
+const EXAMPLE_MEMORY_OWNER: &[&str] = &["stamp_v1"];
 
 const POLICIES: &str = "SELECT c.relname::text, p.polname::text, p.polcmd::text,
         p.polpermissive, p.polroles::text,
@@ -283,11 +285,16 @@ async fn a_table_installed_per_call_has_the_policies_of_the_schema_installer() {
 async fn per_table_calls_rebuild_the_example_schemas_policies() {
     let (_db, mut conn) = migrated_platform().await;
     let mut tx = conn.begin().await.expect("transaction");
-    let lists: [&[&str]; 4] = [EXAMPLE_OWNER_ID, EXAMPLE_FK_PARENT, EXAMPLE_OWNERLESS, &[]];
+    let lists: [&[&str]; 4] = [
+        EXAMPLE_OWNER_ID,
+        EXAMPLE_FK_PARENT,
+        EXAMPLE_OWNERLESS,
+        EXAMPLE_MEMORY_OWNER,
+    ];
     let current = policies(&mut tx, "proxima_example").await;
     assert_eq!(
         current.len(),
-        3 * (EXAMPLE_OWNER_ID.len() + EXAMPLE_FK_PARENT.len() + EXAMPLE_OWNERLESS.len())
+        3 * lists.iter().map(|list| list.len()).sum::<usize>()
     );
 
     install_schema(&mut tx, "proxima_example", lists)
