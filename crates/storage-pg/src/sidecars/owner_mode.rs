@@ -8,10 +8,12 @@
 ///   keeps it (`TransferRule::RetainAtSource`); forget/erase/export skip it and hydrate with
 ///   the owner-join select.
 /// - [`Follows`](Self::Follows): stamps `owner_id` from the memory at insert
-///   (same SQL as Pinned) so RLS can read the column without touching
-///   `proxima_core`, but transfer rehomes it (`TransferRule::Follow` +
-///   `Surface.owner_column`); forget/erase/export walk it with the memory, and
-///   hydrate uses the ordinary batch select.
+///   (same SQL as Pinned) and keeps it equal to the memory's owner: transfer
+///   rehomes it (`TransferRule::Follow` + `Surface.owner_column`);
+///   forget/erase/export walk it with the memory, and hydrate uses the
+///   ordinary batch select. Its RLS policies still read through
+///   `proxima_core.memory` (`install_owner_rls`'s `memory_owner_tables`), so
+///   the row is visible exactly when its memory is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidecarOwnerMode {
     None,
