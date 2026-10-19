@@ -20,10 +20,11 @@ use crate::projection::{projection_key_ident, snippet_sql};
 const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
        m.t AS src, m.kind::text AS src_kind, pin AS tgt,
        proxima_core.memory_created_at(m.t) AS created_at
-  FROM proxima_core.memory m
+  FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
   JOIN unnest(m.origins) AS pin ON true
  WHERE m.t = ANY($1::uuid[])
    AND m.owner_id = ANY($2::uuid[])
+   AND m.forgotten_at IS NULL
    AND ($3::uuid IS NULL OR (m.t, pin) < ($3::uuid, $4::uuid))
  ORDER BY m.t DESC, pin DESC
  LIMIT $5";
@@ -33,9 +34,10 @@ const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
 const DESCENDANT_HOP_SQL: &str = "SELECT DISTINCT ON (child.t, pin)
        child.t AS src, child.kind::text AS src_kind, pin AS tgt,
        proxima_core.memory_created_at(child.t) AS created_at
-  FROM proxima_core.memory child
+  FROM proxima_core.memory child /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
   JOIN unnest(child.origins) AS pin ON true
  WHERE child.owner_id = ANY($2::uuid[])
+   AND child.forgotten_at IS NULL
    AND child.origins && $1::uuid[]
    AND pin = ANY($1::uuid[])
    AND ($3::uuid IS NULL OR (child.t, pin) < ($3::uuid, $4::uuid))
@@ -43,14 +45,16 @@ const DESCENDANT_HOP_SQL: &str = "SELECT DISTINCT ON (child.t, pin)
  LIMIT $5";
 
 const ANCESTOR_FRONTIER_SQL: &str = "SELECT DISTINCT pin
-  FROM proxima_core.memory m
+  FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
   JOIN unnest(m.origins) AS pin ON true
  WHERE m.t = ANY($1::uuid[])
-   AND m.owner_id = ANY($2::uuid[])";
+   AND m.owner_id = ANY($2::uuid[])
+   AND m.forgotten_at IS NULL";
 
 const DESCENDANT_FRONTIER_SQL: &str = "SELECT DISTINCT child.t
-  FROM proxima_core.memory child
+  FROM proxima_core.memory child /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
  WHERE child.owner_id = ANY($2::uuid[])
+   AND child.forgotten_at IS NULL
    AND child.origins && $1::uuid[]";
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -198,8 +202,9 @@ async fn lineage_node_rows_on_connection(
     projections: &[MemorySearchProjection],
 ) -> Result<(Vec<(Uuid, String, String)>, HashMap<Uuid, String>), StorageError> {
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m
-          WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])",
+        "SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage node is a readable memory; owner RLS hides it too) */
+          WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
+            AND m.forgotten_at IS NULL",
     )
     .bind(node_ids)
     .bind(owner_ids)
@@ -294,8 +299,9 @@ pub(crate) async fn external_edges_on_connection(
     let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT e.t, e.memory, e.edge_kind
            FROM proxima_core.memory_external_origin e
-           JOIN proxima_core.memory m ON m.t = e.t
+           JOIN proxima_core.memory m /* FORGET-POLICY: live-only (a lineage edge hangs off a readable memory; owner RLS hides it too) */ ON m.t = e.t
           WHERE e.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
+            AND m.forgotten_at IS NULL
           ORDER BY e.t, e.memory",
     )
     .bind(memory_ids)

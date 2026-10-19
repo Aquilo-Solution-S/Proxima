@@ -557,7 +557,7 @@ async fn load_ingest_replay(
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let replay_row: Result<Option<ReplayRow>, StorageError> = sqlx::query_as(
         "SELECT handle, refs, goal_refs, forgotten_at IS NOT NULL
-           FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a re-delivered admission replays as forgotten) */ WHERE t = $1 AND owner_id = $2",
     )
     .bind(replay_t)
     .bind(owner_id)
@@ -685,7 +685,7 @@ async fn latest_observation(
             "SELECT EXISTS (
                  SELECT 1
                    FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m
+                   JOIN proxima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory displaces no head) */
                      ON m.t = $2 AND m.owner_id = $3 AND m.forgotten_at IS NULL
                   WHERE h.handle = $1 AND h.t <> $2
              )",
@@ -978,7 +978,7 @@ async fn insert_memory_revision(
 ) -> Result<(), StorageError> {
     let draft = &prepared.draft;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxima_core.memory /* FORGET-POLICY: includes-forgotten (a new row is live; the insert reads no other row) */
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
              content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via,
              lexical_language)
@@ -1084,7 +1084,7 @@ pub(crate) async fn read_memory_by_t(
     sqlx::query_as::<_, MemoryRow>(
         "SELECT handle, t, kind::text, owner_id, \"by\", via, source_id, ingest_key, origins, refs, goal_refs,
                 occurred_at
-           FROM proxima_core.memory
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test helper: the row the test just wrote) */
           WHERE t = $1",
     )
     .bind(t)
@@ -1104,7 +1104,7 @@ pub(crate) async fn read_memory_head(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.\"by\", m.via, m.source_id, m.ingest_key,
                 m.origins, m.refs, m.goal_refs, m.occurred_at
            FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_core.memory m /* FORGET-POLICY: includes-forgotten (test helper: the head the test just wrote) */ ON m.handle = h.handle AND m.t = h.t
           WHERE h.handle = $1",
     )
     .bind(handle)

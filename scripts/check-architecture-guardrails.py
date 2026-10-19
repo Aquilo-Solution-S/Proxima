@@ -759,13 +759,20 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 16, "includes-forgotten": 62}
+EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 72}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
     if suffix not in {".rs", ".sql"}:
         return False
-    return rel.startswith(MEMORY_CENSUS_PLATFORM_CALLEES) or PLATFORM_SCOPE_BINDING.search(text) is not None
+    return (
+        rel.startswith(MEMORY_CENSUS_PLATFORM_CALLEES)
+        or PLATFORM_SCOPE_BINDING.search(text) is not None
+        # A module that turns the lifecycle scope on reads forgotten memories
+        # through the owner policy (#488 review r2), so its reads say which
+        # side of forget they want, like platform-scope reads.
+        or LIFECYCLE_SCOPE_ENTER.search(text) is not None
+    )
 
 
 def live_only_statement(lines: list[str], index: int, suffix: str) -> str:
@@ -881,6 +888,23 @@ LIFECYCLE_GUC_WRITE = re.compile(
     re.IGNORECASE,
 )
 LIFECYCLE_GUC_MODULE = "crates/storage-pg/src/lifecycle_scope.rs"
+# Every production function that turns the lifecycle scope on, with how many
+# times (#488 review r2). A new site is a new way to see forgotten memories
+# under owner scope: add it here in the change that reviews it.
+LIFECYCLE_SCOPE_ENTER = re.compile(r"\bPgLifecycleScope::(?:enter|begin)\(")
+EXPECTED_LIFECYCLE_ENTER_SITES = {
+    ("crates/storage-pg/src/ports/owners.rs", "visible_home_owner"): 1,
+    ("crates/storage-pg/src/verbs/derive_append.rs", "try_derived_replay"): 1,
+    ("crates/storage-pg/src/verbs/derive_append.rs", "assert_derived_index_rows"): 1,
+    ("crates/storage-pg/src/verbs/derive_append.rs", "record_external_edges"): 1,
+    ("crates/storage-pg/src/verbs/fact_ingest.rs", "citation_object_for_t"): 1,
+    ("crates/storage-pg/src/verbs/forget.rs", "forget_marked"): 1,
+    ("crates/storage-pg/src/verbs/forget.rs", "restore_marked"): 1,
+    ("crates/storage-pg/src/verbs/forget.rs", "erase_memory"): 1,
+    ("crates/storage-pg/src/verbs/forget.rs", "erase_memory_series"): 1,
+    ("crates/storage-pg/src/verbs/memory_timeseries.rs", "load_ingest_replay"): 1,
+    ("crates/storage-pg/src/verbs/query/lineage.rs", "forgotten_nodes_on_connection"): 1,
+}
 LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "flavors")
 
 
@@ -894,6 +918,37 @@ def lifecycle_guc_writers(files: dict[str, str]) -> list[tuple[str, int]]:
             if LIFECYCLE_GUC_WRITE.search(line):
                 writers.append((rel, index))
     return writers
+
+
+def lifecycle_enter_sites(files: dict[str, str]) -> dict[tuple[str, str], int]:
+    """Production calls that enter the lifecycle scope, keyed by file and
+    enclosing function. Test modules and `*_tests.rs` files are left out."""
+    sites: dict[tuple[str, str], int] = {}
+    for rel, text in sorted(files.items()):
+        stem = rel.rsplit("/", 1)[-1].removesuffix(".rs")
+        if not rel.endswith(".rs") or stem == "tests" or stem.endswith("_tests") or "/tests/" in rel:
+            continue
+        lines = text.splitlines()
+        function = "?"
+        for index, line in enumerate(lines):
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            if line == "#[cfg(test)]" and re.match(r"mod \w+ \{", following):
+                break
+            name = re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)", line)
+            if name:
+                function = name.group(1)
+            if not line.strip().startswith("//") and LIFECYCLE_SCOPE_ENTER.search(line):
+                sites[(rel, function)] = sites.get((rel, function), 0) + 1
+    return sites
+
+
+def lifecycle_enter_mismatch(expected: dict[tuple[str, str], int], actual: dict[tuple[str, str], int]) -> list[str]:
+    problems = []
+    for key in sorted(set(expected) | set(actual)):
+        want, have = expected.get(key, 0), actual.get(key, 0)
+        if want != have:
+            problems.append(f"{key[0]} {key[1]}: expected {want} lifecycle scope enter(s), found {have}")
+    return problems
 
 
 def check_lifecycle_guc(findings: list[Finding]) -> None:
@@ -912,6 +967,8 @@ def check_lifecycle_guc(findings: list[Finding]) -> None:
     for rel, line_no in lifecycle_guc_writers(files):
         line = files[rel].splitlines()[line_no - 1]
         findings.append(Finding(ROOT / rel, line_no, "app.proxima_lifecycle set outside PgLifecycleScope", line))
+    for problem in lifecycle_enter_mismatch(EXPECTED_LIFECYCLE_ENTER_SITES, lifecycle_enter_sites(files)):
+        findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "lifecycle scope enter sites", problem))
 
 
 COLD_VOCABULARY = re.compile(
@@ -1039,6 +1096,26 @@ async fn ingest_fact_atomic(
     }
     if [rel for rel, _line in lifecycle_guc_writers(guc_files)] != ["crates/storage-pg/src/other.rs", "crates/x/src/y.sql"]:
         failures.append("lifecycle scope: a second writer of app.proxima_lifecycle was not detected (or a reader was)")
+    if not in_memory_census("let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;", ".rs"):
+        failures.append("memory census: a lifecycle-scope file was not recognized")
+    enter_files = {
+        "crates/storage-pg/src/verbs/a.rs": (
+            "async fn pinned(tx: &mut T) {\n"
+            "    let lifecycle = PgLifecycleScope::enter(tx.as_mut()).await?;\n"
+            "}\n"
+            "async fn added(tx: &mut T) {\n"
+            "    // PgLifecycleScope::enter(tx) in prose is no site\n"
+            "    let lifecycle = PgLifecycleScope::enter(tx.as_mut()).await?;\n"
+            "}\n"
+            "#[cfg(test)]\nmod tests {\n    fn t() { PgLifecycleScope::begin(&pool); }\n}\n"
+        ),
+        "crates/storage-pg/src/lifecycle_scope_pg_tests.rs": "PgLifecycleScope::begin(&pool);",
+    }
+    enter_problems = lifecycle_enter_mismatch(
+        {("crates/storage-pg/src/verbs/a.rs", "pinned"): 1}, lifecycle_enter_sites(enter_files)
+    )
+    if enter_problems != ["crates/storage-pg/src/verbs/a.rs added: expected 0 lifecycle scope enter(s), found 1"]:
+        failures.append(f"lifecycle scope: an unpinned enter site was not detected exactly: {enter_problems}")
     live_fixture = (
         'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */ WHERE t = $1")\n'
         'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */\n'

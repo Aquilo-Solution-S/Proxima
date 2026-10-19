@@ -147,8 +147,8 @@ async fn admit_derived(
     };
     let handle = if let Some(prior) = draft.supersedes {
         let prior_handle: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.memory
-              WHERE t = $1 AND owner_id = $2",
+            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
+              WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL",
         )
         .bind(prior.into_inner())
         .bind(draft.owner.into_inner())
@@ -549,9 +549,15 @@ async fn load_pin_ids(
     column: PinColumn,
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     let sql = match column {
-        PinColumn::Origins => "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
-        PinColumn::Refs => "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
-        PinColumn::GoalRefs => "SELECT unnest(goal_refs) FROM proxima_core.memory WHERE t = $1",
+        PinColumn::Origins => {
+            "SELECT unnest(origins) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+        }
+        PinColumn::Refs => {
+            "SELECT unnest(refs) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+        }
+        PinColumn::GoalRefs => {
+            "SELECT unnest(goal_refs) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+        }
     };
     // SQL-POLICY: fixed-fragment
     sqlx::query_scalar(sql)
@@ -700,8 +706,8 @@ async fn load_stored_memory_kinds_in_tx(
     }
     let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
         "SELECT m.t, m.kind::text
-           FROM proxima_core.memory m
-          WHERE m.t = ANY($1::uuid[])",
+           FROM proxima_core.memory m /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
+          WHERE m.t = ANY($1::uuid[]) AND m.forgotten_at IS NULL",
     )
     .bind(ids)
     .fetch_all(&mut **tx)
