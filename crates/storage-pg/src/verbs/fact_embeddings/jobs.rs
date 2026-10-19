@@ -397,7 +397,7 @@ pub async fn renew_embedding_jobs<'e, E: PgExecutor<'e>>(
 /// here instead would spin a broken provider at the drain loop's interval with
 /// nothing recording why. Permanent rejection uses
 /// [`fail_embedding_job_permanently`]; a claimed-but-unattempted job uses
-/// [`release_embedding_jobs`].
+/// [`release_embedding_jobs_on_connection`].
 ///
 /// # Errors
 ///
@@ -441,6 +441,7 @@ pub async fn fail_embedding_job_permanently<'e, E: PgExecutor<'e>>(
 ///
 /// Returns `Conflict` when any claim is stale/non-processing; maps SQL
 /// failures through the shared mapper. The batch is atomic.
+#[cfg(test)]
 pub async fn release_embedding_jobs(
     pool: &PgPool,
     claims: &[EmbeddingJobClaim],

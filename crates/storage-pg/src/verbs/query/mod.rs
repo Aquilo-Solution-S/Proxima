@@ -15,14 +15,12 @@ mod series_handle;
 pub(crate) use citations::citation_of_fact_on_connection;
 pub(crate) use citations::facts_citing_object_on_connection;
 pub(crate) use counts::count_memories_on_connection;
-pub use edges::MAX_SNAPSHOT_EDGES;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use edges::inbound_pin_sql_for_tests;
 pub(crate) use edges::{
     load_inbound_pin_nodes_on_connection, load_pin_nodes_on_connection,
     load_visible_goal_ids_on_connection,
 };
-pub use goals::{ActiveGoalTargetRow, active_goals_for_memory_targets_on_connection};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
 pub(crate) use lineage::{

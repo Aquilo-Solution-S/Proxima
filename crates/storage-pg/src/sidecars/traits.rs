@@ -1,7 +1,6 @@
 use super::{
-    GoalId, MemoryId, PayloadKind, PgFactSidecar, PgMemoryPayloadBatchFuture,
-    PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit,
-    StorageError, Transaction,
+    GoalId, MemoryId, PayloadKind, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
+    PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit, StorageError, Transaction,
 };
 
 /// A flavor's typed memory-sidecar insert.
@@ -103,18 +102,4 @@ pub trait PgGoalSidecar: Send + Sync + 'static {
         goal_id: GoalId,
         source_goal_id: GoalId,
     ) -> PgSidecarFuture<'t>;
-}
-
-impl<T> PgMemorySidecar for T
-where
-    T: PgFactSidecar + Clone + Send + Sync,
-{
-    fn insert_memory_sidecar<'t>(
-        &'t self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-        permit: SidecarInsertPermit,
-    ) -> PgSidecarFuture<'t> {
-        self.clone().insert_sidecar(tx, memory_id, permit)
-    }
 }

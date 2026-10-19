@@ -18,7 +18,6 @@ use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, PgPool, Postgres, Transaction};
 
 use crate::pg_ident::PgIdent;
-use crate::verbs::fact_ingest::PgFactSidecar;
 
 mod core_sidecars;
 mod dispatch;

@@ -4,28 +4,10 @@ use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory
 use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
-
-/// # Errors
-///
-/// Returns a storage error when the backend or schema resolver rejects a
-/// requested row.
-#[allow(
-    dead_code,
-    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
-)]
-pub(crate) async fn load_memory_by_id(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    memory_id: MemoryId,
-    schemas: &[MemorySchemaSpec],
-) -> Result<Option<MemorySnapshot>, StorageError> {
-    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
-    load_memory_by_id_on_connection(&mut connection, pg_sidecars, memory_id, schemas).await
-}
 
 /// # Errors
 /// Returns storage errors from query execution or invalid stored data.
@@ -45,32 +27,6 @@ pub(crate) async fn load_memory_by_id_on_connection(
     let mut snapshots =
         snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await?;
     Ok(snapshots.pop())
-}
-
-/// # Errors
-///
-/// Returns a storage error when the backend or schema resolver rejects a
-/// requested row.
-#[allow(
-    dead_code,
-    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
-)]
-pub(crate) async fn load_memories_by_ids(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[proxima_core::OwnerId],
-    memory_ids: &[MemoryId],
-    schemas: &[MemorySchemaSpec],
-) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
-    load_memories_by_ids_on_connection(
-        &mut connection,
-        pg_sidecars,
-        read_owners,
-        memory_ids,
-        schemas,
-    )
-    .await
 }
 
 /// # Errors
@@ -99,32 +55,6 @@ pub(crate) async fn load_memories_by_ids_on_connection(
         .filter_map(StoredMemoryRow::into_hydration)
         .collect::<Vec<_>>();
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
-}
-
-/// # Errors
-///
-/// Returns a storage error when an admitted identity disappears, changes, or
-/// has an invalid sidecar declaration.
-#[allow(
-    dead_code,
-    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
-)]
-pub(crate) async fn load_memory_graph_payloads(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    identities: &[MemoryGraphIdentity],
-    schemas: &[MemorySchemaSpec],
-    include_body: bool,
-) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
-    let mut connection = pool.acquire().await.map_err(crate::error::map_err)?;
-    load_memory_graph_payloads_on_connection(
-        &mut connection,
-        pg_sidecars,
-        identities,
-        schemas,
-        include_body,
-    )
-    .await
 }
 
 /// # Errors

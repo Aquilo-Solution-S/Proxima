@@ -8,8 +8,10 @@
 //! sketch, and the embedding enqueue together with the Fact. A second
 //! entry point that skipped any of those would make them optional.
 //!
-//! [`PgFactSidecar`] stays public because flavors IMPLEMENT it. They cannot
-//! invoke it — see [`crate::sidecars::SidecarInsertPermit`].
+//! This module has no flavor-facing items. Flavors implement
+//! `PgMemorySidecar` (normally via `pg_sidecar!`), reached through
+//! `proxima::flavor`; they cannot invoke it — see
+//! [`crate::sidecars::SidecarInsertPermit`].
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,8 +22,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, FactPayload,
-    MemoryId, OwnerId, SidecarPayload, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, MemoryId,
+    OwnerId, SidecarPayload, StorageError,
 };
 use sqlx::{Acquire, PgPool, Postgres, Transaction};
 
@@ -32,25 +34,6 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub type FactIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
-
-/// Companion trait for Postgres-backed typed Fact sidecars. Flavor
-/// crates implement this for each `FactPayload` whose sidecar table
-/// is inserted by `proxima-storage-pg`.
-///
-/// Implemented by flavors, invoked by the frozen registry only: the
-/// [`crate::sidecars::SidecarInsertPermit`] argument cannot be minted
-/// outside this crate.
-pub trait PgFactSidecar: FactPayload + Sized {
-    /// Insert this payload's sidecar row keyed by `memory_id`.
-    fn insert_sidecar<'t>(
-        self,
-        tx: &'t mut Transaction<'_, Postgres>,
-        memory_id: MemoryId,
-        permit: crate::sidecars::SidecarInsertPermit,
-    ) -> FactIngestSidecarFuture<'t>
-    where
-        Self: 't;
-}
 
 /// How [`ingest_core`] settles the write's side effects: which embedding
 /// spaces to enqueue and how the draft's citation resolves to a `blob_id`.

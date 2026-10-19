@@ -1,10 +1,14 @@
 //! Memory timeseries: the admission row every write lands, and the two
 //! reads that go straight at it.
 //!
-//! Crate-internal write and reads: `ingest_fact_timeseries` is the row every
-//! governed write path materializes through, so a public door onto it is a
-//! second write path — one that skips the sidecar, the projection row, the
-//! sketch and the embedding enqueue its callers add. `read_memory_by_t` /
+//! Crate-internal write and reads: every governed write path lands its row
+//! through the prepare / lock / claim / materialize phases
+//! (`prepare_memory_admission`, `lock_prepared_memory_admission`,
+//! `claim_prepared_memory_admission`, `materialize_prepared_memory_admission`);
+//! `ingest_fact_timeseries` composes those same phases for in-crate tests
+//! only. A public door onto them is a second write path — one that skips the
+//! sidecar, the projection row, the sketch and the embedding enqueue its
+//! callers add. `read_memory_by_t` /
 //! `read_memory_head` take the same transaction and exist to assert on that
 //! row from inside the crate; the authorized read surface is the query ports.
 
@@ -124,6 +128,7 @@ impl PreparedMemoryAdmission {
 /// `admission.sidecar_tables` is the declared set forget will dump/delete —
 /// tables actually inserted for this `t`, never the global registry.
 /// `content_id` is the owner-scoped payload (required for A/P).
+#[cfg(test)]
 pub(crate) async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,

@@ -8,20 +8,6 @@ use uuid::Uuid;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 
-/// Owner-scoped read of the rendered text stored on a Fact memory row.
-///
-/// # Errors
-///
-/// Returns `StorageError::Internal` for SQL failures.
-pub async fn load_fact_text(
-    pool: &PgPool,
-    owner: &OwnerId,
-    memory_id: MemoryId,
-    units: &[MemoryEmbedUnit],
-) -> Result<Option<String>, StorageError> {
-    load_embedding_text(pool, owner, EntityKind::Fact, memory_id, &[], units).await
-}
-
 /// Owner-scoped embed text for one memory.
 ///
 /// Text comes from the `(table, column)` the row's schema declares as its
@@ -184,7 +170,7 @@ pub async fn load_embedding_texts_on_connection(
     Ok(out)
 }
 
-/// Transaction-scoped variant of [`load_fact_text`].
+/// Owner-scoped read of a Fact row's rendered text inside the caller's transaction.
 ///
 /// # Errors
 ///

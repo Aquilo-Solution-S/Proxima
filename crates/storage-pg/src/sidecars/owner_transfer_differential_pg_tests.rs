@@ -189,7 +189,8 @@ fn note(title: &str) -> SidecarPayload {
     })
 }
 
-/// The production write: `ingest_fact_timeseries` for the admission and
+/// The production write: the production admission phases, composed by
+/// `ingest_fact_timeseries`, for the admission and
 /// `insert_memory_sidecar` for the payload, which is where the generated
 /// projection statement runs. Hand-INSERTing would leave the projection
 /// leg unwitnessed.

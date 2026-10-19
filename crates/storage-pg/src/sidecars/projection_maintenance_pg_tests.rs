@@ -80,8 +80,8 @@ fn note() -> SidecarPayload {
     })
 }
 
-/// The production write, not a hand-rolled one: `ingest_fact_timeseries`
-/// for the admission and `insert_memory_sidecar` for the payload, which is
+/// The production write, not a hand-rolled one: the production admission
+/// phases, composed by `ingest_fact_timeseries`, for the admission and `insert_memory_sidecar` for the payload, which is
 /// where the generated projection statement runs. A test that INSERTed the
 /// projection row itself would prove nothing about the write path.
 async fn write_note(

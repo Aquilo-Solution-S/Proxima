@@ -90,6 +90,7 @@ WITH scoped AS MATERIALIZED (
 ///
 /// Returns `ConstraintViolation` for negative limits, otherwise maps SQL
 /// failures through the shared mapper.
+#[cfg(test)]
 pub async fn reconcile_embeddings(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,

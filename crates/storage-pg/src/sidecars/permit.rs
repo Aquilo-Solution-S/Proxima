@@ -9,9 +9,8 @@
 /// the write that would produce one must not be reachable on its own.
 ///
 /// The split this type makes is between IMPLEMENTING and INVOKING. A flavor
-/// implements [`super::PgMemorySidecar`] /
-/// `PgFactSidecar` (crate-private) — the `pg_sidecar!` macro
-/// writes the body — and names this type in the signature it implements. It
+/// implements [`super::PgMemorySidecar`] (the `pg_sidecar!` macro writes
+/// the body) and names this type in the signature it implements. It
 /// cannot construct one, because the field is crate-private, so it cannot
 /// call what it implemented. Same `_private: ()` idiom as the core write
 /// permits.

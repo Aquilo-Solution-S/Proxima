@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::sidecars::PgSidecarRegistryFrozen;
-use crate::verbs::memory_timeseries::{ingest_fact_timeseries, ingest_unpinned_fact_at};
+use crate::verbs::memory_timeseries::ingest_unpinned_fact_at;
 
 pub const WRITE_ACT_SCHEMA: &str = "core/write-act-v1";
 
@@ -153,48 +153,6 @@ pub(crate) async fn load_goal_by_request_id(
         t,
         write_act_t,
     }))
-}
-
-pub async fn ingest_write_act(
-    tx: &mut Transaction<'_, Postgres>,
-    permit: &proxima_core::storage_ports::OwnerWritePermit,
-    store_number: u16,
-) -> Result<FactIngestOutcome, StorageError> {
-    let draft = FactWriteCommand {
-        schema_id: proxima_core::SchemaId::new(WRITE_ACT_SCHEMA.to_string()),
-        schema_version: proxima_core::SchemaVersion::new(1),
-        handle: None,
-        source_id: None,
-        ingest_key: None,
-        payload: Vec::new(),
-        rendered_text: None,
-        lexical_language: None,
-        receipt: None,
-        occurred_at: None,
-        citation: None,
-        additional_references: Vec::new(),
-        refs: Vec::new(),
-        blob_id: None,
-        kind: "fact".into(),
-        request: None,
-    };
-    let writer = crate::owner_scope::require_owner_scope(permit.owner_scope())?.writer();
-    ingest_fact_timeseries(
-        tx,
-        crate::verbs::memory_timeseries::MemoryAdmissionDraft {
-            store_number,
-            natural_key: None,
-            owner: permit.owner(),
-            writer,
-            draft: &draft,
-            origins: &[],
-            references: &[],
-            sidecar_tables: &[],
-            scopes: &[],
-        },
-        None,
-    )
-    .await
 }
 
 pub(crate) fn reserve_fact_identity(store_number: u16) -> ReservedFactIdentity {

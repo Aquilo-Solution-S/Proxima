@@ -10,7 +10,7 @@ use crate::error::map_err;
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
-pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
+const MAX_SNAPSHOT_EDGES: usize = 50_000;
 
 #[derive(Debug, sqlx::FromRow)]
 struct PinNodeRow {

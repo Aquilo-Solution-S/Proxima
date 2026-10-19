@@ -133,7 +133,7 @@ impl ColdPurgePlan {
 
 /// Result of one post-commit exact-key purge attempt.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ColdPurgeOutcome {
+pub(crate) struct ColdPurgeOutcome {
     pub attempted: u64,
     pub purged: u64,
     pub failed: u64,
@@ -152,10 +152,7 @@ pub struct ColdPurgeOutcome {
 /// operator retry reads — the same over-report-pending-rather-than-lose-it rule
 /// the cited-object purge follows. Counts reconciled plan entries, including
 /// debts already retired by another drain before provider I/O begins.
-#[allow(
-    dead_code,
-    reason = "#474 C3: was public; tests/`with_platform` cover the drain"
-)]
+#[cfg(test)]
 pub(crate) async fn purge_cold_objects_after_commit(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
@@ -1095,42 +1092,6 @@ async fn erase_memory_series_after_snapshot(
     Ok((erased, ColdPurgePlan::from_entries(entries)))
 }
 
-/// Every version of every series the given admissions belong to, for this
-/// owner.
-///
-/// The expansion [`erase_memory_series`] performs, exposed so a caller that
-/// must reason about the FULL set before touching any of it can ask for it
-/// first. A flavor computing an erase footprint needs exactly that: it
-/// finds admissions through its own rows, but the substrate erases whole
-/// series, and the versions the expansion adds are as much part of the
-/// footprint as the ones the flavor named. A footprint computed without
-/// this is a footprint that closes and locks the wrong set — the flavor
-/// then deletes rows referencing a version it never saw, which is an abort,
-/// not a leak.
-///
-/// Owner-scoped on both legs, so a handle that changed hands never widens
-/// one owner's erase into another's rows.
-///
-/// # Errors
-///
-/// Returns storage errors from the expansion query.
-#[allow(
-    dead_code,
-    reason = "#474 C3: was public helper; series erase uses snapshot path"
-)]
-pub(crate) async fn expand_series_for_erase(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
-    ts: &[Uuid],
-) -> Result<Vec<Uuid>, StorageError> {
-    if ts.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(snapshot_series_for_erase_tx(tx, owner.into_inner(), ts)
-        .await?
-        .versions())
-}
-
 #[derive(Debug)]
 struct MemorySeriesSnapshot {
     members: BTreeSet<(Uuid, Uuid)>,
@@ -1233,52 +1194,6 @@ SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgo
   JOIN unnest($1::uuid[]) h(handle) ON h.handle = m.handle
  WHERE m.owner_id = $2
  ORDER BY handle, t";
-
-/// Which of `ts` are NOT admissions of `owner`.
-///
-/// A flavor discovers admissions through its own tables, and a flavor table
-/// holds a foreign key on `proxima_core.memory (t)` and nothing that
-/// constrains WHOSE memory it names. One owner's row may therefore reference
-/// another owner's admission — by writing the id, or, more ordinarily,
-/// because the admission was transferred out from under it.
-///
-/// A scope erase that follows such a reference would delete a principal's
-/// rows on the authority of a different principal, and it would do it
-/// silently. This is the question that makes that unrepresentable, and it
-/// lives here rather than in the flavor for the same reason
-/// [`lock_admissions_for_erase`] does: the answer is in `proxima_core`.
-///
-/// # Errors
-///
-/// Returns storage errors from the query.
-#[allow(
-    dead_code,
-    reason = "#474 C3: was public helper; lock_admissions_for_erase is the seam"
-)]
-pub(crate) async fn admissions_outside_owner(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
-    ts: &[Uuid],
-) -> Result<Vec<Uuid>, StorageError> {
-    if ts.is_empty() {
-        return Ok(Vec::new());
-    }
-    sqlx::query_scalar(ADMISSIONS_OUTSIDE_OWNER_SQL)
-        .bind(ts)
-        .bind(owner.into_inner())
-        .fetch_all(tx.as_mut())
-        .await
-        .map_err(map_err)
-}
-
-#[allow(dead_code, reason = "#474 C3: pairs with admissions_outside_owner")]
-const ADMISSIONS_OUTSIDE_OWNER_SQL: &str = "\
-SELECT c.t
-  FROM unnest($1::uuid[]) AS c(t)
- WHERE NOT EXISTS (
-           SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-            WHERE m.t = c.t AND m.owner_id = $2
-       )";
 
 /// Take a row lock on admissions a scope erase is about to delete.
 ///
