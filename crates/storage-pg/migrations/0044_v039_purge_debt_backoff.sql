@@ -4,7 +4,7 @@
 -- keys behind it. Attempts survive a re-enqueue, so a key that keeps failing
 -- stays visible however often it is owed again.
 --
--- No refusal: 0042 already required an empty queue, and the defaults below
+-- No refusal: 0043 already required an empty queue, and the defaults below
 -- make every existing row due now with no attempts.
 SELECT set_config('app.proxima_scope', 'platform', true);
 

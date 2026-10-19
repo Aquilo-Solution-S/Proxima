@@ -455,6 +455,7 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
             (43, true),
             (44, true),
             (45, true),
+            (46, true),
         ]
     );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
@@ -832,7 +833,7 @@ async fn drop_cooled_migration_keeps_only_upload_purge_rows() -> TestResult {
     .execute(&admin)
     .await?;
 
-    // Through 0040 only: 0042 refuses a store that still holds purge debt.
+    // Through 0040 only: 0043 refuses a store that still holds purge debt.
     let mut through_0040 = core_migrator();
     through_0040.migrations = std::borrow::Cow::Owned(
         through_0040
