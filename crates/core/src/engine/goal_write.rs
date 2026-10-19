@@ -666,8 +666,10 @@ pub(in crate::engine) async fn transition_goal_authorized(
         .map_err(map_goal_storage_error)
 }
 
-fn map_goal_storage_error(err: StorageError) -> ProtocolError {
-    // Evidence passed the entry gate, which resolves a home in either state;
+/// Goal storage errors for the standalone and unit-of-work paths alike.
+pub(in crate::engine) fn map_goal_storage_error(err: StorageError) -> ProtocolError {
+    // Evidence passed the entry gate, which resolves a home in either state
+    // (or, in a unit of work, named a slot that replayed a forgotten memory);
     // a row the owner transaction cannot see is forgotten (or went away), and
     // the caller gets the gate's answer for an unknown id.
     if let StorageError::ConstraintViolation(message) = &err

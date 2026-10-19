@@ -1126,13 +1126,7 @@ impl<'a> UnitOfWork<'a> {
                 permit.owner_write_permit(),
             )
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "goal",
-                    "goal write referenced row not found",
-                )
-            })?;
+            .map_err(super::goal_write::map_goal_storage_error)?;
         if let Some(outcome) = replay {
             return outcome.into_goal().map_err(ProtocolError::internal);
         }
@@ -1158,13 +1152,7 @@ impl<'a> UnitOfWork<'a> {
             .await?
             .create_goal(&atomic, permit.owner_write_permit())
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "goal",
-                    "goal write referenced row not found",
-                )
-            })?;
+            .map_err(super::goal_write::map_goal_storage_error)?;
         Ok(outcome)
     }
 

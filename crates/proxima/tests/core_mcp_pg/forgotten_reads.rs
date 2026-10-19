@@ -1241,3 +1241,106 @@ async fn a_new_stance_on_a_forgotten_replay_slot_is_refused() {
     .await;
     result.expect("new stance on a forgotten replay slot");
 }
+
+/// #488 follow-up: a new Goal in an episode whose evidence (`derive`) or
+/// target (`stance:N`) names a slot that replayed a forgotten memory is
+/// refused like a new stance or derive on that slot: `entry not found`, not
+/// "evidence does not exist". No live row comes to pin the forgotten memory.
+#[tokio::test]
+async fn a_new_goal_on_a_forgotten_replay_slot_says_entry_not_found() {
+    let split_db = clone_split_core_db("proxima_episode_forgotten_goal")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let live_pins = |target: String| {
+            let url = db_url(split_db.name());
+            async move {
+                let admin = sqlx::PgPool::connect(&url).await?;
+                let rows: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM proxima_core.memory
+                      WHERE forgotten_at IS NULL
+                        AND ($1 = ANY(refs) OR $1 = ANY(origins) OR $1 = ANY(goal_refs))",
+                )
+                .bind(Uuid::parse_str(&target)?)
+                .fetch_one(&admin)
+                .await?;
+                admin.close().await;
+                Ok::<i64, Box<dyn std::error::Error>>(rows)
+            }
+        };
+        let base = |tag: &str| {
+            serde_json::json!({
+                "remember": [{"title": tag, "body": tag, "idempotency_key": format!("{tag}-f")}],
+                "derive": {"title": format!("{tag} derived"), "body": format!("{tag} derived"),
+                    "source_handles": ["remember:0"], "model_id": "test-model",
+                    "idempotency_key": format!("{tag}-d")},
+                "stance": [{"claim": format!("{tag} stance"), "confidence": 70,
+                    "subjects": ["remember:0"], "model_id": "test-model"}],
+            })
+        };
+        let with_goal = |tag: &str| {
+            let mut episode = base(tag);
+            episode["goal"] = serde_json::json!([{
+                "schema_id": "core/simple-text-v1", "title": "goal", "text": "goal", "body": {},
+                "evidence": ["derive"], "target_perspective": "stance:0",
+                "idempotency_key": format!("{tag}-g"),
+            }]);
+            episode
+        };
+        let refused =
+            |result: Result<serde_json::Value, proxima::CoreMcpError>, what: &str| match result {
+                Ok(value) => panic!("{what}: a new goal pinned a forgotten slot: {value}"),
+                Err(err) => assert!(err.to_string().contains("entry not found"), "{what}: {err}"),
+            };
+
+        // Evidence `derive` replays a forgotten Abstraction.
+        let first = call("core_episode_commit", base("fu-ev")).await?;
+        let derived = first["derived"].as_str().ok_or("derived")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": derived})).await?;
+        refused(
+            call("core_episode_commit", with_goal("fu-ev")).await,
+            "evidence derive",
+        );
+        assert_eq!(
+            live_pins(derived).await?,
+            0,
+            "a live row pins the forgotten derive"
+        );
+
+        // Target `stance:0` replays a forgotten Perspective.
+        let first = call("core_episode_commit", base("fu-tg")).await?;
+        let stance = first["stances"][0].as_str().ok_or("stance")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": stance})).await?;
+        refused(
+            call("core_episode_commit", with_goal("fu-tg")).await,
+            "target stance:0",
+        );
+        assert_eq!(
+            live_pins(stance).await?,
+            0,
+            "a live row pins the forgotten stance"
+        );
+
+        // Control: the same goal over live slots is accepted.
+        let made = call("core_episode_commit", with_goal("fu-ok")).await?;
+        assert_eq!(made["goals"].as_array().map(Vec::len), Some(1), "{made}");
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("new goal on a forgotten replay slot");
+}
