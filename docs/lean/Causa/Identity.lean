@@ -93,7 +93,8 @@ opaque SchemaRef : Type := String
 /-- ST-11 — no UPDATE in the cognitive lifecycle. Marker class. -/
 class AppendOnly (α : Type) : Prop
 
-/-- Never updated in place. Facts, blobs. Forget is cool-to-S3, not UPDATE. -/
+/-- Never updated in place. Facts, blobs. Forget sets only the forgotten flag
+    on the Memory row and restore clears it (#488); no payload or pin changes. -/
 class Immutable (α : Type) : Prop
 
 /- ST-15..17 — vector-store independence is carried by ABSENCE: the kernel

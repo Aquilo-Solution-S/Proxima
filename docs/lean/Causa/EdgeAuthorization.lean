@@ -3,7 +3,7 @@ Causa — Pin authorization
 
 Writer can read each pinned `t` (UML §2 `read`). No edge row. Source-owned
 means the pin lives on the declaring Memory/Goal. Target render is a
-separate gate (hot / Cold / Unavailable).
+separate gate (live / forgotten / unavailable).
 -/
 
 import Causa.Edges

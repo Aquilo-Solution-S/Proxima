@@ -429,29 +429,6 @@ theorem forgetIn_adds_nothing
   · exact ⟨m, hm, rfl, rfl, rfl⟩
   · exact ⟨_, hm, rfl, rfl, rfl⟩
 
--- ============================================================
--- Cooled stub — superseded by the flag above; Compliance still states
--- `wipeable` over it until S19 of #488 removes it.
--- ============================================================
-
-structure Cooled where
-  t      : MemoryId
-  handle : Handle
-  owner  : Owner
-  kind   : MemoryKind
-
-def cooled_t : Cooled → MemoryId := Cooled.t
-def cooled_handle : Cooled → Handle := Cooled.handle
-def cooled_owner : Cooled → Owner := Cooled.owner
-def cooled_kind : Cooled → MemoryKind := Cooled.kind
-
-def CooledIdUnique (cooled : Set Cooled) : Prop :=
-  ∀ c1 c2 : Cooled,
-    c1 ∈ cooled →
-    c2 ∈ cooled →
-    cooled_t c1 = cooled_t c2 →
-    c1 = c2
-
 /-- A pin target exists when a row with that `t` is stored, live or
     forgotten: forget keeps the row (#488). -/
 def pinExists (memories : Set Memory) (id : MemoryId) : Prop :=
@@ -490,11 +467,6 @@ def ErasedTargetsDisjointMemories
   ∀ e : ErasedPinTarget, e ∈ targets →
     ∀ m : Memory, m ∈ memories → erased_pin_target_t e ≠ memory_t m
 
-def ErasedTargetsDisjointCooled
-    (targets : Set ErasedPinTarget) (cooled : Set Cooled) : Prop :=
-  ∀ e : ErasedPinTarget, e ∈ targets →
-    ∀ c : Cooled, c ∈ cooled → erased_pin_target_t e ≠ cooled_t c
-
 theorem erased_target_not_memory
     (targets : Set ErasedPinTarget) (memories : Set Memory)
     (hdisjoint : ErasedTargetsDisjointMemories targets memories)
@@ -502,14 +474,6 @@ theorem erased_target_not_memory
     (m : Memory) (hm : m ∈ memories) :
     erased_pin_target_t e ≠ memory_t m :=
   hdisjoint e he m hm
-
-theorem erased_target_not_cooled
-    (targets : Set ErasedPinTarget) (cooled : Set Cooled)
-    (hdisjoint : ErasedTargetsDisjointCooled targets cooled)
-    (e : ErasedPinTarget) (he : e ∈ targets)
-    (c : Cooled) (hc : c ∈ cooled) :
-    erased_pin_target_t e ≠ cooled_t c :=
-  hdisjoint e he c hc
 
 def recordedPinKindIs
     (memories : Set Memory)

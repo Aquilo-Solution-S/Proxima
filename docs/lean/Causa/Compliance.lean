@@ -1,11 +1,11 @@
 /-
 Causa — Compliance
 
-Hard delete is abandonment, the v0.0.8 cold path, or a flavor-scoped erase:
+Hard delete is abandonment, the forgotten path, or a flavor-scoped erase:
 
-  wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy) ∨ flavorScoped
+  wipeable := abandoned ∨ (forgotten ∧ unreferenced ∧ policy) ∨ flavorScoped
 
-Forget cools; erase wipes abandoned owners; a flavor-scoped erase wipes whole
+Forget sets a flag on the row and keeps it (#488); erase wipes abandoned owners; a flavor-scoped erase wipes whole
 series of one flavor's own schemas under one live owner, on Admin or the
 host's system authority (renegotiated in writing, docs/13 §Flavor-scoped
 erase). An owner-to-owner transfer carries
@@ -29,13 +29,13 @@ theorem drop_personal_abandoned (u : User) :
   intro v
   by_cases h : v = u <;> simp [Group.drop, Owner.ofUser, h]
 
-/-- No hot row still pins this `t`. -/
+/-- No stored row, live or forgotten, still pins this `t`. -/
 def unreferenced (memories : Set Memory) (id : MemoryId) : Prop :=
   ∀ m : Memory, m ∈ memories →
     id ∉ memory_origins m ∧ id ∉ memory_refs m
 
-/-- No remaining admission names this Content. Cooled stubs do not keep
-    payload identity; Content GC is admission-set emptiness. -/
+/-- No remaining admission names this Content. A forgotten row is still an
+    admission and keeps its payload; Content GC is admission-set emptiness. -/
 def contentUnreferenced (memories : Set Memory) (id : ContentId) : Prop :=
   ∀ m : Memory, m ∈ memories → memory_content_id m ≠ some id
 
@@ -53,8 +53,15 @@ theorem content_wipeable_when_unreferenced
     contentWipeable o memories id :=
   Or.inr h
 
-def cold (stubs : Set Cooled) (id : MemoryId) : Prop :=
-  ∃ c : Cooled, c ∈ stubs ∧ cooled_t c = id
+/-- The row `id` is stored and flagged forgotten. -/
+def forgotten (memories : Set Memory) (id : MemoryId) : Prop :=
+  ∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_forgotten m = true
+
+/-- Forgetting a stored row makes it forgotten. -/
+theorem forgotten_after_forget
+    (memories : Set Memory) (m : Memory) (hm : m ∈ memories) :
+    forgotten (forgetIn memories (memory_t m)) (memory_t m) :=
+  ⟨m.forget, (forgetIn_marks memories (memory_t m) m hm rfl).1, rfl, rfl⟩
 
 -- ============================================================
 -- Flavor-scoped erase (docs/13 §Flavor-scoped erase)
@@ -77,7 +84,7 @@ def EraseAuthority.admits : EraseAuthority → Owner → Prop
     PARAMETER (`ownSchemas`), as in `Causa.Flavor`; a series carries one
     schema (`seriesSchema`: a new shape is a new handle, Identity). Nothing
     here requires the owner to be abandoned. -/
-structure FlavorScopedErase (memories : Set Memory) (stubs : Set Cooled) where
+structure FlavorScopedErase (memories : Set Memory) where
   owner        : Owner
   ownSchemas   : SchemaRef → Prop
   seriesSchema : Handle → SchemaRef
@@ -85,77 +92,75 @@ structure FlavorScopedErase (memories : Set Memory) (stubs : Set Cooled) where
   authority    : EraseAuthority
   authorized   : authority.admits owner
   ownSchema    : ∀ h : Handle, h ∈ handles → ownSchemas (seriesSchema h)
-  hotInOwner   : ∀ m : Memory, m ∈ memories → memory_handle m ∈ handles →
+  /-- Every version of a selected series, live or forgotten, is the owner's. -/
+  inOwner      : ∀ m : Memory, m ∈ memories → memory_handle m ∈ handles →
     memory_owner m = owner
-  coldInOwner  : ∀ c : Cooled, c ∈ stubs → cooled_handle c ∈ handles →
-    cooled_owner c = owner
 
-/-- A `t` the erase selects: any version, hot or cooled, of a selected
+/-- A `t` the erase selects: any version, live or forgotten, of a selected
     series. -/
-def FlavorScopedErase.selects {memories : Set Memory} {stubs : Set Cooled}
-    (e : FlavorScopedErase memories stubs) (id : MemoryId) : Prop :=
-  (∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_handle m ∈ e.handles) ∨
-    (∃ c : Cooled, c ∈ stubs ∧ cooled_t c = id ∧ cooled_handle c ∈ e.handles)
+def FlavorScopedErase.selects {memories : Set Memory}
+    (e : FlavorScopedErase memories) (id : MemoryId) : Prop :=
+  ∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_handle m ∈ e.handles
 
-/-- CO-7 / ST-13: abandonment OR (cold ∧ unreferenced ∧ policy) OR selected by
-    a flavor-scoped erase of that owner. -/
-def wipeable (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
+/-- CO-7 / ST-13: abandonment OR (forgotten ∧ unreferenced ∧ policy) OR
+    selected by a flavor-scoped erase of that owner. -/
+def wipeable (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop) : Prop :=
-  abandoned o ∨ (cold stubs id ∧ unreferenced memories id ∧ policy) ∨
-    ∃ e : FlavorScopedErase memories stubs, e.owner = o ∧ e.selects id
+  abandoned o ∨ (forgotten memories id ∧ unreferenced memories id ∧ policy) ∨
+    ∃ e : FlavorScopedErase memories, e.owner = o ∧ e.selects id
 
 theorem wipeable_when_abandoned
-    (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
+    (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop) (h : abandoned o) :
-    wipeable o memories stubs id policy :=
+    wipeable o memories id policy :=
   Or.inl h
 
-theorem wipeable_when_cold_unreferenced_policy
-    (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
+theorem wipeable_when_forgotten_unreferenced_policy
+    (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop)
-    (hc : cold stubs id) (hu : unreferenced memories id) (hp : policy) :
-    wipeable o memories stubs id policy :=
+    (hc : forgotten memories id) (hu : unreferenced memories id) (hp : policy) :
+    wipeable o memories id policy :=
   Or.inr (Or.inl ⟨hc, hu, hp⟩)
 
 theorem wipeable_when_flavor_scoped
-    (o : Owner) (memories : Set Memory) (stubs : Set Cooled)
+    (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop)
-    (e : FlavorScopedErase memories stubs) (ho : e.owner = o) (hs : e.selects id) :
-    wipeable o memories stubs id policy :=
+    (e : FlavorScopedErase memories) (ho : e.owner = o) (hs : e.selects id) :
+    wipeable o memories id policy :=
   Or.inr (Or.inr ⟨e, ho, hs⟩)
 
-/-- The erase never prunes a series' history: every hot version of a
-    selected series is selected. -/
+/-- The erase never prunes a series' history: every version of a selected
+    series, live or forgotten, is selected. -/
 theorem flavor_erase_takes_whole_series
-    {memories : Set Memory} {stubs : Set Cooled}
-    (e : FlavorScopedErase memories stubs) (m : Memory)
+    {memories : Set Memory}
+    (e : FlavorScopedErase memories) (m : Memory)
     (hm : m ∈ memories) (hh : memory_handle m ∈ e.handles) :
     e.selects (memory_t m) :=
-  Or.inl ⟨m, hm, rfl, hh⟩
+  ⟨m, hm, rfl, hh⟩
 
-/-- … and every cooled version: a flavor-scoped erase keeps no cold copy. -/
-theorem flavor_erase_takes_cooled_versions
-    {memories : Set Memory} {stubs : Set Cooled}
-    (e : FlavorScopedErase memories stubs) (c : Cooled)
-    (hc : c ∈ stubs) (hh : cooled_handle c ∈ e.handles) :
-    e.selects (cooled_t c) :=
-  Or.inr ⟨c, hc, rfl, hh⟩
+/-- … forgotten versions included: a flavor-scoped erase keeps no forgotten
+    copy. -/
+theorem flavor_erase_takes_forgotten_versions
+    {memories : Set Memory}
+    (e : FlavorScopedErase memories) (m : Memory)
+    (hm : m ∈ memories) (_hf : memory_forgotten m = true)
+    (hh : memory_handle m ∈ e.handles) :
+    e.selects (memory_t m) :=
+  ⟨m, hm, rfl, hh⟩
 
-/-- One owner: no version of a selected series, hot or cooled, belongs to
-    anyone else. -/
+/-- One owner: no version of a selected series, live or forgotten, belongs
+    to anyone else. -/
 theorem flavor_erase_stays_in_owner
-    {memories : Set Memory} {stubs : Set Cooled}
-    (e : FlavorScopedErase memories stubs) :
-    (∀ m : Memory, m ∈ memories → memory_handle m ∈ e.handles →
-      memory_owner m = e.owner) ∧
-    (∀ c : Cooled, c ∈ stubs → cooled_handle c ∈ e.handles →
-      cooled_owner c = e.owner) :=
-  ⟨e.hotInOwner, e.coldInOwner⟩
+    {memories : Set Memory}
+    (e : FlavorScopedErase memories) :
+    ∀ m : Memory, m ∈ memories → memory_handle m ∈ e.handles →
+      memory_owner m = e.owner :=
+  e.inOwner
 
 /-- Only the flavor's own vocabulary. -/
 theorem flavor_erase_stays_in_flavor
-    {memories : Set Memory} {stubs : Set Cooled}
-    (e : FlavorScopedErase memories stubs) (h : Handle) (hh : h ∈ e.handles) :
+    {memories : Set Memory}
+    (e : FlavorScopedErase memories) (h : Handle) (hh : h ∈ e.handles) :
     e.ownSchemas (e.seriesSchema h) :=
   e.ownSchema h hh
 
@@ -178,19 +183,37 @@ theorem ingest_cannot_authorize_flavor_erase
     ¬ (EraseAuthority.user u).admits o :=
   below_admin_cannot_authorize_flavor_erase u o Role.ingest hx (by decide)
 
-/-- A pin to a cooled `t` renders Cold, not a missing origin. -/
-def pin_target_cold (stubs : Set Cooled) (id : MemoryId) : Prop :=
-  cold stubs id
+/-- Target render: live / forgotten / unavailable. A pin to a forgotten `t`
+    renders forgotten, not a missing origin. -/
+def pin_render_live (memories : Set Memory) (id : MemoryId) : Prop :=
+  ∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_forgotten m = false
 
-/-- Target render: hot / Cold / Unavailable (UML §5c). -/
-def pin_render_hot (memories : Set Memory) (id : MemoryId) : Prop :=
-  ∃ m : Memory, m ∈ memories ∧ memory_t m = id
+def pin_render_forgotten (memories : Set Memory) (id : MemoryId) : Prop :=
+  forgotten memories id
 
-def pin_render_cold (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId) : Prop :=
-  ¬ pin_render_hot memories id ∧ cold stubs id
+def pin_render_unavailable (memories : Set Memory) (id : MemoryId) : Prop :=
+  ¬ pinExists memories id
 
-def pin_render_unavailable (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId) : Prop :=
-  ¬ pin_render_hot memories id ∧ ¬ cold stubs id
+/-- With unique `t`, a stored pin target renders exactly one of live or
+    forgotten, and never unavailable. -/
+theorem pin_render_stored
+    (memories : Set Memory) (id : MemoryId) (h : pinExists memories id) :
+    (pin_render_live memories id ∨ pin_render_forgotten memories id) ∧
+      ¬ pin_render_unavailable memories id := by
+  obtain ⟨m, hm, ht⟩ := h
+  refine ⟨?_, fun hu => hu ⟨m, hm, ht⟩⟩
+  cases hf : memory_forgotten m with
+  | false => exact Or.inl ⟨m, hm, ht, hf⟩
+  | true => exact Or.inr ⟨m, hm, ht, hf⟩
+
+theorem pin_render_live_not_forgotten
+    (memories : Set Memory) (hunique : MemoryIdUnique memories) (id : MemoryId)
+    (hl : pin_render_live memories id) : ¬ pin_render_forgotten memories id := by
+  obtain ⟨m, hm, ht, hf⟩ := hl
+  rintro ⟨m', hm', ht', hf'⟩
+  have heq := hunique m m' hm hm' (ht.trans ht'.symm)
+  subst heq
+  simp [hf] at hf'
 
 /-- Forget of a pinned `t` deletes neither the pinning row nor its target:
     forget is a flag on the target row (#488). -/
@@ -229,7 +252,7 @@ def hardEraseMemoryWitnesses
     database's uniqueness/disjointness fences, including rejection of an
     already-recorded target with a conflicting kind. -/
 structure HardEraseMemoryTransition
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (goals : Set Goal) (targets : Set ErasedPinTarget)
     (target : Memory) (memories' : Set Memory)
     (targets' : Set ErasedPinTarget) : Prop where
@@ -238,22 +261,20 @@ structure HardEraseMemoryTransition
   witnessIdsUnique : ErasedPinTargetIdUnique targets
   witnessMemoryDisjoint :
     ErasedTargetsDisjointMemories targets (hardEraseMemoryRows memories target)
-  witnessCooledDisjoint : ErasedTargetsDisjointCooled targets cooled
   witnessGoalDisjoint : ErasedTargetsDisjointGoals targets goals
   targetWitnessCompatible :
     ErasedPinTargetKindCompatible targets (memory_t target)
       (memory_kind target).pinTargetKind
-  targetNotCooled : ∀ c : Cooled, c ∈ cooled → memory_t target ≠ cooled_t c
   targetNotGoal : ∀ g : Goal, g ∈ goals → memory_t target ≠ goal_t g
   memoriesEq : memories' = hardEraseMemoryRows memories target
   targetsEq : targets' = hardEraseMemoryWitnesses targets target
 
 theorem hard_erase_memory_records_kind
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Memory)
     (memories' : Set Memory) (targets' : Set ErasedPinTarget)
     (htransition : HardEraseMemoryTransition
-      memories cooled goals targets target memories' targets') :
+      memories goals targets target memories' targets') :
     recordedMemoryTargetKind
       targets' (memory_t target) (memory_kind target) := by
   rw [htransition.targetsEq]
@@ -261,25 +282,25 @@ theorem hard_erase_memory_records_kind
   exact Or.inr ⟨rfl, rfl⟩
 
 theorem hard_erase_memory_rejects_wrong_kind
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Memory)
     (e : ErasedPinTarget) (he : e ∈ targets)
     (hid : erased_pin_target_t e = memory_t target)
     (hkind : erased_pin_target_kind e ≠ (memory_kind target).pinTargetKind) :
     ¬ HardEraseMemoryTransition
-      memories cooled goals targets target
+      memories goals targets target
         (hardEraseMemoryRows memories target)
         (hardEraseMemoryWitnesses targets target) := by
   intro htransition
   exact hkind (htransition.targetWitnessCompatible e he hid)
 
 theorem hard_erase_memory_preserves_source
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (goals : Set Goal) (targets : Set ErasedPinTarget)
     (target source : Memory) (memories' : Set Memory)
     (targets' : Set ErasedPinTarget)
     (htransition : HardEraseMemoryTransition
-      memories cooled goals targets target memories' targets')
+      memories goals targets target memories' targets')
     (hs : source ∈ memories) (hsource : memory_t source ≠ memory_t target) :
     ∃ post : Memory,
       post ∈ memories' ∧ post = source ∧
@@ -289,14 +310,13 @@ theorem hard_erase_memory_preserves_source
   exact ⟨source, ⟨hs, hsource⟩, rfl, rfl, rfl⟩
 
 theorem hard_erase_memory_result_well_formed
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Memory)
     (memories' : Set Memory) (targets' : Set ErasedPinTarget)
     (htransition : HardEraseMemoryTransition
-      memories cooled goals targets target memories' targets') :
+      memories goals targets target memories' targets') :
     ErasedPinTargetIdUnique targets' ∧
     ErasedTargetsDisjointMemories targets' memories' ∧
-    ErasedTargetsDisjointCooled targets' cooled ∧
     ErasedTargetsDisjointGoals targets' goals := by
   rw [htransition.targetsEq, htransition.memoriesEq]
   constructor
@@ -337,15 +357,6 @@ theorem hard_erase_memory_result_well_formed
     | inr hnew =>
         intro same
         exact hm.2 ((hnew.1.symm.trans same).symm)
-  constructor
-  · intro e he c hc
-    change e ∈ targets ∨
-      (erased_pin_target_t e = memory_t target ∧
-        erased_pin_target_kind e = (memory_kind target).pinTargetKind) at he
-    cases he with
-    | inl hold => exact htransition.witnessCooledDisjoint e hold c hc
-    | inr hnew =>
-        exact fun same => htransition.targetNotCooled c hc (hnew.1.symm.trans same)
   · intro e he g hg
     change e ∈ targets ∨
       (erased_pin_target_t e = memory_t target ∧
@@ -355,201 +366,49 @@ theorem hard_erase_memory_result_well_formed
     | inr hnew =>
         exact fun same => htransition.targetNotGoal g hg (hnew.1.symm.trans same)
 
-/-- A cooled-only erase has the same witness contract as hot deletion, but
-    removes the cooled locator rather than a hot Memory row. -/
-def hardEraseCooledRows (cooled : Set Cooled) (target : Cooled) : Set Cooled :=
-  fun c => c ∈ cooled ∧ cooled_t c ≠ cooled_t target
-
-def hardEraseCooledWitnesses
-    (targets : Set ErasedPinTarget) (target : Cooled) : Set ErasedPinTarget :=
-  fun e => e ∈ targets ∨
-    (erased_pin_target_t e = cooled_t target ∧
-      erased_pin_target_kind e = (cooled_kind target).pinTargetKind)
-
-structure HardEraseCooledTransition
-    (memories : Set Memory) (cooled : Set Cooled)
-    (goals : Set Goal) (targets : Set ErasedPinTarget)
-    (target : Cooled) (memories' : Set Memory) (cooled' : Set Cooled)
-    (targets' : Set ErasedPinTarget) : Prop where
-  targetInCooled : target ∈ cooled
-  cooledIdsUnique : CooledIdUnique cooled
-  witnessIdsUnique : ErasedPinTargetIdUnique targets
-  witnessMemoryDisjoint : ErasedTargetsDisjointMemories targets memories
-  witnessCooledDisjoint :
-    ErasedTargetsDisjointCooled targets (hardEraseCooledRows cooled target)
-  witnessGoalDisjoint : ErasedTargetsDisjointGoals targets goals
-  targetWitnessCompatible :
-    ErasedPinTargetKindCompatible targets (cooled_t target)
-      (cooled_kind target).pinTargetKind
-  targetNotMemory : ∀ m : Memory, m ∈ memories → cooled_t target ≠ memory_t m
-  targetNotGoal : ∀ g : Goal, g ∈ goals → cooled_t target ≠ goal_t g
-  memoriesEq : memories' = memories
-  cooledEq : cooled' = hardEraseCooledRows cooled target
-  targetsEq : targets' = hardEraseCooledWitnesses targets target
-
-theorem hard_erase_cooled_records_kind
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
-    (targets : Set ErasedPinTarget) (target : Cooled)
-    (memories' : Set Memory) (cooled' : Set Cooled)
-    (targets' : Set ErasedPinTarget)
-    (htransition : HardEraseCooledTransition
-      memories cooled goals targets target memories' cooled' targets') :
-    recordedMemoryTargetKind
-      targets' (cooled_t target) (cooled_kind target) := by
-  rw [htransition.targetsEq]
-  refine ⟨{ t := cooled_t target, kind := (cooled_kind target).pinTargetKind }, ?_, rfl, rfl⟩
-  exact Or.inr ⟨rfl, rfl⟩
-
-theorem hard_erase_cooled_rejects_wrong_kind
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
-    (targets : Set ErasedPinTarget) (target : Cooled)
-    (e : ErasedPinTarget) (he : e ∈ targets)
-    (hid : erased_pin_target_t e = cooled_t target)
-    (hkind : erased_pin_target_kind e ≠ (cooled_kind target).pinTargetKind) :
-    ¬ HardEraseCooledTransition
-      memories cooled goals targets target
-        memories
-        (hardEraseCooledRows cooled target)
-        (hardEraseCooledWitnesses targets target) := by
-  intro htransition
-  exact hkind (htransition.targetWitnessCompatible e he hid)
-
-theorem hard_erase_cooled_result_well_formed
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
-    (targets : Set ErasedPinTarget) (target : Cooled)
-    (memories' : Set Memory) (cooled' : Set Cooled)
-    (targets' : Set ErasedPinTarget)
-    (htransition : HardEraseCooledTransition
-      memories cooled goals targets target memories' cooled' targets') :
-    ErasedPinTargetIdUnique targets' ∧
-    ErasedTargetsDisjointMemories targets' memories' ∧
-    ErasedTargetsDisjointCooled targets' cooled' ∧
-    ErasedTargetsDisjointGoals targets' goals := by
-  rw [htransition.targetsEq, htransition.memoriesEq, htransition.cooledEq]
-  constructor
-  · intro e1 e2 h1 h2 hid
-    change e1 ∈ targets ∨
-      (erased_pin_target_t e1 = cooled_t target ∧
-        erased_pin_target_kind e1 = (cooled_kind target).pinTargetKind) at h1
-    change e2 ∈ targets ∨
-      (erased_pin_target_t e2 = cooled_t target ∧
-        erased_pin_target_kind e2 = (cooled_kind target).pinTargetKind) at h2
-    cases h1 with
-    | inl h1old =>
-        cases h2 with
-        | inl h2old => exact htransition.witnessIdsUnique e1 e2 h1old h2old hid
-        | inr h2new =>
-            exact erased_pin_target_ext e1 e2 hid
-              ((htransition.targetWitnessCompatible e1 h1old (hid.trans h2new.1)).trans
-                h2new.2.symm)
-    | inr h1new =>
-        cases h2 with
-        | inl h2old =>
-            exact erased_pin_target_ext e1 e2 hid
-              (h1new.2.trans
-                (htransition.targetWitnessCompatible e2 h2old
-                  (hid.symm.trans h1new.1)).symm)
-        | inr h2new =>
-            exact erased_pin_target_ext e1 e2 (h1new.1.trans h2new.1.symm)
-              (h1new.2.trans h2new.2.symm)
-  constructor
-  · intro e he m hm
-    change e ∈ targets ∨
-      (erased_pin_target_t e = cooled_t target ∧
-        erased_pin_target_kind e = (cooled_kind target).pinTargetKind) at he
-    cases he with
-    | inl hold => exact htransition.witnessMemoryDisjoint e hold m hm
-    | inr hnew =>
-        exact fun same => htransition.targetNotMemory m hm (hnew.1.symm.trans same)
-  constructor
-  · intro e he c hc
-    change e ∈ targets ∨
-      (erased_pin_target_t e = cooled_t target ∧
-        erased_pin_target_kind e = (cooled_kind target).pinTargetKind) at he
-    change c ∈ cooled ∧ cooled_t c ≠ cooled_t target at hc
-    cases he with
-    | inl hold =>
-        exact htransition.witnessCooledDisjoint e hold c ⟨hc.1, hc.2⟩
-    | inr hnew => exact fun same => hc.2 (same.symm.trans hnew.1)
-  · intro e he g hg
-    change e ∈ targets ∨
-      (erased_pin_target_t e = cooled_t target ∧
-        erased_pin_target_kind e = (cooled_kind target).pinTargetKind) at he
-    cases he with
-    | inl hold => exact htransition.witnessGoalDisjoint e hold g hg
-    | inr hnew =>
-        exact fun same => htransition.targetNotGoal g hg (hnew.1.symm.trans same)
-
-theorem hard_erase_cooled_preserves_memory_source
-    (memories : Set Memory) (cooled : Set Cooled) (goals : Set Goal)
-    (targets : Set ErasedPinTarget) (target : Cooled)
-    (memories' : Set Memory) (cooled' : Set Cooled)
-    (targets' : Set ErasedPinTarget)
-    (htransition : HardEraseCooledTransition
-      memories cooled goals targets target memories' cooled' targets')
-    (source : Memory) (hs : source ∈ memories) :
-    ∃ post : Memory,
-      post ∈ memories' ∧ post = source ∧
-      memory_origins post = memory_origins source ∧
-      memory_refs post = memory_refs source := by
-  rw [htransition.memoriesEq]
-  exact ⟨source, hs, rfl, rfl, rfl⟩
-
-/-- The reversible forget transform removes a hot row, adds its matching
-    cooled locator, and leaves the hard-erase witness set untouched. -/
-def cooledSnapshot (target : Memory) : Cooled := {
-  t := memory_t target
-  handle := memory_handle target
-  owner := memory_owner target
-  kind := memory_kind target
-}
-
-def forgetMemoryCooledRows
-    (cooled : Set Cooled) (target : Memory) : Set Cooled :=
-  fun c => c ∈ cooled ∨ c = cooledSnapshot target
-
+/-- Forget sets the flag on the target row (#488): every row stays, the
+    payload and pins with it, and the hard-erase witness set is untouched. -/
 structure ForgetMemoryTransition
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (target : Memory)
-    (memories' : Set Memory) (cooled' : Set Cooled)
+    (memories' : Set Memory)
     (targets' : Set ErasedPinTarget) : Prop where
   targetInMemories : target ∈ memories
   witnessIdsUnique : ErasedPinTargetIdUnique targets
   witnessMemoryDisjoint : ErasedTargetsDisjointMemories targets memories
-  noExistingCooledTarget :
-    ∀ c : Cooled, c ∈ cooled → cooled_t c ≠ memory_t target
-  memoriesEq : memories' = hardEraseMemoryRows memories target
-  cooledEq : cooled' = forgetMemoryCooledRows cooled target
+  memoriesEq : memories' = forgetIn memories (memory_t target)
   targetsEq : targets' = targets
 
-theorem forget_memory_creates_matching_cooled
-    (memories : Set Memory) (cooled : Set Cooled)
+theorem forget_memory_marks_target
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (target : Memory)
-    (memories' : Set Memory) (cooled' : Set Cooled)
+    (memories' : Set Memory)
     (targets' : Set ErasedPinTarget)
     (htransition : ForgetMemoryTransition
-      memories cooled targets target memories' cooled' targets') :
-    cooledSnapshot target ∈ cooled' := by
-  rw [htransition.cooledEq]
-  exact Or.inr rfl
+      memories targets target memories' targets') :
+    target.forget ∈ memories' ∧ forgotten memories' (memory_t target) := by
+  rw [htransition.memoriesEq]
+  exact ⟨(forgetIn_marks memories (memory_t target) target
+      htransition.targetInMemories rfl).1,
+    forgotten_after_forget memories target htransition.targetInMemories⟩
 
 theorem forget_memory_leaves_witnesses
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (target : Memory)
-    (memories' : Set Memory) (cooled' : Set Cooled)
+    (memories' : Set Memory)
     (targets' : Set ErasedPinTarget)
     (htransition : ForgetMemoryTransition
-      memories cooled targets target memories' cooled' targets') :
+      memories targets target memories' targets') :
     targets' = targets :=
   htransition.targetsEq
 
 theorem forget_memory_no_witness_for_target
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (target : Memory)
-    (memories' : Set Memory) (cooled' : Set Cooled)
+    (memories' : Set Memory)
     (targets' : Set ErasedPinTarget)
     (htransition : ForgetMemoryTransition
-      memories cooled targets target memories' cooled' targets') :
+      memories targets target memories' targets') :
     ¬ erasedPinTargetExists targets' (memory_t target) := by
   intro hexists
   obtain ⟨e, he, hid⟩ := hexists
@@ -557,19 +416,35 @@ theorem forget_memory_no_witness_for_target
   exact (htransition.witnessMemoryDisjoint e he target htransition.targetInMemories) hid
 
 theorem forget_memory_preserves_source
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (target source : Memory)
-    (memories' : Set Memory) (cooled' : Set Cooled)
+    (memories' : Set Memory)
     (targets' : Set ErasedPinTarget)
     (htransition : ForgetMemoryTransition
-      memories cooled targets target memories' cooled' targets')
+      memories targets target memories' targets')
     (hs : source ∈ memories) (hsource : memory_t source ≠ memory_t target) :
     ∃ post : Memory,
       post ∈ memories' ∧ post = source ∧
       memory_origins post = memory_origins source ∧
       memory_refs post = memory_refs source := by
   rw [htransition.memoriesEq]
-  exact ⟨source, ⟨hs, hsource⟩, rfl, rfl, rfl⟩
+  exact ⟨source, ⟨source, hs, Or.inr ⟨hsource, rfl⟩⟩, rfl, rfl, rfl⟩
+
+/-- Forget deletes no row: the target and every other row survive with
+    their pins, so a forgotten row is erased later by the ordinary Memory
+    hard erase, not by a separate stub erase. -/
+theorem forget_memory_keeps_every_row
+    (memories : Set Memory)
+    (targets : Set ErasedPinTarget) (target : Memory)
+    (memories' : Set Memory)
+    (targets' : Set ErasedPinTarget)
+    (htransition : ForgetMemoryTransition
+      memories targets target memories' targets')
+    (m : Memory) (hm : m ∈ memories) :
+    ∃ m' : Memory, m' ∈ memories' ∧ memory_t m' = memory_t m ∧
+      memory_kind m' = memory_kind m ∧ memory_owner m' = memory_owner m := by
+  rw [htransition.memoriesEq]
+  exact forgetIn_keeps_row memories (memory_t target) m hm
 
 /-- A Goal erase records a Goal witness while leaving the Memory set intact. -/
 def hardEraseGoalRows (goals : Set Goal) (target : Goal) : Set Goal :=
@@ -581,59 +456,56 @@ def hardEraseGoalWitnesses
     (erased_pin_target_t e = goal_t target ∧ erased_pin_target_kind e = .Goal)
 
 structure HardEraseGoalTransition
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Goal)
     (memories' : Set Memory) (goals' : Set Goal)
     (targets' : Set ErasedPinTarget) : Prop where
   targetInGoals : target ∈ goals
   witnessIdsUnique : ErasedPinTargetIdUnique targets
   witnessMemoryDisjoint : ErasedTargetsDisjointMemories targets memories
-  witnessCooledDisjoint : ErasedTargetsDisjointCooled targets cooled
   witnessGoalDisjoint :
     ErasedTargetsDisjointGoals targets (hardEraseGoalRows goals target)
   targetWitnessCompatible :
     ErasedPinTargetKindCompatible targets (goal_t target) .Goal
   targetNotMemory : ∀ m : Memory, m ∈ memories → goal_t target ≠ memory_t m
-  targetNotCooled : ∀ c : Cooled, c ∈ cooled → goal_t target ≠ cooled_t c
   memoriesEq : memories' = memories
   goalsEq : goals' = hardEraseGoalRows goals target
   targetsEq : targets' = hardEraseGoalWitnesses targets target
 
 theorem hard_erase_goal_records_kind
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Goal)
     (memories' : Set Memory) (goals' : Set Goal)
     (targets' : Set ErasedPinTarget)
     (htransition : HardEraseGoalTransition
-      memories goals cooled targets target memories' goals' targets') :
+      memories goals targets target memories' goals' targets') :
     recordedGoalTargetExists targets' (goal_t target) := by
   rw [htransition.targetsEq]
   refine ⟨{ t := goal_t target, kind := .Goal }, ?_, rfl, rfl⟩
   exact Or.inr ⟨rfl, rfl⟩
 
 theorem hard_erase_goal_rejects_wrong_kind
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Goal)
     (e : ErasedPinTarget) (he : e ∈ targets)
     (hid : erased_pin_target_t e = goal_t target)
     (hkind : erased_pin_target_kind e ≠ .Goal) :
     ¬ HardEraseGoalTransition
-      memories goals cooled targets target memories
+      memories goals targets target memories
         (hardEraseGoalRows goals target)
         (hardEraseGoalWitnesses targets target) := by
   intro htransition
   exact hkind (htransition.targetWitnessCompatible e he hid)
 
 theorem hard_erase_goal_result_well_formed
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Goal)
     (memories' : Set Memory) (goals' : Set Goal)
     (targets' : Set ErasedPinTarget)
     (htransition : HardEraseGoalTransition
-      memories goals cooled targets target memories' goals' targets') :
+      memories goals targets target memories' goals' targets') :
     ErasedPinTargetIdUnique targets' ∧
     ErasedTargetsDisjointMemories targets' memories' ∧
-    ErasedTargetsDisjointCooled targets' cooled ∧
     ErasedTargetsDisjointGoals targets' goals' := by
   rw [htransition.targetsEq, htransition.memoriesEq, htransition.goalsEq]
   constructor
@@ -668,14 +540,6 @@ theorem hard_erase_goal_result_well_formed
     | inl hold => exact htransition.witnessMemoryDisjoint e hold m hm
     | inr hnew =>
         exact fun same => htransition.targetNotMemory m hm (hnew.1.symm.trans same)
-  constructor
-  · intro e he c hc
-    change e ∈ targets ∨
-      (erased_pin_target_t e = goal_t target ∧ erased_pin_target_kind e = .Goal) at he
-    cases he with
-    | inl hold => exact htransition.witnessCooledDisjoint e hold c hc
-    | inr hnew =>
-        exact fun same => htransition.targetNotCooled c hc (hnew.1.symm.trans same)
   · intro e he g hg
     change e ∈ targets ∨
       (erased_pin_target_t e = goal_t target ∧ erased_pin_target_kind e = .Goal) at he
@@ -686,12 +550,12 @@ theorem hard_erase_goal_result_well_formed
     | inr hnew => exact fun same => hg.2 (same.symm.trans hnew.1)
 
 theorem hard_erase_goal_preserves_memory_source
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (target : Goal)
     (memories' : Set Memory) (goals' : Set Goal)
     (targets' : Set ErasedPinTarget)
     (htransition : HardEraseGoalTransition
-      memories goals cooled targets target memories' goals' targets')
+      memories goals targets target memories' goals' targets')
     (source : Memory) (hs : source ∈ memories) :
     ∃ post : Memory,
       post ∈ memories' ∧ post = source ∧

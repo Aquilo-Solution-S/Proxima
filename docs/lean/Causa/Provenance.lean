@@ -52,7 +52,7 @@ structure MemoryGraphValid
       ∃ id : MemoryId,
         (id ∈ memory_origins m ∨ id ∈ memory_refs m) ∧
         (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id)
-  /-- Every hot pin target is strictly earlier. -/
+  /-- Every stored pin target is strictly earlier. -/
   pinTimeStrict :
     ∀ m tgt : Memory, m ∈ memories → tgt ∈ memories →
       pinFrom m tgt → memory_tick tgt < memory_tick m
@@ -93,7 +93,7 @@ structure RetainedMemoryGraphValid
   derivedProvenance :
     ∀ m : Memory, m ∈ memories → memory_kind m ≠ .Fact →
       memory_origins m ≠ [] ∨ memory_refs m ≠ []
-  /-- Every hot pin target is strictly earlier. -/
+  /-- Every stored pin target is strictly earlier. -/
   pinTimeStrict :
     ∀ m tgt : Memory, m ∈ memories → tgt ∈ memories →
       pinFrom m tgt → memory_tick tgt < memory_tick m
