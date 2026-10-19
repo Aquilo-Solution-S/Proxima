@@ -1079,7 +1079,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
 }
 
 #[tokio::test]
-async fn forget_and_admit_preserve_grounding_support() {
+async fn forgetting_every_source_keeps_what_rests_on_them_live() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1109,8 +1109,10 @@ async fn forget_and_admit_preserve_grounding_support() {
             .await
             .expect("A2 from A");
 
+        // #488 S13: a forgotten memory still grounds what rests on it, so
+        // forgetting A2's only source is allowed and A2 stays live.
         let mut tx = pool.begin().await?;
-        let err = forget_memory(
+        forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
@@ -1118,19 +1120,8 @@ async fn forget_and_admit_preserve_grounding_support() {
             owner.into_inner(),
         )
         .await
-        .expect_err("forget A while A2 pins only A");
-        assert!(
-            err.to_string().contains("ungrounded") || err.to_string().contains("23514"),
-            "got: {err}"
-        );
-        tx.rollback().await?;
-        let still_hot: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
-                .bind(abs.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(still_hot, 1, "refused forget must leave A hot");
-
+        .expect("forget A while A2 pins only A");
+        tx.commit().await?;
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
@@ -1140,78 +1131,29 @@ async fn forget_and_admit_preserve_grounding_support() {
             owner.into_inner(),
         )
         .await
-        .expect("forget Fact under A is a cooled-Fact leaf");
+        .expect("forget the Fact under A too");
         tx.commit().await?;
 
-        let mut mixed = draft(None);
-        mixed.kind = "abstraction".into();
-        mixed.additional_references = vec![
-            EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id),
-            EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id),
-        ];
-        let mixed_abs = pg
-            .ingest_fact_atomic(&permit, &mixed, None)
-            .await
-            .expect("A from hot A + cooled Fact");
-
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &surfaces(),
-            abs.memory_id.into_inner(),
-            owner.into_inner(),
+        let states: Vec<(Uuid, bool)> = sqlx::query_as(
+            "SELECT t, forgotten_at IS NOT NULL FROM proxima_core.memory
+              WHERE t = ANY($1) ORDER BY t",
         )
-        .await
-        .expect_err("A2 still pins only A");
-        tx.rollback().await?;
-
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &surfaces(),
+        .bind(vec![
+            fact.memory_id.into_inner(),
+            abs.memory_id.into_inner(),
             abs2.memory_id.into_inner(),
-            owner.into_inner(),
-        )
-        .await
-        .expect("forget A2 (no dependers)");
-        tx.commit().await?;
-
-        let mut tx = pool.begin().await?;
-        forget_memory(
-            &mut tx,
-            &core_pg_sidecars(),
-            &surfaces(),
-            abs.memory_id.into_inner(),
-            owner.into_inner(),
-        )
-        .await
-        .expect("forget A after A2 gone; mixed_abs still has cooled Fact");
-        tx.commit().await?;
-
-        let err = pg
-            .ingest_fact_atomic(
-                &permit,
-                &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
-                None,
-            )
-            .await
-            .expect_err("admit A from cooled A only");
-        assert!(
-            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
-            "got: {err}"
+        ])
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            states,
+            vec![
+                (fact.memory_id.into_inner(), true),
+                (abs.memory_id.into_inner(), true),
+                (abs2.memory_id.into_inner(), false),
+            ],
+            "both sources are forgotten and A2, resting only on them, stays live"
         );
-
-        pg.ingest_fact_atomic(
-            &permit,
-            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
-            None,
-        )
-        .await
-        .expect("admit A from cooled Fact");
-
-        let _ = mixed_abs;
         Ok(())
     }
     .await;
@@ -1361,7 +1303,7 @@ async fn forget_pinless_abstraction_is_refused() {
 }
 
 #[tokio::test]
-async fn concurrent_forget_keeps_one_grounding_support() {
+async fn concurrent_forgets_of_both_sources_both_commit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1463,8 +1405,8 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         let r2 = f2.await.expect("join a2").expect("tx a2");
         let ok_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
         assert_eq!(
-            ok_count, 1,
-            "exactly one of A1/A2 forgets may commit; {r1:?} {r2:?}"
+            ok_count, 2,
+            "a forgotten source still grounds, so both forgets commit; {r1:?} {r2:?}"
         );
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
@@ -1480,9 +1422,9 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         .bind(dep.memory_id.into_inner())
         .fetch_one(&pool)
         .await?;
-        assert!(
-            remaining > 0,
-            "dependent must keep a hot pin or cooled Fact"
+        assert_eq!(
+            remaining, 2,
+            "the dependent keeps both pins, each to a forgotten memory row"
         );
         Ok(())
     }
@@ -1492,7 +1434,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
 }
 
 #[tokio::test]
-async fn forget_blocks_admit_until_grounding_rechecked() {
+async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1581,11 +1523,13 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         .await?;
         tx_f.commit().await?;
 
-        let err = admit.await?.expect_err("admit after forget of sole A origin");
-        assert!(
-            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
-            "got: {err}"
-        );
+        // Since #488 S13 pin integrity accepts any memory row, so a raw
+        // admission (table owner, no owner scope) pinning the now-forgotten A
+        // passes once it gets the lock. A real write cannot cite A: owner
+        // scope does not resolve a forgotten memory.
+        admit
+            .await?
+            .expect("raw admission over the forgotten A, after the lifecycle lock");
         Ok(())
     }
     .await;

@@ -109,3 +109,86 @@ async fn the_owner_sees_a_forgotten_source_as_forgotten_and_lineage_stops_there(
     .await;
     result.expect("forgotten targets");
 }
+
+/// #488 S13: a forgotten memory still grounds what was derived from it.
+/// Forgetting the only source of a Perspective (an Abstraction) is no
+/// longer refused, nor is forgetting the only source of that Abstraction
+/// (a Fact); both derived memories stay readable and their lineage names
+/// the source forgotten.
+#[tokio::test]
+async fn forgetting_the_last_source_is_allowed_and_the_derived_memory_stays_readable() {
+    let split_db = clone_split_core_db("proxima_forget_last_source")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let handle = |made: serde_json::Value| made["handle"].as_str().expect("handle").to_owned();
+        let fact = handle(
+            call(
+                "core_remember",
+                serde_json::json!({"title": "observed", "body": "observed", "tags": []}),
+            )
+            .await?,
+        );
+        let derive = |kind: &'static str, title: &'static str, source: String| {
+            call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": kind,
+                    "title": title,
+                    "body": title,
+                    "source_handles": [source],
+                    "model_id": "test-model"
+                }),
+            )
+        };
+        let abstraction = handle(derive("Abstraction", "concluded", fact.clone()).await?);
+        let perspective = handle(derive("Perspective", "viewed", abstraction.clone()).await?);
+
+        call("core_forget", serde_json::json!({"memory": abstraction})).await?;
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+
+        let read = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner,
+            &format!("proxima://memory/{perspective}"),
+        )
+        .await?;
+        assert_eq!(read["handle"], perspective.as_str(), "{read}");
+        let lineage = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            owner,
+            &format!("proxima://memory/{perspective}/lineage?direction=ancestors&depth=3"),
+        )
+        .await?;
+        let status = lineage["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| node["memory"] == abstraction.as_str())
+            .map(|node| node["status"].clone());
+        assert_eq!(status, Some("forgotten".into()), "{lineage}");
+        Ok(())
+    }
+    .await;
+    result.expect("forget last source");
+}

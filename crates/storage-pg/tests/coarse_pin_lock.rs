@@ -423,19 +423,19 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
         };
         let (forget_result, driver_result) = tokio::join!(forget, driver);
         driver_result?;
-        let error = forget_result.expect_err("forget sees the committed Perspective");
-        assert!(
-            matches!(error, StorageError::ConstraintViolation(ref message)
-                if message.contains("ungrounded")),
-            "{error}"
-        );
+        // Since #488 S13 the forgotten Abstraction still grounds the
+        // Perspective the bulk committed, so the forget, once it gets the
+        // locks, goes through.
+        forget_result.expect("forget after the bulk commits");
 
-        let hot: Vec<Uuid> =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE t = ANY($1) ORDER BY t")
-                .bind(vec![abstraction.into_inner(), perspective])
-                .fetch_all(pool)
-                .await?;
-        assert_eq!(hot, vec![abstraction.into_inner(), perspective]);
+        let live: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory
+              WHERE t = ANY($1) AND forgotten_at IS NULL ORDER BY t",
+        )
+        .bind(vec![abstraction.into_inner(), perspective])
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(live, vec![perspective], "the Perspective stays live");
         assert_eq!(ungrounded_memories(pool).await?, 0);
         Ok(())
     }

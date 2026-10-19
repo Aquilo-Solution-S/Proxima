@@ -15,17 +15,17 @@ owner, never a global content hash.
 | Operation | Effect |
 |---|---|
 | Supersede | Append a new version on a series; retain prior versions |
-| Forget | Cool an admission; preserve identity and declared pins |
+| Forget | Mark an admission forgotten; keep its rows, identity and declared pins |
 | Owner erase | Destroy the selected owner's declared storage |
 | Source-scope erase | Destroy rows attributable to the selected source within one owner |
 | Flavor-scoped erase | Destroy whole series of the flavor's own schemas in one owner |
 | Owner export | Return the declared exportable surfaces under host authority |
 
-Forget is not hard deletion. It refuses a change that would leave a retained hot
-derived memory without required grounding. Exact hydration restores the saved
-admission, including typed sidecars and historical integrity evidence; an
-unsupported object format or missing evidence is a refusal, not a guessed
-conversion.
+Forget is not hard deletion. The memory row and its sidecar rows stay in
+Postgres marked `forgotten_at`; reads hide them, and their search projection and
+embeddings are deleted. A forgotten memory still grounds what was derived from
+it, so forgetting the last source of an Abstraction or Perspective is allowed and
+the derived memory stays readable.
 
 The kernel states `wipeable` and owner-scope principles in
 [`Compliance.lean`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Compliance.lean).

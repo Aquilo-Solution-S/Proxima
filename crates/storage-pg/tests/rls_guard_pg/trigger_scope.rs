@@ -318,19 +318,12 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     )
     .await;
 
-    // cooled_forget_grounding: non-Fact path and the ungrounded-depender refusal.
+    // cooled_forget_grounding: the non-Fact path, and since #488 S13 the
+    // last source of a remaining depender cools too (no grounding refusal).
     cool(&mut tx, abstraction).await.unwrap();
     assert_owner_scope(&mut tx, "cooled_forget_grounding return").await;
-    savepoint(&mut tx).await;
-    let outcome = cool(&mut tx, grounding).await;
-    assert_refusal_restores_scope(
-        &mut tx,
-        "cooled_forget_grounding",
-        "23514",
-        "would leave an ungrounded memory",
-        outcome,
-    )
-    .await;
+    cool(&mut tx, grounding).await.unwrap();
+    assert_owner_scope(&mut tx, "cooled_forget_grounding last-source return").await;
 
     // The three erase witnesses, each refused inside its body by a held
     // lifecycle lock, then run to completion. Completion nests

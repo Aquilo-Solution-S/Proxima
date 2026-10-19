@@ -237,6 +237,7 @@ $function$;
 REVOKE ALL ON FUNCTION proxima_core.cooled_erase_witness() FROM PUBLIC;
 
 -- Fires on a cooled insert and, since #488, on memory.forgotten_at being set.
+-- Since S13 it only takes the footprint and depender locks; it refuses nothing.
 -- FORGET-POLICY: includes-forgotten (forget grounding: locks every depender, checks the live ones) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
  RETURNS trigger
@@ -280,21 +281,9 @@ BEGIN
        AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
      ORDER BY m.t
      FOR UPDATE;
-    IF EXISTS (
-        SELECT 1
-          FROM proxima_core.memory m
-         WHERE m.kind <> 'fact'
-           AND m.t <> NEW.t
-           AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
-           -- A forgotten depender is hidden; it needs no live grounding.
-           AND m.forgotten_at IS NULL
-           AND NOT proxima_core.pins_have_grounding_support(
-                 m.origins || m.refs, NEW.t, NEW.kind
-               )
-    ) THEN
-        RAISE EXCEPTION 'forget would leave an ungrounded memory'
-            USING ERRCODE = '23514';
-    END IF;
+    -- No grounding refusal since #488 S13: a forgotten memory still grounds
+    -- what was derived from it. The locks above keep forget serialized with
+    -- a concurrent derive over the same targets.
     PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END;
@@ -2074,14 +2063,14 @@ BEGIN
         SELECT 1
           FROM unnest(pins) AS p(id)
          WHERE CASE
+                 -- The memory being forgotten still grounds (#488 S13).
                  WHEN cooling IS NOT NULL AND p.id = cooling THEN
-                   cooling_kind = 'fact'
+                   true
                  ELSE
-                   -- A forgotten Fact still grounds; a forgotten non-Fact does not.
+                   -- Any memory row grounds, forgotten or not.
                    EXISTS (
                         SELECT 1 FROM proxima_core.memory h
                          WHERE h.t = p.id
-                           AND (h.forgotten_at IS NULL OR h.kind = 'fact')
                    )
                    OR EXISTS (
                         SELECT 1 FROM proxima_core.cooled c
