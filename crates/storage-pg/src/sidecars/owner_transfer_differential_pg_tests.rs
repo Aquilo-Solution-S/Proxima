@@ -658,13 +658,15 @@ pub async fn dump_database(
         // `t` with no owner column, so they follow the memory, live or
         // forgotten, that a transfer moves. 0034's
         // publication counter moves with the series head;
-        // `publication_outbox_pg_tests` pins it.
+        // `publication_outbox_pg_tests` pins it. 0042's owner_follows is
+        // host-written schema metadata about no owner.
         if matches!(
             table.as_str(),
             "publication_consumer"
                 | "publication_delivery"
                 | "memory_external_origin"
                 | "publication_counter"
+                | "owner_follows"
         ) {
             continue;
         }

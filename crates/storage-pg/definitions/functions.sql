@@ -737,6 +737,7 @@ DECLARE
     class proxima_core.owner_rls_class;
     classes integer;
     installed integer := 0;
+    follows text[];
 BEGIN
     IF target_schema IS NULL OR target_schema IN ('proxima_core', 'public', 'information_schema')
        OR target_schema LIKE 'pg\_%' THEN
@@ -745,6 +746,13 @@ BEGIN
     IF to_regnamespace(quote_ident(target_schema)) IS NULL THEN
         RAISE EXCEPTION 'install_owner_rls: schema % does not exist', target_schema;
     END IF;
+    -- The host's Follows tables of this schema (sync_owner_follows): each
+    -- gets the follows rule whatever class it is listed in, and needs no
+    -- listing at all.
+    SELECT COALESCE(array_agg(substr(f.table_name, length(target_schema) + 2)), '{}')
+      INTO follows
+      FROM proxima_core.owner_follows AS f
+     WHERE split_part(f.table_name, '.', 1) = target_schema;
     FOREACH listed IN ARRAY classified LOOP
         classes := (listed = ANY(COALESCE(owner_id_tables, '{}')))::integer
             + (listed = ANY(COALESCE(fk_parent_tables, '{}')))::integer
@@ -806,11 +814,12 @@ BEGIN
          WHERE n.nspname = target_schema AND c.relkind IN ('r', 'p')
          ORDER BY c.relname
     LOOP
-        IF relation.relname <> ALL(classified) THEN
+        IF relation.relname <> ALL(classified) AND relation.relname <> ALL(follows) THEN
             RAISE EXCEPTION 'owner RLS classification missing for %.%', relation.schema_name, relation.relname;
         END IF;
         IF relation.has_owner_id AND relation.relname <> ALL(COALESCE(owner_id_tables, '{}')
-                || COALESCE(memory_owner_tables, '{}')) THEN
+                || COALESCE(memory_owner_tables, '{}'))
+           AND NOT (relation.relname = ANY(follows) AND relation.relname <> ALL(classified)) THEN
             RAISE EXCEPTION 'install_owner_rls: %.% has an owner_id column but is not in owner_id_tables',
                 relation.schema_name, relation.relname;
         END IF;
@@ -826,6 +835,16 @@ BEGIN
                 relation.schema_name, relation.relname;
         END IF;
 
+        IF relation.relname = ANY(follows) THEN
+            IF class IS NOT NULL THEN
+                RAISE NOTICE 'install_owner_rls: %.% is a Follows table; the host installs Follows owner RLS, so its class % is superseded',
+                    relation.schema_name, relation.relname, class;
+            END IF;
+            PERFORM proxima_core.owner_rls_apply_follows(
+                'install_owner_rls', relation.schema_name, relation.relname);
+            installed := installed + 1;
+            CONTINUE;
+        END IF;
         PERFORM proxima_core.owner_rls_apply_class(
             'install_owner_rls', 'in ' || class::text || '_tables',
             relation.schema_name, relation.relname, class, 'owner_id');
@@ -840,7 +859,7 @@ BEGIN
 END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one flavor schema from its table classification; refuses an unclassified table (docs/09 §Owner RLS).';
+COMMENT ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one flavor schema from its table classification; refuses an unclassified table. A table in proxima_core.owner_follows gets the host follows rule whatever class it is listed in, and may be left out (docs/09 §Owner RLS).';
 
 CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text DEFAULT 'owner_id'::text)
  RETURNS void
@@ -887,6 +906,16 @@ BEGIN
     IF has_owner_id AND class IN ('fk_parent', 'ownerless') THEN
         RAISE EXCEPTION 'install_owner_rls_table: %.% has an owner_id column but is class %; a table with owner_id is class owner_id or memory_owner',
             target_schema, target_table, class;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM proxima_core.owner_follows AS f
+         WHERE f.table_name = target_schema || '.' || target_table
+    ) THEN
+        RAISE NOTICE 'install_owner_rls_table: %.% is a Follows table; the host installs Follows owner RLS, so its class % is superseded',
+            target_schema, target_table, class;
+        PERFORM proxima_core.owner_rls_apply_follows('install_owner_rls_table', target_schema, target_table);
+        PERFORM proxima_core.owner_rls_census_table(target_schema, target_table);
+        RETURN;
     END IF;
 
     CASE class
@@ -939,7 +968,94 @@ BEGIN
 END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a flavor or host schema; the per-table form of install_owner_rls (docs/09 §Owner RLS).';
+COMMENT ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a flavor or host schema; the per-table form of install_owner_rls. A table in proxima_core.owner_follows gets the host follows rule instead of class owner_id or memory_owner (docs/09 §Owner RLS).';
+
+-- Host only: record the Follows tables of the schemas this binary composes
+-- and install their owner RLS. The host calls it from its Rust registry
+-- (pg_sidecar!(owner: follows)) in the migration lane: once before the
+-- flavor sources, when a table may not exist yet and is only marked, and once
+-- after them. Marks of other schemas are left alone, so binaries composing
+-- different bundles over one database do not undo each other.
+CREATE OR REPLACE FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[])
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    listed text;
+    rel_schema text;
+    rel_name text;
+    rel_oid oid;
+    owner_attnum smallint;
+    index_name text;
+BEGIN
+    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'platform' THEN
+        RAISE EXCEPTION 'sync_owner_follows: runs in platform scope only';
+    END IF;
+    IF schemas IS NULL OR tables IS NULL THEN
+        RAISE EXCEPTION 'sync_owner_follows: schemas and tables must not be NULL';
+    END IF;
+    FOREACH rel_schema IN ARRAY schemas LOOP
+        IF rel_schema IS NULL OR rel_schema IN ('proxima_core', 'public', 'information_schema')
+           OR rel_schema LIKE 'pg\_%' THEN
+            RAISE EXCEPTION 'sync_owner_follows: % is not a flavor schema', COALESCE(rel_schema, 'NULL');
+        END IF;
+    END LOOP;
+    FOREACH listed IN ARRAY tables LOOP
+        IF listed IS NULL OR listed <> lower(listed) OR listed !~ '^[^.]+\.[^.]+$' THEN
+            RAISE EXCEPTION 'sync_owner_follows: % is not a lowercase schema.table name', COALESCE(listed, 'NULL');
+        END IF;
+        IF split_part(listed, '.', 1) <> ALL(schemas) THEN
+            RAISE EXCEPTION 'sync_owner_follows: % is outside the composed schemas %', listed, schemas;
+        END IF;
+    END LOOP;
+
+    DELETE FROM proxima_core.owner_follows AS f
+     WHERE split_part(f.table_name, '.', 1) = ANY(schemas)
+       AND f.table_name <> ALL(tables);
+    INSERT INTO proxima_core.owner_follows (table_name)
+    SELECT DISTINCT unnest(tables)
+    ON CONFLICT DO NOTHING;
+
+    FOR listed IN SELECT DISTINCT unnest(tables) ORDER BY 1 LOOP
+        rel_schema := split_part(listed, '.', 1);
+        rel_name := split_part(listed, '.', 2);
+        SELECT c.oid INTO rel_oid
+          FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
+         WHERE n.nspname = rel_schema AND c.relname = rel_name AND c.relkind IN ('r', 'p');
+        -- Not created yet: the flavor lane creates it, its installer run
+        -- applies the follows rule, and the post-lane sync adds the index.
+        CONTINUE WHEN rel_oid IS NULL;
+
+        PERFORM proxima_core.owner_rls_apply_follows('sync_owner_follows', rel_schema, rel_name);
+
+        SELECT a.attnum INTO owner_attnum
+          FROM pg_attribute AS a
+         WHERE a.attrelid = rel_oid AND a.attname = 'owner_id' AND NOT a.attisdropped AND a.attnum > 0;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_index AS i
+              JOIN pg_class AS ic ON ic.oid = i.indexrelid
+              JOIN pg_am AS am ON am.oid = ic.relam
+             WHERE i.indrelid = rel_oid AND i.indisvalid AND am.amname = 'btree'
+               AND i.indkey[0] = owner_attnum
+        ) THEN
+            index_name := left(rel_name, 40) || '_owner_follows_idx';
+            IF EXISTS (
+                SELECT 1 FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                 WHERE n.nspname = rel_schema AND c.relname = index_name
+            ) THEN
+                RAISE EXCEPTION 'sync_owner_follows: %.% exists but is no valid btree index leading with %.owner_id',
+                    rel_schema, index_name, listed;
+            END IF;
+            EXECUTE format('CREATE INDEX %I ON %I.%I (owner_id)', index_name, rel_schema, rel_name);
+        END IF;
+
+        PERFORM proxima_core.owner_rls_census_table(rel_schema, rel_name);
+    END LOOP;
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[]) FROM PUBLIC;
+COMMENT ON FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[]) IS 'Host only: replaces the owner_follows marks of the composed schemas with the registry Follows tables, and gives each existing one the follows owner RLS (owner_id AND EXISTS over its memory) and a btree index leading with owner_id.';
 
 -- Lexical functions
 
@@ -1720,19 +1836,32 @@ CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_class(caller text, class
  SET search_path TO 'pg_catalog'
 AS $function$
 DECLARE
-    rel_owner name;
     read_expr text;
     write_expr text;
 BEGIN
-    SELECT pg_get_userbyid(c.relowner) INTO rel_owner
-      FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
-     WHERE n.nspname = target_schema AND c.relname = target_table AND c.relkind IN ('r', 'p');
-
     SELECT predicates.read_expr, predicates.write_expr
       INTO read_expr, write_expr
       FROM proxima_core.owner_rls_class_predicates(
           caller, class_label, target_schema, target_table, class, owner_column
       ) AS predicates;
+    PERFORM proxima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+
+-- The three owner-RLS policies of one table from its read and write
+-- predicates, with ENABLE and FORCE: the one place they are created.
+CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    rel_owner name;
+BEGIN
+    SELECT pg_get_userbyid(c.relowner) INTO rel_owner
+      FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
+     WHERE n.nspname = target_schema AND c.relname = target_table AND c.relkind IN ('r', 'p');
 
     EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', target_schema, target_table);
     EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', target_schema, target_table);
@@ -1744,7 +1873,65 @@ BEGIN
     EXECUTE format('CREATE POLICY proxima_platform ON %I.%I FOR ALL TO %I USING (current_setting(''app.proxima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxima_scope'', true) = ''platform'')', target_schema, target_table, rel_owner);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text) FROM PUBLIC;
+
+-- The host's follows rule for a pg_sidecar!(owner: follows) table: the
+-- owner_id class predicate AND the memory_owner class predicate, read and
+-- write alike. The memory half reads through the row's memory under that
+-- memory's own policies, so a forgotten memory hides the row from owner
+-- scopes and the lifecycle scope still reaches it; the owner_id half lets the
+-- planner use an owner_id index. Follows keeps owner_id equal to the
+-- memory's owner, so the AND admits exactly the rows memory_owner admits.
+CREATE OR REPLACE FUNCTION proxima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text)
+ RETURNS TABLE(read_expr text, write_expr text)
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    by_owner record;
+    by_memory record;
+BEGIN
+    SELECT * INTO by_owner
+      FROM proxima_core.owner_rls_class_predicates(
+          caller, 'a Follows table', target_schema, target_table, 'owner_id', 'owner_id');
+    SELECT * INTO by_memory
+      FROM proxima_core.owner_rls_class_predicates(
+          caller, 'a Follows table', target_schema, target_table, 'memory_owner', 'owner_id');
+    read_expr := format('(%s) AND (%s)', by_owner.read_expr, by_memory.read_expr);
+    write_expr := format('(%s) AND (%s)', by_owner.write_expr, by_memory.write_expr);
+    RETURN NEXT;
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text) FROM PUBLIC;
+
+-- Install the follows rule on one existing flavor table. The table must
+-- carry a uuid owner_id column: freeze requires it of every Follows sidecar.
+CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    read_expr text;
+    write_expr text;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+          JOIN pg_class AS c ON c.oid = a.attrelid
+          JOIN pg_namespace AS n ON n.oid = c.relnamespace
+         WHERE n.nspname = target_schema AND c.relname = target_table AND c.relkind IN ('r', 'p')
+           AND a.attname = 'owner_id' AND a.atttypid = 'uuid'::regtype
+           AND NOT a.attisdropped AND a.attnum > 0
+    ) THEN
+        RAISE EXCEPTION '%: Follows table %.% has no uuid owner_id column', caller, target_schema, target_table;
+    END IF;
+    SELECT predicates.read_expr, predicates.write_expr
+      INTO read_expr, write_expr
+      FROM proxima_core.owner_rls_follows_predicates(caller, target_schema, target_table) AS predicates;
+    PERFORM proxima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text) FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION proxima_core.owner_rls_census_table(target_schema text, target_table text)
  RETURNS void

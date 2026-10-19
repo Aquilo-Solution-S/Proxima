@@ -660,6 +660,9 @@ pub const DROPPED_TABLES: &[&str] = &[
     // deleted by owner erase once nothing of its series is left.
     // `publication_outbox_pg_tests` pins it.
     "publication_counter",
+    // Added after the baseline by 0042: which flavor tables are Follows
+    // sidecars, host-written schema metadata about no owner.
+    "owner_follows",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

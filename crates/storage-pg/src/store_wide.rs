@@ -35,6 +35,12 @@ pub const STORE_WIDE_TABLES: &[(&str, &str)] = &[
          declarations are checked AGAINST.",
     ),
     (
+        "proxima_core.owner_follows",
+        "Which flavor tables are Follows sidecars: schema metadata the host writes from its \
+         registry at migration, identical for every owner, and the relation the installer reads \
+         to give those tables the follows owner RLS.",
+    ),
+    (
         "proxima_core.lexical_languages",
         "The FK domain of permitted regconfig values. Schema metadata written by migrations, \
          identical for every owner.",

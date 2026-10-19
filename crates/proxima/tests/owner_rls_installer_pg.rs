@@ -6,7 +6,15 @@
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
 mod example_engine;
 
+use example_engine::ExampleEngine;
+use proxima::{FactPayload, FactWrite};
+use proxima_core::{
+    AuthPath, AuthzContext, OwnerId, UserId,
+    test_fixtures::{authenticated_context, owner_scope_for_tests},
+};
+use proxima_example::StampV1;
 use sqlx::{Connection, PgConnection};
+use uuid::Uuid;
 
 /// The example schema's classification, as the example migrator states it
 /// (baseline, `stamp_follows`, then `stamp_follows_memory_rls`).
@@ -402,5 +410,336 @@ async fn installer_refuses_invalid_classifications_and_preserves_live_policies()
     assert_refusals(&mut conn).await;
     assert_parent_refusals(&mut conn).await;
     assert_memory_owner_refusals(&mut conn).await;
+    conn.close().await.expect("close");
+}
+
+/// The host's Follows table of the example flavor.
+const FOLLOWS_TABLE: &str = "proxima_example.stamp_v1";
+
+const SYNC_SQL: &str = "SELECT proxima_core.sync_owner_follows($1, $2)";
+
+/// Leading-`owner_id` btree indexes on `stamp_v1`.
+const OWNER_INDEXES: &str = "SELECT count(*) FROM pg_index AS i
+     JOIN pg_class AS ic ON ic.oid = i.indexrelid
+     JOIN pg_am AS am ON am.oid = ic.relam
+     JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+    WHERE i.indrelid = 'proxima_example.stamp_v1'::regclass
+      AND am.amname = 'btree' AND i.indisvalid AND a.attname = 'owner_id'";
+
+async fn platform_scope(conn: &mut PgConnection) {
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        .execute(&mut *conn)
+        .await
+        .expect("platform scope");
+}
+
+async fn sync(
+    conn: &mut PgConnection,
+    schemas: &[&str],
+    tables: &[&str],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(SYNC_SQL)
+        .bind(owned(schemas))
+        .bind(owned(tables))
+        .execute(&mut *conn)
+        .await
+        .map(|_| ())
+}
+
+async fn policies(conn: &mut PgConnection) -> Vec<PolicyRow> {
+    sqlx::query_as(POLICIES)
+        .fetch_all(&mut *conn)
+        .await
+        .expect("example policies")
+}
+
+/// Both owner policies of `stamp_v1` are the host follows rule: its own
+/// `owner_id` check AND an EXISTS over its memory.
+fn assert_follows_rule(policies: &[PolicyRow]) {
+    let read = named_policy(policies, "stamp_v1", "proxima_owner_read");
+    let write = named_policy(policies, "stamp_v1", "proxima_owner_write");
+    for expr in [&read.5, &write.5, &write.6] {
+        assert!(
+            expr.contains("owner_id = ANY")
+                && expr.contains("FROM proxima_core.memory parent")
+                && expr.contains("parent.t = stamp_v1.t"),
+            "stamp_v1 carries the follows rule: {expr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sync_gives_a_follows_table_the_combined_rule_and_an_owner_index() {
+    let db = example_engine::migrated_db("proxima_owner_follows_sync").await;
+    let mut conn = PgConnection::connect(db.platform_url())
+        .await
+        .expect("platform connection");
+    let mut tx = conn.begin().await.expect("sync transaction");
+    platform_scope(&mut tx).await;
+    sqlx::query(
+        "INSERT INTO proxima_core.owner_follows (table_name) VALUES ('proxima_other.thing_v1')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("another binary's mark");
+    let before: i64 = sqlx::query_scalar(OWNER_INDEXES)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("indexes");
+    assert_eq!(
+        before, 0,
+        "the example declares no owner_id index on stamp_v1"
+    );
+
+    sync(&mut tx, &["proxima_example"], &[FOLLOWS_TABLE])
+        .await
+        .expect("the host syncs its Follows table");
+    let first = policies(&mut tx).await;
+    assert_follows_rule(&first);
+    let indexes: i64 = sqlx::query_scalar(OWNER_INDEXES)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("indexes");
+    assert_eq!(indexes, 1, "the sync adds one owner_id index");
+
+    sync(&mut tx, &["proxima_example"], &[FOLLOWS_TABLE])
+        .await
+        .expect("the sync is idempotent");
+    assert_eq!(
+        policies(&mut tx).await,
+        first,
+        "a second sync changes no policy"
+    );
+    let indexes: i64 = sqlx::query_scalar(OWNER_INDEXES)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("indexes");
+    assert_eq!(indexes, 1, "a second sync adds no index");
+
+    let marks: Vec<String> =
+        sqlx::query_scalar("SELECT table_name FROM proxima_core.owner_follows ORDER BY 1")
+            .fetch_all(&mut *tx)
+            .await
+            .expect("marks");
+    assert_eq!(
+        marks,
+        ["proxima_example.stamp_v1", "proxima_other.thing_v1"],
+        "the sync leaves marks of schemas it does not compose"
+    );
+
+    sync(&mut tx, &["proxima_example"], &[])
+        .await
+        .expect("a registry without Follows tables unmarks the schema");
+    let marks: Vec<String> =
+        sqlx::query_scalar("SELECT table_name FROM proxima_core.owner_follows ORDER BY 1")
+            .fetch_all(&mut *tx)
+            .await
+            .expect("marks");
+    assert_eq!(marks, ["proxima_other.thing_v1"]);
+    tx.rollback().await.expect("rollback");
+    conn.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn installer_keeps_the_follows_rule_whatever_the_flavor_lists() {
+    let db = example_engine::migrated_db("proxima_owner_follows_installer").await;
+    let mut conn = PgConnection::connect(db.platform_url())
+        .await
+        .expect("platform connection");
+    let mut tx = conn.begin().await.expect("install transaction");
+    platform_scope(&mut tx).await;
+    sync(&mut tx, &["proxima_example"], &[FOLLOWS_TABLE])
+        .await
+        .expect("the host syncs its Follows table");
+    let synced = policies(&mut tx).await;
+    assert_follows_rule(&synced);
+
+    let mut as_owner_id = OWNER_ID_TABLES.to_vec();
+    as_owner_id.push("stamp_v1");
+    for (label, owner_id, memory_owner) in [
+        ("in owner_id_tables", as_owner_id.as_slice(), &[][..]),
+        (
+            "in memory_owner_tables",
+            OWNER_ID_TABLES,
+            MEMORY_OWNER_TABLES,
+        ),
+        ("left out", OWNER_ID_TABLES, &[][..]),
+    ] {
+        install(
+            &mut tx,
+            owner_id,
+            FK_PARENT_TABLES,
+            OWNERLESS_TABLES,
+            memory_owner,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("stamp_v1 {label} installs: {error}"));
+        assert_eq!(
+            policies(&mut tx).await,
+            synced,
+            "stamp_v1 {label} keeps the follows rule"
+        );
+    }
+    sqlx::query(
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'stamp_v1', 'owner_id')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("the per-table installer accepts a Follows table");
+    assert_eq!(
+        policies(&mut tx).await,
+        synced,
+        "install_owner_rls_table keeps the follows rule"
+    );
+
+    for (label, fk_parent, ownerless) in [
+        (
+            "fk_parent_tables",
+            ["note_v1", "digest_v1", "stamp_v1"].as_slice(),
+            OWNERLESS_TABLES,
+        ),
+        (
+            "ownerless_tables",
+            FK_PARENT_TABLES,
+            ["settings", "stamp_v1"].as_slice(),
+        ),
+    ] {
+        let mut savepoint = tx.begin().await.expect("savepoint");
+        let message = install(&mut savepoint, OWNER_ID_TABLES, fk_parent, ownerless, &[])
+            .await
+            .expect_err("a table with owner_id takes no parent's or ownerless policy")
+            .to_string();
+        savepoint.rollback().await.expect("rollback to savepoint");
+        assert!(
+            message.contains(
+                "proxima_example.stamp_v1 has an owner_id column but is not in owner_id_tables"
+            ),
+            "stamp_v1 in {label}: {message}"
+        );
+    }
+    tx.rollback().await.expect("rollback");
+    conn.close().await.expect("close");
+}
+
+/// How many stamp rows for memory `t` the `owner` scope sees, on the runtime
+/// role under owner RLS.
+async fn stamps_seen_by(runtime: &sqlx::PgPool, owner: OwnerId, t: Uuid) -> i64 {
+    let mut tx =
+        proxima_storage_pg::begin_owner_transaction(runtime, &owner_scope_for_tests(&[owner]))
+            .await
+            .expect("owner transaction");
+    let seen: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_example.stamp_v1 WHERE t = $1")
+            .bind(t)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("stamp count under owner RLS");
+    tx.rollback().await.expect("rollback");
+    seen
+}
+
+/// The r3 leak (F1): a flavor migration that classifies its Follows table as
+/// `owner_id` after the host marked it must not let a forgotten memory's row
+/// through an owner read.
+#[tokio::test]
+async fn forgotten_follows_row_hidden_after_flavor_installs_owner_id_class() {
+    let harness = ExampleEngine::new("proxima_owner_follows_forgotten", |_| {}).await;
+    let runtime = sqlx::PgPool::connect(harness.db.runtime_url())
+        .await
+        .expect("runtime connection");
+    let mut conn = PgConnection::connect(harness.db.platform_url())
+        .await
+        .expect("platform connection");
+    let mut tx = conn.begin().await.expect("install transaction");
+    platform_scope(&mut tx).await;
+    sync(&mut tx, &["proxima_example"], &[FOLLOWS_TABLE])
+        .await
+        .expect("the host syncs its Follows table");
+    let mut as_owner_id = OWNER_ID_TABLES.to_vec();
+    as_owner_id.push("stamp_v1");
+    install(
+        &mut tx,
+        &as_owner_id,
+        FK_PARENT_TABLES,
+        OWNERLESS_TABLES,
+        &[],
+    )
+    .await
+    .expect("the flavor classifies stamp_v1 as owner_id");
+    tx.commit().await.expect("commit");
+    conn.close().await.expect("close");
+
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let authz = authenticated_context(AuthzContext::for_subject(user, AuthPath::HostBearer));
+    let stamp = StampV1 {
+        mark: "follows-forgotten".to_owned(),
+    };
+    let memory_id = harness
+        .engine
+        .ingest_fact(&authz, FactWrite::new(owner, StampV1::SCHEMA_ID, &stamp))
+        .await
+        .expect("stamp is remembered")
+        .memory_id;
+    let t = memory_id.into_inner();
+    assert_eq!(
+        stamps_seen_by(&runtime, owner, t).await,
+        1,
+        "the owner sees its live stamp"
+    );
+    harness
+        .engine
+        .forget_memory(&authz, owner, memory_id)
+        .await
+        .expect("owner forgets the memory");
+    assert_eq!(
+        stamps_seen_by(&runtime, owner, t).await,
+        0,
+        "the forgotten memory's Follows row is hidden from its owner"
+    );
+}
+
+#[tokio::test]
+async fn refuses_sync_outside_composed_schemas() {
+    let db = example_engine::migrated_db("proxima_owner_follows_refusals").await;
+    let mut conn = PgConnection::connect(db.platform_url())
+        .await
+        .expect("platform connection");
+    for (schemas, tables, refusal) in [
+        (
+            &["proxima_example"][..],
+            &["proxima_core.memory"][..],
+            "outside the composed schemas",
+        ),
+        (
+            &["proxima_core"][..],
+            &["proxima_core.memory"][..],
+            "proxima_core is not a flavor schema",
+        ),
+        (
+            &["proxima_example"][..],
+            &["proxima_other.thing_v1"][..],
+            "outside the composed schemas",
+        ),
+        (
+            &["proxima_example"][..],
+            &["stamp_v1"][..],
+            "is not a lowercase schema.table name",
+        ),
+    ] {
+        let mut tx = conn.begin().await.expect("refusal transaction");
+        platform_scope(&mut tx).await;
+        let message = sync(&mut tx, schemas, tables)
+            .await
+            .expect_err(refusal)
+            .to_string();
+        tx.rollback().await.expect("rollback");
+        assert!(message.contains(refusal), "{refusal}: {message}");
+    }
+    let message = sync(&mut conn, &["proxima_example"], &[FOLLOWS_TABLE])
+        .await
+        .expect_err("outside platform scope")
+        .to_string();
+    assert!(message.contains("runs in platform scope only"), "{message}");
     conn.close().await.expect("close");
 }

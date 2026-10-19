@@ -292,3 +292,10 @@ SELECT proxima_core.owner_rls_apply_class(
 -- publication_counter
 SELECT proxima_core.owner_rls_apply_class(
     'policies.sql', 'class owner_id', 'proxima_core', 'publication_counter', 'owner_id', 'owner_id');
+
+-- owner_follows: the host writes it (platform); owner scopes may read it,
+-- like flavor_surface.
+SELECT proxima_core.owner_rls_apply_class(
+    'policies.sql', 'class ownerless', 'proxima_core', 'owner_follows', 'ownerless', NULL);
+
+ALTER POLICY proxima_owner_read ON proxima_core.owner_follows USING (((current_setting('app.proxima_scope'::text, true) = 'owner'::text) AND (cardinality(COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[])) > 0)));

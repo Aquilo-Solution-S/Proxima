@@ -450,7 +450,8 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
             (38, true),
             (39, true),
             (40, true),
-            (41, true)
+            (41, true),
+            (42, true)
         ]
     );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);

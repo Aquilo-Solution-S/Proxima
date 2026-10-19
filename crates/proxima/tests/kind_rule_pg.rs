@@ -1034,6 +1034,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("memory", Rows::Kind),
     ("memory_external_origin", Rows::Memory("t")),
     ("memory_head", Rows::Kind),
+    ("owner_follows", Rows::NoKind),
     ("owner_rls_epoch", Rows::NoKind),
     ("owners", Rows::NoKind),
     ("projection", Rows::Memory("memory_id")),
