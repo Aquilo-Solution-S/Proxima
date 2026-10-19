@@ -16,6 +16,7 @@
 //! | 6 | `ALTER DEFAULT PRIVILEGES IN SCHEMA s GRANT` (4) `ON TABLES` / (5) `ON SEQUENCES` | " — objects the platform role creates later |
 //! | 7 | `GRANT USAGE ON SCHEMA l` | a ledger's schema that is not composed (`public`), when runtime lacks `USAGE` |
 //! | 8 | `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON l.t`, then `GRANT SELECT ON l.t` | each existing migration ledger of this binary |
+//! | 9 | `SET LOCAL ROLE proxima_search`, `GRANT EXECUTE`, restore platform role | candidate-owned functions in composed schemas |
 //!
 //! Never granted: `TRUNCATE`, `REFERENCES`, `TRIGGER`, `CREATE`, ownership,
 //! role membership; no DML on `public` beyond the ledgers' `SELECT` (host
@@ -152,6 +153,7 @@ impl RuntimeGrants {
                 .await
                 .map_err(|error| failed(statement.class, &statement.object, &error))?;
         }
+        self.grant_candidate_execution(&mut tx, &schemas).await?;
         tx.commit()
             .await
             .map_err(|error| failed("COMMIT", "runtime grants", &error))?;
@@ -161,6 +163,46 @@ impl RuntimeGrants {
             ledgers = ledgers.len(),
             "runtime grants applied"
         );
+        Ok(())
+    }
+
+    async fn grant_candidate_execution(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        schemas: &[String],
+    ) -> Result<(), ProximaError> {
+        let statements: Vec<String> = sqlx::query_scalar(
+            "SELECT format('DO %L', format(
+                 'DECLARE original_role name := current_user;
+                  BEGIN
+                    SET LOCAL ROLE proxima_search;
+                    GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I;
+                    EXECUTE format(''SET LOCAL ROLE %%I'', original_role);
+                  END',
+                 n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), $2::text))
+               FROM pg_proc p
+               JOIN pg_namespace n ON n.oid = p.pronamespace
+               JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+              WHERE n.nspname = ANY($1::text[])
+                AND owner_role.rolname = 'proxima_search'
+                AND p.prosecdef AND p.prokind = 'f'
+              ORDER BY n.nspname, p.proname, p.oid",
+        )
+        .bind(schemas)
+        .bind(&self.runtime_role)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| failed("candidate function lookup", "composed schemas", &error))?;
+        for statement in statements {
+            // SQL-POLICY: fixed-fragment — PostgreSQL format quotes catalog signatures,
+            // the runtime identifier and the DO body; only the fixed owner is admitted.
+            sqlx::raw_sql(AssertSqlSafe(statement))
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| {
+                    failed("GRANT EXECUTE ON FUNCTION", "search candidates", &error)
+                })?;
+        }
         Ok(())
     }
 }

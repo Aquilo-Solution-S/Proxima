@@ -22,6 +22,7 @@ mod owner_inverse;
 mod proof;
 pub mod publication;
 mod rejecting;
+mod vector_index;
 mod write_session;
 
 pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
@@ -88,6 +89,7 @@ pub use publication::{
     AckOutcome, ClaimToken, ClaimedPublication, PublicationOutboxPort, PublisherId,
     PublisherIdError, ReleaseOutcome,
 };
+pub use vector_index::{VectorCandidate, VectorIndex};
 pub use write_session::{
     SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };

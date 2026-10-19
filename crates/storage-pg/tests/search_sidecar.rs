@@ -12,6 +12,9 @@ mod query_stopwords;
 #[path = "search_sidecar/hybrid_rrf.rs"]
 mod hybrid_rrf;
 
+#[path = "search_sidecar/candidates.rs"]
+mod candidates;
+
 use proxima_core::flavor::{
     Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
 };
@@ -228,6 +231,15 @@ async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
     sqlx::query("GRANT SELECT ON ALL TABLES IN SCHEMA proxima_docs TO proxima_test_runtime")
         .execute(pool)
         .await?;
+    let artifacts =
+        proxima_storage_pg::search_candidates::candidate_artifacts_for_tests(&[docs_projection()])
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    for artifact in artifacts {
+        // SQL-POLICY: generated — fixed candidate functions from the fixture projection.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(artifact.forward))
+            .execute(pool)
+            .await?;
+    }
     Ok(())
 }
 
@@ -1116,7 +1128,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         let (parameter_types, generic_plans): (Vec<String>, i64) = sqlx::query_as(
             "SELECT parameter_types::text[], generic_plans
                FROM pg_prepared_statements
-              WHERE statement LIKE '%<=> $3::vector(1024)%'
+              WHERE statement LIKE '%proxima_core.vector_candidates_d1024($1, $2, $3, $4)%'
                 AND statement NOT LIKE '%pg_prepared_statements%'",
         )
         .fetch_one(&runtime_pool)

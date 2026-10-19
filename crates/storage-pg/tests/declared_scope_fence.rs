@@ -278,9 +278,9 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
                  ARRAY['scoped_fact_v1', 'unscoped_fact_v1']::text[],
                  ARRAY[]::text[]
              );
-             GRANT USAGE ON SCHEMA test_scope TO PUBLIC;
+             GRANT USAGE ON SCHEMA test_scope TO proxima_test_runtime;
              REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA test_scope FROM PUBLIC;
-             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA test_scope TO PUBLIC;",
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA test_scope TO proxima_test_runtime;",
         )
         .execute(pg.pool_for_tests())
         .await?;

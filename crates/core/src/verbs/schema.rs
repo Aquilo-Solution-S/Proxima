@@ -471,7 +471,7 @@ pub struct FlavorRegistryFrozen {
 /// the arm here is what lets [`MemorySearchProjection::sidecar_key_column`]
 /// be a `String` — the same refusal, raised at the one place the column is
 /// read, rather than a default no reader could tell from a declaration.
-fn contract_search_projections(
+pub fn contract_search_projections(
     contracts: &[&'static FlavorContract],
 ) -> Result<Vec<MemorySearchProjection>, crate::flavor::FlavorRegistryError> {
     let mut out = Vec::new();

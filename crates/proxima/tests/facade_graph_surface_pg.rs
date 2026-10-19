@@ -1442,6 +1442,12 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
             .into_iter()
             .map(|artifact| artifact.forward),
     );
+    statements.extend(
+        proxima::flavor::search_candidate_artifacts(&FACADE_CONTRACT)
+            .expect("the facade test flavor's search candidates")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
 
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(vec![sqlx::migrate::Migration::new(

@@ -450,22 +450,10 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
             .await?;
     assert_eq!(
         ledger,
-        [
-            (33, true),
-            (34, true),
-            (35, true),
-            (36, true),
-            (37, true),
-            (38, true),
-            (39, true),
-            (40, true),
-            (41, true),
-            (42, true),
-            (43, true),
-            (44, true),
-            (45, true),
-            (46, true),
-        ]
+        core_migrator()
+            .iter()
+            .map(|migration| (migration.version, true))
+            .collect::<Vec<_>>()
     );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
 

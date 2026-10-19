@@ -59,6 +59,7 @@ pub struct Artifact {
 pub struct ProjectionArtifacts {
     pub table: Artifact,
     pub index: Artifact,
+    pub tag_index: Artifact,
     pub language_trigger: Artifact,
 }
 
@@ -69,6 +70,7 @@ impl ProjectionArtifacts {
         vec![
             self.table.forward.as_str(),
             self.index.forward.as_str(),
+            self.tag_index.forward.as_str(),
             self.language_trigger.forward.as_str(),
         ]
     }
@@ -79,6 +81,7 @@ impl ProjectionArtifacts {
     pub fn inverse(&self) -> Vec<&str> {
         vec![
             self.language_trigger.inverse.as_str(),
+            self.tag_index.inverse.as_str(),
             self.index.inverse.as_str(),
             self.table.inverse.as_str(),
         ]
@@ -117,6 +120,8 @@ pub fn projection_artifacts(
     };
     let table = PgIdent::table(spec.table)?;
     let index = PgIdent::column(spec.index)?;
+    let tag_index_name = format!("{}_tag", spec.index);
+    let tag_index = PgIdent::column(&tag_index_name)?;
     let (schema, relation) = split_qualified(spec.table)?;
     let trigger = format!("{relation}_remember_lang");
     let trigger_ident = PgIdent::column(&trigger)?;
@@ -168,6 +173,15 @@ pub fn projection_artifacts(
             forward: create_index,
             // SQL-POLICY: PgIdent
             inverse: format!("DROP INDEX IF EXISTS {schema}.{};", index.as_str()),
+        },
+        tag_index: Artifact {
+            forward: format!(
+                "CREATE INDEX {tag_index} ON {table} USING gin (owner_id, tag);",
+                tag_index = tag_index.as_str(),
+                table = table.as_str()
+            ),
+            // SQL-POLICY: PgIdent — both names came from the projection contract.
+            inverse: format!("DROP INDEX IF EXISTS {schema}.{};", tag_index.as_str()),
         },
         language_trigger: Artifact {
             forward: create_trigger,
@@ -794,6 +808,7 @@ mod tests {
             artifacts.inverse(),
             vec![
                 "DROP TRIGGER IF EXISTS projection_remember_lang ON proxima_core.projection;",
+                "DROP INDEX IF EXISTS proxima_core.core_projection_owner_tsv_gin_tag;",
                 "DROP INDEX IF EXISTS proxima_core.core_projection_owner_tsv_gin;",
                 "DROP TABLE IF EXISTS proxima_core.projection;",
             ]

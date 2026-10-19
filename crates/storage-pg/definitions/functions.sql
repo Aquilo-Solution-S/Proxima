@@ -1933,6 +1933,31 @@ END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text) FROM PUBLIC;
 
+-- Candidate policies are limited to derived projections and the local vector index.
+CREATE OR REPLACE FUNCTION proxima_core.is_search_candidate_relation(relation_id oid)
+ RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog'
+AS $function$
+    SELECT EXISTS (
+        SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+         WHERE relation.oid = relation_id AND relation.relkind IN ('r', 'p')
+           AND ((namespace.nspname = 'proxima_core' AND relation.relname IN ('embeddings', 'embedding_heads'))
+             OR (EXISTS (
+                 SELECT 1 FROM pg_attribute a WHERE a.attrelid = relation_id AND a.attname = 'search_tsv'
+                   AND a.atttypid = 'tsvector'::regtype AND a.attnum > 0 AND NOT a.attisdropped
+             ) AND EXISTS (
+                 SELECT 1 FROM pg_constraint fk
+                   JOIN pg_attribute child ON child.attrelid = relation_id AND child.attname = 'memory_id'
+                   JOIN pg_attribute parent ON parent.attrelid = fk.confrelid AND parent.attname = 't'
+                  WHERE fk.conrelid = relation_id AND fk.contype = 'f'
+                    AND fk.confrelid = 'proxima_core.memory'::regclass
+                    AND fk.conkey = ARRAY[child.attnum] AND fk.confkey = ARRAY[parent.attnum]
+                    AND child.atttypid = 'uuid'::regtype AND NOT child.attisdropped
+             )))
+    )
+$function$;
+
 CREATE OR REPLACE FUNCTION proxima_core.owner_rls_census_table(target_schema text, target_table text)
  RETURNS void
  LANGUAGE plpgsql
@@ -1940,6 +1965,8 @@ CREATE OR REPLACE FUNCTION proxima_core.owner_rls_census_table(target_schema tex
 AS $function$
 DECLARE
     relation record;
+    candidate_policy record;
+    expected_policies integer := 3;
 BEGIN
     SELECT c.oid, n.nspname AS schema_name, c.relname, c.relowner,
            c.relrowsecurity, c.relforcerowsecurity
@@ -1949,8 +1976,25 @@ BEGIN
     IF NOT relation.relrowsecurity OR NOT relation.relforcerowsecurity THEN
         RAISE EXCEPTION 'table %.% lacks ENABLE/FORCE RLS', relation.schema_name, relation.relname;
     END IF;
-    IF (SELECT count(*) FROM pg_policy WHERE polrelid = relation.oid) <> 3 THEN
-        RAISE EXCEPTION 'table %.% does not have exactly three RLS policies', relation.schema_name, relation.relname;
+    SELECT * INTO candidate_policy FROM pg_policy
+     WHERE polrelid = relation.oid AND polname = 'proxima_search_candidates';
+    IF FOUND THEN
+        IF NOT proxima_core.is_search_candidate_relation(relation.oid)
+           OR candidate_policy.polcmd <> 'r' OR NOT candidate_policy.polpermissive
+           OR candidate_policy.polroles IS DISTINCT FROM ARRAY[to_regrole('proxima_search')::oid]
+           OR pg_get_expr(candidate_policy.polqual, relation.oid) IS DISTINCT FROM 'true'
+           OR candidate_policy.polwithcheck IS NOT NULL
+        THEN
+            RAISE EXCEPTION 'table %.% has an invalid search candidate policy', relation.schema_name, relation.relname;
+        END IF;
+        expected_policies := 4;
+    END IF;
+    IF (SELECT count(*) FROM pg_policy WHERE polrelid = relation.oid) <> expected_policies THEN
+        IF expected_policies = 3 THEN
+            RAISE EXCEPTION 'table %.% does not have exactly three RLS policies', relation.schema_name, relation.relname;
+        ELSE
+            RAISE EXCEPTION 'table %.% has unexpected search RLS policies', relation.schema_name, relation.relname;
+        END IF;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = relation.oid AND polname = 'proxima_platform' AND polroles = ARRAY[relation.relowner] AND polcmd = '*') THEN
         RAISE EXCEPTION 'table %.% platform policy is not owner-role limited', relation.schema_name, relation.relname;
@@ -2110,3 +2154,1066 @@ CREATE OR REPLACE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (
     COMBINEFUNC = tsquery_or,
     PARALLEL = safe
 );
+
+-- Memory read/write policies both require their base owner set before kind checks.
+-- Candidates use that union; ordinary memory RLS remains the per-kind authority.
+CREATE OR REPLACE FUNCTION proxima_core.search_owner_ids()
+ RETURNS uuid[]
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog'
+AS $function$
+    SELECT CASE WHEN current_setting('app.proxima_scope', true) = 'owner'
+           THEN ARRAY(SELECT DISTINCT owner_id
+                        FROM unnest(
+                            COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}')
+                         || COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}')
+                        ) AS scoped(owner_id))
+           ELSE '{}'::uuid[] END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxima_core.assert_search_scope(requested_owners uuid[])
+ RETURNS void
+ LANGUAGE plpgsql STABLE
+ SET search_path TO 'pg_catalog'
+AS $function$
+BEGIN
+    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'owner'
+       OR NULLIF(current_setting('app.owner', true), '') IS NULL
+       OR requested_owners IS NULL
+       OR array_position(requested_owners, NULL) IS NOT NULL
+       OR NOT requested_owners <@ proxima_core.search_owner_ids()
+    THEN
+        RAISE EXCEPTION 'search requires an authenticated owner scope'
+            USING ERRCODE = '42501';
+    END IF;
+END
+$function$;
+
+-- Generated candidate functions: search_candidates.rs and vector_index.rs.
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.agent_derivation_v1, proxima_core.agent_note_v1, proxima_core.interpretation_v1, proxima_core.lexical_default, proxima_core.lexical_languages, proxima_core.memory, proxima_core.memory_head, proxima_core.projection, proxima_core.utterance_v1 TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.projection;
+CREATE POLICY proxima_search_candidates ON proxima_core.projection FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.search_lexical_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
+RETURNS TABLE(t uuid, schema_id text, lexical_score real)
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path TO pg_catalog, pg_temp
+AS $candidate_function$
+BEGIN
+PERFORM proxima_core.assert_search_scope(requested_owners);
+IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
+RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
+END IF;
+IF recency THEN
+RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
+             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
+                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
+                        proxima_core.lexical_scrub($1)) AS analyzed
+         ), q AS MATERIALIZED (
+             SELECT s.scrubbed, s.analyzed,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    websearch_to_tsquery(l.config, s.analyzed)
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
+                    ) AS tsq,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    NULLIF(
+                                        replace(
+                                            plainto_tsquery(l.config, s.analyzed)::text,
+                                            '' & '', '' | ''),
+                                        '''')::tsquery
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        NULLIF(
+                            replace(
+                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
+                                '' & '', '' | ''),
+                            '''')::tsquery
+                    ) AS any_tsq
+               FROM analyzed_query s
+         )
+         SELECT p.memory_id AS t,
+                p.schema_id,
+                GREATEST(
+                    CASE WHEN p.search_tsv @@ q.tsq
+                         THEN 0.50 + LEAST(COALESCE(ts_rank_cd(p.search_tsv, websearch_to_tsquery(p.lexical_language, q.analyzed), 32), 0.0), 1.0) * 0.50
+                         ELSE 0.0 END, CASE WHEN $9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
+                    THEN 0.25 + LEAST(COALESCE(ts_rank(p.search_tsv, q.any_tsq, 33), 0.0) * 100.0, 1.0) * 0.20
+                    ELSE 0.0 END,
+                    0.0
+                )::real AS lexical_score
+           FROM proxima_core.projection p, q
+          WHERE p.owner_id = ANY($7::uuid[])
+            AND p.schema_id = ANY($8::text[])
+            AND (p.search_tsv @@ q.tsq OR ($9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
+             AND p.owner_id = ANY(proxima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
+            AND ($6::uuid IS NULL OR p.memory_id < $6)
+          ORDER BY p.memory_id DESC
+          LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+ELSE
+RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
+             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
+                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
+                        proxima_core.lexical_scrub($1)) AS analyzed
+         ), q AS MATERIALIZED (
+             SELECT s.scrubbed, s.analyzed,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    websearch_to_tsquery(l.config, s.analyzed)
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
+                    ) AS tsq,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    NULLIF(
+                                        replace(
+                                            plainto_tsquery(l.config, s.analyzed)::text,
+                                            '' & '', '' | ''),
+                                        '''')::tsquery
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        NULLIF(
+                            replace(
+                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
+                                '' & '', '' | ''),
+                            '''')::tsquery
+                    ) AS any_tsq
+               FROM analyzed_query s
+         )
+         SELECT p.memory_id AS t,
+                p.schema_id,
+                GREATEST(
+                    CASE WHEN p.search_tsv @@ q.tsq
+                         THEN 0.50 + LEAST(COALESCE(ts_rank_cd(p.search_tsv, websearch_to_tsquery(p.lexical_language, q.analyzed), 32), 0.0), 1.0) * 0.50
+                         ELSE 0.0 END, CASE WHEN $9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
+                    THEN 0.25 + LEAST(COALESCE(ts_rank(p.search_tsv, q.any_tsq, 33), 0.0) * 100.0, 1.0) * 0.20
+                    ELSE 0.0 END,
+                    0.0
+                )::real AS lexical_score
+           FROM proxima_core.projection p, q
+          WHERE p.owner_id = ANY($7::uuid[])
+            AND p.schema_id = ANY($8::text[])
+            AND (p.search_tsv @@ q.tsq OR ($9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
+             AND p.owner_id = ANY(proxima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
+            AND ($6::uuid IS NULL OR p.memory_id < $6)
+          ORDER BY lexical_score DESC, p.memory_id DESC
+          LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+END IF;
+END
+$candidate_function$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.search_lexical_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.agent_derivation_v1, proxima_core.agent_note_v1, proxima_core.interpretation_v1, proxima_core.lexical_default, proxima_core.lexical_languages, proxima_core.memory, proxima_core.memory_head, proxima_core.projection, proxima_core.utterance_v1 TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.projection;
+CREATE POLICY proxima_search_candidates ON proxima_core.projection FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.search_substring_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
+RETURNS TABLE(t uuid, lexical_score real)
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path TO pg_catalog, pg_temp
+AS $candidate_function$
+BEGIN
+PERFORM proxima_core.assert_search_scope(requested_owners);
+IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
+RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
+END IF;
+IF recency THEN
+RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.agent_derivation_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.agent_note_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.interpretation_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.utterance_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6)) s ORDER BY s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+ELSE
+RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.agent_derivation_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.agent_note_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.interpretation_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+                0.25::real AS lexical_score
+           FROM proxima_core.utterance_v1 c
+           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+          WHERE m.owner_id = ANY($7::uuid[])
+            AND m.schema_id = ANY($8::text[])
+            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+            AND ($4::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) >= $4)
+            AND ($5::timestamptz IS NULL
+                 OR proxima_core.memory_created_at(c.t) <= $5)
+            AND ($6::uuid IS NULL OR c.t < $6)) s ORDER BY s.lexical_score DESC, s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+END IF;
+END
+$candidate_function$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.search_substring_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d384(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 384 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 384
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.vector(384) OPERATOR(public.<=>) $3::public.vector(384)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 384
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 384
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d384(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d768(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 768 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 768
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.vector(768) OPERATOR(public.<=>) $3::public.vector(768)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 768
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 768
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d768(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 1024 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 1024
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.vector(1024) OPERATOR(public.<=>) $3::public.vector(1024)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 1024
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 1024
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 1536 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 1536
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.vector(1536) OPERATOR(public.<=>) $3::public.vector(1536)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 1536
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 1536
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 2048 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 2048
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.halfvec(2048) OPERATOR(public.<=>) $3::public.halfvec(2048)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 2048
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 2048
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;
+
+DO $install_candidate$
+DECLARE original_role name := current_user;
+BEGIN
+GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+GRANT SELECT ON proxima_core.embeddings, proxima_core.embedding_heads, proxima_core.memory TO proxima_search;
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embeddings;
+CREATE POLICY proxima_search_candidates ON proxima_core.embeddings FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.embedding_heads;
+CREATE POLICY proxima_search_candidates ON proxima_core.embedding_heads FOR SELECT TO proxima_search USING (true);
+SET LOCAL ROLE proxima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint)
+                 RETURNS TABLE(memory_id uuid, similarity_score real)
+                 LANGUAGE plpgsql STABLE SECURITY DEFINER
+                 SET search_path = pg_catalog, pg_temp
+                 AS $body$
+DECLARE
+    target bigint := LEAST(GREATEST($4, 0), 1000);
+    chunk_window bigint := GREATEST(target, 1);
+    candidate_ids uuid[] := '{}'::uuid[];
+    scanned_ids uuid[];
+    fetched bigint;
+BEGIN
+    PERFORM proxima_core.assert_search_scope($1);
+    IF public.vector_dims($3) IS DISTINCT FROM 3072 THEN
+        RAISE EXCEPTION 'query vector does not match index width'
+            USING ERRCODE = '22023';
+    END IF;
+    IF target = 0 THEN
+        RETURN;
+    END IF;
+    LOOP
+        WITH scanned AS MATERIALIZED (
+            SELECT emb.entity_id
+              FROM proxima_core.embeddings emb
+             WHERE emb.dim = 3072
+               AND emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.embedding_heads head
+                    WHERE head.entity_id = emb.entity_id
+                      AND head.model_id = emb.model_id
+                      AND head.dim = emb.dim
+                      AND head.embedding_version = emb.embedding_version
+               )
+               AND EXISTS (
+                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                    WHERE m.t = emb.entity_id
+                      AND m.owner_id = ANY($1)
+                      AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+               )
+             ORDER BY emb.vec::public.halfvec(3072) OPERATOR(public.<=>) $3::public.halfvec(3072)
+             LIMIT chunk_window
+        )
+        SELECT COALESCE(array_agg(DISTINCT s.entity_id), '{}'::uuid[]), count(*)
+          INTO scanned_ids, fetched FROM scanned s;
+        SELECT ARRAY(SELECT DISTINCT id FROM unnest(candidate_ids || scanned_ids) id)
+          INTO candidate_ids;
+        EXIT WHEN fetched < chunk_window
+               OR cardinality(candidate_ids) >= target
+               OR chunk_window >= 1000;
+        chunk_window := LEAST(chunk_window * 2, 1000);
+    END LOOP;
+    IF cardinality(candidate_ids) < target THEN
+        RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 3072
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+         ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
+         LIMIT 1000
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+        RETURN;
+    END IF;
+    RETURN QUERY
+        WITH owned_embeddings AS MATERIALIZED (
+            SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
+                   NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
+              FROM proxima_core.embeddings emb
+             WHERE emb.owner_id = ANY($1)
+               AND emb.model_id = $2
+               AND emb.dim = 3072
+               AND emb.entity_id = ANY(candidate_ids)
+        ), eligible_chunks AS (
+        SELECT emb.entity_id, emb.chunk_score
+          FROM owned_embeddings emb
+          JOIN proxima_core.embedding_heads head
+            ON head.entity_id = emb.entity_id
+           AND head.model_id = emb.model_id
+           AND head.dim = emb.dim
+           AND head.embedding_version = emb.embedding_version
+          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+         WHERE m.owner_id = ANY($1)
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+        )
+        SELECT emb.entity_id,
+               LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
+          FROM eligible_chunks emb
+         GROUP BY emb.entity_id
+         ORDER BY score DESC, emb.entity_id DESC
+         LIMIT target;
+END;
+$body$;$generated_function$;
+REVOKE ALL ON FUNCTION proxima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint) FROM PUBLIC;
+EXECUTE format('SET LOCAL ROLE %I', original_role);
+REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+END
+$install_candidate$;

@@ -4,6 +4,7 @@
 //! has to pick the shipped index. Not a cost/latency bench.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::EmbeddingDim;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
@@ -11,7 +12,6 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EdgeKind, OwnerId, SchemaId, UserId};
-use proxima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
@@ -19,7 +19,7 @@ use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tes
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
-    search_admit_sql_for_tests, semantic_query_vector_for_tests, semantic_search_sql_for_tests,
+    search_admit_sql_for_tests, semantic_candidate_admission_sql_for_tests,
     set_hnsw_search_sql_for_tests, substring_sql_for_tests,
 };
 use uuid::Uuid;
@@ -115,6 +115,21 @@ async fn seed_note(
     .execute(&mut *stamped)
     .await?;
     stamped.commit().await?;
+    let schema = proxima_core::FLAVOR_0
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == "core/agent-note-v1")
+        .expect("core note schema");
+    let projection =
+        proxima_storage_pg::projection::projection_insert_sql(&proxima_core::FLAVOR_0, schema)
+            .expect("core note projection");
+    // SQL-POLICY: generated — the production projection renderer over the core contract.
+    sqlx::query(sqlx::AssertSqlSafe(projection))
+        .bind(t)
+        .bind(None::<&str>)
+        .bind(schema.schema_id().as_str())
+        .execute(pool)
+        .await?;
     Ok(t)
 }
 
@@ -166,8 +181,8 @@ async fn seed_derived(
 /// is visibly the worse plan.
 const CORPUS_ROWS: i32 = 4_000;
 
-/// Seed `CORPUS_ROWS` notes for `owner`, every one of them matching the
-/// query the pin runs, each with its admission and projection row.
+/// Seed `CORPUS_ROWS` notes for `owner` containing `term`, each with its
+/// admission and projection row.
 ///
 /// Three statements, not one: `memory_align_head` is a BEFORE INSERT trigger
 /// that reads `memory_head` back, and every CTE of one statement reads the
@@ -176,7 +191,11 @@ const CORPUS_ROWS: i32 = 4_000;
 /// the admissions need a statement of their own too. The projection rows
 /// ride along with the sidecars, because referential integrity is an AFTER
 /// trigger.
-async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerId) -> Result<(), sqlx::Error> {
+async fn seed_projection_corpus(
+    pool: &sqlx::PgPool,
+    owner: OwnerId,
+    term: &str,
+) -> Result<(), sqlx::Error> {
     let owner_id = owner.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -213,19 +232,21 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerId) -> Result<(
              SELECT m.t, row_number() OVER (ORDER BY m.t) AS n
                FROM proxima_core.memory m
               WHERE m.owner_id = $1
+                AND m.sidecar_tables @> ARRAY['proxima_core.agent_note_v1']
                 AND NOT EXISTS (
                         SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)
          ), notes AS (
              INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             SELECT t, uuidv7(), 'Needle ' || n, 'needle body ' || n, '{}' FROM ids
+             SELECT t, uuidv7(), $2 || ' ' || n, $2 || ' body ' || n, '{}' FROM ids
              RETURNING t
          )
          INSERT INTO proxima_core.projection (memory_id, schema_id, owner_id, search_tsv)
          SELECT t, 'core/agent-note-v1', $1,
-                to_tsvector('english', 'needle title needle body ' || n)
+                to_tsvector('english', $2 || ' title ' || $2 || ' body ' || n)
            FROM ids",
     )
     .bind(owner_id)
+    .bind(term)
     .execute(&mut *stamped)
     .await?;
     stamped.commit().await
@@ -343,12 +364,16 @@ async fn hot_path_plans_use_expected_indexes() {
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        // The situation the composite index exists for: a NEIGHBOUR owner
-        // whose whole corpus matches the same query word. Without it the
-        // table is two rows, every access path costs the same, and the
-        // plan says nothing about the composite index at all.
+        // Both predicates must be selective: our large corpus does not
+        // match the word, while the neighbour's large corpus does. An
+        // owner-only scan through the tag GIN would visit our whole corpus.
+        seed_projection_corpus(pool, owner, "haystack").await?;
         let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
-        seed_projection_corpus(pool, neighbour).await?;
+        seed_projection_corpus(pool, neighbour, "needle").await?;
+        // Flush GIN pending lists before comparing settled read paths.
+        sqlx::query("VACUUM (ANALYZE) proxima_core.projection")
+            .execute(pool)
+            .await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
             "ANALYZE proxima_core.agent_note_v1;
@@ -411,6 +436,11 @@ async fn hot_path_plans_use_expected_indexes() {
         assert!(
             index_cond.contains("owner_id"),
             "the composite GIN must index on owner_id, not filter on it afterwards; \
+             index cond was `{index_cond}`; plan:\n{lexical_plan}"
+        );
+        assert!(
+            index_cond.contains("search_tsv") && index_cond.contains("@@"),
+            "the composite GIN must apply the text condition; \
              index cond was `{index_cond}`; plan:\n{lexical_plan}"
         );
         assert!(
@@ -529,36 +559,41 @@ async fn hot_path_plans_use_expected_indexes() {
         // Every width lane is served by its own partial HNSW index: the
         // statement spells the lane's expression and a literal `dim = N`,
         // so the planner proves the index predicate under any plan.
-        let mut plan = serde_json::Value::Null;
         for dim in EmbeddingDim::ALL {
-            let semantic =
-                semantic_search_sql_for_tests(&req, std::slice::from_ref(&projection), dim)?;
+            let semantic = proxima_storage_pg::vector_index::candidate_scan_sql_for_tests(dim);
             let semantic_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic}");
             // SQL-POLICY: PgIdent — production semantic builder
             let lane_plan: serde_json::Value =
                 sqlx::query_scalar(sqlx::AssertSqlSafe(semantic_explain))
                     .bind(&owner_ids)
                     .bind("test-embed")
-                    .bind(semantic_query_vector_for_tests(&SpaceVector::new(
-                        EmbeddingSpace::new("test-embed", dim),
-                        unit_values(dim),
-                    )?))
+                    .bind(pgvector::Vector::from(unit_values(dim)))
                     .bind(20_i64)
-                    .bind(None::<time::OffsetDateTime>)
-                    .bind(None::<time::OffsetDateTime>)
-                    .bind(&schema_ids)
                     .fetch_one(&mut *tx)
                     .await?;
             assert_plan_names(&lane_plan, &format!("embeddings_hnsw_d{}", dim.width()));
-            if dim == EmbeddingDim::D1024 {
-                plan = lane_plan;
-            }
         }
+        let semantic_admission = semantic_candidate_admission_sql_for_tests(
+            &req,
+            std::slice::from_ref(&projection),
+        )?;
+        let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic_admission}");
+        // SQL-POLICY: PgIdent — production candidate admission builder.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+            .bind(vec![leaf])
+            .bind(&owner_ids)
+            .bind(Some("fact"))
+            .bind(None::<&str>)
+            .bind(None::<time::OffsetDateTime>)
+            .bind(None::<time::OffsetDateTime>)
+            .bind(&schema_ids)
+            .fetch_one(&mut *tx)
+            .await?;
         let projection_scan = scan_of(&plan, "projection")
-            .unwrap_or_else(|| panic!("semantic candidates must probe participating schemas; plan:\n{plan}"));
+            .unwrap_or_else(|| panic!("semantic admission must probe participating schemas; plan:\n{plan}"));
         assert!(
             predicates(&projection_scan).contains("schema_id"),
-            "the participating schema set must narrow semantic candidates; plan:\n{plan}"
+            "the participating schema set must narrow semantic admission; plan:\n{plan}"
         );
 
         let admit = search_admit_sql_for_tests(true);

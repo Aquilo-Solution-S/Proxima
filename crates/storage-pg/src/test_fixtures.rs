@@ -178,6 +178,20 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
 }
 
 impl PgStorage {
+    /// Replace the index for candidate-admission tests; memory RLS still gates reads.
+    #[must_use]
+    pub fn with_vector_index_for_tests(
+        mut self,
+        index: std::sync::Arc<
+            dyn proxima_core::storage_ports::VectorIndex<
+                    Context = sqlx::Transaction<'static, sqlx::Postgres>,
+                >,
+        >,
+    ) -> Self {
+        self.vector_index = index;
+        self
+    }
+
     /// Test-only serving connection using the real split-role boot sequence.
     ///
     /// # Errors

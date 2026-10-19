@@ -16,6 +16,15 @@ BEGIN
         CREATE ROLE proxima_runtime LOGIN PASSWORD 'proxima-runtime-dev'
             NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxima_search') THEN
+        CREATE ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+            NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxima_search'
+               AND (rolcanlogin OR rolsuper OR rolbypassrls OR rolcreaterole
+                    OR rolcreatedb OR rolinherit)) THEN
+        RAISE EXCEPTION 'search role has unsafe privileges';
+    END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('proxima_platform', 'proxima_runtime')
                AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb)) THEN
         RAISE EXCEPTION 'development runtime/platform roles have unsafe privileges';
@@ -23,14 +32,18 @@ BEGIN
     EXECUTE format('GRANT CREATE ON DATABASE %I TO proxima_platform', current_database());
 END
 $roles$;
+GRANT proxima_search TO proxima_platform WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+REVOKE proxima_search FROM proxima_runtime;
 GRANT USAGE, CREATE ON SCHEMA public TO proxima_platform;
-GRANT USAGE ON SCHEMA public TO proxima_runtime;
+GRANT USAGE ON SCHEMA public TO proxima_runtime, proxima_search;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxima_platform
     GRANT USAGE ON SCHEMAS TO proxima_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxima_platform
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO proxima_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxima_platform
     GRANT USAGE, SELECT ON SEQUENCES TO proxima_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE proxima_search
+    GRANT EXECUTE ON FUNCTIONS TO proxima_runtime;
 
 -- Empty SQLx ledgers: only SQLx records applied migrations. Creating these
 -- before the global defaults are used keeps runtime access read-only.
@@ -71,8 +84,17 @@ BEGIN
     END LOOP;
     FOR object IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) args
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname IN ('proxima_core', 'proxima_example') LOOP
+        JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+        WHERE n.nspname IN ('proxima_core', 'proxima_example')
+          AND owner_role.rolname <> 'proxima_search' LOOP
         EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO proxima_platform', object.nspname, object.proname, object.args);
+    END LOOP;
+    FOR object IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) args
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+        WHERE n.nspname IN ('proxima_core', 'proxima_example')
+          AND owner_role.rolname = 'proxima_search' AND p.prosecdef LOOP
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO proxima_runtime', object.nspname, object.proname, object.args);
     END LOOP;
     FOR object IN SELECT n.nspname, t.typname FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace

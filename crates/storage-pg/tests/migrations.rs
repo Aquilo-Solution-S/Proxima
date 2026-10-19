@@ -176,7 +176,12 @@ fn collect_relations_in_source(source: &str, found: &mut BTreeSet<String>) {
                 .collect();
             // `FROM proxima_core.lexical_tsv(...)` is a set-returning call,
             // not a relation.
-            if !name.is_empty() && !qualified[name.len()..].starts_with('(') {
+            let suffix = &qualified[name.len()..];
+            let function = suffix.starts_with('(')
+                || suffix
+                    .strip_prefix("{}")
+                    .is_some_and(|rest| rest.starts_with('('));
+            if !name.is_empty() && !function {
                 found.insert(name);
             }
         }
@@ -1430,6 +1435,25 @@ fn generator_output_is_the_migration_text() {
         definitions.contains(&core.language_trigger.forward),
         "definitions/triggers.sql does not carry the projection trigger"
     );
+    assert!(
+        include_str!("../migrations/0047_v039_search_tag_index.sql")
+            .contains(&core.tag_index.forward)
+    );
+    for artifact in
+        proxima_storage_pg::search_candidates::candidate_artifacts(&proxima_core::FLAVOR_0)
+            .expect("core candidates")
+            .into_iter()
+            .chain(
+                proxima_storage_pg::vector_index::vector_candidate_artifacts()
+                    .expect("vector candidates"),
+            )
+    {
+        assert!(
+            proxima_storage_pg::definitions::FUNCTIONS.contains(&artifact.forward),
+            "definitions do not carry generated candidate function:\n{}",
+            artifact.forward
+        );
+    }
 
     // A flavor's baseline is checked from its own crate's tests (the
     // example flavor's `tests/migration_pg.rs`), which is where that file is.

@@ -440,8 +440,24 @@ impl MemoryReadPort for PgStorage {
         )
         .await?;
         let result = async {
-            verbs::query::search_memories_on_connection(&mut tx, req, projections, &self.tuning)
-                .await
+            // A request can narrow authenticated authority. The database helper
+            // is also the candidate functions' source of the owner-set union.
+            let authenticated_owners: Vec<uuid::Uuid> =
+                sqlx::query_scalar("SELECT proxima_core.search_owner_ids()")
+                    .fetch_one(tx.as_mut())
+                    .await
+                    .map_err(crate::error::map_err)?;
+            let mut req = req.clone();
+            req.read_owners
+                .retain(|owner| authenticated_owners.contains(&owner.into_inner()));
+            verbs::query::search_memories_on_connection(
+                &mut tx,
+                &req,
+                projections,
+                &self.tuning,
+                self.vector_index.as_ref(),
+            )
+            .await
         }
         .await;
         crate::owner_scope::finish_transaction(tx, result).await

@@ -179,6 +179,11 @@ configured timeout. The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
 
+The store's vector index implements the `VectorIndex` port.
+The PostgreSQL adapter writes complete chunk versions in the store transaction
+and ranks each memory by its best chunk. Index hits are candidates: the store
+reads their memory rows under owner RLS before using their IDs or scores.
+
 Derivation reads all foreign origins within one call-wide deadline and refuses
 before writing if they cannot all be read. Lineage deduplicates foreign origins
 across the page, bounds distinct reads, and renders unread origins as unavailable

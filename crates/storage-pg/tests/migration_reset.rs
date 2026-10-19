@@ -32,7 +32,13 @@ fn definitions_record_sql(checksum: &str, release: &str) -> String {
 
 fn declared_names(source: &str, keyword: &str) -> BTreeMap<String, usize> {
     let mut names = BTreeMap::new();
-    for line in source.lines().map(str::trim) {
+    for mut line in source.lines().map(str::trim) {
+        // Generated installers execute dollar-quoted DDL under its owner.
+        if let Some(execution) = line.strip_prefix("EXECUTE $")
+            && let Some((_, statement)) = execution.split_once('$')
+        {
+            line = statement;
+        }
         let Some(index) = line.find(keyword) else {
             continue;
         };
@@ -298,7 +304,7 @@ async fn core_catalog_has_no_undeclared_objects() {
                 .map(str::to_owned)
         })
         .collect();
-    let declared_policies: BTreeSet<(String, String)> = tables
+    let mut declared_policies: BTreeSet<(String, String)> = tables
         .into_iter()
         .flat_map(|table| {
             [
@@ -309,6 +315,12 @@ async fn core_catalog_has_no_undeclared_objects() {
             .map(|policy| (table.clone(), policy.to_owned()))
         })
         .collect();
+    declared_policies.extend(definitions::FUNCTIONS.lines().filter_map(|line| {
+        let declaration = line.trim().strip_prefix("CREATE POLICY ")?;
+        let (policy, rest) = declaration.split_once(" ON proxima_core.")?;
+        let table = rest.split_whitespace().next()?;
+        Some((table.to_owned(), policy.to_owned()))
+    }));
     let live_policies: BTreeSet<(String, String)> = sqlx::query_as(
         "SELECT c.relname, p.polname FROM pg_policy p
            JOIN pg_class c ON c.oid = p.polrelid

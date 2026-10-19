@@ -122,6 +122,10 @@ Core search includes every declared projection with comparable score bands and
 a supported projection renderer, both unscoped and when selected by schema.
 Tags narrow those results; they are not needed to reach a flavor's projection.
 A tag-filtered query requires the projection to declare its tag column.
+Carry the output of `proxima::flavor::search_candidate_artifacts(contract)` in
+the projection's migration, alongside its owner/text and owner/tag GIN indexes.
+These generated functions return only candidates authorized by memory RLS;
+their declared schema sets and score bands come from the same contract.
 
 Use `proxima::flavor_bundle!` to register the payloads, contract, sidecars, and
 `NamedMigrator` together. Its rustdoc shows all parameters. Use a manual

@@ -1,6 +1,7 @@
 //! Shared test fixtures for the migration-reset adoption boundary.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use proxima_storage_pg::{begin_migration_transaction, core_migrator, definitions};
 use sqlx::PgPool;
@@ -97,7 +98,33 @@ pub async fn apply_historical_schema(
     } else {
         pre_forgotten_policies(policies)
     };
-    for sql in [definitions::FUNCTIONS, policies] {
+    let tables: BTreeSet<String> = sqlx::query_scalar(
+        "SELECT c.relname FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r', 'p')",
+    )
+    .fetch_all(transaction.as_mut())
+    .await?
+    .into_iter()
+    .collect();
+    // Current policy declarations can name tables added after this history.
+    let policies = policies
+        .split("\n-- ")
+        .filter(|section| {
+            section
+                .split("'proxima_core', '")
+                .nth(1)
+                .and_then(|rest| rest.split('\'').next())
+                .is_none_or(|table| tables.contains(table))
+        })
+        .collect::<Vec<_>>()
+        .join("\n-- ");
+    // Candidate installers belong to complete current-schema fixtures.
+    let functions = definitions::FUNCTIONS
+        .split_once("\n-- Generated candidate functions:")
+        .expect("candidate installers follow the function definitions")
+        .0;
+    for sql in [functions, policies.as_str()] {
         // SQL-POLICY: fixed-fragment — embedded definitions, with an asserted final section boundary.
         sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(transaction.as_mut())

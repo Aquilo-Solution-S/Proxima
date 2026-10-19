@@ -207,6 +207,7 @@ pub use proxima_storage_pg::access::owner_columns::{
     lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx,
 };
 pub use proxima_storage_pg::pg_sidecar;
+pub use proxima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
 pub use proxima_storage_pg::sidecars::{
     PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
     PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,

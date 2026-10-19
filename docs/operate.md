@@ -25,6 +25,27 @@ the runtime role for serving grants. Development provisioning is executable in
 [`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/pg-init.sql).
 Stop older hosts before changing their role/schema contract.
 
+Before migrating, an administrator provisions the fixed candidate-function
+owner and grants the platform role permission to switch to it. Replace
+`platform_role` below with the deployment's migration role:
+
+```sql
+CREATE ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+    NOCREATEDB NOCREATEROLE NOINHERIT;
+GRANT proxima_search TO platform_role WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+GRANT USAGE ON SCHEMA public TO proxima_search;
+```
+
+Keep the runtime role outside this membership. Migrations temporarily give
+`proxima_search` schema creation rights while replacing its candidate
+functions, then revoke those rights. Preserve this function ownership when
+reassigning restored objects. Candidate functions have no public execution
+grant; the runtime grant phase grants execution on their catalog signatures
+after migrations. Deployments that manage grants themselves must grant
+`EXECUTE` on the `proxima_search`-owned candidate functions in each composed
+schema to their runtime role. These functions find candidates through the
+indexes; ordinary memory RLS still gates every returned id and score.
+
 Released migrations are immutable. This release adopts databases at v0.0.35 or
 later; older databases must be upgraded to v0.0.35 first, or reset when used
 for development. A database migrated by a newer release refuses an older

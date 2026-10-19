@@ -123,7 +123,9 @@ async fn setup() -> Fixture {
     exec(
         &admin,
         format!(
-            "GRANT CREATE ON DATABASE {} TO {p}; GRANT USAGE, CREATE ON SCHEMA public TO {p}",
+            "GRANT CREATE ON DATABASE {} TO {p}; GRANT USAGE, CREATE ON SCHEMA public TO {p}; \
+             GRANT USAGE ON SCHEMA public TO proxima_search; \
+             GRANT proxima_search TO {p} WITH INHERIT FALSE, SET TRUE",
             ident(&database),
             p = ident(&platform),
         ),

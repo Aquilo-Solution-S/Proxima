@@ -44,6 +44,9 @@ mod omitted_schema;
 #[path = "rls_guard_pg/owner_predicates.rs"]
 mod owner_predicates;
 
+#[path = "rls_guard_pg/search_candidates.rs"]
+mod search_candidates;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(
@@ -276,6 +279,15 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         )
         .await;
     }
+    execute(
+        &admin,
+        // SQL-POLICY: fixed-fragment — fixture role identifier is quoted.
+        &format!(
+            "GRANT proxima_search TO {} WITH INHERIT FALSE, SET TRUE",
+            quoted_identifier(&platform)
+        ),
+    )
+    .await;
     // The extensions are cluster capabilities; the platform role owns the
     // schemas and runs the migration path that applies the baseline and
     // definitions under NOSUPERUSER NOBYPASSRLS.
@@ -293,7 +305,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     execute(
         &admin,
         &format!(
-            "GRANT CREATE ON SCHEMA public TO {}",
+            "GRANT USAGE, CREATE ON SCHEMA public TO {}",
             quoted_identifier(&platform)
         ),
     )
@@ -629,6 +641,14 @@ async fn information_schema_census_matches_catalog_guard_contract() {
             .iter()
             .any(|(s, t)| s == "proxima_example" && t == "note_v1")
     );
+    for (schema, table) in &tables {
+        sqlx::query("SELECT proxima_core.owner_rls_census_table($1, $2)")
+            .bind(schema)
+            .bind(table)
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
     let uncovered: Vec<String> = sqlx::query_scalar(
         "SELECT t.table_schema || '.' || t.table_name
            FROM information_schema.tables t
@@ -636,7 +656,10 @@ async fn information_schema_census_matches_catalog_guard_contract() {
            JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
           WHERE t.table_schema = ANY($1) AND t.table_type = 'BASE TABLE'
             AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity
-              OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid) <> 3
+              OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid) <>
+                 3 + (proxima_core.is_search_candidate_relation(c.oid) AND EXISTS (
+                     SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                       AND p.polname = 'proxima_search_candidates'))::integer
               OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
                  AND p.polname = 'proxima_owner_read' AND p.polcmd = 'r')
               OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
@@ -649,6 +672,9 @@ async fn information_schema_census_matches_catalog_guard_contract() {
     .await
     .unwrap();
     assert!(uncovered.is_empty(), "unprotected tables: {uncovered:?}");
+    // The guard validates the complete candidate signature and authority
+    // before their explicit runtime execution grants enter the inventory.
+    assert_runtime_rls(&runtime, &schemas).await.unwrap();
     let unsafe_definers: Vec<String> = sqlx::query_scalar(
         "SELECT n.nspname || '.' || p.proname
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -660,7 +686,8 @@ async fn information_schema_census_matches_catalog_guard_contract() {
                   SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
                    WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
                  ) OR (p.prorettype <> 'pg_catalog.trigger'::regtype
-                     AND has_function_privilege($2, p.oid, 'EXECUTE')))",
+                     AND has_function_privilege($2, p.oid, 'EXECUTE')
+                     AND p.proowner IS DISTINCT FROM to_regrole('proxima_search')::oid))",
     )
     .bind(&schemas[..])
     .bind(&runtime_role)
@@ -671,7 +698,6 @@ async fn information_schema_census_matches_catalog_guard_contract() {
         unsafe_definers.is_empty(),
         "additive migration left unsafe definers: {unsafe_definers:?}"
     );
-    assert_runtime_rls(&runtime, &schemas).await.unwrap();
     runtime.close().await;
     platform.close().await;
     cleanup(&database, admin, &owner, &runtime_role).await;

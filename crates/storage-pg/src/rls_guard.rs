@@ -31,6 +31,7 @@ struct RelationRow {
     owner_usage: bool,
     owner_set: bool,
     dangerous_set_role: bool,
+    candidate_relation: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -52,6 +53,7 @@ struct DefinerRow {
     runtime_execute: bool,
     non_platform_execute: bool,
     settings: Option<Vec<String>>,
+    candidate_kind: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -76,6 +78,73 @@ struct PolicyRow {
     platform_role_is_owner: bool,
     platform_role_is_public: bool,
     platform_targets_runtime: bool,
+    candidate_role: bool,
+}
+
+#[derive(sqlx::FromRow)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent catalog authority flags"
+)]
+struct CandidateRoleRow {
+    safe_flags: bool,
+    unsafe_memberships: bool,
+    owns_objects: bool,
+    can_write: bool,
+    owner_usage: bool,
+    owner_set: bool,
+}
+
+async fn assert_candidate_role(
+    pool: &PgPool,
+    schemas: &[String],
+    platform: bool,
+) -> Result<(), StorageError> {
+    let role: Option<CandidateRoleRow> = sqlx::query_as(
+        "SELECT NOT (r.rolcanlogin OR r.rolsuper OR r.rolbypassrls
+                     OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication) AS safe_flags,
+                EXISTS (SELECT 1 FROM pg_auth_members membership
+                         WHERE membership.member = r.oid
+                            OR (membership.roleid = r.oid
+                                AND (membership.inherit_option OR membership.admin_option)))
+                    AS unsafe_memberships,
+                (EXISTS (SELECT 1 FROM pg_namespace n
+                          WHERE n.nspname = ANY($1::text[]) AND n.nspowner = r.oid)
+                 OR EXISTS (SELECT 1 FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                             WHERE n.nspname = ANY($1::text[]) AND c.relowner = r.oid))
+                    AS owns_objects,
+                (EXISTS (SELECT 1 FROM pg_namespace n
+                          WHERE n.nspname = ANY($1::text[])
+                            AND has_schema_privilege(r.oid, n.oid, 'CREATE'))
+                 OR EXISTS (SELECT 1 FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                             WHERE n.nspname = ANY($1::text[])
+                               AND c.relkind IN ('r', 'p', 'v', 'f')
+                               AND (has_table_privilege(r.oid, c.oid,
+                                    'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                                    OR has_any_column_privilege(r.oid, c.oid,
+                                        'INSERT,UPDATE,REFERENCES')))) AS can_write,
+                pg_has_role(current_user, r.oid, 'USAGE') AS owner_usage,
+                pg_has_role(current_user, r.oid, 'SET') AS owner_set
+           FROM pg_roles r WHERE r.rolname = 'proxima_search'",
+    )
+    .bind(schemas)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| refused(format!("inspect candidate role: {error}")))?;
+    let Some(role) = role else {
+        return Err(refused("candidate functions require proxima_search"));
+    };
+    if !role.safe_flags || role.unsafe_memberships || role.owns_objects || role.can_write {
+        return Err(refused(
+            "proxima_search must be an isolated NOLOGIN read-only role",
+        ));
+    }
+    if role.owner_usage || (!platform && role.owner_set) {
+        return Err(refused("runtime must not inherit or assume proxima_search"));
+    }
+    Ok(())
 }
 
 fn refused(reason: impl std::fmt::Display) -> StorageError {
@@ -94,6 +163,11 @@ async fn assert_policy_structure(
     relations: &[RelationRow],
     reject_current_user_platform_policy: bool,
 ) -> Result<(), StorageError> {
+    let schemas: Vec<_> = relations
+        .iter()
+        .map(|relation| relation.schema_name.clone())
+        .collect();
+    let mut has_candidate_policy = false;
     for relation in relations.iter().filter(|relation| relation.is_table()) {
         let relation_name = format!("{}.{}", relation.schema_name, relation.table_name);
         if !relation.row_security || !relation.force_row_security {
@@ -109,7 +183,9 @@ async fn assert_policy_structure(
                     (p.polroles = ARRAY[c.relowner]) AS platform_role_is_owner,
                     (0 = ANY(p.polroles)) AS platform_role_is_public,
                     ((SELECT oid FROM pg_roles WHERE rolname = current_user) = ANY(p.polroles))
-                        AS platform_targets_runtime
+                        AS platform_targets_runtime,
+                    COALESCE(p.polroles = ARRAY[(SELECT oid FROM pg_roles
+                        WHERE rolname = 'proxima_search')], false) AS candidate_role
                FROM pg_policy AS p JOIN pg_class AS c ON c.oid = p.polrelid
               WHERE p.polrelid::bigint = $1",
         )
@@ -117,9 +193,15 @@ async fn assert_policy_structure(
         .fetch_all(pool)
         .await
         .map_err(|error| refused(format!("inspect policies on {relation_name}: {error}")))?;
-        if policies.len() != REQUIRED_POLICIES.len()
+        let candidate_policy = policies
+            .iter()
+            .any(|policy| policy.name == "proxima_search_candidates");
+        has_candidate_policy |= candidate_policy;
+        if policies.len() != REQUIRED_POLICIES.len() + usize::from(candidate_policy)
             || policies.iter().any(|policy| {
-                !REQUIRED_POLICIES.contains(&policy.name.as_str()) || !policy.permissive
+                (!REQUIRED_POLICIES.contains(&policy.name.as_str())
+                    && policy.name != "proxima_search_candidates")
+                    || !policy.permissive
             })
         {
             return Err(refused(format!(
@@ -143,6 +225,12 @@ async fn assert_policy_structure(
                         && !policy.platform_role_is_public
                         && (!reject_current_user_platform_policy
                             || !policy.platform_targets_runtime) => {}
+                "proxima_search_candidates"
+                    if relation.candidate_relation
+                        && policy.command == "r"
+                        && policy.candidate_role
+                        && policy.using_expr.as_deref() == Some("true")
+                        && policy.check_expr.is_none() => {}
                 _ => {
                     return Err(refused(format!(
                         "{relation_name} has an invalid {} policy",
@@ -151,6 +239,9 @@ async fn assert_policy_structure(
                 }
             }
         }
+    }
+    if has_candidate_policy {
+        assert_candidate_role(pool, &schemas, !reject_current_user_platform_policy).await?;
     }
     Ok(())
 }
@@ -202,7 +293,24 @@ async fn relations(pool: &PgPool, schemas: &[String]) -> Result<Vec<RelationRow>
                      WHERE target.oid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
                        AND (target.rolsuper OR target.rolbypassrls)
                        AND pg_has_role(current_user, target.oid, 'SET')
-                ) AS dangerous_set_role
+                ) AS dangerous_set_role,
+                ((n.nspname = 'proxima_core' AND c.relname IN ('embeddings', 'embedding_heads'))
+                 OR (EXISTS (SELECT 1 FROM pg_attribute a
+                              WHERE a.attrelid = c.oid AND a.attname = 'search_tsv'
+                                AND a.atttypid = 'tsvector'::regtype
+                                AND a.attnum > 0 AND NOT a.attisdropped)
+                     AND EXISTS (
+                         SELECT 1 FROM pg_constraint fk
+                         JOIN pg_attribute child ON child.attrelid = c.oid
+                              AND child.attnum = fk.conkey[1]
+                         JOIN pg_attribute parent ON parent.attrelid = fk.confrelid
+                              AND parent.attnum = fk.confkey[1]
+                          WHERE fk.conrelid = c.oid AND fk.contype = 'f'
+                            AND fk.confrelid = to_regclass('proxima_core.memory')
+                            AND cardinality(fk.conkey) = 1
+                            AND child.attname = 'memory_id'
+                            AND child.atttypid = 'uuid'::regtype
+                            AND parent.attname = 't'))) AS candidate_relation
            FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
           WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
           ORDER BY n.nspname, c.relname",
@@ -313,11 +421,22 @@ fn assert_definer_path(
     if !path_is_pinned(&path) {
         return Err(invalid());
     }
+    if let Some(kind) = function.candidate_kind.as_deref() {
+        let expected: &[&str] = match kind {
+            "lexical" | "substring" | "vector" => &["pg_catalog", "pg_temp"],
+            _ => return Err(invalid()),
+        };
+        if path != expected {
+            return Err(invalid());
+        }
+    }
     for name in &path[..path.len() - 1] {
         let Some(namespace) = namespaces.iter().find(|namespace| namespace.name == *name) else {
             return Err(invalid());
         };
-        if (name != "pg_catalog" && !namespace.platform_owner_oids.contains(&function.owner_oid))
+        if (function.candidate_kind.is_none()
+            && name != "pg_catalog"
+            && !namespace.platform_owner_oids.contains(&function.owner_oid))
             || namespace.non_platform_create
             || (!platform && namespace.runtime_create)
         {
@@ -331,8 +450,16 @@ fn assert_definer_path(
 }
 
 async fn definers(pool: &PgPool, schemas: &[String]) -> Result<Vec<DefinerRow>, StorageError> {
+    let vector_names: Vec<_> = proxima_core::EmbeddingDim::ALL
+        .into_iter()
+        .map(|dim| format!("vector_candidates_d{}", dim.width()))
+        .collect();
     sqlx::query_as(
-        "SELECT format('%I.%I(%s)', n.nspname, p.proname,
+        "WITH text_input AS (
+             SELECT ARRAY(SELECT to_regtype(type_name)::oid
+                            FROM unnest(string_to_array($2::text, ', ')) type_name) AS oids
+         )
+         SELECT format('%I.%I(%s)', n.nspname, p.proname,
                        pg_get_function_identity_arguments(p.oid)) AS name,
                 p.proowner::bigint AS owner_oid, owner.rolname AS owner_name,
                 owner.rolsuper AS owner_superuser, owner.rolbypassrls AS owner_bypass_rls,
@@ -359,13 +486,47 @@ async fn definers(pool: &PgPool, schemas: &[String]) -> Result<Vec<DefinerRow>, 
                                AND NOT pg_has_role(grantee.oid, p.proowner, 'USAGE')
                                AND NOT pg_has_role(grantee.oid, p.proowner, 'SET')
                            ))) AS non_platform_execute,
-                p.proconfig AS settings
+                p.proconfig AS settings,
+                CASE
+                    WHEN p.proname = 'search_lexical_candidates'
+                     AND shape.text_input AND shape.table_result
+                     AND shape.output_types = ARRAY['uuid'::regtype::oid, 'text'::regtype::oid, 'real'::regtype::oid]
+                     AND shape.output_names = ARRAY['t', 'schema_id', 'lexical_score']::text[]
+                    THEN 'lexical'
+                    WHEN p.proname = 'search_substring_candidates'
+                     AND shape.text_input AND shape.table_result
+                     AND shape.output_types = ARRAY['uuid'::regtype::oid, 'real'::regtype::oid]
+                     AND shape.output_names = ARRAY['t', 'lexical_score']::text[]
+                    THEN 'substring'
+                    WHEN n.nspname = 'proxima_core' AND p.proname = ANY($3::text[])
+                     AND p.pronargs = 4
+                     AND p.proargtypes[0] = 'uuid[]'::regtype
+                     AND p.proargtypes[1] = 'text'::regtype
+                     AND p.proargtypes[2] = to_regtype('public.vector')
+                     AND p.proargtypes[3] = 'bigint'::regtype
+                     AND shape.table_result
+                     AND shape.output_types = ARRAY['uuid'::regtype::oid, 'real'::regtype::oid]
+                     AND shape.output_names = ARRAY['memory_id', 'similarity_score']::text[]
+                    THEN 'vector'
+                END AS candidate_kind
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
            JOIN pg_roles owner ON owner.oid = p.proowner
+           CROSS JOIN text_input
+           CROSS JOIN LATERAL (
+               SELECT ARRAY(SELECT argument FROM unnest(p.proargtypes) argument) = text_input.oids AS text_input,
+                      (p.proretset AND p.prorettype = 'record'::regtype
+                       AND p.proargmodes[1:p.pronargs] = array_fill('i'::\"char\", ARRAY[p.pronargs::integer])
+                       AND p.proargmodes[p.pronargs + 1:] = ARRAY(
+                           SELECT 't'::\"char\" FROM unnest(p.proallargtypes[p.pronargs + 1:]) argument)) AS table_result,
+                      p.proallargtypes[p.pronargs + 1:] AS output_types,
+                      p.proargnames[p.pronargs + 1:] AS output_names
+           ) shape
           WHERE n.nspname = ANY($1::text[]) AND p.prosecdef
           ORDER BY n.nspname, p.proname, p.oid",
     )
     .bind(schemas)
+    .bind(crate::search_candidates::ARGUMENT_TYPES)
+    .bind(vector_names)
     .fetch_all(pool)
     .await
     .map_err(|error| refused(format!("enumerate SECURITY DEFINER functions: {error}")))
@@ -436,7 +597,28 @@ async fn assert_definers(
         return Ok(());
     }
     let namespaces = definer_namespaces(pool, &functions).await?;
+    if functions.iter().any(|function| {
+        function.candidate_kind.is_some() || function.owner_name == "proxima_search"
+    }) {
+        assert_candidate_role(pool, schemas, platform).await?;
+    }
     for function in &functions {
+        if function.candidate_kind.is_some() {
+            if function.owner_name != "proxima_search"
+                || function.owner_superuser
+                || function.owner_bypass_rls
+                || function.public_execute
+                || function.owner_usage
+                || (!platform && function.owner_set)
+            {
+                return Err(refused(format!(
+                    "{} must use isolated proxima_search authority with no PUBLIC EXECUTE",
+                    function.name
+                )));
+            }
+            assert_definer_path(function, &namespaces, platform)?;
+            continue;
+        }
         if function.owner_superuser
             || function.owner_bypass_rls
             || !function.platform_owner

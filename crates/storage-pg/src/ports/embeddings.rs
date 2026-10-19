@@ -114,8 +114,10 @@ impl EmbeddingWritePort for PgStorage {
         let mut tx = self.platform_transaction().await?;
         verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
             .await?;
-        let outcome =
-            verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vectors).await?;
+        let outcome = self
+            .vector_index
+            .add(&mut tx, owner, entity, vectors)
+            .await?;
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }

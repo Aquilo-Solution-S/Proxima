@@ -36,27 +36,26 @@
 //! this renderer cannot serve are both exclusions the contract states. The
 //! semantic arm honours the same scope: its candidate scan requires one
 //! of those flavors' projection rows to satisfy the schema set and the
-//! request's optional tag predicate ([`semantic_search_sql`]).
+//! request's optional tag predicate before a candidate is accepted.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::pgvector::{Lane, set_hnsw_search_sql};
+use crate::pgvector::set_hnsw_search_sql;
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
+use proxima_core::storage_ports::VectorIndex;
 use proxima_core::verbs::query::{
     EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
 };
 use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
 use proxima_core::{MemoryId, OwnerId, SchemaId, StorageError};
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Postgres, Transaction};
 
-use super::embedding_candidates::{
-    SEMANTIC_SCAN_CAP, best_embedding_scores_on_connection, next_chunk_window,
-};
+use super::embedding_candidates::{SEMANTIC_SCAN_CAP, next_candidate_window};
 use super::lineage::load_one_schema_snippets_on_connection;
 
 mod hybrid;
@@ -69,45 +68,6 @@ use hybrid::{HYBRID_CANDIDATE_WINDOW, apply_hybrid_fusion, uses_hybrid_fusion};
 /// scaling has no contract home, because it is a function of the request
 /// rather than of the shard.
 const REQUEST_OVERFETCH_FACTOR: u32 = 20;
-
-/// The semantic arm's fixed scan for one width lane, without its tail.
-/// `$1` is the owner set, `$2` the model id, `$3` the query vector, `$4` the
-/// candidate budget, `$5`/`$6` the `since`/`until` window. The lane's
-/// predicate and casts are literals, so the planner proves the lane's
-/// partial HNSW index. [`semantic_search_sql`] adds the participating flavor
-/// probes ahead of [`semantic_search_tail`].
-fn semantic_search_scan(lane: Lane) -> String {
-    format!(
-        "SELECT emb.entity_id AS t
-           FROM proxima_core.embeddings emb
-           JOIN proxima_core.embedding_heads head
-             ON head.entity_id = emb.entity_id
-            AND head.model_id = emb.model_id
-            AND head.dim = emb.dim
-            AND head.embedding_version = emb.embedding_version
-          WHERE emb.owner_id = ANY($1::uuid[])
-            AND emb.model_id = $2
-            AND {predicate}
-            AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(emb.entity_id) >= $5)
-            AND ($6::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(emb.entity_id) <= $6)",
-        predicate = lane.predicate,
-    )
-}
-
-/// The scan's `ORDER BY` / `LIMIT`, spelled once. Projection probes must
-/// precede this tail so filtering happens before the HNSW candidate window
-/// is applied.
-fn semantic_search_tail(lane: Lane) -> String {
-    format!(
-        "
-          ORDER BY {vec} <=> $3{cast}
-          LIMIT $4",
-        vec = lane.vec,
-        cast = lane.cast,
-    )
-}
 
 /// The tagged semantic scan's tag-array bind…
 const SEMANTIC_TAGS_BIND: usize = 7;
@@ -156,10 +116,11 @@ struct AdmitRow {
 /// Request search on a caller-owned transaction connection. All candidate,
 /// admission, and snippet statements are serialized on that connection.
 pub(crate) async fn search_memories_on_connection(
-    connection: &mut PgConnection,
+    connection: &mut Transaction<'static, Postgres>,
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
     tuning: &PgTuning,
+    vector_index: &dyn VectorIndex<Context = Transaction<'static, Postgres>>,
 ) -> Result<MemorySearchPage, StorageError> {
     if matches!(req.kind, Some(EntityKind::Goal)) || req.limit == 0 {
         return Ok(MemorySearchPage {
@@ -180,7 +141,7 @@ pub(crate) async fn search_memories_on_connection(
     match req.mode {
         SearchMode::Lexical => merge_hits(
             &mut hits,
-            scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
+            scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true).await?,
         ),
         SearchMode::Semantic => merge_hits(
             &mut hits,
@@ -190,6 +151,7 @@ pub(crate) async fn search_memories_on_connection(
                 &flavors,
                 tuning,
                 candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
+                vector_index,
             )
             .await?,
         ),
@@ -197,7 +159,8 @@ pub(crate) async fn search_memories_on_connection(
             if req.semantic.is_some() {
                 merge_hits(
                     &mut hits,
-                    scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
+                    scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true)
+                        .await?,
                 );
                 merge_hits(
                     &mut hits,
@@ -207,23 +170,25 @@ pub(crate) async fn search_memories_on_connection(
                         &flavors,
                         tuning,
                         candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
+                        vector_index,
                     )
                     .await?,
                 );
             } else {
                 merge_hits(
                     &mut hits,
-                    scan_flavors_on_connection(connection, req, &flavors, limit, true).await?,
+                    scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true)
+                        .await?,
                 );
             }
         }
     }
-    let mut admitted = admit_hits_on_connection(connection, req, &hits).await?;
+    let mut admitted = admit_hits_on_connection(connection.as_mut(), req, &hits).await?;
     if uses_hybrid_fusion(req) {
         apply_hybrid_fusion(req, &mut admitted, &hits);
     }
     let mut page = page_hits(req, limit, admitted);
-    hydrate_snippets_on_connection(connection, projections, &mut page.results).await?;
+    hydrate_snippets_on_connection(connection.as_mut(), projections, &mut page.results).await?;
     Ok(page)
 }
 
@@ -440,7 +405,7 @@ async fn scan_one_flavor_on_connection(
     let budget = candidate_overfetch(req, limit, flavor.head().overfetch_k);
     let overfetch = i64::from(budget);
     let tags = (!req.tags.is_empty()).then_some(req.tags.as_slice());
-    let sql = ranked_projection_sql(flavor, req, rescue)?;
+    let sql = crate::search_candidates::call_sql(&flavor.head().projection_table, false)?;
     // SQL-POLICY: PgIdent
     let rows: Vec<RankedRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&req.query)
@@ -451,6 +416,11 @@ async fn scan_one_flavor_on_connection(
         .bind(recency_t)
         .bind(&owner_ids)
         .bind(&schema_ids)
+        .bind(rescue)
+        .bind(matches!(candidate_order(req), SearchOrder::Recency))
+        .bind(matches!(req.supersession, SupersessionStatus::HeadsOnly))
+        .bind(kind_literal(req.kind))
+        .bind(matches!(req.tag_match, TagMatch::All))
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
@@ -474,7 +444,7 @@ async fn scan_one_flavor_on_connection(
         .collect();
     if !missing.is_empty() {
         let missing_ids: Vec<&str> = missing.iter().map(|p| p.schema_id.as_str()).collect();
-        let sql = substring_sql(&missing, flavor.bands, req)?;
+        let sql = crate::search_candidates::call_sql(&flavor.head().projection_table, true)?;
         // SQL-POLICY: PgIdent
         let rows: Vec<SubstringRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(like_pattern(&req.query))
@@ -485,6 +455,11 @@ async fn scan_one_flavor_on_connection(
             .bind(recency_t)
             .bind(&owner_ids)
             .bind(&missing_ids)
+            .bind(rescue)
+            .bind(matches!(candidate_order(req), SearchOrder::Recency))
+            .bind(matches!(req.supersession, SupersessionStatus::HeadsOnly))
+            .bind(kind_literal(req.kind))
+            .bind(matches!(req.tag_match, TagMatch::All))
             .fetch_all(&mut *connection)
             .await
             .map_err(map_err)?;
@@ -526,6 +501,7 @@ async fn scan_one_flavor_on_connection(
 /// (`sidecar_text_sql`) — the same expression the stored vector and the
 /// snippet are built from, so the three cannot disagree about what a row's
 /// searchable text is.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn substring_sql(
     schemas: &[&MemorySearchProjection],
     bands: RenderBands,
@@ -581,14 +557,12 @@ fn substring_sql(
 /// There is no query-side CTE here: the `LIKE` predicate reads no tsquery,
 /// so computing a `websearch_to_tsquery` and a `plainto_tsquery` per
 /// statement would be paid for and never read.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn substring_leg_sql(
     projection: &MemorySearchProjection,
     bands: RenderBands,
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
-    let table = PgIdent::table(&projection.sidecar_table)?;
-    let key = projection_key_ident(projection)?;
-    let search_text = sidecar_text_sql(projection)?;
     let tag_pred = match projection.tag_column.as_deref() {
         Some(column) if !req.tags.is_empty() => {
             let column = PgIdent::column(column)?;
@@ -600,13 +574,29 @@ fn substring_leg_sql(
         }
         _ => String::new(),
     };
+    substring_leg_sql_parts(
+        projection,
+        bands,
+        &tag_pred,
+        &admit_side_restriction(req, SUBSTRING_MEMORY_ID),
+    )
+}
+
+fn substring_leg_sql_parts(
+    projection: &MemorySearchProjection,
+    bands: RenderBands,
+    tag_pred: &str,
+    admit_pred: &str,
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(&projection.sidecar_table)?;
+    let key = projection_key_ident(projection)?;
+    let search_text = sidecar_text_sql(projection)?;
     // A flat band: the substring arm ranks nothing, it only admits — hence
     // zero width, and no `ts_rank` call to normalize.
     let (floor, _) = bands.substring.parts();
     // Same reason as the ranked arm's: this window is shared across the
     // missing schemas now, so a row admission will drop must not spend a
     // slot in it. See `admit_side_restriction`.
-    let admit_pred = admit_side_restriction(req, SUBSTRING_MEMORY_ID);
     // SQL-POLICY: PgIdent
     // `c.{key}` is the sidecar's DECLARED memory-key column and `m.t` the
     // kernel memory table's own; the leg aliases its projection back to `t`
@@ -616,7 +606,7 @@ fn substring_leg_sql(
         "SELECT c.{key} AS t,
                 {floor}::real AS lexical_score
            FROM {table} c
-           JOIN proxima_core.memory m ON m.t = c.{key}
+           JOIN proxima_core.memory m ON m.t = c.{key} /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
@@ -659,14 +649,12 @@ fn substring_leg_sql(
 /// The admit-side restriction ([`admit_side_restriction`]) is the third
 /// predicate that has to be here rather than only at admit. See that
 /// function.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn ranked_projection_sql(
     flavor: &FlavorScan<'_>,
     req: &MemorySearchRequest,
     rescue: bool,
 ) -> Result<String, StorageError> {
-    let head = flavor.head();
-    let table = PgIdent::table(&head.projection_table)?;
-    let tsv = "p.search_tsv";
     let tag_pred = if req.tags.is_empty() {
         String::new()
     } else {
@@ -680,6 +668,28 @@ fn ranked_projection_sql(
             op = tag_operator(req.tag_match)
         )
     };
+    ranked_projection_sql_parts(
+        flavor,
+        rescue,
+        &tag_pred,
+        &admit_side_restriction(req, RANKED_MEMORY_ID),
+        candidate_order(req),
+        None,
+    )
+}
+
+fn ranked_projection_sql_parts(
+    flavor: &FlavorScan<'_>,
+    rescue: bool,
+    tag_pred: &str,
+    admit_pred: &str,
+    order: SearchOrder,
+    rescue_switch: Option<&str>,
+) -> Result<String, StorageError> {
+    let head = flavor.head();
+    let table = PgIdent::table(&head.projection_table)?;
+    let tsv = "p.search_tsv";
+    let rescue_guard = rescue_switch.map_or_else(String::new, |flag| format!("{flag} AND "));
     let multilingual = multilingual(head);
     let rank_tsq = rank_tsquery_expr(multilingual);
     let weights = rank_weight_array(head);
@@ -694,7 +704,7 @@ fn ranked_projection_sql(
     let rescue_norm = rescue_band.normalization_arg();
     let rescue_score = if rescue {
         format!(
-            ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
+            ", CASE WHEN {rescue_guard}q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
                     THEN {rescue_floor} + LEAST(COALESCE(ts_rank({weights}{tsv}, q.any_tsq{rescue_norm}), 0.0) * 100.0, 1.0) * {rescue_width}
                     ELSE 0.0 END"
         )
@@ -702,7 +712,7 @@ fn ranked_projection_sql(
         String::new()
     };
     let rescue_where = if rescue {
-        format!(" OR (q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)")
+        format!(" OR ({rescue_guard}q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)")
     } else {
         String::new()
     };
@@ -716,11 +726,10 @@ fn ranked_projection_sql(
                     0.0
                 )::real"
     );
-    let order_by = match candidate_order(req) {
+    let order_by = match order {
         SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
         SearchOrder::Recency => "p.memory_id DESC",
     };
-    let admit_pred = admit_side_restriction(req, RANKED_MEMORY_ID);
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{q_cte}
@@ -745,9 +754,107 @@ fn ranked_projection_sql(
 }
 
 /// The candidate-side spelling of "this row's memory" in the ranked arm.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const RANKED_MEMORY_ID: &str = "p.memory_id";
 /// …and in a substring leg, which already drives `proxima_core.memory m`.
 const SUBSTRING_MEMORY_ID: &str = "m.t";
+
+/// Fixed candidate statements emitted into a projection's migration.
+/// Request switches are values; table names and scoring remain contract-owned.
+pub(crate) fn projection_candidate_statements(
+    projections: &[MemorySearchProjection],
+    substring: bool,
+    recency: bool,
+) -> Result<Option<String>, StorageError> {
+    let Some(flavor) = FlavorScan::new(
+        projections
+            .iter()
+            .filter(|projection| {
+                matches!(projection.band_comparability, BandComparability::CoreBands)
+                    && projection.render_bands.is_some()
+            })
+            .collect(),
+    ) else {
+        return Ok(None);
+    };
+    let order = if recency {
+        SearchOrder::Recency
+    } else {
+        SearchOrder::Relevance
+    };
+    if !substring {
+        let admit = candidate_authorization("p.memory_id");
+        return ranked_projection_sql_parts(
+            &flavor,
+            true,
+            &format!(
+                " AND p.owner_id = ANY(proxima_core.search_owner_ids()){}",
+                candidate_tags("p.tag")
+            ),
+            &admit,
+            order,
+            Some("$9::boolean"),
+        )
+        .map(Some);
+    }
+    let mut by_table = BTreeMap::new();
+    for projection in &flavor.schemas {
+        if projection.substring != SubstringArm::Off {
+            by_table
+                .entry(projection.sidecar_table.as_str())
+                .or_insert(*projection);
+        }
+    }
+    let legs = by_table
+        .into_values()
+        .map(|projection| {
+            let tags = projection.tag_column.as_deref().map_or_else(
+                || Ok::<_, StorageError>(" AND $3::text[] IS NULL".to_owned()),
+                |column| {
+                    let column = PgIdent::column(column)?;
+                    Ok(candidate_tags(&format!("c.{}", column.as_str())))
+                },
+            )?;
+            substring_leg_sql_parts(
+                projection,
+                flavor.bands,
+                &tags,
+                &candidate_authorization("m.t"),
+            )
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    if legs.is_empty() {
+        return Ok(None);
+    }
+    let order_by = match order {
+        SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
+        SearchOrder::Recency => "s.t DESC",
+    };
+    Ok(Some(format!(
+        "SELECT s.t, s.lexical_score FROM ({}) s ORDER BY {order_by} LIMIT $2",
+        legs.join(" UNION ALL ")
+    )))
+}
+
+fn candidate_tags(column: &str) -> String {
+    format!(
+        " AND ($3::text[] IS NULL OR CASE WHEN $12::boolean \
+         THEN {column} @> $3::text[] ELSE {column} && $3::text[] END)"
+    )
+}
+
+fn candidate_authorization(memory_id: &str) -> String {
+    format!(
+        " AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ \
+         WHERE authorized_memory.t = {memory_id} \
+         AND authorized_memory.owner_id = ANY($7::uuid[]) \
+         AND authorized_memory.forgotten_at IS NULL \
+         AND ($11::text IS NULL OR authorized_memory.kind::text = $11) \
+         AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head \
+         WHERE authorized_head.handle = authorized_memory.handle \
+         AND authorized_head.t = authorized_memory.t)))"
+    )
+}
 
 /// The `memory_kind` literal a request's `kind` filter selects.
 ///
@@ -976,7 +1083,7 @@ fn query_side_cte(multilingual: bool) -> &'static str {
              SELECT proxima_core.lexical_scrub($1) AS scrubbed,
                     proxima_core.lexical_query_text(proxima_core.lexical_config(),
                         proxima_core.lexical_scrub($1)) AS analyzed
-         ), q AS (
+         ), q AS MATERIALIZED (
              SELECT s.scrubbed, s.analyzed,
                     COALESCE(
                         (SELECT proxima_core.tsquery_or_agg(
@@ -1003,7 +1110,7 @@ fn query_side_cte(multilingual: bool) -> &'static str {
                FROM analyzed_query s
          )"
     } else {
-        "WITH q AS (
+        "WITH q AS MATERIALIZED (
              SELECT proxima_core.lexical_scrub($1) AS scrubbed,
                     websearch_to_tsquery(proxima_core.lexical_config(),
                         proxima_core.lexical_scrub($1)) AS tsq,
@@ -1025,35 +1132,13 @@ fn rank_tsquery_expr(multilingual: bool) -> &'static str {
     }
 }
 
-/// The semantic arm's statement: the embedding scan restricted to memories
-/// whose projection row belongs to a participating flavor and, when
-/// requested, matches the tag predicate.
-///
-/// The restriction sits on the CANDIDATE side for the reason
-/// [`admit_side_restriction`] gives: `emb.vec <=> $3` walks the HNSW index
-/// in similarity order and `LIMIT $4` is the window, so a tag applied after
-/// the scan is a window spent on rows that will be dropped. Measured on one
-/// query and one tag: `lexical` returned the one row carrying the tag,
-/// `semantic` returned six carrying none of it, and `hybrid` — the default
-/// mode — returned those six plus the one, because only the lexical arm knew
-/// about the tag.
-///
-/// Tags live on `<flavor>.projection`, not on the embedding, so the predicate
-/// is one `EXISTS` probe per participating flavor — the set the lexical arm
-/// scans, from `core_search_flavors` — `OR`ed. Each probe hits the
-/// projection's primary key `(memory_id, schema_id)` and binds ITS flavor's
-/// schema set, so no flavor's table is asked about another flavor's schemas.
-///
-/// An empty `flavors` is the caller's case: `scan_embeddings` returns no rows
-/// rather than an unfiltered scan, because no participating schema means an
-/// empty result for both tagged and untagged requests.
-fn semantic_search_sql(
+/// Admit vector-port candidates through the ordinary memory read and the
+/// participating projections. The same memory predicate is used for final
+/// admission, so authorization and request filters have one author.
+fn semantic_candidate_admission_sql(
     flavors: &[FlavorScan<'_>],
     req: &MemorySearchRequest,
-    lane: Lane,
 ) -> Result<String, StorageError> {
-    let scan = semantic_search_scan(lane);
-    let tail = semantic_search_tail(lane);
     let op = tag_operator(req.tag_match);
     let schema_bind_base = if req.tags.is_empty() {
         SEMANTIC_TAGS_BIND
@@ -1068,16 +1153,13 @@ fn semantic_search_sql(
             let tag_pred = if req.tags.is_empty() {
                 String::new()
             } else {
-                format!(
-                    "\n                            AND p.tag {op} ${SEMANTIC_TAGS_BIND}::text[]"
-                )
+                format!(" AND p.tag {op} ${SEMANTIC_TAGS_BIND}::text[]")
             };
             // SQL-POLICY: PgIdent
             Ok(format!(
-                "EXISTS (SELECT 1
-                           FROM {table} p
-                          WHERE p.memory_id = emb.entity_id
-                            AND p.owner_id = ANY($1::uuid[])
+                "EXISTS (SELECT 1 FROM {table} p
+                          WHERE p.memory_id = m.t
+                            AND p.owner_id = ANY($2::uuid[])
                             AND p.schema_id = ANY(${schema_bind}::text[]){tag_pred})",
                 table = table.as_str(),
                 schema_bind = schema_bind_base + index,
@@ -1087,32 +1169,28 @@ fn semantic_search_sql(
     let projection_pred = if probes.is_empty() {
         "FALSE".to_owned()
     } else {
-        probes.join("\n                 OR ")
+        probes.join(" OR ")
     };
-    // Shared schemas can contain more than one memory kind, and an embedding
-    // head need not be a current memory head. Exclude those ineligible rows
-    // before they consume the limited similarity candidate window.
-    let admit_restriction = admit_side_restriction(req, "emb.entity_id");
-    // SQL-POLICY: PgIdent
+    // SQL-POLICY: PgIdent — each projection relation above is checked.
     Ok(format!(
-        "{scan}
-            AND ({projection_pred}){admit_restriction}{tail}"
+        "{} AND ({projection_pred})",
+        search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly))
     ))
 }
 
 async fn scan_embeddings_on_connection(
-    connection: &mut PgConnection,
+    connection: &mut Transaction<'static, Postgres>,
     req: &MemorySearchRequest,
     flavors: &[FlavorScan<'_>],
     tuning: &PgTuning,
     overfetch: u32,
+    vector_index: &dyn VectorIndex<Context = Transaction<'static, Postgres>>,
 ) -> Result<Vec<Hit>, StorageError> {
     let Some(semantic) = req.semantic.as_ref() else {
         return Err(StorageError::ConstraintViolation(
             "semantic search requires a query embedding".into(),
         ));
     };
-    let lane = Lane::of(semantic.space().dim());
     if flavors.is_empty() {
         return Ok(Vec::new());
     }
@@ -1126,21 +1204,28 @@ async fn scan_embeddings_on_connection(
         .iter()
         .map(|f| f.schemas.iter().map(|p| p.schema_id.as_str()).collect())
         .collect();
-    let sql = semantic_search_sql(flavors, req, lane)?;
+    let sql = semantic_candidate_admission_sql(flavors, req)?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
-        .execute(&mut *connection)
+        .execute(connection.as_mut())
         .await
         .map_err(map_err)?;
-    let query_vector = lane.query_vector(semantic.values());
     let mut window = overfetch;
-    let mut candidates = BTreeSet::new();
+    let mut admitted = BTreeMap::new();
     loop {
-        // SQL-POLICY: PgIdent
-        let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+        let candidates = vector_index
+            .nearest(connection, &req.read_owners, semantic, window)
+            .await?;
+        let fetched = candidates.len();
+        let candidate_ids: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.memory_id.into_inner())
+            .collect();
+        // SQL-POLICY: PgIdent — the shared memory read plus checked projection probes.
+        let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(&candidate_ids)
             .bind(&owner_ids)
-            .bind(semantic.space().model_id())
-            .bind(&query_vector)
-            .bind(i64::from(window))
+            .bind(kind_literal(req.kind))
+            .bind(req.schema_id.as_ref().map(SchemaId::as_str))
             .bind(req.since)
             .bind(req.until);
         if !req.tags.is_empty() {
@@ -1149,29 +1234,30 @@ async fn scan_embeddings_on_connection(
         for schema_ids in &schema_sets {
             query = query.bind(schema_ids);
         }
-        let rows: Vec<uuid::Uuid> = query.fetch_all(&mut *connection).await.map_err(map_err)?;
-        let fetched = rows.len();
-        candidates.extend(rows);
-        let Some(next) = next_chunk_window(window, fetched, candidates.len(), overfetch) else {
+        let rows: Vec<AdmitRow> = query
+            .fetch_all(connection.as_mut())
+            .await
+            .map_err(map_err)?;
+        let allowed: BTreeSet<_> = rows.into_iter().map(|row| row.t).collect();
+        for candidate in candidates {
+            let t = candidate.memory_id.into_inner();
+            if allowed.contains(&t) {
+                admitted.insert(
+                    t,
+                    Hit {
+                        t,
+                        lexical_score: None,
+                        similarity_score: Some(candidate.similarity_score),
+                    },
+                );
+            }
+        }
+        let Some(next) = next_candidate_window(window, fetched, admitted.len(), overfetch) else {
             break;
         };
         window = next;
     }
-    let rows = best_embedding_scores_on_connection(
-        connection,
-        &owner_ids,
-        semantic,
-        &candidates.into_iter().collect::<Vec<_>>(),
-    )
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| Hit {
-            t: row.memory_id,
-            lexical_score: None,
-            similarity_score: Some(row.similarity_score),
-        })
-        .collect())
+    Ok(admitted.into_values().collect())
 }
 
 async fn admit_hits_on_connection(
@@ -1326,27 +1412,17 @@ pub fn substring_sql_for_tests(
     substring_sql(schemas, bands, req)
 }
 
+/// The store's RLS admission query for vector-port candidates.
+///
+/// # Errors
+/// Refuses invalid projection identifiers.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
-pub fn semantic_search_sql_for_tests(
+pub fn semantic_candidate_admission_sql_for_tests(
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
-    dim: proxima_core::EmbeddingDim,
 ) -> Result<String, StorageError> {
-    let flavors = core_search_flavors(req, projections);
-    semantic_search_sql(&flavors, req, Lane::of(dim))
-}
-
-/// The `$3` bind [`semantic_search_sql_for_tests`]'s scan takes for `query`:
-/// what the served search binds, so a plan pinned against it is the served
-/// plan.
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-#[doc(hidden)]
-#[must_use]
-pub fn semantic_query_vector_for_tests(
-    query: &proxima_core::SpaceVector,
-) -> impl for<'q> sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + use<> {
-    Lane::of(query.space().dim()).query_vector(query.values())
+    semantic_candidate_admission_sql(&core_search_flavors(req, projections), req)
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -1367,9 +1443,6 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
 
 #[cfg(test)]
 mod tests {
-    /// The default width's lane, which every pre-lane golden was written in.
-    const D1024: super::Lane = super::Lane::of(proxima_core::EmbeddingDim::D1024);
-
     use super::{
         EntityKind, MemorySearchRequest, OwnerId, SearchMode, SearchOrder, SupersessionStatus,
         TagMatch,
@@ -1397,16 +1470,16 @@ mod tests {
         let src = include_str!("search.rs");
         let prod = src.split("mod tests").next().expect("production");
         assert!(
-            prod.contains("ranked_projection_sql(flavor, req, rescue)"),
-            "the ranked scan must run the exported builder"
+            prod.contains("search_candidates::call_sql(&flavor.head().projection_table, false)"),
+            "the ranked scan must call the fixed candidate function"
         );
         assert!(
-            prod.contains("substring_sql(&missing, flavor.bands, req)"),
-            "the substring scan must run the exported builder"
+            prod.contains("search_candidates::call_sql(&flavor.head().projection_table, true)"),
+            "the substring scan must call the fixed candidate function"
         );
         assert!(
-            prod.contains("semantic_search_sql(flavors, req, lane)"),
-            "the semantic scan must run the builder for every request shape"
+            prod.contains(".nearest(connection, &req.read_owners, semantic, window)"),
+            "the semantic scan must obtain candidates through the vector port"
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
         assert!(prod.contains(&admit), "admit must run search_admit_sql");
@@ -1605,7 +1678,7 @@ mod tests {
             super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands"),
             super::FlavorScan::new(vec![&docs]).expect("fixture head declares render bands"),
         ];
-        let two = super::semantic_search_sql(&flavors, &req, D1024).expect("semantic");
+        let two = super::semantic_candidate_admission_sql(&flavors, &req).expect("semantic");
         let core = two
             .find("FROM proxima_core.projection p")
             .expect("core probe");
@@ -1613,10 +1686,7 @@ mod tests {
             .find("FROM proxima_docs.projection p")
             .expect("docs probe");
         assert!(core < foreign, "probes render in `flavors` order");
-        assert!(
-            two.contains(")\n                 OR EXISTS ("),
-            "one probe per flavor, OR'ed"
-        );
+        assert!(two.contains(") OR EXISTS ("), "one probe per flavor, OR'ed");
         let first = two.find("p.schema_id = ANY($8::text[])").expect("$8");
         let second = two.find("p.schema_id = ANY($9::text[])").expect("$9");
         assert!(
@@ -1634,20 +1704,20 @@ mod tests {
         let hostile =
             [super::FlavorScan::new(vec![&spliced]).expect("fixture head declares render bands")];
         assert!(
-            super::semantic_search_sql(&hostile, &req, D1024).is_err(),
+            super::semantic_candidate_admission_sql(&hostile, &req).is_err(),
             "an invalid projection table identifier is refused, not spliced"
         );
 
         // Without tags the same per-flavor probes remain, with schema sets
         // starting at `$7`.
         req.tags.clear();
-        let untagged = super::semantic_search_sql(&flavors, &req, D1024).expect("semantic");
+        let untagged = super::semantic_candidate_admission_sql(&flavors, &req).expect("semantic");
         assert!(untagged.contains("FROM proxima_core.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
         assert!(untagged.contains("FROM proxima_docs.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($8::text[])"));
         assert!(!untagged.contains("p.tag"));
-        assert!(super::semantic_search_sql(&hostile, &req, D1024).is_err());
+        assert!(super::semantic_candidate_admission_sql(&hostile, &req).is_err());
     }
 
     /// Admission's filters are on the CANDIDATE side, in both arms, and

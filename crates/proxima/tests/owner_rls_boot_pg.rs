@@ -130,6 +130,15 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
         ),
     )
     .await;
+    // SQL-POLICY: fixed-fragment — the migration role is a quoted fixture identifier.
+    exec(
+        &admin,
+        format!(
+            "GRANT proxima_search TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+            ident(&platform)
+        ),
+    )
+    .await;
     assert_no_scope_parameter_grant(&admin, &platform).await;
     let runtime_url = PgConnectOptions::from_str(&db_url(&database))
         .expect("database URL")

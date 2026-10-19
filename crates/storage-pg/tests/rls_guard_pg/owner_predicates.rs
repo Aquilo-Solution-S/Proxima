@@ -191,39 +191,65 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
     let policies: Vec<(String, String, bool, bool, bool, bool, bool)> = sqlx::query_as(
         "SELECT p.polname::text,p.polcmd::text,p.polpermissive,p.polroles=ARRAY[0::oid],p.polroles=ARRAY[c.relowner],p.polwithcheck IS NOT NULL,pg_get_expr(p.polqual,p.polrelid) IS NOT DISTINCT FROM pg_get_expr(p.polwithcheck,p.polrelid) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid WHERE p.polrelid=$1::regclass ORDER BY p.polname"
     ).bind(&target).fetch_all(&fixture.admin).await.unwrap();
-    assert_eq!(
-        policies,
-        vec![
-            (
-                "proxima_owner_read".into(),
-                "r".into(),
-                true,
-                true,
-                false,
-                false,
-                false
-            ),
-            (
-                "proxima_owner_write".into(),
-                "*".into(),
-                true,
-                true,
-                false,
-                true,
-                true
-            ),
-            (
-                "proxima_platform".into(),
-                "*".into(),
-                true,
-                false,
-                true,
-                true,
-                true
-            ),
-        ],
-        "{target}"
-    );
+    let mut expected = vec![
+        (
+            "proxima_owner_read".into(),
+            "r".into(),
+            true,
+            true,
+            false,
+            false,
+            false,
+        ),
+        (
+            "proxima_owner_write".into(),
+            "*".into(),
+            true,
+            true,
+            false,
+            true,
+            true,
+        ),
+        (
+            "proxima_platform".into(),
+            "*".into(),
+            true,
+            false,
+            true,
+            true,
+            true,
+        ),
+    ];
+    let candidate_relation: bool =
+        sqlx::query_scalar("SELECT proxima_core.is_search_candidate_relation($1::regclass)")
+            .bind(&target)
+            .fetch_one(&fixture.admin)
+            .await
+            .unwrap();
+    if candidate_relation {
+        let valid_candidate_policy: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_policy
+              WHERE polrelid = $1::regclass AND polname = 'proxima_search_candidates'
+                AND polcmd = 'r' AND polpermissive
+                AND polroles = ARRAY[to_regrole('proxima_search')::oid]
+                AND pg_get_expr(polqual, polrelid) = 'true' AND polwithcheck IS NULL)",
+        )
+        .bind(&target)
+        .fetch_one(&fixture.admin)
+        .await
+        .unwrap();
+        assert!(valid_candidate_policy, "{target}");
+        expected.push((
+            "proxima_search_candidates".into(),
+            "r".into(),
+            true,
+            false,
+            false,
+            false,
+            false,
+        ));
+    }
+    assert_eq!(policies, expected, "{target}");
 }
 
 async fn assert_helper_acl(fixture: &Fixture) {

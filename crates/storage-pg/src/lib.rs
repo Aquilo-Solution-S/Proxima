@@ -62,8 +62,10 @@ mod pool_config;
 mod ports;
 pub mod projection;
 mod rls_guard;
+pub mod search_candidates;
 pub mod sidecars;
 mod store_wide;
+pub mod vector_index;
 pub use store_wide::STORE_WIDE_TABLES;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
@@ -547,6 +549,11 @@ pub struct PgStorage {
     non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
+    vector_index: Arc<
+        dyn proxima_core::storage_ports::VectorIndex<
+                Context = sqlx::Transaction<'static, sqlx::Postgres>,
+            >,
+    >,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
     /// Optional host-state participant invoked on the write-session
     /// transaction. `None` keeps existing
@@ -1056,6 +1063,7 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
+            vector_index: Arc::new(vector_index::PgVectorIndex),
             cold: Arc::new(verbs::forget::MemoryColdStore),
             host_state: None,
         })

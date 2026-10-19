@@ -350,8 +350,8 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 ///
 /// The roles are intentionally reusable across disposable databases. Their
 /// password is a local fixture value and must never be used outside tests.
-/// Existing Proxima objects are transferred to the platform role before the
-/// runtime grants are applied.
+/// Existing objects move to the platform role except candidate functions,
+/// which keep their dedicated owner, before runtime grants are applied.
 ///
 /// # Errors
 /// Returns admin, target-database, catalog, or role-attribute errors.
@@ -443,6 +443,16 @@ pub async fn split_role_urls_for(
                 .execute(&mut control)
                 .await?;
         }
+        let search_membership = format!(
+            "GRANT proxima_search TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+             REVOKE proxima_search FROM {runtime}",
+            platform = quoted_ident(SPLIT_PLATFORM_ROLE),
+            runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
+        );
+        // SQL-POLICY: fixed-fragment — closed fixture role identifiers only.
+        sqlx::raw_sql(AssertSqlSafe(search_membership))
+            .execute(&mut control)
+            .await?;
         // Neither fixture role may inherit membership from the other.
         for (member, role) in [(SPLIT_RUNTIME_ROLE, SPLIT_PLATFORM_ROLE), (SPLIT_PLATFORM_ROLE, SPLIT_RUNTIME_ROLE)] {
             let statement = format!(
@@ -489,7 +499,7 @@ pub async fn split_role_urls_for(
                 .await?;
         }
         let public_grants = format!(
-            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform};
+            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform}, proxima_search;
              GRANT CREATE ON SCHEMA public TO {platform}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
@@ -506,7 +516,9 @@ pub async fn split_role_urls_for(
              ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime};
              ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
-               GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}",
+               GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime};
+             ALTER DEFAULT PRIVILEGES FOR ROLE proxima_search
+               GRANT EXECUTE ON FUNCTIONS TO {runtime}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
         );
@@ -562,9 +574,20 @@ pub async fn split_role_urls_for(
                FOR r IN SELECT n.nspname, p.proname,
                                 pg_get_function_identity_arguments(p.oid) AS args
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-                  WHERE n.nspname IN ({schema_list}) LOOP
+                   JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+                  WHERE n.nspname IN ({schema_list})
+                    AND owner_role.rolname <> 'proxima_search' LOOP
                  EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
                                 r.nspname, r.proname, r.args, '{SPLIT_PLATFORM_ROLE}');
+               END LOOP;
+               FOR r IN SELECT n.nspname, p.proname,
+                                pg_get_function_identity_arguments(p.oid) AS args
+                   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                   JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+                  WHERE n.nspname IN ({schema_list})
+                    AND owner_role.rolname = 'proxima_search' AND p.prosecdef LOOP
+                 EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
+                                r.nspname, r.proname, r.args, '{SPLIT_RUNTIME_ROLE}');
                END LOOP;
                FOR r IN SELECT n.nspname, c.relname
                    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -712,7 +735,7 @@ impl SplitRoleDb {
     /// The clone half of a migrated, split-role template: build the template
     /// with the roles provisioned on its staging database
     /// ([`ensure_template_in`]), and the clone arrives with them prepared, so
-    /// the call here re-asserts the two roles and the database grant and
+    /// the call here re-asserts the shared roles and the database grant and
     /// returns early. A template built without the roles gets them
     /// provisioned on the clone, as [`Self::create`] does.
     ///
@@ -1322,6 +1345,7 @@ async fn ensure_catalog(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
         .execute(&mut *conn)
         .await?;
     let result: Result<(), sqlx::Error> = async {
+        ensure_search_role(conn).await?;
         sqlx::query("CREATE SCHEMA IF NOT EXISTS _proxima_test")
             .execute(&mut *conn)
             .await?;
@@ -1346,6 +1370,23 @@ async fn ensure_catalog(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+async fn ensure_search_role(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(
+        "DO $$ BEGIN
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxima_search') THEN
+             CREATE ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+               NOCREATEDB NOCREATEROLE NOINHERIT;
+           ELSE
+             ALTER ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+               NOCREATEDB NOCREATEROLE NOINHERIT;
+           END IF;
+         END $$",
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
     ensure_catalog(conn).await?;
     sqlx::query(
@@ -1355,6 +1396,11 @@ async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Erro
     .bind(name)
     .execute(&mut *conn)
     .await?;
+    let mut target = PgConnection::connect(&db_url(name)).await?;
+    sqlx::query("GRANT USAGE ON SCHEMA public TO proxima_search")
+        .execute(&mut target)
+        .await?;
+    target.close().await?;
     Ok(())
 }
 
@@ -1697,6 +1743,96 @@ mod tests {
 
         assert!(!busy.expect("a busy drop is not an error"), "kept");
         assert!(idle.expect("an idle drop"), "dropped once nobody is on it");
+    }
+
+    #[tokio::test]
+    async fn candidate_ownership_and_execution_survive_split_role_provisioning() {
+        use sqlx::Connection;
+
+        let Some(_) = super::admin_url_or_skip() else {
+            return;
+        };
+        let name = unique_db_name("proxima_search_role");
+        create_db(&name).await.expect("create");
+        let guard = super::DbGuard::adopt(name);
+        let (runtime_url, _) = super::split_role_urls(guard.name()).await.expect("roles");
+        let mut admin = sqlx::PgConnection::connect(&db_url(guard.name()))
+            .await
+            .expect("admin");
+        sqlx::raw_sql(
+            "CREATE SCHEMA proxima_core;
+             GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
+             SET ROLE proxima_search;
+             CREATE FUNCTION proxima_core.candidate_probe() RETURNS integer
+               LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 7';
+             REVOKE ALL ON FUNCTION proxima_core.candidate_probe() FROM PUBLIC;
+             RESET ROLE;
+             REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search",
+        )
+        .execute(&mut admin)
+        .await
+        .expect("candidate creation");
+        let default_execute: bool = sqlx::query_scalar(
+            "SELECT has_function_privilege($1, 'proxima_core.candidate_probe()', 'EXECUTE')",
+        )
+        .bind(super::SPLIT_RUNTIME_ROLE)
+        .fetch_one(&mut admin)
+        .await
+        .expect("default execution grant");
+        assert!(default_execute);
+        sqlx::raw_sql(
+            "REVOKE EXECUTE ON FUNCTION proxima_core.candidate_probe() FROM proxima_test_runtime;
+             DROP TABLE _proxima_test.split_roles_ready",
+        )
+        .execute(&mut admin)
+        .await
+        .expect("replay preparation");
+        super::split_role_urls(guard.name()).await.expect("replay");
+        let owner: String = sqlx::query_scalar(
+            "SELECT owner_role.rolname FROM pg_proc p
+               JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+              WHERE p.oid = 'proxima_core.candidate_probe()'::regprocedure",
+        )
+        .fetch_one(&mut admin)
+        .await
+        .expect("owner");
+        assert_eq!(owner, "proxima_search");
+        let attributes: (bool, bool, bool, bool, bool, bool) = sqlx::query_as(
+            "SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolinherit
+               FROM pg_roles WHERE rolname = 'proxima_search'",
+        )
+        .fetch_one(&mut admin)
+        .await
+        .expect("search attributes");
+        assert_eq!(attributes, (false, false, false, false, false, false));
+        let membership: (bool, bool, bool) = sqlx::query_as(
+            "SELECT m.admin_option, m.inherit_option, m.set_option
+               FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
+               JOIN pg_roles member_role ON member_role.oid = m.member
+              WHERE r.rolname = 'proxima_search' AND member_role.rolname = $1",
+        )
+        .bind(super::SPLIT_PLATFORM_ROLE)
+        .fetch_one(&mut admin)
+        .await
+        .expect("platform membership");
+        assert_eq!(membership, (false, false, true));
+        let runtime_member: bool =
+            sqlx::query_scalar("SELECT pg_has_role($1, 'proxima_search', 'MEMBER')")
+                .bind(super::SPLIT_RUNTIME_ROLE)
+                .fetch_one(&mut admin)
+                .await
+                .expect("runtime membership");
+        assert!(!runtime_member);
+        let mut runtime = sqlx::PgConnection::connect(&runtime_url)
+            .await
+            .expect("runtime");
+        let result: i32 = sqlx::query_scalar("SELECT proxima_core.candidate_probe()")
+            .fetch_one(&mut runtime)
+            .await
+            .expect("explicit execution grant");
+        assert_eq!(result, 7);
+        runtime.close().await.expect("close runtime");
+        admin.close().await.expect("close admin");
     }
 
     #[test]

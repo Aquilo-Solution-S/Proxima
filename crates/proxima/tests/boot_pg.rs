@@ -650,9 +650,9 @@ async fn assert_role_ddl_contention_retries_to_green(
             .await?;
         // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
         // fixture identifier; the target schema is the literal public schema.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "GRANT CREATE ON SCHEMA public TO {}",
-            quoted_ident(&role_name),
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "GRANT CREATE ON SCHEMA public TO {role}; GRANT proxima_search TO {role} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+            role = quoted_ident(&role_name),
         )))
         .execute(&mut target_admin)
         .await?;
