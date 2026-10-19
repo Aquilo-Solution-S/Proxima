@@ -666,6 +666,7 @@ pub async fn dump_database(
             continue;
         }
         out.push_str(&format!("## proxima_core.{table} ({})\n", rows.len()));
+        let mut lines = Vec::with_capacity(rows.len());
         for row in rows {
             let mut row: Value = serde_json::from_str(&row)?;
             if table == "embeddings"
@@ -717,11 +718,39 @@ pub async fn dump_database(
                 // its pre-locator-integrity fixture bug.
                 object.remove("content_hash");
             }
-            out.push_str(&canonical(&row));
+            lines.push(canonical(&row));
+        }
+        // `normalize` numbers ids by first appearance, so the order rows are
+        // written in decides the tokens. `ctid` order moves with MVCC (a
+        // re-homed tuple lands wherever free space is), which renumbered the
+        // handles between runs: the flaky transfer_differential of #488.
+        // Rows are written in the order of their text with every id and
+        // timestamp masked, which does not depend on where a tuple sits.
+        lines.sort_by_cached_key(|line| masked(line));
+        for line in lines {
+            out.push_str(&line);
             out.push('\n');
         }
     }
     Ok(out)
+}
+
+/// The row with every uuid and timestamp blanked: an order key that is the
+/// same on every run.
+fn masked(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(len) = uuid_at(&chars, i).or_else(|| timestamp_at(&chars, i)) {
+            out.push_str("<>");
+            i += len;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 /// Split a dump into `## relation` sections with their rows sorted.
