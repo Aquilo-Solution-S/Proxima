@@ -45,6 +45,9 @@ mod lifecycle;
 #[path = "blob_roundtrip_pg/store_identity.rs"]
 mod store_identity;
 
+#[path = "blob_roundtrip_pg/implied_keys.rs"]
+mod implied_keys;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
@@ -427,6 +430,14 @@ where
     Ok(result)
 }
 
+/// Purge debts still owed, over every store.
+async fn cold_purge_debt_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
+        .fetch_one(pool)
+        .await
+        .expect("count purge debts")
+}
+
 #[tokio::test]
 async fn prepare_then_complete_then_read_roundtrip() {
     // Opt-in integration test: needs a reachable S3 target. Skip
@@ -690,10 +701,9 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
 }
 
 /// Stage's S3 work may finish after a terminal transition has already locked
-/// the upload row. Stage must return the terminal error while retaining a
-/// canonical locator that owner erase can discover. It removes only the
-/// expendable pending versions and creates no corpus rows or staged content
-/// identity for this first-stage failure. The abort-first barrier also proves
+/// the upload row. Stage must return the terminal error, record the
+/// canonical locator, and owe and purge both keys. It creates no corpus rows
+/// or staged content identity for this first-stage failure. The abort-first barrier also proves
 /// that provider I/O remains outside the database publication locks.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -820,7 +830,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     assert_eq!(
         row.try_get::<Option<Vec<u8>>, _>("sha256")?.as_deref(),
         Some(expected_sha256.as_slice()),
-        "terminal locator repair records the retained bytes' digest"
+        "terminal locator repair records the published bytes' digest"
     );
     let etag: Option<String> = row.try_get("etag")?;
     assert!(etag.as_deref().is_some_and(|value| !value.is_empty()));
@@ -829,15 +839,14 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
         row.try_get::<Option<Vec<u8>>, _>("content_hash")?.is_none(),
         "a first-stage terminal repair must not manufacture staged identity"
     );
-    let client = config.client();
-    let object = client
-        .get_object()
-        .bucket(&config.bucket)
-        .key(&canonical_key)
-        .send()
-        .await?;
-    assert_eq!(object.e_tag(), etag.as_deref());
-    assert_eq!(object.body.collect().await?.into_bytes().as_ref(), body);
+    // The repair owed the bytes nobody may cite, and drained them.
+    assert!(
+        head(&config.client(), &config.bucket, &canonical_key)
+            .await
+            .is_none(),
+        "the canonical bytes a lost stage published are purged"
+    );
+    assert_eq!(cold_purge_debt_count(&pool).await, 0);
     assert_s3_key_versions_absent(&config, &format!("pending/{upload_id}")).await;
     let corpus_counts: (i64, i64) = sqlx::query_as(
         "SELECT
@@ -2894,11 +2903,11 @@ async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
 /// Every expectation mismatch happens after one real stage call but before
 /// any corpus transaction or finish call. The pending row remains available
 /// for the caller's explicit abort or corrected-expectation retry; its
-/// pending-key versions are already retired while canonical bytes remain
-/// available for erase and orphan reconciliation.
+/// pending-key versions are already retired. Aborting owes both keys, so the
+/// canonical bytes the stage published are purged with it.
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // four independent metadata mismatches share one abort proof
-async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical() {
+async fn fresh_pending_expectation_mismatches_are_abortable_and_owe_canonical() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
@@ -3022,8 +3031,8 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
         assert!(
             head(&config.client(), &config.bucket, &canonical_key)
                 .await
-                .is_some(),
-            "explicit abort retains canonical bytes for owner cleanup"
+                .is_none(),
+            "explicit abort owes and purges the canonical bytes nobody may cite"
         );
         assert_s3_key_absent(&config, &pending_key).await;
 
@@ -3041,8 +3050,13 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_retain_canonical
         assert!(
             head(&config.client(), &config.bucket, &canonical_key)
                 .await
-                .is_some(),
-            "repeated abort retains canonical bytes"
+                .is_none(),
+            "a repeated abort leaves the canonical key purged"
+        );
+        assert_eq!(
+            cold_purge_debt_count(&pool).await,
+            0,
+            "the abort drained its debt"
         );
         assert_s3_key_absent(&config, &pending_key).await;
     }
@@ -3142,12 +3156,11 @@ async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
 }
 
 /// Abort cleanup must use version-aware deletion for the expendable pending
-/// transfer key, while retaining the canonical bytes recorded on the upload
-/// row. The extra PUT and delete marker make a key-only delete observably
+/// transfer key, and owes the canonical bytes the stage published too. The extra PUT and delete marker make a key-only delete observably
 /// insufficient on a versioned bucket.
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // the versioned cleanup and entry-stage proof share one fixture
-async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
+async fn versioned_abort_purges_pending_versions_and_the_canonical_object() {
     if !S3RuntimeConfig::present_in_env() {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return;
@@ -3235,8 +3248,8 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
     assert!(
         head(&config.client(), &config.bucket, &canonical_key)
             .await
-            .is_some(),
-        "aborting does not delete the canonical object"
+            .is_none(),
+        "aborting owes and purges the canonical object"
     );
 
     // A stage that enters after the abort status committed must perform the
@@ -3268,8 +3281,8 @@ async fn versioned_abort_purges_pending_versions_and_retains_canonical() {
     assert!(
         head(&config.client(), &config.bucket, &canonical_key)
             .await
-            .is_some(),
-        "stage-after-abort cleanup retains canonical bytes"
+            .is_none(),
+        "the canonical object stays purged after a stage that lost to abort"
     );
 
     let replay = store
@@ -3417,8 +3430,13 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     assert!(
         head(&config.client(), &config.bucket, &canonical_key)
             .await
-            .is_some(),
-        "terminal repair retains canonical bytes"
+            .is_none(),
+        "terminal repair owes and purges the canonical bytes nobody may cite"
+    );
+    assert_eq!(
+        cold_purge_debt_count(&pool).await,
+        0,
+        "the repair drained its debt"
     );
     let locator: (String, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
         "SELECT object_key, sha256, etag FROM proxima_core.blob_uploads\n          WHERE upload_id = $1",
@@ -3623,21 +3641,39 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
         matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
     );
 
-    let debt: (String, Option<Uuid>) = sqlx::query_as(
-        "SELECT object_store, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+    // The erase owes the key the row implies even though it never saw the
+    // object; the stage that lost to it owes the same key again. Whichever
+    // order their purges ran in, a drain leaves neither bytes nor debt.
+    let stores: Vec<String> = sqlx::query_scalar(
+        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("the key the erase could not have seen is owed by the stage");
-    assert_eq!(debt.0, store.store_id().as_str());
-    assert_eq!(debt.1, None);
+    .expect("read the canonical key's debt");
+    assert!(
+        stores.iter().all(|s| s == store.store_id().as_str()),
+        "any remaining debt names the wired store: {stores:?}"
+    );
+    let drain_pg = pg.clone().with_cold(Arc::new(store.cold_store()));
+    drain_pg
+        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions::default())
+        .await
+        .expect("drain");
+    let _ = sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
+        .execute(&pool)
+        .await;
+    drain_pg
+        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions::default())
+        .await
+        .expect("drain");
     assert!(
         head(&config.client(), &config.bucket, &canonical_key)
             .await
-            .is_some(),
-        "the debt is a queue row, not a synchronous delete"
+            .is_none(),
+        "no canonical bytes survive the erase that raced the stage"
     );
+    assert_eq!(cold_purge_debt_count(&pool).await, 0);
     assert_eq!(corpus_counts(&pool).await, (0, 0));
 
     sqlx::raw_sql(

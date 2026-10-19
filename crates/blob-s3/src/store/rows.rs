@@ -7,6 +7,7 @@
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
 use proxima_core::{OwnerId, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -173,23 +174,35 @@ pub(super) async fn load_upload_optional_for_update(
     }))
 }
 
-/// Expire a pending row past its TTL under the owner fence and row lock.
+/// Expire a pending row past its TTL under the owner fence, the canonical
+/// key's object fence and the row lock, and owe both keys the upload implies
+/// in the same transaction.
 ///
-/// Returns the status the row now has: `Pending` for a staged row (one with
-/// a recorded content identity), which never expires.
+/// Returns the status the row now has — `Pending` for a staged row (one with
+/// a recorded content identity), which never expires — and the debts the
+/// expiry owes, for the caller to purge after commit.
 pub(super) async fn mark_upload_expired_on_connection(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store: &proxima_core::ObjectStoreId,
     owner: &OwnerId,
     upload_id: Uuid,
-) -> Result<UploadStatus, BlobError> {
+) -> Result<(UploadStatus, Vec<ColdPurgeEntry>), BlobError> {
     proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
         .await
         .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+    // Fence → key → row, as abort and the stage locator write take them: a
+    // stage that is about to record its canonical locator holds this key.
+    proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
+        tx,
+        std::slice::from_ref(&super::keys::canonical_object_key(upload_id)),
+    )
+    .await
+    .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
     let row = load_upload_optional_for_update(tx, owner, upload_id)
         .await?
         .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
     if row.status != UploadStatus::Pending {
-        return Ok(row.status);
+        return Ok((row.status, Vec::new()));
     }
     // A staged row is not expirable: its bytes are verified and published
     // under the canonical key, and only a finish (or an abort) may decide it.
@@ -204,11 +217,15 @@ pub(super) async fn mark_upload_expired_on_connection(
     .await
     .map_err(BlobError::Db)?
     .rows_affected();
-    Ok(if expired == 1 {
-        UploadStatus::Expired
-    } else {
-        UploadStatus::Pending
-    })
+    if expired != 1 {
+        return Ok((UploadStatus::Pending, Vec::new()));
+    }
+    let owed = proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+        tx, store, owner, upload_id,
+    )
+    .await
+    .map_err(|err| BlobError::State(format!("owe expired upload keys: {err}")))?;
+    Ok((UploadStatus::Expired, owed))
 }
 
 pub(super) async fn load_staged_payload_on_connection(

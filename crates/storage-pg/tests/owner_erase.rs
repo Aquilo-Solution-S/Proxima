@@ -1004,8 +1004,9 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         ));
         // The queue IS the debt: outstanding debt is a row count, which cannot
         // disagree with itself the way a queue row and a mirrored boolean on a
-        // journal row can.
-        assert_eq!(pending_debts(pool).await?, 1);
+        // journal row can. The fixture records a key that is neither of the
+        // keys its upload implies, so the erase owes all three.
+        assert_eq!(pending_debts(pool).await?, 3);
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ('objects/test-second-debt', $1, 's3:test/bucket')",
@@ -1027,14 +1028,14 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             ),
             (1, 0, 1)
         );
-        assert_eq!((failed_retry.due, failed_retry.deferred), (0, 2));
-        assert_eq!(failed_retry.remaining(), 2);
+        assert_eq!((failed_retry.due, failed_retry.deferred), (0, 4));
+        assert_eq!(failed_retry.remaining(), 4);
         let attempts: Vec<(i32, Option<String>)> = sqlx::query_as(
             "SELECT attempts, last_error FROM proxima_core.cold_purge_pending ORDER BY object_key",
         )
         .fetch_all(pool)
         .await?;
-        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts.len(), 4);
         for (count, error) in &attempts {
             assert_eq!(*count, 1, "each failure is recorded once");
             assert!(
@@ -1051,7 +1052,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             .await?;
         assert_eq!(
             (idle.selected, idle.deferred),
-            (0, 2),
+            (0, 4),
             "a backed-off debt is not retried early"
         );
         sqlx::query(
@@ -1064,7 +1065,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             .await?;
         assert_eq!(
             (dry_run.selected, dry_run.purged, dry_run.remaining()),
-            (1, 0, 2)
+            (1, 0, 4)
         );
         let first = retry_pg
             .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
@@ -1074,18 +1075,18 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             (first.selected, first.purged, first.absent, first.failed),
             (1, 0, 1, 0)
         );
-        assert_eq!(first.remaining(), 1);
+        assert_eq!(first.remaining(), 3);
         assert_eq!(
             pending_debts(pool).await?,
-            1,
-            "the first of two keys clears its own debt and no more"
+            3,
+            "the first key clears its own debt and no more"
         );
         let second = retry_pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
             .await?;
         assert_eq!(
             (second.selected, second.purged, second.absent, second.failed),
-            (1, 0, 1, 0)
+            (3, 0, 3, 0)
         );
         assert_eq!(second.remaining(), 0);
         assert_eq!(pending_debts(pool).await?, 0);

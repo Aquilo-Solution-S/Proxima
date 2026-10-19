@@ -529,14 +529,17 @@ async fn recover_and_cleanup(
         let retried = maintenance
             .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
             .await?;
+        // The canonical object existed; the upload's transfer key was
+        // already retired, so its debt clears as absent.
         assert_eq!(
             (
                 retried.selected,
                 retried.purged,
+                retried.absent,
                 retried.failed,
                 retried.remaining()
             ),
-            (1, 1, 0, 0)
+            (2, 1, 1, 0, 0)
         );
         let debt: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.cold_purge_pending WHERE object_key = $1",

@@ -4261,8 +4261,12 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
         }
         assert_eq!(
             plan.object_keys(),
-            std::slice::from_ref(&object_key),
-            "the erase owes the object store the bytes of the blob it just orphaned"
+            [
+                object_key.clone(),
+                object_key.replacen("objects/", "pending/", 1)
+            ]
+            .as_slice(),
+            "the erase owes the object store both keys of the upload it just orphaned"
         );
 
         let leftovers: Vec<String> = sqlx::query_scalar(
@@ -4342,10 +4346,11 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
             Some("fact"),
             "series erase records the erased hot Memory kind"
         );
-        assert!(
-            plan.object_keys().is_empty(),
-            "the destination mounted this object; the erase owes nothing: {:?}",
-            plan.object_keys()
+        assert_eq!(
+            plan.object_keys(),
+            [format!("pending/{upload_id}")].as_slice(),
+            "the destination mounted the canonical object, so the erase owes only \
+             the source upload's transfer key"
         );
 
         let source_rows: i64 =

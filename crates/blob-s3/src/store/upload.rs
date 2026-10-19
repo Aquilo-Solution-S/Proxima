@@ -11,6 +11,7 @@ use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
 use proxima_core::{AuthzContext, OwnerId};
 use proxima_storage_pg::begin_owner_transaction;
+use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -77,10 +78,11 @@ enum AbortCommit {
     /// Nothing further: the row was already terminal in a way that owes no
     /// provider work.
     Settled(CitedBlobUploadAbortOutcomeTs),
-    /// The row was already aborted; only the transfer-key cleanup remains.
+    /// The row was already aborted; its debts may still be undischarged.
     CleanUpThenAborted,
-    /// A pending row was transitioned; classify `(locked status, rows)`.
-    Decide(UploadStatus, u64),
+    /// A pending row was transitioned; classify `(locked status, rows)` and
+    /// purge what the transition owed.
+    Decide(UploadStatus, u64, Vec<ColdPurgeEntry>),
 }
 
 enum ObjectReadError {
@@ -415,8 +417,8 @@ impl CitedBlobStore {
     /// On the first stage the row's locator changes to the canonical key, so a
     /// retry re-reads that canonical copy even if the presigned pending key is
     /// overwritten. Retiring the redundant pending transfer copy is
-    /// best-effort hygiene, never an outcome: the completion cleanup retries it, and
-    /// the bucket lifecycle rule reclaims whatever every attempt missed.
+    /// best-effort hygiene, never an outcome: the completion cleanup retries it,
+    /// and erasing the upload owes whatever every attempt missed.
     ///
     /// # Errors
     /// Returns `BlobError` when the upload is missing, expired,
@@ -470,12 +472,14 @@ impl CitedBlobStore {
                             .await;
                     }
                     StageSource::Terminal { bucket, status } => {
-                        // An expired row's transfer key is left to the bucket
-                        // lifecycle rule, exactly as the entry check leaves it.
-                        if status == UploadStatus::Aborted {
-                            self.purge_pending_upload_best_effort(&bucket, upload_id)
-                                .await;
-                        }
+                        // The abort or expiry owed both keys; retry whatever
+                        // of that debt remains. A transfer key PUT again after
+                        // the debt drained is cleaned here too: nobody may
+                        // cite a terminal upload.
+                        self.purge_owed_after_commit(self.terminal_upload_debts(upload_id))
+                            .await;
+                        self.purge_pending_upload_best_effort(&bucket, upload_id)
+                            .await;
                         return Err(BlobError::State(terminal_status_message(status).into()));
                     }
                     StageSource::Read(reloaded) => {
@@ -552,8 +556,11 @@ impl CitedBlobStore {
                 )
                 .await
                 .map_err(|err| BlobError::State(err.to_string()))?;
-                let status = mark_upload_expired_on_connection(&mut tx, owner, upload_id).await?;
+                let (status, owed) =
+                    mark_upload_expired_on_connection(&mut tx, &self.store_id, owner, upload_id)
+                        .await?;
                 tx.commit().await.map_err(BlobError::Db)?;
+                self.purge_owed_after_commit(owed).await;
                 status
             }
         } else {
@@ -638,7 +645,8 @@ impl CitedBlobStore {
                     .await
             }
             StageLocatorDecision::RepairTerminal(status) => {
-                self.purge_pending_upload_best_effort(&row.bucket, upload_id)
+                // The repair owed both keys under the canonical key's fence.
+                self.purge_owed_after_commit(self.terminal_upload_debts(upload_id))
                     .await;
                 Err(BlobError::State(terminal_status_message(status).into()))
             }
@@ -855,11 +863,10 @@ impl CitedBlobStore {
     }
 
     /// A stage can lose its pending-row guard after writing the canonical
-    /// bytes. Keep that locator on the locked terminal row before releasing
-    /// the owner/key fences, so an erase cannot snapshot its old pending key
-    /// and delete the row without owing the retained canonical object.
-    /// A completion or erase that won earlier was already classified by the
-    /// caller's locked reload. Pending S3 cleanup happens after commit.
+    /// bytes. Record that locator on the locked terminal row and owe both
+    /// keys before releasing the owner/key fences: a terminal upload's bytes
+    /// belong to no one. A completion or erase that won earlier was already
+    /// classified by the caller's locked reload. The purge runs after commit.
     async fn repair_terminal_stage(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -892,6 +899,18 @@ impl CitedBlobStore {
                 "terminal upload locator repair affected {rows_affected} rows under the row lock"
             )));
         }
+        // The abort or expiry this stage lost to may already have owed and
+        // drained these keys before the canonical PUT landed. Nobody may
+        // cite a terminal upload, so the bytes just published are owed again,
+        // under the fence the terminal transition and every erase take.
+        proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+            tx,
+            &self.store_id,
+            owner,
+            upload_id,
+        )
+        .await
+        .map_err(|err| BlobError::State(format!("owe terminal upload keys: {err}")))?;
         Ok(StageLocatorDecision::RepairTerminal(terminal))
     }
 
@@ -901,15 +920,15 @@ impl CitedBlobStore {
     /// locator, and the presigned PUT stays usable until it expires — so this
     /// is hygiene, not a guarantee. A provider failure here must not turn an
     /// already-decided completion, replay or abort into an error for the
-    /// caller: the stage and finish paths retry the purge, and the bucket lifecycle
-    /// rule reclaims whatever every attempt missed.
+    /// caller: the stage and finish paths retry the purge, and erasing the
+    /// upload owes whatever every attempt missed.
     async fn purge_pending_upload_best_effort(&self, bucket: &str, upload_id: Uuid) {
         if let Err(error) = self.purge_pending_upload(bucket, upload_id).await {
             tracing::warn!(
                 bucket,
                 %upload_id,
                 %error,
-                "leaving the pending transfer key to the bucket lifecycle rule"
+                "pending transfer key left in place; erasing the upload owes it"
             );
         }
     }
@@ -931,11 +950,8 @@ impl CitedBlobStore {
     /// replay only validates the cited-object id and returns the cleanup bucket.
     /// Pending-key deletion is best effort and never changes a committed outcome.
     ///
-    /// There is no in-process pending-expiry sweep: leftover `pending/`
-    /// objects (from a crashed complete, an abandoned prepare, or an
-    /// expired upload) MUST be reclaimed by a mandatory S3
-    /// lifecycle-expiration rule on the `pending/` prefix (see docs/operate.md
-    /// deployment). Do not rely on application code to GC them.
+    /// A transfer key this cleanup misses stays implied by the row, so
+    /// erasing the row owes it.
     ///
     /// # Errors
     /// Returns `BlobError` when the upload is missing for `owner`, is not
@@ -1002,11 +1018,13 @@ impl CitedBlobStore {
         match with_retried_tx(|| self.commit_abort(ctx.owner_scope(), &owner, upload_id)).await? {
             AbortCommit::Settled(outcome) => Ok(outcome),
             AbortCommit::CleanUpThenAborted => {
-                self.cleanup_aborted_upload(ctx.owner_scope(), &owner, upload_id)
+                // A repeated abort retries the first one's purge; a debt
+                // another drain already cleared is not touched again.
+                self.purge_owed_after_commit(self.terminal_upload_debts(upload_id))
                     .await;
                 Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
             }
-            AbortCommit::Decide(status, rows_affected) => {
+            AbortCommit::Decide(status, rows_affected, owed) => {
                 // The row was locked for that transaction, so a zero-row result
                 // is only an external writer violating the protocol. Classify
                 // against the locked state rather than opening a second,
@@ -1014,8 +1032,12 @@ impl CitedBlobStore {
                 match abort_transition_decision(status, rows_affected)? {
                     AbortTransitionDecision::WonPending
                     | AbortTransitionDecision::AlreadyAborted => {
-                        self.cleanup_aborted_upload(ctx.owner_scope(), &owner, upload_id)
-                            .await;
+                        let owed = if owed.is_empty() {
+                            self.terminal_upload_debts(upload_id)
+                        } else {
+                            owed
+                        };
+                        self.purge_owed_after_commit(owed).await;
                         Ok(CitedBlobUploadAbortOutcomeTs { aborted: true })
                     }
                     AbortTransitionDecision::Completed => {
@@ -1095,48 +1117,61 @@ impl CitedBlobStore {
         .await
         .map_err(BlobError::Db)?
         .rows_affected();
+        // One outcome per upload: no Fact can cite an aborted upload, so its
+        // transfer key and its canonical object (if a stage published one)
+        // are owed now, in the transaction that decides the abort.
+        let owed = if rows_affected == 1 {
+            proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+                &mut tx,
+                &self.store_id,
+                owner,
+                upload_id,
+            )
+            .await
+            .map_err(|err| BlobError::State(format!("owe aborted upload keys: {err}")))?
+        } else {
+            Vec::new()
+        };
 
-        // Commit before any provider work: the status write is the decision,
-        // and `cleanup_aborted_upload` re-reads the row on another connection
-        // that would otherwise block on this transaction's own row lock.
+        // Commit before any provider work: the status write is the decision.
         tx.commit().await.map_err(BlobError::Db)?;
-        Ok(AbortCommit::Decide(row.status, rows_affected))
+        Ok(AbortCommit::Decide(row.status, rows_affected, owed))
     }
 
-    /// Remove the expendable transfer key an aborted upload may have left
-    /// behind. Canonical bytes remain owned by the row: finish may have
-    /// truthfully committed the corpus before an abort observation won.
-    ///
-    /// A staged row stores the canonical key in `object_key`, while the
-    /// presigned upload always started at `pending/<upload_id>`. The status
-    /// update wins the database race before provider cleanup; keeping this
-    /// helper retryable closes the window where a provider failure after
-    /// that update would strand either copy.
-    async fn cleanup_aborted_upload(
-        &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
-        owner: &proxima_core::OwnerId,
-        upload_id: Uuid,
-    ) {
-        // Re-read after the status transition so a finish that overtook the
-        // abort is never mistaken for an aborted row whose transfer copy is
-        // ours to clean.
-        let row = match self.load_upload_scoped(owner_scope, owner, upload_id).await {
-            Ok(row) => row,
-            Err(error) => {
-                tracing::warn!(
-                    %upload_id,
-                    %error,
-                    "could not re-read an aborted upload row for transfer-key cleanup"
-                );
-                return;
-            }
-        };
-        if row.status != UploadStatus::Aborted {
+    /// The two debts a terminal upload owes, as the queue names them.
+    fn terminal_upload_debts(&self, upload_id: Uuid) -> Vec<ColdPurgeEntry> {
+        [
+            pending_object_key(upload_id),
+            canonical_object_key(upload_id),
+        ]
+        .into_iter()
+        .map(|object_key| ColdPurgeEntry {
+            object_key,
+            object_store: self.store_id.to_string(),
+        })
+        .collect()
+    }
+
+    /// Destroy what a committed terminal transition owed. Best effort: a
+    /// failure leaves the durable debt for the drain, backed off.
+    async fn purge_owed_after_commit(&self, owed: Vec<ColdPurgeEntry>) {
+        if owed.is_empty() {
             return;
         }
-        self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-            .await;
+        let cold = self.cold_store();
+        let outcome = proxima_storage_pg::access::owner_columns::purge_owed_keys_after_commit(
+            &self.pool,
+            &self.platform_scope,
+            &cold,
+            owed,
+        )
+        .await;
+        if outcome.pending {
+            tracing::info!(
+                failed = outcome.failed,
+                "upload objects stay owed to the purge drain after a failed delete"
+            );
+        }
     }
 }
 

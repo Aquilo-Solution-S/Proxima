@@ -24,7 +24,7 @@ pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
 /// In-flight bytes for one upload. The upload id already names exactly one
 /// `blob_uploads` row.
 pub(super) fn pending_object_key(upload_id: Uuid) -> String {
-    format!("pending/{upload_id}")
+    proxima_core::citations::upload_transfer_key(upload_id)
 }
 
 /// The committed object for one upload, derived from the row's own primary

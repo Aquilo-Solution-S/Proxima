@@ -7,6 +7,7 @@ use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, PurgeDeleted, StorageError};
 
+use crate::access::owner_columns::{other_upload_implies_key_sql, upload_implied_keys_sql};
 use crate::verbs::maintenance::PurgeBackoff;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -1517,7 +1518,8 @@ async fn gc_unreferenced_blobs(
         })
 }
 
-const GC_UNREFERENCED_BLOBS_SQL: &str = "\
+const GC_UNREFERENCED_BLOBS_SQL: &str = concat!(
+    "\
 WITH orphans AS MATERIALIZED (
     SELECT b.blob_id
       FROM proxima_core.blob b
@@ -1529,20 +1531,24 @@ WITH orphans AS MATERIALIZED (
 ),
 enqueued AS (
     INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
-    SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
+    SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
       FROM proxima_core.blob_uploads u
-      JOIN orphans o ON o.blob_id = u.blob_id
-     WHERE NOT EXISTS (
+      JOIN orphans o ON o.blob_id = u.blob_id ",
+    upload_implied_keys_sql!(),
+    "
+     WHERE k.object_key IS NOT NULL
+       AND NOT EXISTS (
                SELECT 1
                  FROM proxima_core.blob_uploads other
-                WHERE other.object_key = u.object_key
-                           AND other.object_store = u.object_store
-                  AND other.upload_id <> u.upload_id
+                WHERE other.upload_id <> u.upload_id
                   AND NOT EXISTS (
                           SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
                       )
+                  AND ",
+    other_upload_implies_key_sql!(),
+    "
            )
-     ORDER BY u.object_store, u.object_key, u.upload_id
+     ORDER BY u.object_store, k.object_key, u.upload_id
     ON CONFLICT (object_store, object_key) DO UPDATE
        SET enqueued_at = now(), next_attempt_at = now()
     RETURNING object_key, object_store
@@ -1560,7 +1566,8 @@ d_blobs AS (
 -- `d_uploads` and `d_blobs` are read by nothing on purpose: a
 -- data-modifying WITH clause runs exactly once and to completion whether
 -- or not the primary query reads its output.
-SELECT object_key, object_store FROM enqueued";
+SELECT object_key, object_store FROM enqueued"
+);
 
 // The forget/erase/hydrate suite. Crate-internal because it works at this
 // layer deliberately: it stamps `sidecar_tables` lists by hand — including a

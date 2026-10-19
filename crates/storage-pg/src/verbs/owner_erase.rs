@@ -3,6 +3,7 @@
 // handed, and bundling them into a struct would only move the arity to its
 // constructor.
 
+use crate::access::owner_columns::{other_upload_implies_key_sql, upload_implied_keys_sql};
 use std::collections::BTreeMap;
 
 use proxima_core::flavor::{EraseLeg, HostStateEraseDisposition, KeyShape};
@@ -1099,22 +1100,34 @@ async fn lock_selected_object_keys(
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
     let owner_id = owner.into_inner();
+    // The recorded keys and every row's canonical object, derived: a row
+    // still recording `pending/<u>` after its canonical PUT implies
+    // `objects/<u>`, which is the key a concurrent stage fences.
     let keys: Vec<String> = match scope {
         SelectionScope::Owner => sqlx::query_scalar(
-            "SELECT DISTINCT object_key
-               FROM proxima_core.blob_uploads
-              WHERE owner_id = $1
-              ORDER BY object_key",
+            "SELECT DISTINCT key FROM (
+                 SELECT object_key AS key FROM proxima_core.blob_uploads WHERE owner_id = $1
+                 UNION
+                 SELECT 'objects/' || coalesce(mounted_from_upload_id, upload_id)::text
+                   FROM proxima_core.blob_uploads WHERE owner_id = $1
+             ) keys
+             ORDER BY key",
         )
         .bind(owner_id)
         .fetch_all(&mut **tx)
         .await
         .map_err(map_err)?,
         SelectionScope::Source(_) => sqlx::query_scalar(
-            "SELECT DISTINCT u.object_key
-               FROM proxima_core.blob_uploads u
-               JOIN selected_blobs sb ON sb.blob_id = u.blob_id
-              ORDER BY u.object_key",
+            "SELECT DISTINCT key FROM (
+                 SELECT u.object_key AS key
+                   FROM proxima_core.blob_uploads u
+                   JOIN selected_blobs sb ON sb.blob_id = u.blob_id
+                 UNION
+                 SELECT 'objects/' || coalesce(u.mounted_from_upload_id, u.upload_id)::text
+                   FROM proxima_core.blob_uploads u
+                   JOIN selected_blobs sb ON sb.blob_id = u.blob_id
+             ) keys
+             ORDER BY key",
         )
         .fetch_all(&mut **tx)
         .await
@@ -1707,49 +1720,57 @@ async fn enqueue_blob_object_keys(
     // `DISTINCT` because two mounted rows over one key carry the same store
     // but differ in `owner_id`, and the insert needs exactly one row per key.
     let rows: Vec<(String, String)> = match scope {
-        SelectionScope::Owner => sqlx::query_as(
+        SelectionScope::Owner => sqlx::query_as(concat!(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
-             SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
-               FROM proxima_core.blob_uploads u
+             SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
+               FROM proxima_core.blob_uploads u ",
+            upload_implied_keys_sql!(),
+            "
               WHERE u.owner_id = $1
+                AND k.object_key IS NOT NULL
                 AND NOT EXISTS (
                         SELECT 1
                           FROM proxima_core.blob_uploads other
-                         WHERE other.object_key = u.object_key
-                           AND other.object_store = u.object_store
-                           AND other.owner_id <> $1
+                         WHERE other.owner_id <> $1
+                           AND ",
+            other_upload_implies_key_sql!(),
+            "
                     )
-              ORDER BY u.object_store, u.object_key, u.upload_id
+              ORDER BY u.object_store, k.object_key, u.upload_id
              ON CONFLICT (object_store, object_key) DO UPDATE
                 SET enqueued_at = now(), next_attempt_at = now()
              RETURNING object_key, object_store",
-        )
+        ))
         .bind(owner_id)
         .fetch_all(&mut **tx)
         .await
         .map_err(map_err)?,
-        SelectionScope::Source(_) => sqlx::query_as(
+        SelectionScope::Source(_) => sqlx::query_as(concat!(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
-             SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
+             SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
                FROM proxima_core.blob_uploads u
-               JOIN selected_blobs sb ON sb.blob_id = u.blob_id
-              WHERE NOT EXISTS (
+               JOIN selected_blobs sb ON sb.blob_id = u.blob_id ",
+            upload_implied_keys_sql!(),
+            "
+              WHERE k.object_key IS NOT NULL
+                AND NOT EXISTS (
                         SELECT 1
                           FROM proxima_core.blob_uploads other
-                         WHERE other.object_key = u.object_key
-                           AND other.object_store = u.object_store
-                           AND other.upload_id <> u.upload_id
+                         WHERE other.upload_id <> u.upload_id
                            AND NOT EXISTS (
                                    SELECT 1
                                      FROM selected_blobs sb2
                                     WHERE sb2.blob_id = other.blob_id
                                )
+                           AND ",
+            other_upload_implies_key_sql!(),
+            "
                     )
-              ORDER BY u.object_store, u.object_key, u.upload_id
+              ORDER BY u.object_store, k.object_key, u.upload_id
              ON CONFLICT (object_store, object_key) DO UPDATE
                 SET enqueued_at = now(), next_attempt_at = now()
              RETURNING object_key, object_store",
-        )
+        ))
         .fetch_all(&mut **tx)
         .await
         .map_err(map_err)?,

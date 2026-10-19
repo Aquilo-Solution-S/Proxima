@@ -70,7 +70,11 @@ the typed declarations live beside their storage code.
 Erase commits database destruction and external-object purge debt atomically.
 Object deletion happens after commit, so a rolled-back erase cannot lose bytes.
 Shared objects survive while another admission still claims them; object-key
-fences serialize competing claim/delete decisions.
+fences serialize competing claim/delete decisions. An upload owes both of its
+keys, the transfer key `pending/<id>` and the canonical `objects/<id>`, whatever
+its row records: erase and abort enqueue both, so bytes left by an interrupted
+upload or a failed transfer-key delete are reached too. A key that never
+existed clears as absent.
 
 Each erased target leaves a payload-free, owner-free identity/kind witness.
 Retained source pins stay byte-for-byte; rendering reports a redacted target.

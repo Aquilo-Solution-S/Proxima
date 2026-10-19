@@ -17,6 +17,13 @@ pub fn uploaded_blob_object_key(upload_id: uuid::Uuid) -> String {
     format!("objects/{upload_id}")
 }
 
+/// The key a holder's presigned PUT writes for one upload, before staging
+/// publishes it under [`uploaded_blob_object_key`].
+#[must_use]
+pub fn upload_transfer_key(upload_id: uuid::Uuid) -> String {
+    format!("pending/{upload_id}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UploadedBlobPayload {
     pub content_hash: [u8; 32],
